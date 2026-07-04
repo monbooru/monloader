@@ -23,7 +23,7 @@ func liveTool(t *testing.T) *Tool {
 	cfg := config.Default()
 	cfg.GalleryDL.BinaryPath = "gallery-dl"
 	cfg.GalleryDL.ConfigPath = ""
-	tool := New(cfg, nil)
+	tool := New(cfg, nil, nil, nil)
 	if tool.Version(context.Background()) == "" {
 		t.Skip("real gallery-dl not available")
 	}
@@ -88,10 +88,10 @@ func TestLiveDownload(t *testing.T) {
 	dir := t.TempDir()
 	cfg.GalleryDL.ConfigPath = filepath.Join(dir, "gallery-dl.json")
 	cfg.GalleryDL.ArchivePath = ""
-	if err := WriteManagedConfig(cfg, nil); err != nil {
+	if err := WriteManagedConfig(cfg, nil, nil, nil); err != nil {
 		t.Fatalf("WriteManagedConfig: %v", err)
 	}
-	tool := New(cfg, nil)
+	tool := New(cfg, nil, nil, nil)
 	if tool.Version(context.Background()) == "" {
 		t.Skip("real gallery-dl not available")
 	}

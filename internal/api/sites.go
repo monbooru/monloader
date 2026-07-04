@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/leqwin/monloader/internal/gdl"
 )
 
 // SiteEntry is one supported site for GET /api/v1/sites. Curated entries carry
@@ -94,6 +97,11 @@ func (h *Handler) testSite(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
+	}
+	// Record the success like the web probe does, so the settings "last ok"
+	// stays fresh whichever surface ran the test.
+	if res.Status == gdl.ProbeOK {
+		h.siteState.Reached(name, time.Now())
 	}
 	writeJSON(w, http.StatusOK, res)
 }

@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Title}}</title>
-  <meta name="csrf-token" content="{{.CSRFToken}}">
   <link rel="icon" type="image/png" href="{{.BooruFavicon}}">
   <link rel="stylesheet" href="/static/main.css">
   {{if .CustomCSS}}<link rel="stylesheet" href="/custom.css">{{end}}
@@ -20,16 +19,16 @@
     <nav>
       <a href="/queue" {{if eq .ActiveNav "queue"}}class="active"{{end}}>Queue</a>
       <a href="/settings" {{if eq .ActiveNav "settings"}}class="active"{{end}}>Settings</a>
-      {{if .MonbooruWebURL}}<span class="nav-sep"></span><a href="{{.MonbooruWebURL}}">Go to monbooru</a>{{end}}
     </nav>
-    {{if .AuthEnabled}}
     <div id="topbar-right">
+      {{template "pause_toggle" .}}
+      {{if .AuthEnabled}}
       <form method="POST" action="/logout" style="display:inline">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <button type="submit">logout</button>
       </form>
+      {{end}}
     </div>
-    {{end}}
   </div>
 {{end}}
 

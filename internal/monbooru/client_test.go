@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -107,6 +108,87 @@ func TestPushImageCreatedBareBody(t *testing.T) {
 	var tags []string
 	if err := json.Unmarshal([]byte(gotTags), &tags); err != nil || len(tags) != 3 {
 		t.Errorf("tags field = %q, want a 3-element JSON array", gotTags)
+	}
+}
+
+func TestPushImageDuplicateMergeNote(t *testing.T) {
+	data := []byte("dup bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(32 << 20)
+		// Duplicate sha: monbooru merged the pushed metadata and reports it.
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"image":       map[string]any{"id": 7, "sha256": "x"},
+			"alias_added": true,
+			"merge":       map[string]any{"tags_added": 5, "tags_removed": 1, "rating_filled": true, "source_added": true},
+		})
+	}))
+	defer srv.Close()
+
+	res, err := testClient(srv.URL, "tok").PushImageFile(context.Background(), tempFile(t, data), PushMeta{Filename: "p.jpg", Source: "danbooru"}, "g")
+	if err != nil {
+		t.Fatalf("PushImageFile: %v", err)
+	}
+	if res.Outcome != queue.OutcomeDuplicate {
+		t.Errorf("outcome = %s, want duplicate", res.Outcome)
+	}
+	if res.MonbooruID != 7 {
+		t.Errorf("id = %d, want 7", res.MonbooruID)
+	}
+	if res.MergeNote != "+5 tags, -1 tags, rating" {
+		t.Errorf("merge note = %q, want %q", res.MergeNote, "+5 tags, -1 tags, rating")
+	}
+}
+
+func TestEnrichImageEnriched(t *testing.T) {
+	var gotPath, gotAuth, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		gotAuth = r.Header.Get("Authorization")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"merge": map[string]any{"tags_added": 5}, "verified": true})
+	}))
+	defer srv.Close()
+
+	res, err := testClient(srv.URL, "tok").EnrichImage(context.Background(), 42, "mygallery", EnrichPayload{
+		Tags: []string{"1girl"}, Source: "danbooru", URL: "https://d/1", SourceMD5: "abc", Verify: true, Commentary: "hi",
+	})
+	if err != nil {
+		t.Fatalf("EnrichImage: %v", err)
+	}
+	if res.Outcome != queue.OutcomeEnriched {
+		t.Errorf("outcome = %s, want enriched", res.Outcome)
+	}
+	if res.MonbooruID != 42 {
+		t.Errorf("id = %d, want 42", res.MonbooruID)
+	}
+	if res.MergeNote != "+5 tags" {
+		t.Errorf("merge note = %q, want +5 tags", res.MergeNote)
+	}
+	if gotPath != "/api/v1/images/42/enrich?gallery=mygallery" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("auth = %q", gotAuth)
+	}
+	if !strings.Contains(gotBody, `"verify":true`) || !strings.Contains(gotBody, `"commentary":"hi"`) {
+		t.Errorf("body missing verify/commentary: %s", gotBody)
+	}
+}
+
+func TestEnrichImageHashMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "the source no longer serves this file", "code": "hash_mismatch"})
+	}))
+	defer srv.Close()
+
+	_, err := testClient(srv.URL, "tok").EnrichImage(context.Background(), 42, "g", EnrichPayload{Verify: true, SourceMD5: "abc"})
+	var ce *queue.CodedError
+	if !errors.As(err, &ce) || ce.Code != queue.ErrCodeHashMismatch {
+		t.Fatalf("err = %v, want CodedError hash_mismatch", err)
 	}
 }
 

@@ -1,0 +1,6 @@
+{{define "pause_toggle"}}<span id="pause-toggle" class="pause-toggle" hx-get="/internal/queue-pause" hx-trigger="every 5s" hx-target="#pause-toggle" hx-swap="outerHTML">
+  <form hx-post="/queue/{{if .Paused}}resume{{else}}pause{{end}}" hx-target="#pause-toggle" hx-swap="outerHTML">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <button type="submit" class="pause-btn{{if .Paused}} paused{{end}}" aria-label="{{if .Paused}}resume downloads{{else}}pause downloads{{end}}" title="{{if .Paused}}downloads paused - click to resume{{else}}pause new downloads{{end}}">{{if .Paused}}&#x25B6;&#xFE0E;{{else}}&#x23F8;&#xFE0E;{{end}}</button>
+  </form>
+</span>{{end}}

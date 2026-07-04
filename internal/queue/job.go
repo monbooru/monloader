@@ -47,6 +47,7 @@ type Outcome string
 const (
 	OutcomeCreated            Outcome = "created"
 	OutcomeDuplicate          Outcome = "duplicate"
+	OutcomeEnriched           Outcome = "enriched"
 	OutcomeSkippedArchive     Outcome = "skipped_archive"
 	OutcomeSkippedUnsupported Outcome = "skipped_unsupported"
 	OutcomeFailed             Outcome = "failed"
@@ -65,6 +66,7 @@ const (
 	ErrCodeFileTooLarge        = "file_too_large"
 	ErrCodeMonbooruUnreachable = "monbooru_unreachable"
 	ErrCodeMonbooruRejected    = "monbooru_rejected"
+	ErrCodeHashMismatch        = "hash_mismatch"
 	ErrCodeMappingFailed       = "mapping_failed"
 	ErrCodeCanceled            = "canceled"
 )
@@ -75,8 +77,11 @@ const (
 type Summary struct {
 	Created   int `json:"created"`
 	Duplicate int `json:"duplicate"`
-	Skipped   int `json:"skipped"`
-	Failed    int `json:"failed"`
+	// Enriched counts metadata-only source refetches that merged tags into an
+	// image monbooru already holds; like Duplicate, but no file was pushed.
+	Enriched int `json:"enriched,omitempty"`
+	Skipped  int `json:"skipped"`
+	Failed   int `json:"failed"`
 	// Canceled counts items aborted by a job cancel (failed with the canceled
 	// code), kept out of Failed so a deliberate cancel does not read as errors.
 	Canceled int `json:"canceled,omitempty"`
@@ -98,24 +103,38 @@ type Item struct {
 	SHA256     string     `json:"sha256,omitempty"`
 	// TagWarnings are tags monbooru rejected on the push; recorded, not fatal.
 	TagWarnings []string `json:"tag_warnings,omitempty"`
-	ErrorCode   string   `json:"error_code,omitempty"`
-	Error       string   `json:"error,omitempty"`
+	// MergeNote summarises what a duplicate merge folded in (e.g. "+7 tags").
+	MergeNote string `json:"merge_note,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
-// Job is a queued URL and its resolved items. The mutex guards every
-// mutable field; callers read through Snapshot (which returns an
-// independent copy) and the worker/processor mutate through the methods
-// below. The JSON tags shape the API payload.
-type Job struct {
-	mu sync.Mutex
+// JobKind distinguishes a normal download from a metadata-only source refetch.
+type JobKind string
 
-	ID       int64     `json:"id"`
-	URL      string    `json:"url"`
-	Status   JobStatus `json:"status"`
-	Site     string    `json:"site"`
-	Gallery  string    `json:"gallery"`
-	Folder   string    `json:"folder,omitempty"`
-	MaxItems int       `json:"max_items,omitempty"`
+const (
+	KindDownload JobKind = "download"
+	KindMetadata JobKind = "metadata"
+)
+
+// jobState is the job's data, split from the lock so Snapshot can copy it
+// wholesale and reset can rebuild it, instead of each maintaining its own
+// field list: a new field is snapshotted automatically and zeroed on reset
+// unless reset explicitly keeps it. The JSON tags shape the API payload
+// (embedding promotes them onto Job).
+type jobState struct {
+	ID     int64     `json:"id"`
+	URL    string    `json:"url"`
+	Status JobStatus `json:"status"`
+	// Kind is "download" (the default) or "metadata": a source refetch that
+	// re-reads URL for its tags/commentary/notes and enriches ImageID (an image
+	// monbooru already holds) instead of downloading and pushing a new file.
+	Kind     JobKind `json:"kind,omitempty"`
+	ImageID  int64   `json:"image_id,omitempty"`
+	Site     string  `json:"site"`
+	Gallery  string  `json:"gallery"`
+	Folder   string  `json:"folder,omitempty"`
+	MaxItems int     `json:"max_items,omitempty"`
 	// Offset skips this many leading posts before the job's window, so a
 	// continue on a capped search fetches the next batch via --range.
 	Offset int `json:"-"`
@@ -145,6 +164,14 @@ type Job struct {
 	CreatedAt  time.Time `json:"created_at"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
+}
+
+// Job is a queued URL and its resolved items. The mutex guards every mutable
+// field; callers read through Snapshot (which returns an independent copy) and
+// the worker/processor mutate through the methods below.
+type Job struct {
+	mu sync.Mutex
+	jobState
 
 	finalized bool
 	done      chan struct{}
@@ -190,18 +217,23 @@ func validItemTransition(from, to ItemStatus) bool {
 
 func newJob(id int64, url string, opts Options, now time.Time) *Job {
 	return &Job{
-		ID:        id,
-		URL:       url,
-		Status:    JobQueued,
-		Gallery:   opts.Gallery,
-		Folder:    opts.Folder,
-		MaxItems:  opts.MaxItems,
-		Offset:    opts.Offset,
-		Root:      opts.Root,
-		Auto:      opts.Auto,
-		Priority:  opts.Priority,
-		CreatedAt: now,
-		done:      make(chan struct{}),
+		jobState: jobState{
+			ID:        id,
+			URL:       url,
+			Status:    JobQueued,
+			Kind:      opts.Kind,
+			ImageID:   opts.ImageID,
+			Site:      opts.Site,
+			Gallery:   opts.Gallery,
+			Folder:    opts.Folder,
+			MaxItems:  opts.MaxItems,
+			Offset:    opts.Offset,
+			Root:      opts.Root,
+			Auto:      opts.Auto,
+			Priority:  opts.Priority,
+			CreatedAt: now,
+		},
+		done: make(chan struct{}),
 	}
 }
 
@@ -299,12 +331,17 @@ func (j *Job) seriesKey() int64 {
 // windowEnd is the offset just past this window's fetched range: its start plus
 // the posts it took - the full cap when capped, else the items it resolved. A
 // short window must still count what it fetched, or a continue from an earlier
-// window in the series would re-fetch it.
+// window in the series would re-fetch it. A window that has not resolved yet
+// holds its whole reserved range, so a second continue issued while it is still
+// pending enqueues the following window instead of a duplicate of it.
 func (j *Job) windowEnd() int {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.Capped {
 		return j.Offset + j.Cap
+	}
+	if !j.finalized && len(j.Items) == 0 && j.MaxItems > 0 {
+		return j.Offset + j.MaxItems
 	}
 	return j.Offset + len(j.Items)
 }
@@ -353,8 +390,9 @@ func (j *Job) cancel(now time.Time) {
 	j.markFinishedLocked(now)
 }
 
-// reset returns a finished job to the queued state for Retry, clearing the
-// prior run's items, summary, error, and timestamps and re-arming done. The
+// reset returns a finished job to the queued state for Retry: the state is
+// rebuilt from the identity fields the re-run keeps, so the prior run's items,
+// summary, error, site, and timestamps zero out, and done is re-armed. The
 // re-run bypasses the download-archive when force is set or the prior run did
 // not fully import (failed or partial).
 func (j *Job) reset(force bool) error {
@@ -364,20 +402,25 @@ func (j *Job) reset(force bool) error {
 		return fmt.Errorf("cannot retry a %s job", j.Status)
 	}
 	j.priorItems = priorImports(j.Items)
-	// A job that did not fully import has items whose download landed in the
-	// archive but whose push never reached monbooru; retrying past the archive
-	// re-downloads and re-pushes them instead of archive-skipping them.
-	j.Force = force || j.Status == JobFailed || j.Status == JobPartial
-	j.Status = JobQueued
-	j.Items = nil
-	j.Summary = Summary{}
-	j.Capped = false
-	j.Cap = 0
-	j.ErrorCode = ""
-	j.Error = ""
-	j.Site = ""
-	j.StartedAt = time.Time{}
-	j.FinishedAt = time.Time{}
+	j.jobState = jobState{
+		ID:      j.ID,
+		URL:     j.URL,
+		Status:  JobQueued,
+		Kind:    j.Kind,
+		ImageID: j.ImageID,
+		Gallery: j.Gallery,
+		Folder:  j.Folder,
+		// A job that did not fully import has items whose download landed in the
+		// archive but whose push never reached monbooru; retrying past the archive
+		// re-downloads and re-pushes them instead of archive-skipping them.
+		Force:     force || j.Status == JobFailed || j.Status == JobPartial,
+		MaxItems:  j.MaxItems,
+		Offset:    j.Offset,
+		Root:      j.Root,
+		Auto:      j.Auto,
+		Priority:  j.Priority,
+		CreatedAt: j.CreatedAt,
+	}
 	j.finalized = false
 	j.done = make(chan struct{})
 	return nil
@@ -432,37 +475,29 @@ func (j *Job) doneChan() chan struct{} {
 func (j *Job) Snapshot() *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	items := make([]Item, len(j.Items))
-	copy(items, j.Items)
+	state := j.jobState
+	state.Items = make([]Item, len(j.Items))
+	copy(state.Items, j.Items)
 	// A running job's summary is only stamped at finalize; compute it live so the
 	// queue and API track item progress instead of reading all-zeros until then.
-	summary := j.Summary
 	if !j.finalized {
-		summary = summarize(j.Items)
+		state.Summary = summarize(j.Items)
 	}
-	return &Job{
-		ID:         j.ID,
-		URL:        j.URL,
-		Status:     j.Status,
-		Site:       j.Site,
-		Gallery:    j.Gallery,
-		Folder:     j.Folder,
-		MaxItems:   j.MaxItems,
-		Offset:     j.Offset,
-		Root:       j.Root,
-		Auto:       j.Auto,
-		Force:      j.Force,
-		Priority:   j.Priority,
-		Summary:    summary,
-		Capped:     j.Capped,
-		Cap:        j.Cap,
-		ErrorCode:  j.ErrorCode,
-		Error:      j.Error,
-		Items:      items,
-		CreatedAt:  j.CreatedAt,
-		StartedAt:  j.StartedAt,
-		FinishedAt: j.FinishedAt,
-		finalized:  j.finalized,
+	return &Job{jobState: state, finalized: j.finalized}
+}
+
+// Add returns the field-wise sum of two summaries, for merging a
+// continue-series' windows into one queue row. Kept next to summarize so a new
+// outcome counter cannot be tallied there but dropped here.
+func (s Summary) Add(b Summary) Summary {
+	return Summary{
+		Created:   s.Created + b.Created,
+		Duplicate: s.Duplicate + b.Duplicate,
+		Enriched:  s.Enriched + b.Enriched,
+		Skipped:   s.Skipped + b.Skipped,
+		Failed:    s.Failed + b.Failed,
+		Canceled:  s.Canceled + b.Canceled,
+		Total:     s.Total + b.Total,
 	}
 }
 
@@ -475,6 +510,8 @@ func summarize(items []Item) Summary {
 			s.Created++
 		case OutcomeDuplicate:
 			s.Duplicate++
+		case OutcomeEnriched:
+			s.Enriched++
 		case OutcomeSkippedArchive, OutcomeSkippedUnsupported:
 			s.Skipped++
 		case OutcomeFailed:

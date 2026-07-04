@@ -15,6 +15,7 @@ import (
 	"github.com/leqwin/monloader/internal/gdl"
 	"github.com/leqwin/monloader/internal/mapping"
 	"github.com/leqwin/monloader/internal/queue"
+	"github.com/leqwin/monloader/internal/sitestate"
 )
 
 // fakeRunner satisfies gdl.Runner for the probe and version paths.
@@ -23,6 +24,7 @@ type fakeRunner struct{ probe gdl.ProbeResult }
 func (f fakeRunner) Resolve(context.Context, string, string, bool) (gdl.ResolveResult, error) {
 	return gdl.ResolveResult{}, nil
 }
+func (f fakeRunner) FetchMeta(context.Context, string) (map[string]any, error) { return nil, nil }
 func (f fakeRunner) Download(context.Context, string, string, string, bool, func(int, gdl.Downloaded), bool) ([]gdl.Downloaded, error) {
 	return nil, nil
 }
@@ -80,6 +82,13 @@ func (fakeProc) Process(ctx context.Context, job *queue.Job) error {
 const apiTestToken = "test-token"
 
 func serveCfg(t *testing.T, cfg *config.Config) *httptest.Server {
+	srv, _ := serveCfgTracked(t, cfg)
+	return srv
+}
+
+// serveCfgTracked also returns the sitestate tracker, for tests asserting what
+// a probe recorded.
+func serveCfgTracked(t *testing.T, cfg *config.Config) (*httptest.Server, *sitestate.Tracker) {
 	t.Helper()
 	q := queue.New(fakeProc{}, 1, 100)
 	q.Start()
@@ -92,12 +101,13 @@ func serveCfg(t *testing.T, cfg *config.Config) *httptest.Server {
 		{Category: "gelbooru", Subcategory: "post", Example: "https://example.com/index.php?id=1"},
 		{Category: "weirdsite", Subcategory: "post", Example: "https://weird.example/1"},
 	}
-	h := New(q, fakeRunner{probe: gdl.ProbeResult{Status: gdl.ProbeOK}}, mapper, config.NewProvider(cfg), extractors, "v1.2.3", "1.32.1")
+	siteState := sitestate.New()
+	h := New(q, fakeRunner{probe: gdl.ProbeResult{Status: gdl.ProbeOK}}, mapper, config.NewProvider(cfg), extractors, "v1.2.3", "1.32.1", siteState)
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(func() { srv.Close(); q.Close() })
-	return srv
+	return srv, siteState
 }
 
 func newTestServer(t *testing.T, token string) *httptest.Server {
@@ -206,6 +216,45 @@ func TestEnqueueRejectsNonHTTPURL(t *testing.T) {
 		resp, _ := doJSON(t, "POST", srv.URL+"/api/v1/queue", "", `{"url":"`+u+`"}`)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("url %q: status = %d, want 400", u, resp.StatusCode)
+		}
+	}
+}
+
+func TestMetadataEnqueues(t *testing.T) {
+	srv := newTestServer(t, "")
+	resp, body := doJSON(t, "POST", srv.URL+"/api/v1/metadata", "", `{"image_id":42,"gallery":"art","url":"http://danbooru/posts/1"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	id, ok := body["job_id"].(float64)
+	if !ok {
+		t.Fatalf("expected job_id, got %v", body)
+	}
+	resp, job := doJSON(t, "GET", srv.URL+"/api/v1/queue/"+strconv.FormatInt(int64(id), 10), "", "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("get job status = %d", resp.StatusCode)
+	}
+	if job["kind"] != "metadata" || job["image_id"] != float64(42) || job["gallery"] != "art" {
+		t.Errorf("job = %v, want kind=metadata image_id=42 gallery=art", job)
+	}
+}
+
+func TestMetadataValidation(t *testing.T) {
+	srv := newTestServer(t, "")
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"missing image_id", `{"url":"http://danbooru/posts/1"}`},
+		{"non-http url", `{"image_id":1,"url":"ftp://h/x"}`},
+		{"missing url", `{"image_id":1}`},
+		{"invalid json", `{`},
+	} {
+		resp, body := doJSON(t, "POST", srv.URL+"/api/v1/metadata", "", tc.body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", tc.name, resp.StatusCode)
+		}
+		if body["code"] != "invalid_request" {
+			t.Errorf("%s: code = %v, want invalid_request", tc.name, body["code"])
 		}
 	}
 }
@@ -350,61 +399,37 @@ func TestRetryForce(t *testing.T) {
 
 // TestContinueJob checks the continue endpoint queues a follow-up for the next
 // window of a capped job and rejects a job that was never capped.
-func TestContinueJob(t *testing.T) {
-	srv := newTestServer(t, "")
+// TestContinueEndpoints checks continue and continue-all each queue the next
+// window of a capped job and reject a job that was never capped.
+func TestContinueEndpoints(t *testing.T) {
+	for _, action := range []string{"continue", "continue-all"} {
+		t.Run(action, func(t *testing.T) {
+			srv := newTestServer(t, "")
 
-	_, job := doJSON(t, "POST", srv.URL+"/api/v1/queue?wait=5", "", `{"url":"http://x/cap"}`)
-	id := int64(job["id"].(float64))
-	resp, body := doJSON(t, "POST", srv.URL+"/api/v1/queue/"+itoa(id)+"/continue", "", "")
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("continue status = %d, want 202", resp.StatusCode)
-	}
-	newID := int64(body["job_id"].(float64))
-	if newID == id {
-		t.Errorf("continue should return a new job id, got the source %d", id)
-	}
-	if r, _ := doJSON(t, "GET", srv.URL+"/api/v1/queue/"+itoa(newID), "", ""); r.StatusCode != 200 {
-		t.Errorf("continued job %d should exist, get status = %d", newID, r.StatusCode)
-	}
+			_, job := doJSON(t, "POST", srv.URL+"/api/v1/queue?wait=5", "", `{"url":"http://x/cap"}`)
+			id := int64(job["id"].(float64))
+			resp, body := doJSON(t, "POST", srv.URL+"/api/v1/queue/"+itoa(id)+"/"+action, "", "")
+			if resp.StatusCode != http.StatusAccepted {
+				t.Fatalf("%s status = %d, want 202", action, resp.StatusCode)
+			}
+			newID := int64(body["job_id"].(float64))
+			if newID == id {
+				t.Errorf("%s should return a new job id, got the source %d", action, id)
+			}
+			if r, _ := doJSON(t, "GET", srv.URL+"/api/v1/queue/"+itoa(newID), "", ""); r.StatusCode != 200 {
+				t.Errorf("follow-up job %d should exist, get status = %d", newID, r.StatusCode)
+			}
 
-	// A non-capped job has no next window (409); an unknown id is 404.
-	_, plain := doJSON(t, "POST", srv.URL+"/api/v1/queue?wait=5", "", `{"url":"http://x/ok"}`)
-	pid := int64(plain["id"].(float64))
-	if r, _ := doJSON(t, "POST", srv.URL+"/api/v1/queue/"+itoa(pid)+"/continue", "", ""); r.StatusCode != http.StatusConflict {
-		t.Errorf("continue on a non-capped job = %d, want 409", r.StatusCode)
-	}
-	if r, _ := doJSON(t, "POST", srv.URL+"/api/v1/queue/99999/continue", "", ""); r.StatusCode != http.StatusNotFound {
-		t.Errorf("continue on unknown id = %d, want 404", r.StatusCode)
-	}
-}
-
-// TestContinueAllJob checks the fetch-all endpoint queues the next window and
-// rejects a job that was never capped.
-func TestContinueAllJob(t *testing.T) {
-	srv := newTestServer(t, "")
-
-	_, job := doJSON(t, "POST", srv.URL+"/api/v1/queue?wait=5", "", `{"url":"http://x/cap"}`)
-	id := int64(job["id"].(float64))
-	resp, body := doJSON(t, "POST", srv.URL+"/api/v1/queue/"+itoa(id)+"/continue-all", "", "")
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("continue-all status = %d, want 202", resp.StatusCode)
-	}
-	newID := int64(body["job_id"].(float64))
-	if newID == id {
-		t.Errorf("continue-all should return a new job id, got the source %d", id)
-	}
-	if r, _ := doJSON(t, "GET", srv.URL+"/api/v1/queue/"+itoa(newID), "", ""); r.StatusCode != 200 {
-		t.Errorf("fetch-all follow-up %d should exist, get status = %d", newID, r.StatusCode)
-	}
-
-	// A non-capped job has no next window (409); an unknown id is 404.
-	_, plain := doJSON(t, "POST", srv.URL+"/api/v1/queue?wait=5", "", `{"url":"http://x/ok"}`)
-	pid := int64(plain["id"].(float64))
-	if r, _ := doJSON(t, "POST", srv.URL+"/api/v1/queue/"+itoa(pid)+"/continue-all", "", ""); r.StatusCode != http.StatusConflict {
-		t.Errorf("continue-all on a non-capped job = %d, want 409", r.StatusCode)
-	}
-	if r, _ := doJSON(t, "POST", srv.URL+"/api/v1/queue/99999/continue-all", "", ""); r.StatusCode != http.StatusNotFound {
-		t.Errorf("continue-all on unknown id = %d, want 404", r.StatusCode)
+			// A non-capped job has no next window (409); an unknown id is 404.
+			_, plain := doJSON(t, "POST", srv.URL+"/api/v1/queue?wait=5", "", `{"url":"http://x/ok"}`)
+			pid := int64(plain["id"].(float64))
+			if r, _ := doJSON(t, "POST", srv.URL+"/api/v1/queue/"+itoa(pid)+"/"+action, "", ""); r.StatusCode != http.StatusConflict {
+				t.Errorf("%s on a non-capped job = %d, want 409", action, r.StatusCode)
+			}
+			if r, _ := doJSON(t, "POST", srv.URL+"/api/v1/queue/99999/"+action, "", ""); r.StatusCode != http.StatusNotFound {
+				t.Errorf("%s on unknown id = %d, want 404", action, r.StatusCode)
+			}
+		})
 	}
 }
 
@@ -424,6 +449,42 @@ func TestJobExposesSeriesRoot(t *testing.T) {
 	_, cont := doJSON(t, "GET", srv.URL+"/api/v1/queue/"+itoa(nid), "", "")
 	if root, ok := cont["root"].(float64); !ok || int64(root) != id {
 		t.Errorf("a continuation should carry the originating root %d, got %v", id, cont["root"])
+	}
+}
+
+func TestPauseResume(t *testing.T) {
+	srv := newTestServer(t, "")
+
+	_, list := doJSON(t, "GET", srv.URL+"/api/v1/queue", "", "")
+	if list["paused"] != false {
+		t.Errorf("initial list paused = %v, want false", list["paused"])
+	}
+
+	resp, out := doJSON(t, "POST", srv.URL+"/api/v1/queue/pause", "", "")
+	if resp.StatusCode != http.StatusOK || out["paused"] != true {
+		t.Fatalf("pause: status=%d paused=%v", resp.StatusCode, out["paused"])
+	}
+	if _, list = doJSON(t, "GET", srv.URL+"/api/v1/queue", "", ""); list["paused"] != true {
+		t.Errorf("after pause, list paused = %v, want true", list["paused"])
+	}
+
+	resp, out = doJSON(t, "POST", srv.URL+"/api/v1/queue/resume", "", "")
+	if resp.StatusCode != http.StatusOK || out["paused"] != false {
+		t.Fatalf("resume: status=%d paused=%v", resp.StatusCode, out["paused"])
+	}
+	if _, list = doJSON(t, "GET", srv.URL+"/api/v1/queue", "", ""); list["paused"] != false {
+		t.Errorf("after resume, list paused = %v, want false", list["paused"])
+	}
+}
+
+func TestPauseRequiresWriteScope(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.BaseURL = "http://localhost:8081"
+	cfg.Auth.Tokens = []config.Token{{ID: "ro", Name: "ro", TokenHash: config.HashToken("ro-token"), Scopes: []string{config.ScopeRead}}}
+	srv := serveCfg(t, cfg)
+	resp, _ := doJSON(t, "POST", srv.URL+"/api/v1/queue/pause", "ro-token", "")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("pause with read-only token = %d, want 403", resp.StatusCode)
 	}
 }
 
@@ -544,6 +605,22 @@ func TestSiteProbe(t *testing.T) {
 	}
 }
 
+func TestSiteProbeRecordsReached(t *testing.T) {
+	// A successful API probe must record "last reached" like the web probe, so
+	// the settings indicator stays fresh whichever surface ran the test.
+	cfg := config.Default()
+	cfg.Server.BaseURL = "http://localhost:8081"
+	cfg.Auth.Tokens = []config.Token{{ID: "test", Name: "test", TokenHash: config.HashToken(apiTestToken), Scopes: config.AllScopes}}
+	srv, tracker := serveCfgTracked(t, cfg)
+	resp, _ := doJSON(t, "POST", srv.URL+"/api/v1/sites/danbooru/test", "", "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if tracker.LastReached("danbooru").IsZero() {
+		t.Error("a successful probe left the site's last-reached time unset")
+	}
+}
+
 func TestOpenAPIStructure(t *testing.T) {
 	srv := newTestServer(t, "")
 	resp, err := http.Get(srv.URL + "/api/v1/openapi.json")
@@ -579,7 +656,7 @@ func TestOpenAPIStructure(t *testing.T) {
 			t.Errorf("dangling $ref %q", ref)
 		}
 	}
-	// Every operation must declare responses.
+	// Every operation must declare responses, a summary, and an operationId.
 	for p, item := range paths {
 		ops := item.(map[string]any)
 		for m, op := range ops {
@@ -587,7 +664,18 @@ func TestOpenAPIStructure(t *testing.T) {
 			if _, ok := o["responses"]; !ok {
 				t.Errorf("%s %s has no responses", m, p)
 			}
+			if s, _ := o["summary"].(string); s == "" {
+				t.Errorf("%s %s has no summary", m, p)
+			}
+			if id, _ := o["operationId"].(string); id == "" {
+				t.Errorf("%s %s has no operationId", m, p)
+			}
 		}
+	}
+	// The declarations drive the mux, so a documented path is a mounted route;
+	// pin the metadata endpoint that had been mounted without documentation.
+	if _, ok := paths["/api/v1/metadata"]; !ok {
+		t.Error("spec is missing /api/v1/metadata")
 	}
 }
 

@@ -130,6 +130,29 @@ type jobGroup struct {
 	Items   []queue.Item
 }
 
+// Phase labels a group's progress next to the row's item count: "downloading"
+// while any item is still waiting to be fetched, "pushing" once the files are
+// down and going to monbooru, "finished" once the series has stopped running.
+func (g jobGroup) Phase() string {
+	if g.Lead == nil {
+		return ""
+	}
+	if g.Lead.Status != queue.JobRunning && g.Lead.Status != queue.JobQueued {
+		return "finished"
+	}
+	for _, it := range g.Items {
+		if it.Status == queue.ItemPending {
+			return "downloading"
+		}
+	}
+	for _, it := range g.Items {
+		if it.Status == queue.ItemDownloaded || it.Status == queue.ItemUploaded {
+			return "pushing"
+		}
+	}
+	return "downloading"
+}
+
 // groupJobs buckets a newest-first job list by series, keeping newest-first
 // order between groups and oldest-first items within each.
 func groupJobs(jobs []*queue.Job) []jobGroup {
@@ -143,7 +166,7 @@ func groupJobs(jobs []*queue.Job) []jobGroup {
 		if i, ok := at[root]; ok {
 			g := &groups[i]
 			g.Items = append(append([]queue.Item{}, j.Items...), g.Items...)
-			g.Summary = addSummary(g.Summary, j.Summary)
+			g.Summary = g.Summary.Add(j.Summary)
 			continue
 		}
 		at[root] = len(groups)
@@ -155,17 +178,6 @@ func groupJobs(jobs []*queue.Job) []jobGroup {
 		})
 	}
 	return groups
-}
-
-func addSummary(a, b queue.Summary) queue.Summary {
-	return queue.Summary{
-		Created:   a.Created + b.Created,
-		Duplicate: a.Duplicate + b.Duplicate,
-		Skipped:   a.Skipped + b.Skipped,
-		Failed:    a.Failed + b.Failed,
-		Canceled:  a.Canceled + b.Canceled,
-		Total:     a.Total + b.Total,
-	}
 }
 
 // fillQueue adds the grouped job list and the monbooru web base (for image
@@ -186,7 +198,7 @@ func (s *Server) monbooruWebBase() string {
 	return strings.TrimRight(base, "/")
 }
 
-// monbooruWebLink is the base for the topbar and footer links to monbooru, or
+// monbooruWebLink is the base for the footer "connected to monbooru" link, or
 // "" when no web_url is set: unlike the image links it never falls back to
 // api_url, which is an internal address that would not resolve from a browser.
 func (s *Server) monbooruWebLink() string {
@@ -236,9 +248,34 @@ func (s *Server) clearQueue(w http.ResponseWriter, r *http.Request) {
 	s.queueRows(w, r)
 }
 
-// monbooruStatus renders the footer connectivity light from a live probe.
+// pauseDownloads holds the queue and re-renders the topbar control.
+func (s *Server) pauseDownloads(w http.ResponseWriter, r *http.Request) {
+	s.queue.Pause()
+	s.renderPauseToggle(w, r)
+}
+
+// resumeDownloads lifts the hold and re-renders the topbar control.
+func (s *Server) resumeDownloads(w http.ResponseWriter, r *http.Request) {
+	s.queue.Resume()
+	s.renderPauseToggle(w, r)
+}
+
+// queuePauseToggle re-renders the topbar control for its poll, so a pause set
+// elsewhere (e.g. from monsender) shows here without a reload.
+func (s *Server) queuePauseToggle(w http.ResponseWriter, r *http.Request) {
+	s.renderPauseToggle(w, r)
+}
+
+func (s *Server) renderPauseToggle(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "pause_toggle", map[string]any{
+		"Paused":    s.queue.Paused(),
+		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
+	})
+}
+
+// monbooruStatus renders the footer connectivity light from a cached probe.
 func (s *Server) monbooruStatus(w http.ResponseWriter, r *http.Request) {
-	status, version := s.checkMonbooru(r.Context())
+	status, version := s.monbooruStatusCached(r.Context())
 	s.render(w, "conn_light", map[string]any{
 		"Conn":            status,
 		"MonbooruWebURL":  s.monbooruWebLink(),
@@ -296,7 +333,7 @@ func (s *Server) settingsScreen(w http.ResponseWriter, r *http.Request) {
 	data["MonbooruPaired"] = s.hasPairedToken("monbooru")
 	data["MonbooruPairWaiting"] = s.getPairAttempt() != nil
 	data["MonsenderPending"] = s.pairs.listPending()
-	data["MonsenderPaired"] = s.pairedExists("monsender")
+	data["MonsenderPaired"] = s.hasPairedToken("monsender")
 
 	if msg := r.URL.Query().Get("msg"); msg != "" {
 		data["Flash"] = msg

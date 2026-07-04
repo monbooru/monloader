@@ -79,6 +79,33 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id})
 }
 
+type metadataRequest struct {
+	ImageID int64  `json:"image_id"`
+	Gallery string `json:"gallery"`
+	URL     string `json:"url"`
+}
+
+// metadata handles POST /api/v1/metadata: monbooru asks monloader to re-read a
+// post URL for its tags / commentary / notes (metadata only, no download) and
+// enrich the monbooru image it names. Returns 202 with the queued job id.
+func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
+	var body metadataRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if body.ImageID <= 0 {
+		apiError(w, http.StatusBadRequest, "invalid_request", "image_id is required")
+		return
+	}
+	if !validEnqueueURL(body.URL) {
+		apiError(w, http.StatusBadRequest, "invalid_request", "url must be an http(s) URL")
+		return
+	}
+	id := h.queue.EnqueueMetadata(body.ImageID, body.Gallery, body.URL)
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id})
+}
+
 // waitSeconds reads and clamps the ?wait= parameter.
 func waitSeconds(r *http.Request) int {
 	v := r.URL.Query().Get("wait")
@@ -117,11 +144,24 @@ func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
 		Page:   page,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"page":  page,
-		"limit": limit,
-		"total": total,
-		"jobs":  jobs,
+		"page":   page,
+		"limit":  limit,
+		"total":  total,
+		"paused": h.queue.Paused(),
+		"jobs":   jobs,
 	})
+}
+
+// pauseQueue handles POST /api/v1/queue/pause: hold new downloads globally.
+func (h *Handler) pauseQueue(w http.ResponseWriter, r *http.Request) {
+	h.queue.Pause()
+	writeJSON(w, http.StatusOK, map[string]any{"paused": true})
+}
+
+// resumeQueue handles POST /api/v1/queue/resume: let held downloads run.
+func (h *Handler) resumeQueue(w http.ResponseWriter, r *http.Request) {
+	h.queue.Resume()
+	writeJSON(w, http.StatusOK, map[string]any{"paused": false})
 }
 
 // getJob handles GET /api/v1/queue/{id}.
@@ -138,32 +178,15 @@ func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
-// retryJob handles POST /api/v1/queue/{id}/retry. With ?force=1 the re-run
-// bypasses the download-archive so already-fetched posts are downloaded again.
-func (h *Handler) retryJob(w http.ResponseWriter, r *http.Request) {
+// jobAction runs one queue action addressed by the {id} path segment and
+// answers 202 with the resulting job id, mapping ErrNotFound to 404 and any
+// other queue refusal to 409.
+func (h *Handler) jobAction(w http.ResponseWriter, r *http.Request, action func(id int64) (int64, error)) {
 	id, ok := apiPathInt64(w, r, "id")
 	if !ok {
 		return
 	}
-	if err := h.queue.Retry(id, r.URL.Query().Get("force") == "1"); err != nil {
-		if errors.Is(err, queue.ErrNotFound) {
-			apiError(w, http.StatusNotFound, "not_found", "job not found")
-			return
-		}
-		apiError(w, http.StatusConflict, "conflict", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id})
-}
-
-// continueJob handles POST /api/v1/queue/{id}/continue. It enqueues a follow-up
-// job for the window after a capped job's, returning the new job id.
-func (h *Handler) continueJob(w http.ResponseWriter, r *http.Request) {
-	id, ok := apiPathInt64(w, r, "id")
-	if !ok {
-		return
-	}
-	newID, err := h.queue.Continue(id)
+	jobID, err := action(id)
 	if err != nil {
 		if errors.Is(err, queue.ErrNotFound) {
 			apiError(w, http.StatusNotFound, "not_found", "job not found")
@@ -172,27 +195,28 @@ func (h *Handler) continueJob(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusConflict, "conflict", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": newID})
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": jobID})
+}
+
+// retryJob handles POST /api/v1/queue/{id}/retry. With ?force=1 the re-run
+// bypasses the download-archive so already-fetched posts are downloaded again.
+func (h *Handler) retryJob(w http.ResponseWriter, r *http.Request) {
+	h.jobAction(w, r, func(id int64) (int64, error) {
+		return id, h.queue.Retry(id, r.URL.Query().Get("force") == "1")
+	})
+}
+
+// continueJob handles POST /api/v1/queue/{id}/continue. It enqueues a follow-up
+// job for the window after a capped job's, returning the new job id.
+func (h *Handler) continueJob(w http.ResponseWriter, r *http.Request) {
+	h.jobAction(w, r, h.queue.Continue)
 }
 
 // continueAllJob handles POST /api/v1/queue/{id}/continue-all. It queues the
 // next window and keeps fetching each following one until the capped search
 // runs short, returning the first follow-up job's id.
 func (h *Handler) continueAllJob(w http.ResponseWriter, r *http.Request) {
-	id, ok := apiPathInt64(w, r, "id")
-	if !ok {
-		return
-	}
-	newID, err := h.queue.ContinueAll(id)
-	if err != nil {
-		if errors.Is(err, queue.ErrNotFound) {
-			apiError(w, http.StatusNotFound, "not_found", "job not found")
-			return
-		}
-		apiError(w, http.StatusConflict, "conflict", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": newID})
+	h.jobAction(w, r, h.queue.ContinueAll)
 }
 
 // deleteJob handles DELETE /api/v1/queue/{id}: cancels a running job, else

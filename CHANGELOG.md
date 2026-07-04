@@ -1,5 +1,19 @@
 # Changelog
 
+## [v1.3.0] - 2026-07-04
+### Added
+- Queue rows show batch progress next to the item count. ([#3](https://github.com/leqwin/monloader/issues/3))
+- Pause and resume downloads from the topbar. ([#4](https://github.com/leqwin/monloader/issues/4))
+- Re-submit a post to refresh its metadata, merging new tags into the existing image. ([#6](https://github.com/leqwin/monloader/issues/6))
+- Imported posts now carry artist commentary and notes from boorus that provide them.
+
+### Fixed
+- Manga and comic imports no longer put CBZ pages out of order on some sites.
+- The footer connection light no longer flickers to "checking" on every page load.
+
+### Internal
+- Metadata refresh and commentary/notes import require monbooru v1.13.0 or newer.
+
 ## [v1.2.0] - 2026-07-01
 This update include a breaking change with the monbooru and monsender pairing mechanism. Update monbooru to >v1.12.0 and monsender to >v1.2.0 and use the pairing mechanism.
 

@@ -1,6 +1,8 @@
 package mapping
 
 import (
+	"html"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -28,6 +30,15 @@ type PushFields struct {
 	Via             string
 	Collection      string
 	CollectionOrder int
+	Commentary      string
+	Notes           []NoteBox
+}
+
+// NoteBox is one positional note overlaid on an image, in original-image pixel
+// coordinates (Danbooru "notes").
+type NoteBox struct {
+	X, Y, W, H int
+	Body       string
 }
 
 // Mapper turns gallery-dl metadata into monbooru push fields using the
@@ -138,7 +149,101 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 		pf.CollectionOrder = kwdict.Int(meta, "num")
 	}
 
+	pf.Commentary = commentaryFor(profile.Family, meta)
+	pf.Notes = notesFor(profile, meta)
+
 	return pf
+}
+
+// commentaryFor reduces a post's artist commentary to a single plain-text body.
+// Danbooru carries a nested artist_commentary object (translated preferred over
+// the original, title folded in as the first line); e621 a flat description.
+func commentaryFor(family string, meta map[string]any) string {
+	switch family {
+	case FamilyDanbooru:
+		ac, ok := meta["artist_commentary"].(map[string]any)
+		if !ok {
+			return ""
+		}
+		title := kwdict.String(ac, "translated_title")
+		desc := kwdict.String(ac, "translated_description")
+		if title == "" && desc == "" {
+			title = kwdict.String(ac, "original_title")
+			desc = kwdict.String(ac, "original_description")
+		}
+		return joinCommentary(title, desc)
+	case FamilyE621:
+		return plainText(kwdict.String(meta, "description"))
+	}
+	return ""
+}
+
+func joinCommentary(title, desc string) string {
+	title, desc = plainText(title), plainText(desc)
+	switch {
+	case title == "":
+		return desc
+	case desc == "":
+		return title
+	default:
+		return title + "\n\n" + desc
+	}
+}
+
+// notesFor extracts the active positional note boxes (Danbooru "notes"). Every
+// note-carrying source shares the danbooru field names: danbooru and e621 flag
+// each note is_active, the gelbooru/moebooru pages and the sankaku notes API
+// carry only active ones. Other sources carry none.
+func notesFor(profile Profile, meta map[string]any) []NoteBox {
+	if profile.Family != FamilyDanbooru && profile.Family != FamilyE621 &&
+		!needsNotesFamily(profile.Family) && !profile.HasNotes {
+		return nil
+	}
+	raw, ok := meta["notes"].([]any)
+	if !ok {
+		return nil
+	}
+	var out []NoteBox
+	for _, item := range raw {
+		n, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if active, ok := n["is_active"].(bool); ok && !active {
+			continue
+		}
+		body := plainText(kwdict.String(n, "body"))
+		if body == "" {
+			continue
+		}
+		out = append(out, NoteBox{
+			X: kwdict.Int(n, "x"), Y: kwdict.Int(n, "y"),
+			W: kwdict.Int(n, "width"), H: kwdict.Int(n, "height"),
+			Body: body,
+		})
+	}
+	return out
+}
+
+var (
+	brRe  = regexp.MustCompile(`(?i)<br\s*/?>`)
+	tagRe = regexp.MustCompile(`<[^>]*>`)
+)
+
+// plainText reduces a booru's HTML note body (or commentary) to plain text so
+// monbooru stores something safe to render: <br> and CRLF become newlines,
+// remaining tags are stripped, and entities are decoded. DText markup, which is
+// not HTML, is left as readable text.
+func plainText(s string) string {
+	if s == "" {
+		return ""
+	}
+	s = brRe.ReplaceAllString(s, "\n")
+	s = tagRe.ReplaceAllString(s, "")
+	s = html.UnescapeString(s)
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return strings.TrimSpace(s)
 }
 
 // PoolName resolves a pool's name. `pool` is either a map carrying the name or

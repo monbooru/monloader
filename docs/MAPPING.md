@@ -10,9 +10,7 @@ the edge cases.
 
 monbooru's built-in categories are general, character, artist, copyright, meta,
 medium, person, and year. gallery-dl exposes per-category tags as
-`tags_<category>` fields (natively for danbooru and e621; for the moebooru and
-gelbooru families only when `tags: true` is set, which monloader sets
-automatically for those families). Each is routed:
+`tags_<category>` fields. Each is routed:
 
 | gallery-dl suffix | monbooru category | notes |
 |---|---|---|
@@ -69,6 +67,12 @@ rating. A real source rating always wins.
 A bare media URL (gallery-dl's `directlink` extractor) has no booru post: the
 `source` is the file's host and the `url` is the file URL itself.
 
+## Commentary and notes
+
+Danbooru-family posts carry the artist's **commentary** and some families carry positional
+**notes** boxes overlaid on the image. Note bodies are reduced to plain text and pushed with their pixel coordinates.
+Monbooru overwrites a source's commentary and notes on each re-pull.
+
 ## Override tables
 
 When a profile's default is wrong for your library, override it in
@@ -123,3 +127,4 @@ change. There are two levels:
   | `rating_overrides` | per-value rating remaps baked into the profile |
   | `default_rating` | rating used only when the source gives none  |
   | `needs_tags` | a generic-family site that needs gallery-dl's `tags: true` to emit per-category tags (one extra request per post, e.g. sankaku) |
+  | `has_notes` | a generic-family site whose extractor emits note boxes with gallery-dl's `notes: true` (e.g. sankaku); the note-carrying booru families get it by family |

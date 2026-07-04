@@ -21,7 +21,10 @@
     <thead>
       <tr><th>status</th><th>url</th><th>site</th><th>gallery</th><th>summary</th><th></th></tr>
     </thead>
-    <tbody id="queue-rows" hx-get="/internal/queue-rows" hx-trigger="load, every 2s" hx-swap="innerHTML">
+    <!-- The action buttons in the rows inherit the target, swap, and CSRF
+         header from here, so each carries only its verb. -->
+    <tbody id="queue-rows" hx-get="/internal/queue-rows" hx-trigger="load, every 2s"
+           hx-target="#queue-rows" hx-swap="innerHTML" hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'>
       {{template "queue_rows" .}}
     </tbody>
   </table>

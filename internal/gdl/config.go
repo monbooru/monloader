@@ -14,10 +14,11 @@ import (
 // download-archive, the metadata postprocessor that writes `<file>.json`
 // sidecars, and per-site blocks. The download location is set per run with
 // `-D <workDir>`, so none is written here. flatTagSites lists the categories
-// that need `tags: true` to emit per-category tags. The validated raw passthrough
+// that need `tags: true` to emit per-category tags; notesSites those that need
+// `notes: true` to emit note boxes. The validated raw passthrough
 // is deep-merged last so operator options win; the file is rewritten from config,
 // never hand-edited.
-func WriteManagedConfig(cfg *config.Config, flatTagSites []string) error {
+func WriteManagedConfig(cfg *config.Config, flatTagSites, metadataSites, notesSites []string) error {
 	extractor := map[string]any{
 		"directory": []any{},
 		"postprocessors": []any{
@@ -47,6 +48,28 @@ func WriteManagedConfig(cfg *config.Config, flatTagSites []string) error {
 	// even when the operator has not added credentials for it.
 	for _, site := range flatTagSites {
 		extractor[site] = map[string]any{"tags": true}
+	}
+
+	// Danbooru-family sites need the metadata include to emit artist commentary
+	// and notes; merge it into whatever block flat-tag already created.
+	for _, site := range metadataSites {
+		block, _ := extractor[site].(map[string]any)
+		if block == nil {
+			block = map[string]any{}
+		}
+		block["metadata"] = "artist_commentary,notes"
+		extractor[site] = block
+	}
+
+	// The gelbooru family emits its note boxes only behind notes:true, parsed
+	// from the same post page the tags fetch already loads.
+	for _, site := range notesSites {
+		block, _ := extractor[site].(map[string]any)
+		if block == nil {
+			block = map[string]any{}
+		}
+		block["notes"] = true
+		extractor[site] = block
 	}
 
 	// Overlay per-site credentials, keeping any tags:true already set.

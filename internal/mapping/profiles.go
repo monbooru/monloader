@@ -47,6 +47,10 @@ type Profile struct {
 	// tags_<category> with gallery-dl's `tags: true` (an extra request per
 	// post), e.g. sankaku. moebooru/gelbooru get it by family instead.
 	NeedsTags bool `json:"needs_tags,omitempty"`
+	// HasNotes marks a generic-family site whose extractor emits positional
+	// note boxes with gallery-dl's `notes: true`, e.g. sankaku. The booru
+	// families that carry notes get it by family instead.
+	HasNotes bool `json:"has_notes,omitempty"`
 }
 
 //go:embed profiles.json
@@ -115,6 +119,13 @@ func needsTagsFamily(family string) bool {
 	return family == FamilyMoebooru || family == FamilyGelbooruV02
 }
 
+// needsNotesFamily reports whether a family emits its positional note boxes
+// only with gallery-dl `notes: true`, parsed from the same post page the
+// `tags: true` fetch already loads.
+func needsNotesFamily(family string) bool {
+	return family == FamilyMoebooru || family == FamilyGelbooruV02
+}
+
 // CuratedCategories returns every curated gallery-dl category, sorted. The
 // sites endpoint surfaces each as a named entry so a multi-instance family
 // (gallery-dl lists the danbooru family only as danbooru.donmai.us) stays
@@ -153,6 +164,38 @@ func (m *Mapper) FlatTagSites() []string {
 	var out []string
 	for category, p := range m.profiles {
 		if needsTagsFamily(p.Family) || p.NeedsTags {
+			out = append(out, category)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// MetadataSites returns the curated categories whose extractor needs
+// gallery-dl's `metadata` include, sorted. The danbooru family carries artist
+// commentary and notes behind it; e621 reads the same include for its notes
+// (one extra request per noted post - the description rides the default post
+// fields, and the commentary token is ignored).
+func (m *Mapper) MetadataSites() []string {
+	var out []string
+	for category, p := range m.profiles {
+		if p.Family == FamilyDanbooru || p.Family == FamilyE621 {
+			out = append(out, category)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// NotesSites returns the curated categories whose extractor emits positional
+// note boxes only with gallery-dl's `notes: true`, sorted. The gelbooru and
+// moebooru families parse them from the same post page their `tags: true`
+// fetch already loads; sankaku-like sites (HasNotes) ask their notes API for
+// posts flagged as noted.
+func (m *Mapper) NotesSites() []string {
+	var out []string
+	for category, p := range m.profiles {
+		if needsNotesFamily(p.Family) || p.HasNotes {
 			out = append(out, category)
 		}
 	}

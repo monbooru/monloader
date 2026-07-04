@@ -10,6 +10,8 @@
   --warning:    #ffaa00;
   --error:      #cc3333;
 
+  /* Tag category colors, identical to monbooru. The app renders no tags
+     itself; these exist for custom-CSS authors theming both apps at once. */
   --cat-general:   #3d90e3;
   --cat-character: #00aa00;
   --cat-artist:    #cc0000;
@@ -69,8 +71,13 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 #topbar nav a { color: var(--fg-dim); font-size: 13px; padding: 10px 0; border-bottom: 2px solid transparent; }
 #topbar nav a:hover, #topbar nav a.active { color: var(--fg); text-decoration: none; }
 #topbar nav a.active { border-bottom-color: var(--accent); }
-#topbar nav .nav-sep { width: 1px; height: 16px; background: var(--fg-dim); align-self: center; flex-shrink: 0; }
 #topbar #topbar-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+/* Global pause control: indigo while downloads run, orange while held; fixed width so toggling the glyph does not resize it. */
+.pause-toggle, .pause-toggle form { display: inline-flex; }
+.pause-btn { width: 32px; padding: 4px 0; font-size: 16px; line-height: 16px; color: var(--accent); border-color: var(--accent); }
+.pause-btn:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.pause-btn.paused { color: var(--warning); border-color: var(--warning); }
+.pause-btn.paused:hover { border-color: var(--warning); background: color-mix(in srgb, var(--warning) 15%, transparent); }
 
 .monbooru-banner {
   background: var(--bg-input);
@@ -142,6 +149,9 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .items-row td { border-top: none; padding-top: 0; }
 .items-row details { margin-left: 16px; border-left: 2px solid var(--accent); padding-left: 12px; }
 .items-row summary { color: var(--fg-dim); padding: 2px 0; }
+.job-phase { margin-left: 6px; }
+.job-phase-downloading, .job-phase-pushing { color: var(--accent); }
+.job-phase-finished { color: var(--fg-dim); }
 .job-items { padding: 4px 8px 8px 16px; font-size: 13px; display: grid; grid-template-columns: repeat(4, minmax(56px, 1fr) auto auto); column-gap: 10px; row-gap: 0; align-items: baseline; }
 .item-row { display: contents; }
 .item-num { color: var(--fg-dim); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 1px solid var(--border); padding: 2px 0 2px 12px; }
@@ -163,7 +173,7 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .st-partial { color: var(--warning); }
 .st-failed, .o-failed { color: var(--error); }
 .st-canceled { color: var(--fg-dim); }
-.o-duplicate, .o-skipped_archive, .o-skipped_unsupported, .o-canceled { color: var(--fg-dim); }
+.o-duplicate, .o-enriched, .o-skipped_archive, .o-skipped_unsupported, .o-canceled, .o-merge { color: var(--fg-dim); }
 .o-capped, .o-warn { color: var(--warning); }
 /* A zero count carries no signal; mute it so only real outcomes are colored. */
 .o-zero { color: var(--fg-dim); }

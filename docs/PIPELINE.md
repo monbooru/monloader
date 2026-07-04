@@ -17,12 +17,13 @@ behind it, and the outcome each item ends up with.
 
 ## Per-item outcomes
 
-Every item ends with one of five outcomes, never silently dropped:
+Every item ends with one of six outcomes, never silently dropped:
 
 | outcome | meaning |
 |---|---|
 | `created` | new image accepted by monbooru (HTTP 201) |
-| `duplicate` | monbooru already had this sha256 (HTTP 200, alias) |
+| `duplicate` | monbooru already had this sha256 (HTTP 200, alias); any new tags merge in |
+| `enriched` | a metadata-only source refetch merged tags into an image monbooru already holds |
 | `skipped_archive` | gallery-dl's archive already had this post; not fetched |
 | `skipped_unsupported` | monbooru cannot ingest this file type; not pushed |
 | `failed` | something went wrong; carries an `error_code` |
@@ -45,10 +46,11 @@ A `failed` item carries one of these stable codes :
 | `file_too_large` | monbooru rejected the upload for size |
 | `monbooru_unreachable` | the push got no HTTP response (connect / timeout) |
 | `monbooru_rejected` | monbooru returned a 4xx/5xx other than the duplicate 200 |
+| `hash_mismatch` | a metadata refetch found the source no longer serves the file monbooru stored, so nothing was merged |
 | `canceled` | the job was canceled while the item was in flight |
 
 The job's `summary` aggregates the counts:
-`{ created, duplicate, skipped, failed, canceled, total }`. A single-post enqueue
+`{ created, duplicate, enriched, skipped, failed, canceled, total }`. A single-post enqueue
 that was already saved resolves to a summary like `{ created: 0, duplicate: 1, ... }`.
 
 ## Pools and manga

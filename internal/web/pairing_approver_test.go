@@ -33,7 +33,7 @@ func TestExtensionPairingHandshake(t *testing.T) {
 	h.ServeHTTP(srr, httptest.NewRequest("GET", "/api/v1/pair/status?id="+id, nil))
 	var st map[string]string
 	_ = json.Unmarshal(srr.Body.Bytes(), &st)
-	if len(st["token"]) != 32 || !srv.pairedExists("monsender") {
+	if len(st["token"]) != 32 || !srv.hasPairedToken("monsender") {
 		t.Fatalf("claim failed: %v", st)
 	}
 	if srr.Header().Get("Access-Control-Allow-Origin") == "" {
@@ -56,7 +56,7 @@ func TestExtensionPairingHandshake(t *testing.T) {
 
 	// Remove.
 	srv.monsenderPairRemove(httptest.NewRecorder(), httptest.NewRequest("POST", "/settings/auth/pair/remove", nil))
-	if srv.pairedExists("monsender") {
+	if srv.hasPairedToken("monsender") {
 		t.Error("remove did not drop the extension token")
 	}
 }
@@ -135,7 +135,7 @@ func TestExtPairTeardownRemovesLocally(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-	if srv.pairedExists("monbooru") || srv.cfg.Current().Monbooru.APIToken != "" {
+	if srv.hasPairedToken("monbooru") || srv.cfg.Current().Monbooru.APIToken != "" {
 		t.Error("teardown did not remove the monbooru pairing")
 	}
 }
@@ -210,7 +210,7 @@ func TestMonsenderPairDeny(t *testing.T) {
 	if st["status"] != "denied" || st["token"] != "" {
 		t.Errorf("after deny: status=%q token=%q, want denied and no token", st["status"], st["token"])
 	}
-	if srv.pairedExists("monsender") {
+	if srv.hasPairedToken("monsender") {
 		t.Error("a denied request must not mint a token")
 	}
 }

@@ -65,6 +65,10 @@ type fakeRunner struct {
 
 	gotForce bool   // records the force arg of the last Download call
 	gotRange string // records the rng arg of the last Resolve call
+
+	// fetchMeta / fetchErr back FetchMeta (the metadata-only source refetch).
+	fetchMeta map[string]any
+	fetchErr  error
 }
 
 func (f *fakeRunner) Resolve(ctx context.Context, url, rng string, deep bool) (gdl.ResolveResult, error) {
@@ -84,6 +88,13 @@ func (f *fakeRunner) Resolve(ctx context.Context, url, rng string, deep bool) (g
 		cat = f.resolved[0].Category
 	}
 	return gdl.ResolveResult{Items: capItems(f.resolved, rng), Queue: f.queue, Category: cat}, nil
+}
+
+func (f *fakeRunner) FetchMeta(ctx context.Context, url string) (map[string]any, error) {
+	if f.fetchErr != nil {
+		return nil, f.fetchErr
+	}
+	return f.fetchMeta, nil
 }
 
 func (f *fakeRunner) Download(ctx context.Context, url, rng, workDir string, force bool, onFile func(int, gdl.Downloaded), deep bool) ([]gdl.Downloaded, error) {
@@ -299,6 +310,89 @@ func waitJob(t *testing.T, q *queue.Queue, id int64) *queue.Job {
 		t.Fatalf("waiting for job %d: %v", id, err)
 	}
 	return job
+}
+
+func TestPipelineMetadataEnriches(t *testing.T) {
+	meta := danbooruPost("100001").Meta
+	meta["md5"] = "abc123def456"
+	fake := &fakeRunner{fetchMeta: meta}
+
+	var gotPath, gotBody string
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"merge": map[string]any{"tags_added": 2}, "verified": true})
+	}
+	q, cleanup := testEnv(t, fake, handler)
+	defer cleanup()
+
+	job := waitJob(t, q, q.EnqueueMetadata(42, "art", "https://danbooru.donmai.us/posts/100001"))
+
+	if job.Status != queue.JobSucceeded {
+		t.Errorf("status = %s, want succeeded", job.Status)
+	}
+	if len(job.Items) != 1 || job.Items[0].Outcome != queue.OutcomeEnriched {
+		t.Fatalf("items = %+v, want one enriched", job.Items)
+	}
+	if job.Summary.Enriched != 1 || job.Summary.Total != 1 {
+		t.Errorf("summary = %+v, want 1 enriched / 1 total", job.Summary)
+	}
+	if job.Site != "danbooru" {
+		t.Errorf("site = %q, want the refetched post's category", job.Site)
+	}
+	if gotPath != "/api/v1/images/42/enrich?gallery=art" {
+		t.Errorf("enrich path = %q, want /api/v1/images/42/enrich?gallery=art", gotPath)
+	}
+	if !strings.Contains(gotBody, `"verify":true`) ||
+		!strings.Contains(gotBody, `"source_md5":"abc123def456"`) ||
+		!strings.Contains(gotBody, "tag_100001") {
+		t.Errorf("enrich body wrong: %s", gotBody)
+	}
+}
+
+func TestPipelineMetadataHashMismatchFails(t *testing.T) {
+	fake := &fakeRunner{fetchMeta: danbooruPost("100002").Meta}
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "changed", "code": "hash_mismatch"})
+	}
+	q, cleanup := testEnv(t, fake, handler)
+	defer cleanup()
+
+	job := waitJob(t, q, q.EnqueueMetadata(7, "art", "https://danbooru.donmai.us/posts/100002"))
+	if len(job.Items) != 1 || job.Items[0].ErrorCode != queue.ErrCodeHashMismatch {
+		t.Fatalf("items = %+v, want one failed with hash_mismatch", job.Items)
+	}
+}
+
+// A fetch that fails before enrich (unsupported URL, timeout) is reported to
+// monbooru's fetch-status endpoint so the detail poll can surface it instead of
+// spinning; enrich is never called.
+func TestPipelineMetadataFetchFailureReported(t *testing.T) {
+	fake := &fakeRunner{fetchErr: &queue.CodedError{Code: queue.ErrCodeUnsupportedURL, Msg: "no suitable extractor"}}
+	var gotPath, gotBody string
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}
+	q, cleanup := testEnv(t, fake, handler)
+	defer cleanup()
+
+	job := waitJob(t, q, q.EnqueueMetadata(42, "art", "https://example.com/x"))
+	if len(job.Items) != 1 || job.Items[0].ErrorCode != queue.ErrCodeUnsupportedURL {
+		t.Fatalf("items = %+v, want one failed with unsupported_url", job.Items)
+	}
+	if gotPath != "/api/v1/images/42/fetch-status?gallery=art" {
+		t.Errorf("report path = %q, want /api/v1/images/42/fetch-status?gallery=art", gotPath)
+	}
+	if !strings.Contains(gotBody, `"state":"unsupported_url"`) {
+		t.Errorf("report body = %q, want the unsupported_url state", gotBody)
+	}
 }
 
 func TestPipelineMixedOutcomes(t *testing.T) {
@@ -724,9 +818,9 @@ func TestPipelineMangaTitleExpandsToChapters(t *testing.T) {
 }
 
 // TestPipelineForcedRetryPassesForce checks that a forced retry reaches the
-// download pass as force=true, while the initial run does not.
+// download pass as force=true, while a bulk initial run does not.
 func TestPipelineForcedRetryPassesForce(t *testing.T) {
-	fake := &fakeRunner{resolved: []gdl.Item{danbooruPost("100001")}, writeIdx: []int{0}}
+	fake := &fakeRunner{resolved: []gdl.Item{danbooruPost("100001"), danbooruPost("100002")}, writeIdx: []int{0, 1}}
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": 1})
@@ -734,10 +828,10 @@ func TestPipelineForcedRetryPassesForce(t *testing.T) {
 	q, cleanup := testEnv(t, fake, handler)
 	defer cleanup()
 
-	id := q.Enqueue("http://danbooru/posts/1", queue.Options{})
+	id := q.Enqueue("http://danbooru/posts", queue.Options{})
 	waitJob(t, q, id)
 	if fake.gotForce {
-		t.Error("initial run passed force=true to Download")
+		t.Error("bulk initial run passed force=true to Download")
 	}
 
 	if err := q.Retry(id, true); err != nil {
@@ -746,6 +840,32 @@ func TestPipelineForcedRetryPassesForce(t *testing.T) {
 	waitJob(t, q, id)
 	if !fake.gotForce {
 		t.Error("forced retry did not pass force=true to Download")
+	}
+}
+
+// TestPipelineSinglePostBypassesArchive checks that a job resolving to a single
+// post re-downloads past the archive (so re-submitting one post lets monbooru
+// merge fresh tags), while a multi-post search keeps the archive.
+func TestPipelineSinglePostBypassesArchive(t *testing.T) {
+	created := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 1})
+	}
+
+	single := &fakeRunner{resolved: []gdl.Item{danbooruPost("100001")}, writeIdx: []int{0}}
+	q, cleanup := testEnv(t, single, created)
+	defer cleanup()
+	waitJob(t, q, q.Enqueue("http://danbooru/posts/1", queue.Options{}))
+	if !single.gotForce {
+		t.Error("single-post job should bypass the archive (force=true)")
+	}
+
+	bulk := &fakeRunner{resolved: []gdl.Item{danbooruPost("100001"), danbooruPost("100002")}, writeIdx: []int{0, 1}}
+	q2, cleanup2 := testEnv(t, bulk, created)
+	defer cleanup2()
+	waitJob(t, q2, q2.Enqueue("http://danbooru/posts", queue.Options{}))
+	if bulk.gotForce {
+		t.Error("multi-post search should keep the archive (force=false)")
 	}
 }
 
@@ -829,6 +949,24 @@ func TestPipelineMangaGalleryBundlesAllPages(t *testing.T) {
 	}
 	if gotCollection != "" {
 		t.Errorf("cbz mode should not set a collection, got %q", gotCollection)
+	}
+}
+
+func TestOrderedPagesFallsBackToNoOrdinal(t *testing.T) {
+	// Some sources emit the per-file ordinal as `no` instead of `num`; the pages
+	// must still bundle in ordinal order, not the lexicographic path order that
+	// puts 10 before 2.
+	pages := []gdl.Downloaded{
+		{Path: "/w/10.jpg", Meta: map[string]any{"no": float64(10)}},
+		{Path: "/w/2.jpg", Meta: map[string]any{"no": float64(2)}},
+		{Path: "/w/1.jpg", Meta: map[string]any{"no": float64(1)}},
+	}
+	got := orderedPages(pages)
+	want := []string{"/w/1.jpg", "/w/2.jpg", "/w/10.jpg"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("orderedPages = %v, want %v", got, want)
+		}
 	}
 }
 
@@ -919,6 +1057,20 @@ func TestPipelineMangaIncompleteFails(t *testing.T) {
 	}
 }
 
+// poolPushHandler records each push's collection fields and answers created
+// with a fresh id, for the pool-mode tests.
+func poolPushHandler(orders, collections *[]string) http.HandlerFunc {
+	nextID := int64(100)
+	return func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(32 << 20)
+		*orders = append(*orders, r.FormValue("collection_order"))
+		*collections = append(*collections, r.FormValue("collection"))
+		nextID++
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": nextID})
+	}
+}
+
 func TestPipelinePool(t *testing.T) {
 	// A booru pool pushes each page separately under a shared collection label
 	// and order.
@@ -926,18 +1078,8 @@ func TestPipelinePool(t *testing.T) {
 		resolved: []gdl.Item{poolPost("1", 1, "g"), poolPost("2", 2, "g"), poolPost("3", 3, "g")},
 		writeIdx: []int{0, 1, 2},
 	}
-	var orders []string
-	var collections []string
-	nextID := int64(100)
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseMultipartForm(32 << 20)
-		orders = append(orders, r.FormValue("collection_order"))
-		collections = append(collections, r.FormValue("collection"))
-		nextID++
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": nextID})
-	}
-	q, cleanup := testEnv(t, fake, handler)
+	var orders, collections []string
+	q, cleanup := testEnv(t, fake, poolPushHandler(&orders, &collections))
 	defer cleanup()
 
 	id := q.Enqueue("http://danbooru/pools/29906", queue.Options{})
@@ -969,16 +1111,7 @@ func TestPipelineMoebooruPool(t *testing.T) {
 		writeIdx: []int{0, 1, 2},
 	}
 	var orders, collections []string
-	nextID := int64(100)
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseMultipartForm(32 << 20)
-		orders = append(orders, r.FormValue("collection_order"))
-		collections = append(collections, r.FormValue("collection"))
-		nextID++
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": nextID})
-	}
-	q, cleanup := testEnv(t, fake, handler)
+	q, cleanup := testEnv(t, fake, poolPushHandler(&orders, &collections))
 	defer cleanup()
 
 	id := q.Enqueue("https://example.com/pool/show/12", queue.Options{})

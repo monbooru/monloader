@@ -10,6 +10,7 @@ import (
 	"github.com/leqwin/monloader/internal/gdl"
 	"github.com/leqwin/monloader/internal/mapping"
 	"github.com/leqwin/monloader/internal/queue"
+	"github.com/leqwin/monloader/internal/sitestate"
 )
 
 // Handler serves monloader's own /api/v1/ surface.
@@ -21,11 +22,13 @@ type Handler struct {
 	extractors []gdl.Extractor
 	version    string
 	gdlVersion string
+	siteState  *sitestate.Tracker
 }
 
 // New builds the API handler. extractors is the cached --list-extractors
-// result; version and gdlVersion feed /health.
-func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, extractors []gdl.Extractor, version, gdlVersion string) *Handler {
+// result; version and gdlVersion feed /health; siteState is the shared "last
+// reached" tracker the test probe records into.
+func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, extractors []gdl.Extractor, version, gdlVersion string, siteState *sitestate.Tracker) *Handler {
 	return &Handler{
 		queue:      q,
 		runner:     runner,
@@ -34,26 +37,22 @@ func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.
 		extractors: extractors,
 		version:    version,
 		gdlVersion: gdlVersion,
+		siteState:  siteState,
 	}
 }
 
-// Mount registers every API route on mux. /health, /openapi.json, and /docs
-// are unauthenticated; the rest go through the bearer-auth gate.
+// Mount registers every API route on mux, straight from the endpoint
+// declarations that also build the OpenAPI document, so a route cannot be
+// mounted without documenting it. NoAuth endpoints (/health and the self-doc
+// pair) skip the bearer gate; the rest go through it.
 func (h *Handler) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("GET /health", h.health)
-	mux.HandleFunc("GET /api/v1/openapi.json", h.openAPIJSON)
-	mux.HandleFunc("GET /api/v1/docs", h.openAPIDocs)
-
-	mux.HandleFunc("POST /api/v1/queue", h.auth(h.enqueue))
-	mux.HandleFunc("GET /api/v1/queue", h.auth(h.listJobs))
-	mux.HandleFunc("GET /api/v1/queue/{id}", h.auth(h.getJob))
-	mux.HandleFunc("POST /api/v1/queue/{id}/retry", h.auth(h.retryJob))
-	mux.HandleFunc("POST /api/v1/queue/{id}/continue", h.auth(h.continueJob))
-	mux.HandleFunc("POST /api/v1/queue/{id}/continue-all", h.auth(h.continueAllJob))
-	mux.HandleFunc("DELETE /api/v1/queue/{id}", h.auth(h.deleteJob))
-
-	mux.HandleFunc("GET /api/v1/sites", h.auth(h.listSites))
-	mux.HandleFunc("POST /api/v1/sites/{name}/test", h.auth(h.testSite))
+	for _, e := range h.endpoints() {
+		fn := e.Handler
+		if !e.NoAuth {
+			fn = h.auth(fn)
+		}
+		mux.HandleFunc(e.Method+" "+e.Path, fn)
+	}
 
 	// CORS preflight for the future browser extension.
 	mux.HandleFunc("OPTIONS /api/v1/", func(w http.ResponseWriter, r *http.Request) {

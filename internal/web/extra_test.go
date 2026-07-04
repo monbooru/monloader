@@ -17,6 +17,16 @@ import (
 	"github.com/leqwin/monloader/internal/sitestate"
 )
 
+// leadJob builds a snapshot-shaped job for rendering tests; a composite
+// literal cannot set the fields promoted from the job's embedded state.
+func leadJob(id int64, status queue.JobStatus, url string) *queue.Job {
+	j := &queue.Job{}
+	j.ID = id
+	j.Status = status
+	j.URL = url
+	return j
+}
+
 // itemsProc drives a job to a created + a failed item so the queue_rows
 // partial exercises the monbooru-link and error-code branches.
 type itemsProc struct{}
@@ -149,55 +159,34 @@ func TestQueueGroupsContinuations(t *testing.T) {
 	}
 }
 
-// TestFetchAllButton checks the capped row offers a fetch-all action that
-// queues the first follow-up window.
-func TestFetchAllButton(t *testing.T) {
-	srv := serverWith(t, cappedOnceProc{})
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-	id := srv.queue.Enqueue("http://danbooru/posts?tags=x", queue.Options{})
-	ctx, cancel := context.WithTimeout(context.Background(), 2e9)
-	defer cancel()
-	if _, err := srv.queue.Wait(ctx, id); err != nil {
-		t.Fatalf("wait: %v", err)
-	}
-	if _, body := get(t, ts, "/internal/queue-rows"); !strings.Contains(body, "/queue/"+itoa(id)+"/continue-all") {
-		t.Error("a capped job row should offer a fetch-all button")
-	}
-	before, _ := srv.queue.List(queue.ListOptions{})
-	resp := postForm(t, ts, srv, "/queue/"+itoa(id)+"/continue-all", map[string][]string{})
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("continue-all status = %d", resp.StatusCode)
-	}
-	if after, _ := srv.queue.List(queue.ListOptions{}); len(after) != len(before)+1 {
-		t.Errorf("fetch-all should queue the first follow-up: before=%d after=%d", len(before), len(after))
-	}
-}
-
-func TestContinueButton(t *testing.T) {
-	srv := serverWith(t, cappedProc{})
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-	id := srv.queue.Enqueue("http://danbooru/posts?tags=x", queue.Options{})
-	ctx, cancel := context.WithTimeout(context.Background(), 2e9)
-	defer cancel()
-	if _, err := srv.queue.Wait(ctx, id); err != nil {
-		t.Fatalf("wait: %v", err)
-	}
-	// The capped row offers a continue button.
-	if _, body := get(t, ts, "/internal/queue-rows"); !strings.Contains(body, "/queue/"+itoa(id)+"/continue") {
-		t.Error("a capped job row should offer a continue button")
-	}
-	// Posting it queues a follow-up job for the next window.
-	before, _ := srv.queue.List(queue.ListOptions{})
-	resp := postForm(t, ts, srv, "/queue/"+itoa(id)+"/continue", map[string][]string{})
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("continue status = %d", resp.StatusCode)
-	}
-	if after, _ := srv.queue.List(queue.ListOptions{}); len(after) != len(before)+1 {
-		t.Errorf("continue should queue one follow-up job: before=%d after=%d", len(before), len(after))
+// TestContinueButtons checks a capped row offers the continue and fetch-all
+// actions and that posting each queues a follow-up window.
+func TestContinueButtons(t *testing.T) {
+	for _, action := range []string{"continue", "continue-all"} {
+		t.Run(action, func(t *testing.T) {
+			srv := serverWith(t, cappedOnceProc{})
+			ts := httptest.NewServer(srv.Handler())
+			defer ts.Close()
+			id := srv.queue.Enqueue("http://danbooru/posts?tags=x", queue.Options{})
+			ctx, cancel := context.WithTimeout(context.Background(), 2e9)
+			defer cancel()
+			if _, err := srv.queue.Wait(ctx, id); err != nil {
+				t.Fatalf("wait: %v", err)
+			}
+			if _, body := get(t, ts, "/internal/queue-rows"); !strings.Contains(body, "/queue/"+itoa(id)+"/"+action) {
+				t.Errorf("a capped job row should offer a %s button", action)
+			}
+			// Posting it queues a follow-up job for the next window.
+			before, _ := srv.queue.List(queue.ListOptions{})
+			resp := postForm(t, ts, srv, "/queue/"+itoa(id)+"/"+action, map[string][]string{})
+			resp.Body.Close()
+			if resp.StatusCode != 200 {
+				t.Fatalf("%s status = %d", action, resp.StatusCode)
+			}
+			if after, _ := srv.queue.List(queue.ListOptions{}); len(after) != len(before)+1 {
+				t.Errorf("%s should queue one follow-up job: before=%d after=%d", action, len(before), len(after))
+			}
+		})
 	}
 }
 
@@ -256,8 +245,8 @@ func TestQueueRowsRendersItems(t *testing.T) {
 func TestQueueRowDefaultOpenState(t *testing.T) {
 	srv := serverWith(t, noopProc{})
 	groups := []jobGroup{
-		{Root: 1, Lead: &queue.Job{ID: 1, Status: queue.JobRunning, URL: "u1"}, Items: []queue.Item{{PostID: "a"}}},
-		{Root: 2, Lead: &queue.Job{ID: 2, Status: queue.JobSucceeded, URL: "u2"}, Items: []queue.Item{{PostID: "b"}}},
+		{Root: 1, Lead: leadJob(1, queue.JobRunning, "u1"), Items: []queue.Item{{PostID: "a"}}},
+		{Root: 2, Lead: leadJob(2, queue.JobSucceeded, "u2"), Items: []queue.Item{{PostID: "b"}}},
 	}
 	rec := httptest.NewRecorder()
 	srv.render(rec, "queue_rows", map[string]any{"Groups": groups, "MonbooruURL": "", "CSRFToken": "t"})
@@ -277,6 +266,29 @@ func TestQueueRowDefaultOpenState(t *testing.T) {
 	}
 }
 
+// The row summary labels the batch's progress: downloading while any item is
+// still pending, pushing once the files are down and going to monbooru, and
+// finished once the series stops running.
+func TestQueueRowPhase(t *testing.T) {
+	srv := serverWith(t, noopProc{})
+	groups := []jobGroup{
+		{Root: 1, Lead: leadJob(1, queue.JobRunning, "u1"), Items: []queue.Item{{PostID: "a", Status: queue.ItemPending}}},
+		{Root: 2, Lead: leadJob(2, queue.JobRunning, "u2"), Items: []queue.Item{{PostID: "b", Status: queue.ItemDownloaded}}},
+		{Root: 3, Lead: leadJob(3, queue.JobSucceeded, "u3"), Items: []queue.Item{{PostID: "c", Status: queue.ItemDone}}},
+	}
+	rec := httptest.NewRecorder()
+	srv.render(rec, "queue_rows", map[string]any{"Groups": groups, "MonbooruURL": "", "CSRFToken": "t"})
+	body := rec.Body.String()
+	for _, want := range []string{"downloading...", "pushing...", "finished"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("queue row phase %q missing from render", want)
+		}
+	}
+	if !strings.Contains(body, "job-phase-downloading") || !strings.Contains(body, "job-phase-finished") {
+		t.Error("phase span should carry its state class")
+	}
+}
+
 // Finished-row actions are gated: retry shows only when the job did not fully
 // succeed (partial / failed / canceled); force download shows only when the row
 // has skipped items; remove always shows.
@@ -292,7 +304,7 @@ func TestQueueActionGating(t *testing.T) {
 	hasRemove := func(s string) bool { return strings.Contains(s, `hx-delete="/queue/`) }
 
 	// Clean success, no skips: neither retry nor force download, but remove.
-	ok := render(jobGroup{Root: 1, Lead: &queue.Job{ID: 1, Status: queue.JobSucceeded, URL: "u"}, Summary: queue.Summary{Created: 1, Total: 1}})
+	ok := render(jobGroup{Root: 1, Lead: leadJob(1, queue.JobSucceeded, "u"), Summary: queue.Summary{Created: 1, Total: 1}})
 	if hasRetry(ok) || hasForce(ok) {
 		t.Errorf("a clean success should offer neither retry nor force download, got %q", ok)
 	}
@@ -301,7 +313,7 @@ func TestQueueActionGating(t *testing.T) {
 	}
 
 	// Succeeded but with skipped items: force download appears, retry does not.
-	skip := render(jobGroup{Root: 2, Lead: &queue.Job{ID: 2, Status: queue.JobSucceeded, URL: "u"}, Summary: queue.Summary{Skipped: 2, Total: 2}})
+	skip := render(jobGroup{Root: 2, Lead: leadJob(2, queue.JobSucceeded, "u"), Summary: queue.Summary{Skipped: 2, Total: 2}})
 	if !hasForce(skip) {
 		t.Errorf("a job with skipped items should offer force download, got %q", skip)
 	}
@@ -310,7 +322,7 @@ func TestQueueActionGating(t *testing.T) {
 	}
 
 	// Partial (some failed), no skips: retry appears, force download does not.
-	partial := render(jobGroup{Root: 3, Lead: &queue.Job{ID: 3, Status: queue.JobPartial, URL: "u"}, Summary: queue.Summary{Created: 1, Failed: 1, Total: 2}})
+	partial := render(jobGroup{Root: 3, Lead: leadJob(3, queue.JobPartial, "u"), Summary: queue.Summary{Created: 1, Failed: 1, Total: 2}})
 	if !hasRetry(partial) {
 		t.Errorf("a partial job should offer retry, got %q", partial)
 	}
@@ -319,7 +331,7 @@ func TestQueueActionGating(t *testing.T) {
 	}
 
 	// Canceled counts as not-succeeded, so retry stays available.
-	canceled := render(jobGroup{Root: 4, Lead: &queue.Job{ID: 4, Status: queue.JobCanceled, URL: "u"}, Summary: queue.Summary{Canceled: 1, Total: 1}})
+	canceled := render(jobGroup{Root: 4, Lead: leadJob(4, queue.JobCanceled, "u"), Summary: queue.Summary{Canceled: 1, Total: 1}})
 	if !hasRetry(canceled) {
 		t.Errorf("a canceled job should offer retry, got %q", canceled)
 	}
@@ -428,41 +440,35 @@ func TestTestMonbooruFailure(t *testing.T) {
 	}
 }
 
-func TestServeCustomCSS(t *testing.T) {
-	srv := serverWith(t, noopProc{})
-	// Unset -> 404.
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-	if code, _ := get(t, ts, "/custom.css"); code != 404 {
-		t.Errorf("unset custom.css = %d, want 404", code)
+// The operator-supplied CSS and logo overrides serve only while configured;
+// unset they 404 so the layout falls back to the bundled assets.
+func TestServeCustomAssets(t *testing.T) {
+	cases := []struct {
+		name, route, file, content string
+		set                        func(s *Server, path string)
+	}{
+		{"css", "/custom.css", "custom.css", ":root{--accent:#abc}",
+			func(s *Server, path string) { s.cfg.Current().Server.CustomCSS = path }},
+		{"logo", "/custom.logo", "logo.png", "PNGBYTES",
+			func(s *Server, path string) { s.cfg.Current().Server.BooruLogo = path }},
 	}
-	// Set -> served.
-	cssPath := filepath.Join(t.TempDir(), "custom.css")
-	if err := os.WriteFile(cssPath, []byte(":root{--accent:#abc}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	srv.cfg.Current().Server.CustomCSS = cssPath
-	if code, body := get(t, ts, "/custom.css"); code != 200 || !strings.Contains(body, "--accent") {
-		t.Errorf("custom.css = %d %q", code, body)
-	}
-}
-
-func TestServeCustomLogo(t *testing.T) {
-	srv := serverWith(t, noopProc{})
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-	// Unset -> 404.
-	if code, _ := get(t, ts, "/custom.logo"); code != 404 {
-		t.Errorf("unset custom.logo = %d, want 404", code)
-	}
-	// Set -> served.
-	logoPath := filepath.Join(t.TempDir(), "logo.png")
-	if err := os.WriteFile(logoPath, []byte("PNGBYTES"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	srv.cfg.Current().Server.BooruLogo = logoPath
-	if code, body := get(t, ts, "/custom.logo"); code != 200 || !strings.Contains(body, "PNGBYTES") {
-		t.Errorf("custom.logo = %d %q", code, body)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := serverWith(t, noopProc{})
+			ts := httptest.NewServer(srv.Handler())
+			defer ts.Close()
+			if code, _ := get(t, ts, tc.route); code != 404 {
+				t.Errorf("unset %s = %d, want 404", tc.route, code)
+			}
+			path := filepath.Join(t.TempDir(), tc.file)
+			if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tc.set(srv, path)
+			if code, body := get(t, ts, tc.route); code != 200 || !strings.Contains(body, tc.content) {
+				t.Errorf("%s = %d %q", tc.route, code, body)
+			}
+		})
 	}
 }
 
@@ -532,21 +538,15 @@ func TestBrandingOverride(t *testing.T) {
 	}
 }
 
-// A configured web_url surfaces the "Go to monbooru" topbar link and turns the
-// footer connection indicator into a link (trailing slash trimmed); the poll
-// endpoint that re-renders the light carries the link too. An empty web_url
-// hides both.
+// A configured web_url turns the footer connection indicator into a link
+// (trailing slash trimmed); the poll endpoint that re-renders the light carries
+// the link too so it survives the swap. An empty web_url renders the word plain.
 func TestMonbooruLink(t *testing.T) {
 	srv := serverWith(t, noopProc{})
 	pairMB(t, srv)
 	srv.cfg.Current().Monbooru.WebURL = "http://booru.example.com/"
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-
-	_, queue := get(t, ts, "/queue")
-	if !strings.Contains(queue, `<a href="http://booru.example.com">Go to monbooru</a>`) {
-		t.Errorf("queue topbar missing the monbooru link, got %q", queue)
-	}
 
 	// The poll handler re-renders the light on its own; without the web base it
 	// would drop the link after the first swap.
@@ -556,10 +556,6 @@ func TestMonbooruLink(t *testing.T) {
 	}
 
 	srv.cfg.Current().Monbooru.WebURL = ""
-	_, plain := get(t, ts, "/queue")
-	if strings.Contains(plain, "Go to monbooru") {
-		t.Error("topbar link should be hidden without web_url")
-	}
 	_, plainLight := get(t, ts, "/internal/monbooru-status")
 	if strings.Contains(plainLight, "<a href=") {
 		t.Error("connection light should not be linked without web_url")

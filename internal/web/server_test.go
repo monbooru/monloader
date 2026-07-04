@@ -29,6 +29,7 @@ type fakeRunner struct{ probe gdl.ProbeResult }
 func (fakeRunner) Resolve(context.Context, string, string, bool) (gdl.ResolveResult, error) {
 	return gdl.ResolveResult{}, nil
 }
+func (fakeRunner) FetchMeta(context.Context, string) (map[string]any, error) { return nil, nil }
 func (fakeRunner) Download(context.Context, string, string, string, bool, func(int, gdl.Downloaded), bool) ([]gdl.Downloaded, error) {
 	return nil, nil
 }
@@ -231,6 +232,54 @@ func TestEnqueueViaForm(t *testing.T) {
 	}
 }
 
+func TestPauseToggle(t *testing.T) {
+	mb := monbooruStub()
+	defer mb.Close()
+	web := newWebServer(t, mb.URL, "")
+	ts := httptest.NewServer(web.Handler())
+	defer ts.Close()
+
+	// The topbar shows the running control by default.
+	_, body := get(t, ts, "/queue")
+	if !strings.Contains(body, `id="pause-toggle"`) || !strings.Contains(body, `aria-label="pause downloads"`) {
+		t.Fatalf("topbar should show the running pause control, got %q", body)
+	}
+	m := csrfRe.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("no CSRF token on the queue screen")
+	}
+	token := m[1]
+
+	resp, err := http.PostForm(ts.URL+"/queue/pause", url.Values{"_csrf": {token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frag := readBody(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("pause status = %d", resp.StatusCode)
+	}
+	if !web.queue.Paused() {
+		t.Error("queue should be paused after POST /queue/pause")
+	}
+	if !strings.Contains(frag, `aria-label="resume downloads"`) || !strings.Contains(frag, "/queue/resume") {
+		t.Errorf("pause fragment should show the paused/resume control, got %q", frag)
+	}
+
+	// The poll fragment reflects the live state.
+	if _, poll := get(t, ts, "/internal/queue-pause"); !strings.Contains(poll, `aria-label="resume downloads"`) {
+		t.Errorf("poll fragment should show paused, got %q", poll)
+	}
+
+	resp, err = http.PostForm(ts.URL+"/queue/resume", url.Values{"_csrf": {token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+	if web.queue.Paused() {
+		t.Error("queue should not be paused after POST /queue/resume")
+	}
+}
+
 // Adding from the queue screen refreshes the rows in place instead of
 // redirecting, so a full-page reload does not drop the operator's collapse
 // state.
@@ -356,6 +405,27 @@ func TestConnLight(t *testing.T) {
 	defer rej.Close()
 	if _, body := get(t, rej, "/internal/monbooru-status"); !strings.Contains(body, "dot-rejected") {
 		t.Errorf("a rejected token should render the amber rejected dot, got %q", body)
+	}
+}
+
+// A full page seeds its footer light from the last cached probe, so the light
+// shows its known state at once instead of flickering to "checking" (and
+// re-probing) on every navigation.
+func TestConnLightSeedsCachedStatus(t *testing.T) {
+	mb := monbooruStub()
+	defer mb.Close()
+	ts := httptest.NewServer(pairMB(t, newWebServer(t, mb.URL, "")).Handler())
+	defer ts.Close()
+
+	// Cold cache: the initial page seeds the "checking" shell.
+	if _, body := get(t, ts, "/queue"); !strings.Contains(body, "checking monbooru") {
+		t.Fatal("cold cache should seed the checking shell")
+	}
+
+	// The poll warms the cache; the next page seeds the connected state.
+	get(t, ts, "/internal/monbooru-status")
+	if _, body := get(t, ts, "/queue"); !strings.Contains(body, "connected to monbooru") {
+		t.Errorf("warm cache should seed the connected light, got %q", body)
 	}
 }
 

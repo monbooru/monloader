@@ -149,15 +149,6 @@ func pairJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func (s *Server) pairedExists(app string) bool {
-	for _, t := range s.cfg.Current().Auth.Tokens {
-		if t.Paired == app {
-			return true
-		}
-	}
-	return false
-}
-
 // removePairingLocal drops the token issued to a peer and, for the monbooru
 // pairing, the credential used to push back. It removes only locally - callers
 // that want the far end gone too notify the peer separately.
@@ -204,7 +195,7 @@ func (s *Server) extPairRequest(w http.ResponseWriter, r *http.Request) {
 		pairJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_request", "error": "app and a JSON body are required"})
 		return
 	}
-	if s.pairedExists(body.App) {
+	if s.hasPairedToken(body.App) {
 		pairJSON(w, http.StatusConflict, map[string]string{"code": "already_paired", "error": "already paired with " + body.App + "; remove the existing pairing first"})
 		return
 	}
@@ -266,7 +257,7 @@ func (s *Server) mintExtToken(req pairReq) (string, error) {
 func (s *Server) extPairData(r *http.Request) map[string]any {
 	return map[string]any{
 		"Pending":   s.pairs.listPending(),
-		"Paired":    s.pairedExists("monsender"),
+		"Paired":    s.hasPairedToken("monsender"),
 		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
 	}
 }
@@ -298,10 +289,7 @@ func (s *Server) monsenderPairDeny(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) monsenderPairRemove(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
-	if err := s.updateConfig(func(c *config.Config) error {
-		c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t config.Token) bool { return t.Paired == "monsender" })
-		return nil
-	}); err != nil {
+	if err := s.removePairingLocal("monsender"); err != nil {
 		logx.Errorf("pairing: remove failed: %v", err)
 	}
 	s.render(w, "monsender_pairing", s.extPairData(r))

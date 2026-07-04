@@ -71,6 +71,40 @@ func TestParseResolveSurfacesDataJobError(t *testing.T) {
 	}
 }
 
+func TestFirstPostMeta(t *testing.T) {
+	// The refetch path reads the first post's full kwdict from a -j document.
+	const j = `[[3,"https://cdn.donmai.us/x.jpg",{"category":"danbooru","id":11474309,"md5":"abc"}]]`
+	meta, err := firstPostMeta([]byte(j))
+	if err != nil {
+		t.Fatalf("firstPostMeta: %v", err)
+	}
+	if meta["md5"] != "abc" {
+		t.Errorf("meta not carried through: md5=%v", meta["md5"])
+	}
+
+	// No post at all is a mapping failure, not a silent nil.
+	_, err = firstPostMeta([]byte(`[]`))
+	var ce *queue.CodedError
+	if e, ok := err.(*queue.CodedError); ok {
+		ce = e
+	}
+	if ce == nil || ce.Code != queue.ErrCodeMappingFailed {
+		t.Errorf("empty document error = %v, want code %s", err, queue.ErrCodeMappingFailed)
+	}
+
+	// A classified extraction error keeps its code instead of flattening to
+	// mapping_failed.
+	const authErr = `[[-1,{"error":"AuthRequired","message":"'api-key' needed ('Missing authentication')"}]]`
+	_, err = firstPostMeta([]byte(authErr))
+	ce = nil
+	if e, ok := err.(*queue.CodedError); ok {
+		ce = e
+	}
+	if ce == nil || ce.Code != queue.ErrCodeAuthRequired {
+		t.Errorf("extraction error = %v, want code %s", err, queue.ErrCodeAuthRequired)
+	}
+}
+
 func TestParseResolveQueueDispatch(t *testing.T) {
 	// A dispatcher URL (a forum thread, a manga title) emits Message.Queue
 	// handoffs (type 6) the -j pass lists but does not follow. They land in
@@ -161,34 +195,38 @@ func TestConfigArgs(t *testing.T) {
 	cfg := config.Default()
 	// No config path -> no -c flag.
 	cfg.GalleryDL.ConfigPath = ""
-	if args := New(cfg, nil).configArgs(); args != nil {
+	if args := New(cfg, nil, nil, nil).configArgs(); args != nil {
 		t.Errorf("empty config path: args = %v, want nil", args)
 	}
 	// A path that does not exist yet -> still no -c (the stat fails).
 	cfg.GalleryDL.ConfigPath = filepath.Join(t.TempDir(), "missing.json")
-	if args := New(cfg, nil).configArgs(); args != nil {
+	if args := New(cfg, nil, nil, nil).configArgs(); args != nil {
 		t.Errorf("missing config: args = %v, want nil", args)
 	}
 	// An existing managed config -> passed via -c.
 	cfg.GalleryDL.ConfigPath = filepath.Join(t.TempDir(), "gdl.json")
-	if err := WriteManagedConfig(cfg, []string{"konachan"}); err != nil {
+	if err := WriteManagedConfig(cfg, []string{"konachan"}, nil, nil); err != nil {
 		t.Fatalf("WriteManagedConfig: %v", err)
 	}
-	if args := New(cfg, nil).configArgs(); !reflect.DeepEqual(args, []string{"-c", cfg.GalleryDL.ConfigPath}) {
+	if args := New(cfg, nil, nil, nil).configArgs(); !reflect.DeepEqual(args, []string{"-c", cfg.GalleryDL.ConfigPath}) {
 		t.Errorf("configArgs = %v, want [-c %s]", args, cfg.GalleryDL.ConfigPath)
 	}
 }
 
-func TestNoTagsArgs(t *testing.T) {
-	// Each flat-tag family gets its own override so the resolve pass skips the
-	// per-post tag fetch; an empty list adds nothing.
-	got := noTagsArgs([]string{"safebooru", "konachan"})
-	want := []string{"-o", "extractor.safebooru.tags=false", "-o", "extractor.konachan.tags=false"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("noTagsArgs = %v, want %v", got, want)
+func TestResolveOffArgs(t *testing.T) {
+	// Each enrichment option gets its own per-site override so the resolve pass
+	// skips the extra fetches; empty lists add nothing.
+	got := resolveOffArgs([]string{"safebooru", "konachan"}, []string{"danbooru", "e621"}, []string{"safebooru"})
+	want := []string{
+		"-o", "extractor.safebooru.tags=false", "-o", "extractor.konachan.tags=false",
+		"-o", "extractor.danbooru.metadata=false", "-o", "extractor.e621.metadata=false",
+		"-o", "extractor.safebooru.notes=false",
 	}
-	if got := noTagsArgs(nil); got != nil {
-		t.Errorf("noTagsArgs(nil) = %v, want nil", got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("resolveOffArgs = %v, want %v", got, want)
+	}
+	if got := resolveOffArgs(nil, nil, nil); got != nil {
+		t.Errorf("resolveOffArgs(nil) = %v, want nil", got)
 	}
 }
 
@@ -293,7 +331,7 @@ func TestWriteManagedConfig(t *testing.T) {
 	}
 	flatTag := []string{"gelbooru", "safebooru", "konachan", "yandere"}
 
-	if err := WriteManagedConfig(cfg, flatTag); err != nil {
+	if err := WriteManagedConfig(cfg, flatTag, []string{"danbooru", "e621"}, []string{"gelbooru", "safebooru", "konachan"}); err != nil {
 		t.Fatalf("WriteManagedConfig: %v", err)
 	}
 	data, err := os.ReadFile(cfg.GalleryDL.ConfigPath)
@@ -319,6 +357,9 @@ func TestWriteManagedConfig(t *testing.T) {
 	if gel["api-key"] != "K" || gel["user-id"] != "U" || gel["tags"] != true {
 		t.Errorf("gelbooru block wrong: %+v", gel)
 	}
+	if gel["notes"] != true {
+		t.Errorf("gelbooru (notes site) should have notes:true, got %+v", gel)
+	}
 	if gel["sleep"] != float64(2) {
 		t.Errorf("raw passthrough did not merge into gelbooru: %+v", gel)
 	}
@@ -331,14 +372,27 @@ func TestWriteManagedConfig(t *testing.T) {
 	if _, hasTags := e621["tags"]; hasTags {
 		t.Error("e621 is not a flat-tag family; it should not get tags:true")
 	}
+	// e621 reads the same include as danbooru for its notes; the commentary
+	// token is ignored there.
+	if e621["metadata"] != "artist_commentary,notes" {
+		t.Errorf("e621 (metadata site) should get the metadata include, got %+v", e621)
+	}
 	// A username with no key must not be sent alone, or the danbooru family
 	// prompts for a password and aborts the extraction.
-	if _, hasUser := asMap("danbooru")["username"]; hasUser {
+	dan := asMap("danbooru")
+	if _, hasUser := dan["username"]; hasUser {
 		t.Error("a username without a key should not be written")
 	}
+	if dan["metadata"] != "artist_commentary,notes" {
+		t.Errorf("danbooru should get the commentary/notes metadata include, got %+v", dan)
+	}
 	kon := asMap("konachan")
-	if kon["tags"] != true {
-		t.Errorf("konachan (flat-tag, no creds) should have tags:true, got %+v", kon)
+	if kon["tags"] != true || kon["notes"] != true {
+		t.Errorf("konachan (flat-tag notes site, no creds) should have tags:true and notes:true, got %+v", kon)
+	}
+	yan := asMap("yandere")
+	if _, hasNotes := yan["notes"]; hasNotes {
+		t.Error("yandere was not passed as a notes site; it should not get notes:true")
 	}
 	// directlink's default filename embeds the host and path; with the directory
 	// flattened to the workdir that overflows the name limit on long URLs.
@@ -370,7 +424,7 @@ func TestWriteManagedConfig(t *testing.T) {
 func TestWriteManagedConfigCapsDeadHost(t *testing.T) {
 	cfg := config.Default()
 	cfg.GalleryDL.ConfigPath = filepath.Join(t.TempDir(), "gallery-dl.json")
-	if err := WriteManagedConfig(cfg, nil); err != nil {
+	if err := WriteManagedConfig(cfg, nil, nil, nil); err != nil {
 		t.Fatalf("WriteManagedConfig: %v", err)
 	}
 	data, err := os.ReadFile(cfg.GalleryDL.ConfigPath)
@@ -394,7 +448,7 @@ func TestWriteManagedConfigRejectsBadRaw(t *testing.T) {
 	cfg := config.Default()
 	cfg.GalleryDL.ConfigPath = filepath.Join(t.TempDir(), "gallery-dl.json")
 	cfg.GalleryDL.RawConfig = "{not json"
-	if err := WriteManagedConfig(cfg, nil); err == nil {
+	if err := WriteManagedConfig(cfg, nil, nil, nil); err == nil {
 		t.Error("expected an error for invalid raw config JSON")
 	}
 }

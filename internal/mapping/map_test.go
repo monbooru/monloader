@@ -56,6 +56,148 @@ func TestMapDanbooruPost(t *testing.T) {
 	}
 }
 
+func TestMapDanbooruCommentaryTranslatedPreferred(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "danbooru",
+		"id":       float64(1),
+		"artist_commentary": map[string]any{
+			"original_title":         "元タイトル",
+			"original_description":   "raw text",
+			"translated_title":       "Title",
+			"translated_description": "the translation",
+		},
+	})
+	if pf.Commentary != "Title\n\nthe translation" {
+		t.Errorf("commentary = %q, want the translated title folded above the body", pf.Commentary)
+	}
+}
+
+func TestMapDanbooruCommentaryFallsBackToOriginal(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "danbooru",
+		"id":       float64(1),
+		"artist_commentary": map[string]any{
+			"original_description": "only the original",
+		},
+	})
+	if pf.Commentary != "only the original" {
+		t.Errorf("commentary = %q, want the original description", pf.Commentary)
+	}
+}
+
+func TestMapDanbooruNotesActiveOnlyAndStripped(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "danbooru",
+		"id":       float64(1),
+		"notes": []any{
+			map[string]any{"x": float64(61), "y": float64(274), "width": float64(432), "height": float64(451), "body": "Otokura Yuuki-chan", "is_active": true},
+			map[string]any{"x": float64(10), "y": float64(20), "width": float64(30), "height": float64(40), "body": "line1<br>line2", "is_active": true},
+			map[string]any{"x": float64(0), "y": float64(0), "width": float64(1), "height": float64(1), "body": "hidden", "is_active": false},
+		},
+	})
+	if len(pf.Notes) != 2 {
+		t.Fatalf("got %d notes, want 2 active", len(pf.Notes))
+	}
+	if pf.Notes[0].X != 61 || pf.Notes[0].W != 432 || pf.Notes[0].Body != "Otokura Yuuki-chan" {
+		t.Errorf("note[0] = %+v", pf.Notes[0])
+	}
+	if pf.Notes[1].Body != "line1\nline2" {
+		t.Errorf("note[1] body = %q, want <br> turned into a newline", pf.Notes[1].Body)
+	}
+}
+
+func TestMapGelbooruNotes(t *testing.T) {
+	// The gelbooru family carries the danbooru note field names, minus is_active
+	// (its post page only renders active notes).
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "gelbooru",
+		"id":       float64(1),
+		"notes": []any{
+			map[string]any{"x": float64(12), "y": float64(34), "width": float64(56), "height": float64(78), "body": "translated line"},
+			map[string]any{"x": float64(0), "y": float64(0), "width": float64(1), "height": float64(1), "body": ""},
+		},
+	})
+	if len(pf.Notes) != 1 {
+		t.Fatalf("got %d notes, want 1 (the empty body dropped)", len(pf.Notes))
+	}
+	if pf.Notes[0].X != 12 || pf.Notes[0].W != 56 || pf.Notes[0].Body != "translated line" {
+		t.Errorf("note[0] = %+v", pf.Notes[0])
+	}
+}
+
+func TestMapMoebooruNotes(t *testing.T) {
+	// moebooru pages carry the same note markup as the gelbooru family (active
+	// notes only, no is_active flag).
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "konachan",
+		"id":       float64(1),
+		"notes": []any{
+			map[string]any{"x": float64(1), "y": float64(2), "width": float64(3), "height": float64(4), "body": "text"},
+		},
+	})
+	if len(pf.Notes) != 1 || pf.Notes[0].H != 4 || pf.Notes[0].Body != "text" {
+		t.Errorf("notes = %+v, want the konachan note mapped", pf.Notes)
+	}
+}
+
+func TestMapE621NotesActiveOnly(t *testing.T) {
+	// e621's notes API returns danbooru-shaped notes including inactive ones.
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "e621",
+		"id":       float64(1),
+		"notes": []any{
+			map[string]any{"x": float64(5), "y": float64(6), "width": float64(7), "height": float64(8), "body": "kept", "is_active": true},
+			map[string]any{"x": float64(0), "y": float64(0), "width": float64(1), "height": float64(1), "body": "gone", "is_active": false},
+		},
+	})
+	if len(pf.Notes) != 1 || pf.Notes[0].Body != "kept" {
+		t.Errorf("notes = %+v, want only the active e621 note", pf.Notes)
+	}
+}
+
+func TestMapSankakuNotes(t *testing.T) {
+	// sankaku is generic-family; its profile's has_notes flag wires the same
+	// danbooru-shaped note boxes its API returns.
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "sankaku",
+		"id":       "abc",
+		"notes": []any{
+			map[string]any{"x": float64(9), "y": float64(10), "width": float64(11), "height": float64(12), "body": "api note"},
+		},
+	})
+	if len(pf.Notes) != 1 || pf.Notes[0].X != 9 || pf.Notes[0].Body != "api note" {
+		t.Errorf("notes = %+v, want the sankaku note mapped", pf.Notes)
+	}
+}
+
+func TestMapGenericNotesDropped(t *testing.T) {
+	// A stray notes field on a source that is not wired for them must not leak
+	// into the push.
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "zerochan",
+		"id":       float64(1),
+		"notes": []any{
+			map[string]any{"x": float64(1), "y": float64(2), "width": float64(3), "height": float64(4), "body": "text"},
+		},
+	})
+	if len(pf.Notes) != 0 {
+		t.Errorf("zerochan notes are not mapped, got %+v", pf.Notes)
+	}
+}
+
+func TestMapE621Description(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category":     "e621",
+		"id":           float64(1),
+		"rating":       "s",
+		"description":  "an <b>uploader</b> note",
+		"tags_general": []any{"x"},
+	})
+	if pf.Commentary != "an uploader note" {
+		t.Errorf("commentary = %q, want the stripped description", pf.Commentary)
+	}
+}
+
 func TestMapE621SafeOverloadAndSuffixes(t *testing.T) {
 	pf := newMapper(t, nil).Map(map[string]any{
 		"category":         "e621",
@@ -630,6 +772,33 @@ func TestFlatTagSites(t *testing.T) {
 	}
 	if !slices.IsSorted(got) {
 		t.Errorf("FlatTagSites should be sorted: %v", got)
+	}
+}
+
+func TestNotesSites(t *testing.T) {
+	got := newMapper(t, nil).NotesSites()
+	for _, want := range []string{"gelbooru", "safebooru", "konachan", "yandere", "sankaku", "idolcomplex"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("NotesSites missing %q: %v", want, got)
+		}
+	}
+	// danbooru and e621 carry notes behind the metadata include, not notes:true.
+	for _, notWanted := range []string{"danbooru", "e621", "zerochan"} {
+		if slices.Contains(got, notWanted) {
+			t.Errorf("NotesSites should not include %q: %v", notWanted, got)
+		}
+	}
+}
+
+func TestMetadataSites(t *testing.T) {
+	got := newMapper(t, nil).MetadataSites()
+	for _, want := range []string{"danbooru", "aibooru", "e621", "e926"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("MetadataSites missing %q: %v", want, got)
+		}
+	}
+	if slices.Contains(got, "gelbooru") {
+		t.Errorf("MetadataSites should not include gelbooru: %v", got)
 	}
 }
 

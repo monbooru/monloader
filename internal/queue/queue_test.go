@@ -88,6 +88,12 @@ func TestSummarizeAndDeriveStatus(t *testing.T) {
 			Summary{Created: 1, Skipped: 1, Total: 2},
 			JobSucceeded,
 		},
+		{
+			"enriched counts on its own, succeeds",
+			[]Item{{Outcome: OutcomeEnriched}},
+			Summary{Enriched: 1, Total: 1},
+			JobSucceeded,
+		},
 	}
 	for _, tc := range cases {
 		if got := summarize(tc.items); got != tc.summary {
@@ -96,6 +102,15 @@ func TestSummarizeAndDeriveStatus(t *testing.T) {
 		if got := deriveStatus(tc.items); got != tc.status {
 			t.Errorf("%s: deriveStatus = %s, want %s", tc.name, got, tc.status)
 		}
+	}
+}
+
+func TestSummaryAddSumsEveryField(t *testing.T) {
+	a := Summary{Created: 1, Duplicate: 2, Enriched: 3, Skipped: 4, Failed: 5, Canceled: 6, Total: 21}
+	b := Summary{Created: 10, Duplicate: 20, Enriched: 30, Skipped: 40, Failed: 50, Canceled: 60, Total: 210}
+	want := Summary{Created: 11, Duplicate: 22, Enriched: 33, Skipped: 44, Failed: 55, Canceled: 66, Total: 231}
+	if got := a.Add(b); got != want {
+		t.Errorf("Add = %+v, want %+v", got, want)
 	}
 }
 
@@ -262,6 +277,27 @@ func TestRetryAndCancelUnknownIDs(t *testing.T) {
 	}
 }
 
+func TestEnqueueMetadata_KindTargetPriority(t *testing.T) {
+	q := New(noopProcessor{}, 1, 100) // not started: the job stays queued
+	id := q.EnqueueMetadata(42, "mygallery", "https://danbooru.donmai.us/posts/1")
+	job, err := q.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Kind != KindMetadata {
+		t.Errorf("kind = %q, want metadata", job.Kind)
+	}
+	if job.ImageID != 42 {
+		t.Errorf("image_id = %d, want 42", job.ImageID)
+	}
+	if job.Gallery != "mygallery" {
+		t.Errorf("gallery = %q, want mygallery", job.Gallery)
+	}
+	if !job.Priority {
+		t.Error("a metadata refetch should take the priority lane")
+	}
+}
+
 func TestContinueEnqueuesNextWindow(t *testing.T) {
 	q := New(noopProcessor{}, 1, 100) // not started: jobs stay queued
 	id := q.Enqueue("http://x/search", Options{Gallery: "art", MaxItems: 50})
@@ -342,6 +378,28 @@ func TestContinueFromEarlierWindowPastShortFinalWindow(t *testing.T) {
 	}
 }
 
+func TestContinueWhilePendingReservesItsWindow(t *testing.T) {
+	// A second continue issued while the first continuation has not resolved yet
+	// must enqueue the window after its reserved range, not a duplicate of it.
+	q := New(noopProcessor{}, 1, 100) // not started: the continuation stays unresolved
+	id := q.Enqueue("http://x/search", Options{MaxItems: 8})
+	q.index[id].SetCapped(8) // window A: posts 1-8
+	n1, err := q.Continue(id)
+	if err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	if b, _ := q.Get(n1); b.Offset != 8 {
+		t.Fatalf("window B offset = %d, want 8", b.Offset)
+	}
+	n2, err := q.Continue(id)
+	if err != nil {
+		t.Fatalf("Continue(rapid second): %v", err)
+	}
+	if c, _ := q.Get(n2); c.Offset != 16 {
+		t.Errorf("rapid second continue offset = %d, want 16 (past the pending window's reserved range)", c.Offset)
+	}
+}
+
 func TestSnapshotLiveSummaryWhileRunning(t *testing.T) {
 	// A running (not finalized) job's snapshot reflects current item outcomes, so
 	// the queue and API show live progress instead of all-zeros until finalize.
@@ -378,6 +436,23 @@ func TestContinueInheritsSeriesRoot(t *testing.T) {
 		if c, _ := q.Get(child); c.Root != id {
 			t.Errorf("continuation %d Root = %d, want originating id %d", child, c.Root, id)
 		}
+	}
+}
+
+func TestContinueCarriesSeriesSite(t *testing.T) {
+	// A window past the search's last post resolves no items and never learns a
+	// site; inheriting the source window's keeps the collapsed row labeled after
+	// a fetch to exhaustion.
+	q := New(noopProcessor{}, 1, 100)
+	id := q.Enqueue("http://x/search", Options{MaxItems: 8})
+	q.index[id].SetSite("danbooru")
+	q.index[id].SetCapped(8)
+	nid, err := q.Continue(id)
+	if err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	if c, _ := q.Get(nid); c.Site != "danbooru" {
+		t.Errorf("continuation site = %q, want the source window's %q", c.Site, "danbooru")
 	}
 }
 

@@ -48,6 +48,15 @@ type Server struct {
 	gdlVersion string
 	siteState  *sitestate.Tracker
 
+	// statusMu guards the cached footer-light probe result. base() seeds each
+	// page's initial render from it so the light shows its last known state at
+	// once instead of flickering to "checking" (and re-probing monbooru) on
+	// every navigation; the poll refreshes it at most once per monbooruStatusTTL.
+	statusMu          sync.Mutex
+	monbooruConn      string
+	monbooruVersion   string
+	monbooruCheckedAt time.Time
+
 	sessions   *SessionStore
 	csrfSecret []byte
 	tmpl       *template.Template
@@ -107,8 +116,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /queue/{id}/continue", s.continueJob)
 	mux.HandleFunc("POST /queue/{id}/continue-all", s.continueAllJob)
 	mux.HandleFunc("POST /queue/clear", s.clearQueue)
+	mux.HandleFunc("POST /queue/pause", s.pauseDownloads)
+	mux.HandleFunc("POST /queue/resume", s.resumeDownloads)
 	mux.HandleFunc("DELETE /queue/{id}", s.deleteJob)
 	mux.HandleFunc("GET /internal/monbooru-status", s.monbooruStatus)
+	mux.HandleFunc("GET /internal/queue-pause", s.queuePauseToggle)
 
 	mux.HandleFunc("GET /settings", s.settingsScreen)
 	mux.HandleFunc("POST /settings/monbooru", s.saveMonbooru)
@@ -144,7 +156,7 @@ func (s *Server) Handler() http.Handler {
 	// precedence for the add screen.
 	mux.HandleFunc("GET /", s.notFound)
 
-	api.New(s.queue, s.runner, s.mapper, s.cfg, s.extractors, Version, s.gdlVersion).Mount(mux)
+	api.New(s.queue, s.runner, s.mapper, s.cfg, s.extractors, Version, s.gdlVersion, s.siteState).Mount(mux)
 
 	var h http.Handler = mux
 	h = s.CSRFMiddleware(h)
@@ -256,7 +268,7 @@ func humanBytes(b int64) string {
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/internal/queue-rows" || r.URL.Path == "/internal/monbooru-status" || r.URL.Path == "/health" {
+		if r.URL.Path == "/internal/queue-rows" || r.URL.Path == "/internal/monbooru-status" || r.URL.Path == "/internal/queue-pause" || r.URL.Path == "/health" {
 			logx.Debugf("%s %s", r.Method, r.URL.Path)
 		} else {
 			logx.Infof("%s %s", r.Method, r.URL.Path)
@@ -267,6 +279,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 
 // base returns the template data common to every page.
 func (s *Server) base(r *http.Request, nav, title string) map[string]any {
+	conn, connVer := s.monbooruStatusSeed()
 	return map[string]any{
 		"Title":            title,
 		"ActiveNav":        nav,
@@ -279,7 +292,11 @@ func (s *Server) base(r *http.Request, nav, title string) map[string]any {
 		"BooruName":        s.booruName(),
 		"BooruLogo":        s.booruLogoURL(),
 		"BooruFavicon":     s.booruFaviconURL(),
-		"Conn":             "checking",
+		"Conn":             conn,
+		"MonbooruVersion":  connVer,
+		// Paused backs the topbar pause control, which also polls to reflect a
+		// pause toggled elsewhere (e.g. from monsender).
+		"Paused": s.queue.Paused(),
 		// MonbooruPaired gates the footer "connected to monbooru" light: it
 		// renders (and polls) only while a monbooru pairing exists.
 		"MonbooruPaired": s.hasPairedToken("monbooru"),
@@ -288,8 +305,8 @@ func (s *Server) base(r *http.Request, nav, title string) map[string]any {
 		// server-side at once. A configured-but-down instance is left to the
 		// async connectivity light to surface.
 		"MonbooruConfigured": s.monbooruConfigured(),
-		// Browser-facing monbooru base for the topbar and footer links, or ""
-		// when no web_url is set, in which case neither link renders.
+		// Browser-facing monbooru base for the footer "connected to monbooru"
+		// link, or "" when no web_url is set, in which case the word renders plain.
 		"MonbooruWebURL": s.monbooruWebLink(),
 	}
 }
@@ -384,7 +401,7 @@ func (s *Server) updateConfig(fn func(*config.Config) error) error {
 // rewriteGDLConfig regenerates the managed gallery-dl config after a settings
 // change that affects it (credentials, sleep, raw passthrough).
 func (s *Server) rewriteGDLConfig() {
-	if err := gdl.WriteManagedConfig(s.cfg.Current(), s.mapper.FlatTagSites()); err != nil {
+	if err := gdl.WriteManagedConfig(s.cfg.Current(), s.mapper.FlatTagSites(), s.mapper.MetadataSites(), s.mapper.NotesSites()); err != nil {
 		logx.Warnf("rewriting managed gallery-dl config: %v", err)
 	}
 }
@@ -420,4 +437,43 @@ func (s *Server) checkMonbooru(ctx context.Context) (status, version string) {
 		return "rejected", ""
 	}
 	return "down", ""
+}
+
+// monbooruStatusTTL bounds how often the footer light re-probes monbooru, so a
+// burst of navigations (each firing the light's load poll) reuses one probe
+// instead of one per page. Kept under the 15s poll cadence so an open page
+// still refreshes on schedule.
+const monbooruStatusTTL = 10 * time.Second
+
+// monbooruStatusSeed returns the last cached probe result without probing, for
+// seeding a page's initial light so it shows its last known state rather than
+// re-checking. A cold cache reads "checking".
+func (s *Server) monbooruStatusSeed() (status, version string) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	if s.monbooruConn == "" {
+		return "checking", ""
+	}
+	return s.monbooruConn, s.monbooruVersion
+}
+
+// monbooruStatusCached probes monbooru at most once per monbooruStatusTTL and
+// serves the cached result otherwise, so the light's per-navigation poll does
+// not re-probe on every page load. The probe runs without the lock held so a
+// slow monbooru never serializes concurrent page renders.
+func (s *Server) monbooruStatusCached(ctx context.Context) (status, version string) {
+	s.statusMu.Lock()
+	if s.monbooruConn != "" && time.Since(s.monbooruCheckedAt) < monbooruStatusTTL {
+		status, version = s.monbooruConn, s.monbooruVersion
+		s.statusMu.Unlock()
+		return status, version
+	}
+	s.statusMu.Unlock()
+
+	status, version = s.checkMonbooru(ctx)
+
+	s.statusMu.Lock()
+	s.monbooruConn, s.monbooruVersion, s.monbooruCheckedAt = status, version, time.Now()
+	s.statusMu.Unlock()
+	return status, version
 }

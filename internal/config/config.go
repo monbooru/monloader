@@ -397,49 +397,44 @@ func ValidateRawConfig(s string) error {
 	return nil
 }
 
+// applyEnvOverrides lets a MONLOADER_* variable override its config field, so
+// a container env can set what the file does not. Adding a variable is one
+// table line; a value that fails to parse is ignored, keeping the file's.
 func applyEnvOverrides(cfg *Config) {
-	if v := os.Getenv("MONLOADER_SERVER_BIND_ADDRESS"); v != "" {
-		cfg.Server.BindAddress = v
-	}
-	if v := os.Getenv("MONLOADER_SERVER_BASE_URL"); v != "" {
-		cfg.Server.BaseURL = v
-	}
-	if v := os.Getenv("MONLOADER_MONBOORU_API_URL"); v != "" {
-		cfg.Monbooru.APIURL = v
-	}
-	if v := os.Getenv("MONLOADER_MONBOORU_API_TOKEN"); v != "" {
-		cfg.Monbooru.APIToken = v
-	}
-	if v := os.Getenv("MONLOADER_MONBOORU_WEB_URL"); v != "" {
-		cfg.Monbooru.WebURL = v
-	}
-	if v := os.Getenv("MONLOADER_MONBOORU_DEFAULT_GALLERY"); v != "" {
-		cfg.Monbooru.DefaultGallery = v
-	}
-	if v := os.Getenv("MONLOADER_DOWNLOADER_CONCURRENCY"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Downloader.Concurrency = n
+	for _, o := range []struct {
+		env string
+		dst *string
+	}{
+		{"MONLOADER_SERVER_BIND_ADDRESS", &cfg.Server.BindAddress},
+		{"MONLOADER_SERVER_BASE_URL", &cfg.Server.BaseURL},
+		{"MONLOADER_MONBOORU_API_URL", &cfg.Monbooru.APIURL},
+		{"MONLOADER_MONBOORU_API_TOKEN", &cfg.Monbooru.APIToken},
+		{"MONLOADER_MONBOORU_WEB_URL", &cfg.Monbooru.WebURL},
+		{"MONLOADER_MONBOORU_DEFAULT_GALLERY", &cfg.Monbooru.DefaultGallery},
+		{"MONLOADER_DOWNLOADER_DEFAULT_FOLDER", &cfg.Downloader.DefaultFolder},
+		{"MONLOADER_GALLERYDL_BINARY_PATH", &cfg.GalleryDL.BinaryPath},
+		{"MONLOADER_GALLERYDL_CONFIG_PATH", &cfg.GalleryDL.ConfigPath},
+		{"MONLOADER_GALLERYDL_ARCHIVE_PATH", &cfg.GalleryDL.ArchivePath},
+		{"MONLOADER_GALLERYDL_COOKIES_DIR", &cfg.GalleryDL.CookiesDir},
+		{"MONLOADER_AUTH_PASSWORD_HASH", &cfg.Auth.PasswordHash},
+		{"MONLOADER_LOG_LEVEL", &cfg.Log.Level},
+	} {
+		if v := os.Getenv(o.env); v != "" {
+			*o.dst = v
 		}
 	}
-	if v := os.Getenv("MONLOADER_DOWNLOADER_MAX_ITEMS_PER_JOB"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Downloader.MaxItemsPerJob = n
+	for _, o := range []struct {
+		env string
+		dst *int
+	}{
+		{"MONLOADER_DOWNLOADER_CONCURRENCY", &cfg.Downloader.Concurrency},
+		{"MONLOADER_DOWNLOADER_MAX_ITEMS_PER_JOB", &cfg.Downloader.MaxItemsPerJob},
+	} {
+		if v := os.Getenv(o.env); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				*o.dst = n
+			}
 		}
-	}
-	if v := os.Getenv("MONLOADER_DOWNLOADER_DEFAULT_FOLDER"); v != "" {
-		cfg.Downloader.DefaultFolder = v
-	}
-	if v := os.Getenv("MONLOADER_GALLERYDL_BINARY_PATH"); v != "" {
-		cfg.GalleryDL.BinaryPath = v
-	}
-	if v := os.Getenv("MONLOADER_GALLERYDL_CONFIG_PATH"); v != "" {
-		cfg.GalleryDL.ConfigPath = v
-	}
-	if v := os.Getenv("MONLOADER_GALLERYDL_ARCHIVE_PATH"); v != "" {
-		cfg.GalleryDL.ArchivePath = v
-	}
-	if v := os.Getenv("MONLOADER_GALLERYDL_COOKIES_DIR"); v != "" {
-		cfg.GalleryDL.CookiesDir = v
 	}
 	if v := os.Getenv("MONLOADER_GALLERYDL_SLEEP_REQUEST"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
@@ -450,12 +445,6 @@ func applyEnvOverrides(cfg *Config) {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.Auth.EnablePassword = b
 		}
-	}
-	if v := os.Getenv("MONLOADER_AUTH_PASSWORD_HASH"); v != "" {
-		cfg.Auth.PasswordHash = v
-	}
-	if v := os.Getenv("MONLOADER_LOG_LEVEL"); v != "" {
-		cfg.Log.Level = v
 	}
 }
 

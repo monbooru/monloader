@@ -247,17 +247,13 @@ func TestRetryForcePropagates(t *testing.T) {
 	}
 }
 
-// TestRetryFailedJobForcesArchiveBypass checks that a plain retry of a job that
-// did not fully import re-runs past the download-archive (so a failed push is
-// re-downloaded rather than archive-skipped), while a retry of a fully
-// succeeded job runs against the archive as before.
-func TestRetryFailedJobForcesArchiveBypass(t *testing.T) {
-	var mu sync.Mutex
-	var seen []bool
+// failOnceProc fails its first run's item and succeeds after, recording each
+// run's Force flag into seen, for the archive-bypass tests.
+func failOnceProc(mu *sync.Mutex, seen *[]bool, monbooruID int64) procFunc {
 	var calls int32
-	q := New(procFunc(func(ctx context.Context, j *Job) error {
+	return func(ctx context.Context, j *Job) error {
 		mu.Lock()
-		seen = append(seen, j.Snapshot().Force)
+		*seen = append(*seen, j.Snapshot().Force)
 		mu.Unlock()
 		j.SetItems([]Item{{PostID: "1"}})
 		if atomic.AddInt32(&calls, 1) == 1 {
@@ -268,9 +264,19 @@ func TestRetryFailedJobForcesArchiveBypass(t *testing.T) {
 			})
 			return nil
 		}
-		createOne(j, 5)
+		createOne(j, monbooruID)
 		return nil
-	}), 1, 100)
+	}
+}
+
+// TestRetryFailedJobForcesArchiveBypass checks that a plain retry of a job that
+// did not fully import re-runs past the download-archive (so a failed push is
+// re-downloaded rather than archive-skipped), while a retry of a fully
+// succeeded job runs against the archive as before.
+func TestRetryFailedJobForcesArchiveBypass(t *testing.T) {
+	var mu sync.Mutex
+	var seen []bool
+	q := New(failOnceProc(&mu, &seen, 5), 1, 100)
 	q.Start()
 	defer q.Close()
 
@@ -312,23 +318,7 @@ func TestRetryFailedJobForcesArchiveBypass(t *testing.T) {
 func TestReaddOfFailedURLForcesArchiveBypass(t *testing.T) {
 	var mu sync.Mutex
 	var seen []bool
-	var calls int32
-	q := New(procFunc(func(ctx context.Context, j *Job) error {
-		mu.Lock()
-		seen = append(seen, j.Snapshot().Force)
-		mu.Unlock()
-		j.SetItems([]Item{{PostID: "1"}})
-		if atomic.AddInt32(&calls, 1) == 1 {
-			j.UpdateItem(0, func(it *Item) {
-				it.Status = ItemFailed
-				it.Outcome = OutcomeFailed
-				it.ErrorCode = ErrCodeMonbooruRejected
-			})
-			return nil
-		}
-		createOne(j, 9)
-		return nil
-	}), 1, 100)
+	q := New(failOnceProc(&mu, &seen, 9), 1, 100)
 	q.Start()
 	defer q.Close()
 
@@ -421,6 +411,49 @@ func TestPriorityJobJumpsAhead(t *testing.T) {
 	want := []int64{a, c, b}
 	if len(order) != 3 || order[0] != want[0] || order[1] != want[1] || order[2] != want[2] {
 		t.Errorf("processing order = %v, want %v (priority c ahead of bulk b)", order, want)
+	}
+}
+
+func TestPauseHoldsPendingJobs(t *testing.T) {
+	ran := make(chan int64, 4)
+	q := New(procFunc(func(ctx context.Context, j *Job) error {
+		createOne(j, 1)
+		ran <- j.ID
+		return nil
+	}), 1, 100)
+	q.Start()
+	defer q.Close()
+
+	q.Pause()
+	if !q.Paused() {
+		t.Fatal("Paused() = false after Pause()")
+	}
+	id := q.Enqueue("http://x", Options{})
+
+	// A paused queue must not start the job even though it is pending.
+	select {
+	case got := <-ran:
+		t.Fatalf("job %d ran while paused", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if j, _ := q.Get(id); j.Status != JobQueued {
+		t.Errorf("status = %s while paused, want queued", j.Status)
+	}
+
+	q.Resume()
+	if q.Paused() {
+		t.Fatal("Paused() = true after Resume()")
+	}
+	select {
+	case got := <-ran:
+		if got != id {
+			t.Errorf("ran job %d, want %d", got, id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("job did not run after resume")
+	}
+	if j := waitFor(t, q, id); j.Status != JobSucceeded {
+		t.Errorf("status = %s, want succeeded", j.Status)
 	}
 }
 

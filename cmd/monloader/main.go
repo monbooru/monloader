@@ -64,8 +64,8 @@ func main() {
 		log.Fatalf("FATAL loading mappings: %v", err)
 	}
 
-	runner := gdl.New(cfg, mapper.FlatTagSites())
-	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites()); err != nil {
+	runner := gdl.New(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites())
+	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites()); err != nil {
 		logx.Warnf("could not write the managed gallery-dl config: %v", err)
 	}
 

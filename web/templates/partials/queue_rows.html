@@ -14,6 +14,7 @@
     {{else}}
     <span class="o-created{{if not .Summary.Created}} o-zero{{end}}">{{.Summary.Created}} created</span>
     <span class="o-duplicate{{if not .Summary.Duplicate}} o-zero{{end}}">{{.Summary.Duplicate}} duplicate</span>
+    {{if .Summary.Enriched}}<span class="o-enriched">{{.Summary.Enriched}} enriched</span>{{end}}
     <span class="o-skipped_archive{{if not .Summary.Skipped}} o-zero{{end}}">{{.Summary.Skipped}} skipped</span>
     <span class="o-failed{{if not .Summary.Failed}} o-zero{{end}}">{{.Summary.Failed}} failed</span>
     {{if .Summary.Canceled}}<span class="o-canceled">{{.Summary.Canceled}} canceled</span>{{end}}
@@ -25,29 +26,23 @@
   <td>
     <span class="actions">
       {{if or (eq .Lead.Status "queued") (eq .Lead.Status "running")}}
-        <button hx-delete="/queue/{{.Lead.ID}}" hx-target="#queue-rows" hx-swap="innerHTML"
-                hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'>cancel</button>
+        <button hx-delete="/queue/{{.Lead.ID}}">cancel</button>
       {{else}}
         {{if and .Lead.Capped (ne .Lead.Status "canceled") (ne .Lead.Status "failed")}}
-        <button hx-post="/queue/{{.Lead.ID}}/continue" hx-target="#queue-rows" hx-swap="innerHTML"
-                hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+        <button hx-post="/queue/{{.Lead.ID}}/continue"
                 title="download the next {{.Lead.Cap}} items">get next {{.Lead.Cap}}</button>
-        <button hx-post="/queue/{{.Lead.ID}}/continue-all" hx-target="#queue-rows" hx-swap="innerHTML"
-                hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+        <button hx-post="/queue/{{.Lead.ID}}/continue-all"
                 hx-confirm="fetch all remaining items? this can take a while"
                 title="keep fetching until the search runs out">get all</button>
         {{end}}
         {{if ne .Lead.Status "succeeded"}}
-        <button hx-post="/queue/{{.Lead.ID}}/retry" hx-target="#queue-rows" hx-swap="innerHTML"
-                hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'>retry</button>
+        <button hx-post="/queue/{{.Lead.ID}}/retry">retry</button>
         {{end}}
         {{if gt .Summary.Skipped 0}}
-        <button hx-post="/queue/{{.Lead.ID}}/retry?force=1" hx-target="#queue-rows" hx-swap="innerHTML"
-                hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+        <button hx-post="/queue/{{.Lead.ID}}/retry?force=1"
                 title="re-download, ignoring the gallery-dl archive">force download</button>
         {{end}}
-        <button hx-delete="/queue/{{.Lead.ID}}" hx-target="#queue-rows" hx-swap="innerHTML"
-                hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'>remove</button>
+        <button hx-delete="/queue/{{.Lead.ID}}">remove</button>
       {{end}}
     </span>
   </td>
@@ -57,7 +52,7 @@
 <tr class="items-row">
   <td colspan="6">
     <details data-job="{{.Root}}" open{{if not $active}} id="job-{{.Root}}" hx-preserve="true" hx-get="/internal/queue-rows/{{.Root}}/items" hx-trigger="load once" hx-target="find .job-items" hx-swap="innerHTML"{{end}}>
-      <summary>{{len .Items}} item{{if ne (len .Items) 1}}s{{end}}</summary>
+      <summary>{{len .Items}} item{{if ne (len .Items) 1}}s{{end}}{{$ph := .Phase}}{{if $ph}} <span class="job-phase job-phase-{{$ph}}">{{if eq $ph "downloading"}}downloading...{{else if eq $ph "pushing"}}pushing...{{else}}finished{{end}}</span>{{end}}</summary>
       <div class="job-items">{{if $active}}{{template "queue_items_capped" (dict "Items" .Items "MonbooruURL" $.MonbooruURL)}}{{end}}</div>
     </details>
   </td>

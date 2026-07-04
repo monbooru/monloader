@@ -167,7 +167,8 @@
     "post_url_template": "https://sankaku.app/posts/{id}",
     "auth": "cookies",
     "example": "https://sankaku.app/it/posts/vkr3EelGKMZ",
-    "needs_tags": true
+    "needs_tags": true,
+    "has_notes": true
   },
   "idolcomplex": {
     "family": "generic",
@@ -175,7 +176,8 @@
     "post_url_template": "https://www.idolcomplex.com/posts/{id}",
     "auth": "cookies",
     "example": "https://www.idolcomplex.com/posts/6ea43jg5M3v",
-    "needs_tags": true
+    "needs_tags": true,
+    "has_notes": true
   },
   "zerochan": {
     "family": "generic",

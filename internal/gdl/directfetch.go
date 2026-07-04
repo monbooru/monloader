@@ -30,6 +30,16 @@ const directlinkCategory = "directlink"
 // request without a browser-like agent, which is also why gallery-dl sends one.
 const directFetchUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 
+// directRequest builds the UA-stamped request the probe and fetch paths share.
+func directRequest(ctx context.Context, method, rawURL string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", directFetchUserAgent)
+	return req, nil
+}
+
 // directFetchClient fetches the bare media URLs gallery-dl cannot. The generous
 // ceiling bounds a stuck connection; the request context cancels the fetch on a
 // job cancel or shutdown.
@@ -109,11 +119,10 @@ func directlinkDownload(ctx context.Context, rawURL, workDir string, onFile func
 	if !ok {
 		return nil, false, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := directRequest(ctx, http.MethodGet, rawURL)
 	if err != nil {
 		return nil, false, nil
 	}
-	req.Header.Set("User-Agent", directFetchUserAgent)
 	resp, err := directFetchClient.Do(req)
 	if err != nil {
 		return nil, false, nil
@@ -168,11 +177,10 @@ func writeFile(path string, r io.Reader) error {
 func probeContentType(ctx context.Context, rawURL string) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, directProbeTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	req, err := directRequest(ctx, http.MethodHead, rawURL)
 	if err != nil {
 		return "", false
 	}
-	req.Header.Set("User-Agent", directFetchUserAgent)
 	resp, err := directFetchClient.Do(req)
 	if err == nil {
 		resp.Body.Close()
@@ -186,11 +194,10 @@ func probeContentType(ctx context.Context, rawURL string) (string, bool) {
 // probeContentTypeGET reads the Content-Type from a ranged GET (first byte
 // only); the body is closed without downloading the file.
 func probeContentTypeGET(ctx context.Context, rawURL string) (string, bool) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := directRequest(ctx, http.MethodGet, rawURL)
 	if err != nil {
 		return "", false
 	}
-	req.Header.Set("User-Agent", directFetchUserAgent)
 	req.Header.Set("Range", "bytes=0-0")
 	resp, err := directFetchClient.Do(req)
 	if err != nil {

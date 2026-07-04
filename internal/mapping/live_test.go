@@ -34,10 +34,10 @@ func liveDownloadOne(t *testing.T, url string) (*Mapper, map[string]any) {
 	if err != nil {
 		t.Fatalf("mapper: %v", err)
 	}
-	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites()); err != nil {
+	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites()); err != nil {
 		t.Fatalf("WriteManagedConfig: %v", err)
 	}
-	tool := gdl.New(cfg, mapper.FlatTagSites())
+	tool := gdl.New(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites())
 	if tool.Version(context.Background()) == "" {
 		t.Skip("real gallery-dl not available")
 	}
@@ -67,25 +67,73 @@ func hasCategoryTags(meta map[string]any) bool {
 	return false
 }
 
-// TestLiveMappingDanbooru maps a live danbooru post. danbooru categorizes
-// natively, so the sidecar carries tags_<category> fields without tags:true.
-func TestLiveMappingDanbooru(t *testing.T) {
-	mapper, meta := liveDownloadOne(t, "https://danbooru.donmai.us/posts?tags=landscape+rating:general")
-	if !hasCategoryTags(meta) {
-		t.Error("danbooru sidecar carried no tags_<category> fields; gallery-dl's tag shape may have changed")
+// TestLiveMappingFamilies maps one live post per booru family and pins the
+// shape each must keep: per-category tag fields (native on danbooru/e621, via
+// the managed tags:true on the flat-tag families), the post-url template, and
+// the family's rating letters. A gallery-dl bump that renamed a tag field or a
+// rating value fails here while the pure fixed-input tests stay green.
+func TestLiveMappingFamilies(t *testing.T) {
+	cases := []struct {
+		name, url string
+		source    string
+		urlPrefix string
+		rating    string
+		ratingWhy string
+	}{
+		// danbooru categorizes natively, so the sidecar carries tags_<category>
+		// fields without tags:true.
+		{
+			name: "danbooru", url: "https://danbooru.donmai.us/posts?tags=landscape+rating:general",
+			source: "danbooru", urlPrefix: "https://danbooru.donmai.us/posts/",
+			rating: RatingGeneral, ratingWhy: "the search filtered rating:general",
+		},
+		// safebooru.org is a flat-tag gelbooru_v02 site: it categorizes only with
+		// tags:true, which the managed config sets - a bump breaking the tags
+		// option drops the per-category tags here while danbooru (native) stays
+		// green. The family maps s -> general and the profile pins its stale
+		// q -> general, so any post maps to general.
+		{
+			name: "safebooru", url: "https://safebooru.org/index.php?page=post&s=list&tags=1girl",
+			source: "safebooru", urlPrefix: "https://safebooru.org/index.php?page=post&s=view&id=",
+			rating: RatingGeneral, ratingWhy: "s and stale q both map to general",
+		},
+		// e621 categorizes natively with tag classes the other families lack
+		// (species, lore, contributor) and overloads the rating letter: the
+		// search pins rating:s, which is "safe" here (general), not danbooru's
+		// "sensitive".
+		{
+			name: "e621", url: "https://e621.net/posts?tags=wolf+rating:s",
+			source: "e621", urlPrefix: "https://e621.net/posts/",
+			rating: RatingGeneral, ratingWhy: "e621 s = safe",
+		},
+		// konachan is a moebooru site - a second flat-tag family on a different
+		// extractor than gelbooru - that categorizes only with tags:true.
+		{
+			name: "konachan", url: "https://konachan.com/post?tags=landscape+rating:s",
+			source: "konachan", urlPrefix: "https://konachan.com/post/show/",
+			rating: RatingGeneral, ratingWhy: "moebooru s = safe",
+		},
 	}
-	pf := mapper.Map(meta)
-	if pf.Source != "danbooru" {
-		t.Errorf("source = %q, want danbooru", pf.Source)
-	}
-	if u := mapper.PostURL(meta); !strings.HasPrefix(u, "https://danbooru.donmai.us/posts/") {
-		t.Errorf("url = %q, want the danbooru post-url template", u)
-	}
-	if len(pf.Tags) == 0 {
-		t.Error("mapped post produced no tags")
-	}
-	if pf.Rating != RatingGeneral {
-		t.Errorf("rating = %q, want general (the search filtered rating:general)", pf.Rating)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mapper, meta := liveDownloadOne(t, tc.url)
+			if !hasCategoryTags(meta) {
+				t.Errorf("%s sidecar carried no tags_<category> fields; the tags:true path or gallery-dl's tag shape may have changed", tc.name)
+			}
+			pf := mapper.Map(meta)
+			if pf.Source != tc.source {
+				t.Errorf("source = %q, want %s", pf.Source, tc.source)
+			}
+			if u := mapper.PostURL(meta); !strings.HasPrefix(u, tc.urlPrefix) {
+				t.Errorf("url = %q, want the %s post-url template", u, tc.name)
+			}
+			if len(pf.Tags) == 0 {
+				t.Error("mapped post produced no tags")
+			}
+			if pf.Rating != tc.rating {
+				t.Errorf("rating = %q, want %s (%s)", pf.Rating, tc.rating, tc.ratingWhy)
+			}
+		})
 	}
 }
 
@@ -104,79 +152,6 @@ func TestLiveMappingDirectlink(t *testing.T) {
 	}
 	if u := mapper.PostURL(meta); u != fileURL {
 		t.Errorf("url = %q, want the file URL %q", u, fileURL)
-	}
-}
-
-// TestLiveMappingSafebooru maps a live safebooru post. safebooru.org is a
-// flat-tag gelbooru_v02 site: it categorizes only with tags:true, which the
-// managed config sets. This pins that path - a bump breaking the tags option
-// would drop the per-category tags here while danbooru (native) stayed green.
-func TestLiveMappingSafebooru(t *testing.T) {
-	mapper, meta := liveDownloadOne(t, "https://safebooru.org/index.php?page=post&s=list&tags=1girl")
-	if !hasCategoryTags(meta) {
-		t.Error("safebooru sidecar carried no tags_<category> fields; the tags:true path or gallery-dl's tag shape may have changed")
-	}
-	pf := mapper.Map(meta)
-	if pf.Source != "safebooru" {
-		t.Errorf("source = %q, want safebooru", pf.Source)
-	}
-	if u := mapper.PostURL(meta); !strings.HasPrefix(u, "https://safebooru.org/index.php?page=post&s=view&id=") {
-		t.Errorf("url = %q, want the safebooru post-url template", u)
-	}
-	if len(pf.Tags) == 0 {
-		t.Error("mapped post produced no tags")
-	}
-	// The family maps s -> general and the profile pins its stale q -> general,
-	// so any post maps to general.
-	if pf.Rating != RatingGeneral {
-		t.Errorf("rating = %q, want general (s and stale q both map to general)", pf.Rating)
-	}
-}
-
-// TestLiveMappingE621 maps a live e621 post. e621 categorizes natively with tag
-// classes the other families lack (species, lore, contributor) and overloads
-// the rating letter: the search pins rating:s, which is "safe" here (general),
-// not danbooru's "sensitive".
-func TestLiveMappingE621(t *testing.T) {
-	mapper, meta := liveDownloadOne(t, "https://e621.net/posts?tags=wolf+rating:s")
-	if !hasCategoryTags(meta) {
-		t.Error("e621 sidecar carried no tags_<category> fields; gallery-dl's tag shape may have changed")
-	}
-	pf := mapper.Map(meta)
-	if pf.Source != "e621" {
-		t.Errorf("source = %q, want e621", pf.Source)
-	}
-	if u := mapper.PostURL(meta); !strings.HasPrefix(u, "https://e621.net/posts/") {
-		t.Errorf("url = %q, want the e621 post-url template", u)
-	}
-	if len(pf.Tags) == 0 {
-		t.Error("mapped post produced no tags")
-	}
-	if pf.Rating != RatingGeneral {
-		t.Errorf("rating = %q, want general (e621 s = safe)", pf.Rating)
-	}
-}
-
-// TestLiveMappingMoebooru maps a live konachan post. konachan is a moebooru
-// site - a second flat-tag family on a different extractor than gelbooru - that
-// categorizes only with tags:true. rating:s is the family's safe -> general.
-func TestLiveMappingMoebooru(t *testing.T) {
-	mapper, meta := liveDownloadOne(t, "https://konachan.com/post?tags=landscape+rating:s")
-	if !hasCategoryTags(meta) {
-		t.Error("konachan sidecar carried no tags_<category> fields; the tags:true path or gallery-dl's tag shape may have changed")
-	}
-	pf := mapper.Map(meta)
-	if pf.Source != "konachan" {
-		t.Errorf("source = %q, want konachan", pf.Source)
-	}
-	if u := mapper.PostURL(meta); !strings.HasPrefix(u, "https://konachan.com/post/show/") {
-		t.Errorf("url = %q, want the konachan post-url template", u)
-	}
-	if len(pf.Tags) == 0 {
-		t.Error("mapped post produced no tags")
-	}
-	if pf.Rating != RatingGeneral {
-		t.Errorf("rating = %q, want general (moebooru s = safe)", pf.Rating)
 	}
 }
 

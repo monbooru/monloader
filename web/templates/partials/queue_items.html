@@ -1,7 +1,7 @@
 {{define "queue_items"}}{{range .Items}}
 <div class="item-row">
   <span class="item-num" title="{{if .Num}}#{{.Num}}{{else}}{{.PostID}}{{end}}">{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{if .Num}}#{{.Num}}{{else if .PostID}}{{.PostID}}{{else}}source{{end}}</a>{{else}}{{if .Num}}#{{.Num}}{{else if .PostID}}{{.PostID}}{{else}}-{{end}}{{end}}</span>
-  {{if eq .ErrorCode "canceled"}}<span class="o-canceled">canceled</span>{{else}}<span class="o-{{.Outcome}}">{{if .Outcome}}{{.Outcome}}{{else}}{{.Status}}{{end}}</span>{{end}}
+  {{if eq .ErrorCode "canceled"}}<span class="o-canceled">canceled</span>{{else}}<span class="o-{{.Outcome}}">{{if .Outcome}}{{.Outcome}}{{else}}{{.Status}}{{end}}</span>{{if .MergeNote}} <span class="o-merge" title="folded into the existing image">({{.MergeNote}})</span>{{end}}{{end}}
   <span class="item-result">{{if ne .ErrorCode "canceled"}}{{if .SHA256}}<a href="{{$.MonbooruURL}}/i/{{.SHA256}}" target="_blank" rel="noopener">view</a>{{end}}{{if .TagWarnings}}<span class="o-warn" title="{{join .TagWarnings ", "}}">{{len .TagWarnings}} tag warning{{if ne (len .TagWarnings) 1}}s{{end}}</span>{{end}}{{if .ErrorCode}}<span class="o-failed" title="{{.Error}}">{{.ErrorCode}}</span>{{end}}{{end}}</span>
 </div>
 {{end}}{{end}}

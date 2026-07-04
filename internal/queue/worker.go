@@ -56,7 +56,9 @@ func (q *Queue) worker() {
 func (q *Queue) nextJob() (*Job, context.Context, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for len(q.pending) == 0 && !q.closed {
+	// A pause holds even with pending work; Close still wins so shutdown never
+	// blocks on it.
+	for (len(q.pending) == 0 || q.paused) && !q.closed {
 		q.cond.Wait()
 	}
 	if q.closed {

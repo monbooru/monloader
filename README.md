@@ -18,7 +18,7 @@ Paste a direct URL, an image or search from an online booru/gallery or [any site
 - **Pools and manga.** A booru pool's pages import as an ordered collection; a manga or comic gallery bundles into a single `.cbz` for monbooru's reader.
 - **Metadata mapped to monbooru.** Tags by category (artist / character / copyright / meta / ...), rating, and source, normalized across booru families so tags land the way monbooru expects them.
 - **50+ curated sites, plus a fallback.** Profiles for the danbooru, e621, moebooru, gelbooru, and philomena families and a set of manga/comic sites; anything else gallery-dl supports still works through a generic fallback.
-- **Queue management.** Each download shows whether it was added, was already in your library, got skipped, or failed so you can see at a glance what happened to every item. Re-submitting the same URL is safe: nothing gets downloaded or imported twice.
+- **Queue management.** Each download shows whether it was added, was already in your library, got skipped, or failed so you can see at a glance what happened to every item. Re-submitting a search skips posts already fetched, while re-submitting a single post refreshes it, folding any new tags into the image monbooru already holds. Pause and resume downloads globally from the topbar (or the monsender popup) to queue up a batch before it starts.
 
 ---
 

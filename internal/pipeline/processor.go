@@ -54,6 +54,10 @@ var _ queue.Processor = (*Processor)(nil)
 func (p *Processor) Process(ctx context.Context, job *queue.Job) error {
 	snap := job.Snapshot()
 
+	if snap.Kind == queue.KindMetadata {
+		return p.processMetadata(ctx, job, snap)
+	}
+
 	rng, limit := p.rangeFor(snap)
 	res, err := p.runner.Resolve(ctx, snap.URL, rng, false)
 	if err != nil {
@@ -107,6 +111,55 @@ func (p *Processor) Process(ctx context.Context, job *queue.Job) error {
 	return p.fetch(ctx, job, snap, resolved, site, cbz, false, rng)
 }
 
+// processMetadata handles a metadata-only source refetch: it re-reads the job's
+// URL for tags / commentary / notes (no file download) and enriches the
+// monbooru image the job targets. A changed upstream file comes back as a
+// failed item coded hash_mismatch; a rejected or unreachable source fails the
+// same way. The job carries one item so the queue shows a row.
+func (p *Processor) processMetadata(ctx context.Context, job *queue.Job, snap *queue.Job) error {
+	job.SetItems([]queue.Item{{URL: snap.URL, Status: queue.ItemPending}})
+	meta, err := p.runner.FetchMeta(ctx, snap.URL)
+	if err != nil {
+		code := errorCode(err)
+		failItem(job, 0, code, err.Error())
+		// A fetch that never reaches enrich leaves monbooru's detail poll with
+		// no outcome; report it so the pill stops instead of spinning.
+		if rerr := p.client.ReportFetchOutcome(ctx, snap.ImageID, snap.Gallery, code, err.Error()); rerr != nil {
+			logx.Warnf("queue: job %d fetch-status report failed: %v", snap.ID, rerr)
+		}
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	// Label the row's site like a download job's, even though nothing is fetched.
+	job.SetSite(kwdict.String(meta, "category"))
+	pf := p.mapper.Map(meta)
+	payload := monbooru.EnrichPayload{
+		Tags:       pf.Tags,
+		Source:     pf.Source,
+		URL:        snap.URL,
+		SourceMD5:  kwdict.String(meta, "md5"),
+		Verify:     true,
+		Commentary: pf.Commentary,
+		Notes:      toNoteBoxes(pf.Notes),
+	}
+	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, payload)
+	if err != nil {
+		failItem(job, 0, errorCode(err), err.Error())
+		return nil
+	}
+	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemDownloaded })
+	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemUploaded })
+	job.UpdateItem(0, func(it *queue.Item) {
+		it.Status = queue.ItemDone
+		it.Outcome = queue.OutcomeEnriched
+		it.MonbooruID = snap.ImageID
+		it.MergeNote = res.MergeNote
+	})
+	return nil
+}
+
 // processDispatch handles a URL that resolved to Message.Queue handoffs instead
 // of files. A manga/comic title is a series the cbz path cannot bundle as one
 // book; everything else (a forum thread, an archive board) re-resolves deep so
@@ -144,15 +197,7 @@ func (p *Processor) processDispatch(ctx context.Context, job, snap *queue.Job, r
 // children were resolved with -J, so the download follows the same handoffs and
 // bounds the child window with --chapter-range.
 func (p *Processor) fetch(ctx context.Context, job, snap *queue.Job, resolved []gdl.Item, site string, cbz, deep bool, rng string) error {
-	job.SetSite(site)
-	// A successful resolve means we reached the source and it returned posts;
-	// record it for the settings "last reached" indicator.
-	p.siteState.Reached(site, time.Now())
-	gallery := snap.Gallery
-	if gallery == "" {
-		gallery = p.mapper.Gallery(site)
-	}
-	job.SetGallery(gallery)
+	gallery := p.beginJob(job, snap, site)
 
 	// Publish the resolved items before the download so the queue shows the
 	// job's size and per-item rows right away, rather than nothing until the
@@ -179,8 +224,11 @@ func (p *Processor) fetch(ctx context.Context, job, snap *queue.Job, resolved []
 
 	// A cbz bundle bypasses the gallery-dl archive so every page is fetched into
 	// /work and the book always assembles complete, never short from a prior run
-	// having recorded some pages in the archive.
-	downloaded, dlErr := p.runner.Download(ctx, snap.URL, rng, workDir, snap.Force || cbz, onFile, deep)
+	// having recorded some pages in the archive. A single resolved post bypasses
+	// it too: re-submitting one post is a deliberate refresh, so re-download and
+	// re-push to let monbooru merge any new tags instead of an archive skip that
+	// changes nothing. A bulk search keeps the archive, so a re-run stays cheap.
+	downloaded, dlErr := p.runner.Download(ctx, snap.URL, rng, workDir, snap.Force || cbz || len(resolved) == 1, onFile, deep)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -204,6 +252,21 @@ func (p *Processor) fetch(ctx context.Context, job, snap *queue.Job, resolved []
 	}
 	p.processItems(ctx, job, downloaded, len(resolved), gallery, snap.URL, dlErr)
 	return nil
+}
+
+// beginJob stamps a job with the site its resolve discovered and the effective
+// monbooru gallery (per-job or per-site setting, else the default), returning
+// the gallery. A successful resolve means the source was reached and returned
+// posts, so it also feeds the settings "last reached" indicator.
+func (p *Processor) beginJob(job, snap *queue.Job, site string) string {
+	job.SetSite(site)
+	p.siteState.Reached(site, time.Now())
+	gallery := snap.Gallery
+	if gallery == "" {
+		gallery = p.mapper.Gallery(site)
+	}
+	job.SetGallery(gallery)
+	return gallery
 }
 
 // firstWritten returns the first written file in the download results, or nil
@@ -305,9 +368,25 @@ func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded
 			CollectionOrder: order,
 			Via:             pf.Via,
 			Folder:          folder,
+			Commentary:      pf.Commentary,
+			Notes:           toNoteBoxes(pf.Notes),
 		}
 		p.pushOne(ctx, job, i, d.Path, meta, gallery)
 	}
+}
+
+// toNoteBoxes converts the mapper's note boxes into the push client's shape.
+// A pool bundle carries no per-post commentary or notes, so aggregatePool omits
+// them.
+func toNoteBoxes(in []mapping.NoteBox) []monbooru.NoteBox {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]monbooru.NoteBox, len(in))
+	for i, n := range in {
+		out[i] = monbooru.NoteBox{X: n.X, Y: n.Y, W: n.W, H: n.H, Body: n.Body}
+	}
+	return out
 }
 
 // pushOne reads, pushes, and records the outcome of a single downloaded file.
@@ -331,14 +410,7 @@ func (p *Processor) pushOne(ctx context.Context, job *queue.Job, i int, path str
 // chapter count; the full chapter list is known, so only an over-cap title is
 // flagged capped.
 func (p *Processor) processChapters(ctx context.Context, job, snap *queue.Job, res gdl.ResolveResult, limit int) {
-	site := res.Category
-	job.SetSite(site)
-	p.siteState.Reached(site, time.Now())
-	gallery := snap.Gallery
-	if gallery == "" {
-		gallery = p.mapper.Gallery(site)
-	}
-	job.SetGallery(gallery)
+	gallery := p.beginJob(job, snap, res.Category)
 
 	chapters := res.Queue
 	capped := limit > 0 && len(chapters) > limit
@@ -535,6 +607,7 @@ func recordSuccess(job *queue.Job, i int, res *monbooru.Result) {
 		it.Outcome = res.Outcome
 		it.MonbooruID = res.MonbooruID
 		it.TagWarnings = res.TagWarnings
+		it.MergeNote = res.MergeNote
 		if res.SHA256 != "" {
 			it.SHA256 = res.SHA256
 		}
@@ -623,13 +696,14 @@ func bundleKey(resolved []gdl.Item) string {
 }
 
 // orderedPages returns the downloaded files' paths in reading order: by the
-// gallery-dl `num` field, then filename. A pool or manga gallery thus bundles
-// in page order regardless of the order the files were written.
+// per-file ordinal (`num`, or `no` on the sites that use it), then filename. A
+// pool or manga gallery thus bundles in page order regardless of the order the
+// files were written.
 func orderedPages(downloaded []gdl.Downloaded) []string {
 	ordered := make([]gdl.Downloaded, len(downloaded))
 	copy(ordered, downloaded)
 	sort.SliceStable(ordered, func(i, j int) bool {
-		ni, nj := kwdict.Int(ordered[i].Meta, "num"), kwdict.Int(ordered[j].Meta, "num")
+		ni, nj := kwdict.Num(ordered[i].Meta), kwdict.Num(ordered[j].Meta)
 		if ni != nj {
 			return ni < nj
 		}

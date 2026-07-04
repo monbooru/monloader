@@ -83,6 +83,7 @@ type ProbeResult struct {
 // implementation shells out; tests inject a fake.
 type Runner interface {
 	Resolve(ctx context.Context, url, rng string, deep bool) (ResolveResult, error)
+	FetchMeta(ctx context.Context, url string) (map[string]any, error)
 	Download(ctx context.Context, url, rng, workDir string, force bool, onFile func(int, Downloaded), deep bool) ([]Downloaded, error)
 	ListExtractors(ctx context.Context) ([]Extractor, error)
 	Probe(ctx context.Context, exampleURL string) (ProbeResult, error)
@@ -92,14 +93,18 @@ type Runner interface {
 // Tool is the real Runner: it shells out to the gallery-dl binary named in
 // config, passing the managed config file written by WriteManagedConfig.
 type Tool struct {
-	cfg          *config.Config
-	flatTagSites []string
+	cfg           *config.Config
+	flatTagSites  []string
+	notesSites    []string
+	metadataSites []string
 }
 
-// New builds a Tool from config. flatTagSites are the categories whose managed
-// config sets `tags: true`; the resolve pass overrides them off (see Resolve).
-func New(cfg *config.Config, flatTagSites []string) *Tool {
-	return &Tool{cfg: cfg, flatTagSites: flatTagSites}
+// New builds a Tool from config. flatTagSites, metadataSites, and notesSites
+// are the categories whose managed config sets `tags: true`, the `metadata`
+// include, and `notes: true`; the resolve pass overrides them off (see
+// resolveOffArgs).
+func New(cfg *config.Config, flatTagSites, metadataSites, notesSites []string) *Tool {
+	return &Tool{cfg: cfg, flatTagSites: flatTagSites, notesSites: notesSites, metadataSites: metadataSites}
 }
 
 var _ Runner = (*Tool)(nil)
@@ -167,18 +172,23 @@ func rangeArgs(rng string, deep bool) []string {
 	return []string{"--range", rng}
 }
 
-// noTagsArgs turns gallery-dl's `tags: true` off for the flat-tag families on
-// the resolve pass. That pass reads only category/id/num and the post URL, so
-// leaving tags on would fetch every post's page (one slow request each) for tag
-// data only the download pass needs. The command-line override beats the managed
-// config's per-extractor value.
-func noTagsArgs(sites []string) []string {
-	if len(sites) == 0 {
-		return nil
-	}
-	args := make([]string, 0, len(sites)*2)
-	for _, s := range sites {
+// resolveOffArgs turns the managed config's per-post enrichment options off
+// for the resolve pass: `tags: true` for the flat-tag families, `notes: true`
+// for the notes sites, and the danbooru/e621 `metadata` include. That pass
+// reads only category/id/num and the post URL; each option left on would spend
+// extra requests (per post, noted post, or page) for data only the download
+// pass needs. The command-line override beats the managed config's
+// per-extractor value.
+func resolveOffArgs(flatTagSites, metadataSites, notesSites []string) []string {
+	var args []string
+	for _, s := range flatTagSites {
 		args = append(args, "-o", "extractor."+s+".tags=false")
+	}
+	for _, s := range metadataSites {
+		args = append(args, "-o", "extractor."+s+".metadata=false")
+	}
+	for _, s := range notesSites {
+		args = append(args, "-o", "extractor."+s+".notes=false")
 	}
 	return args
 }
@@ -197,14 +207,14 @@ func downloadArgs(workDir, rng, url string, force, deep bool) []string {
 }
 
 // Resolve runs `gallery-dl -j [--range] <url>` and parses the authoritative
-// item list. It turns `tags: true` off for the flat-tag families (see
-// noTagsArgs), whose per-post tag fetch is wasted on this pass. A non-zero exit
+// item list. It turns the per-post enrichment options off (see
+// resolveOffArgs), whose extra fetches are wasted on this pass. A non-zero exit
 // becomes a coded error so the pipeline can attribute the failure. deep runs the
 // resolve-json mode (`-J`) instead, which follows Message.Queue handoffs into
 // their files; the child window is then bounded by --chapter-range, not --range.
 func (t *Tool) Resolve(ctx context.Context, url, rng string, deep bool) (ResolveResult, error) {
 	args := t.configArgs()
-	args = append(args, noTagsArgs(t.flatTagSites)...)
+	args = append(args, resolveOffArgs(t.flatTagSites, t.metadataSites, t.notesSites)...)
 	mode := "-j"
 	if deep {
 		mode = "-J"
@@ -228,6 +238,43 @@ func (t *Tool) Resolve(ctx context.Context, url, rng string, deep bool) (Resolve
 		return ResolveResult{}, cerr
 	}
 	return parseResolve(res.stdout)
+}
+
+// FetchMeta runs `gallery-dl -j <url>` with the enrichment options left ON
+// (unlike Resolve, which turns them off) so the first post's full metadata -
+// tags, commentary, notes, md5 - comes back without downloading the file. It
+// backs the source-refetch path, which maps that metadata and enriches an image
+// monbooru already holds.
+func (t *Tool) FetchMeta(ctx context.Context, url string) (map[string]any, error) {
+	args := t.configArgs()
+	args = append(args, "-j", url)
+	res, err := t.run(ctx, args...)
+	if err != nil {
+		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+	}
+	if res.exitCode != 0 {
+		return nil, classifyError(res.exitCode, res.stderr)
+	}
+	return firstPostMeta(res.stdout)
+}
+
+// firstPostMeta pulls the first resolved post's kwdict out of a -j output
+// through the shared parseResolve, so the two readers of the message tuples
+// cannot drift; a document with no post is a mapping error rather than a
+// silent empty result, and a classified extraction error keeps its code.
+func firstPostMeta(data []byte) (map[string]any, error) {
+	res, err := parseResolve(data)
+	if err != nil {
+		var ce *queue.CodedError
+		if errors.As(err, &ce) {
+			return nil, err
+		}
+		return nil, &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: err.Error()}
+	}
+	if len(res.Items) == 0 {
+		return nil, &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: "no post metadata in gallery-dl output"}
+	}
+	return res.Items[0].Meta, nil
 }
 
 // Download runs `gallery-dl -D <workDir> [--range] <url>` and returns the files

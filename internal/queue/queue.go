@@ -30,12 +30,20 @@ type Options struct {
 	// Root ties a continuation to its originating job's series; zero starts a
 	// new series (the queue fills it with the new job's id).
 	Root int64
+	// Site pre-labels a continuation with its series' site: a window past the
+	// last post resolves no items and never learns one, which would blank the
+	// collapsed row's site cell. A fresh add leaves it for the resolve pass.
+	Site string
 	// Auto chains a "fetch all" run: a capped auto window enqueues the next one
 	// itself until the source runs short.
 	Auto bool
 	// Priority marks a single-post / wait request so it jumps ahead of bulk
 	// jobs in the FIFO.
 	Priority bool
+	// Kind + ImageID mark a metadata-only source refetch (see EnqueueMetadata);
+	// a zero-value Kind is a normal download.
+	Kind    JobKind
+	ImageID int64
 }
 
 // Processor runs a job's full pipeline (resolve, download, map, push). It is
@@ -64,6 +72,10 @@ type Queue struct {
 	maxFinished int
 	nextID      int64
 	closed      bool
+	// paused holds a global download pause: workers finish the job in flight
+	// but pick up no new one while set, so submissions queue behind a manual
+	// resume. It survives no restart (the queue itself is in memory).
+	paused bool
 
 	proc    Processor
 	workers int
@@ -101,6 +113,29 @@ func New(proc Processor, workers, maxFinished int) *Queue {
 // restart.
 func (q *Queue) Workers() int { return q.workers }
 
+// Pause holds the queue: workers finish any job already running but start no
+// new one until Resume. Submissions still enqueue and wait their turn.
+func (q *Queue) Pause() {
+	q.mu.Lock()
+	q.paused = true
+	q.mu.Unlock()
+}
+
+// Resume lifts a pause and wakes the idle workers so pending jobs run.
+func (q *Queue) Resume() {
+	q.mu.Lock()
+	q.paused = false
+	q.cond.Broadcast()
+	q.mu.Unlock()
+}
+
+// Paused reports whether the queue is holding new work.
+func (q *Queue) Paused() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.paused
+}
+
 // Enqueue creates a queued job for url and returns its id. The job jumps
 // ahead of bulk jobs when opts.Priority is set.
 func (q *Queue) Enqueue(url string, opts Options) int64 {
@@ -122,6 +157,14 @@ func (q *Queue) Enqueue(url string, opts Options) int64 {
 	q.cond.Broadcast()
 	q.mu.Unlock()
 	return id
+}
+
+// EnqueueMetadata queues a metadata-only source refetch: it re-reads url for
+// its tags / commentary / notes and enriches monbooru image imageID (already in
+// gallery) instead of downloading a new file. Prioritized so a single refetch
+// does not wait behind a bulk download.
+func (q *Queue) EnqueueMetadata(imageID int64, gallery, url string) int64 {
+	return q.Enqueue(url, Options{Kind: KindMetadata, ImageID: imageID, Gallery: gallery, Priority: true})
 }
 
 // Get returns a snapshot of the job with the given id.
@@ -227,6 +270,7 @@ func (q *Queue) continueFrom(id int64, auto bool) (int64, error) {
 		MaxItems: src.Cap,
 		Offset:   q.seriesHighWater(src.seriesKey()),
 		Root:     src.seriesKey(),
+		Site:     src.Site,
 		Auto:     auto,
 	}), nil
 }
