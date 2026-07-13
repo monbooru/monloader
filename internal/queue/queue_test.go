@@ -698,3 +698,56 @@ func TestWaitTimesOutOnPendingJob(t *testing.T) {
 		t.Errorf("Wait(unknown) = %v, want ErrNotFound", err)
 	}
 }
+
+func TestEnqueueLookupCarriesHashFields(t *testing.T) {
+	q := New(noopProcessor{}, 1, 100) // not started: jobs stay queued
+	id := q.EnqueueLookup(42, "art", BackendBooru, "0123456789abcdef0123456789abcdef", "")
+	j, err := q.Get(id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if j.Kind != KindLookup || j.Backend != BackendBooru || j.ImageID != 42 || j.Gallery != "art" {
+		t.Errorf("lookup job fields wrong: %+v", j.jobState)
+	}
+	if j.URL != "" || j.Subject() != "md5:0123456789abcdef0123456789abcdef" {
+		t.Errorf("subject = %q url = %q, want the md5 form and no url", j.Subject(), j.URL)
+	}
+}
+
+func TestSubjectPrefersURLThenHashes(t *testing.T) {
+	j := newJob(1, "", Options{MD5: "aa", SHA256: "bb"}, time.Now())
+	if got := j.Subject(); got != "md5:aa" {
+		t.Errorf("Subject = %q, want md5:aa", got)
+	}
+	j.SetURL("http://x/posts/1")
+	if got := j.Subject(); got != "http://x/posts/1" {
+		t.Errorf("Subject after SetURL = %q, want the url", got)
+	}
+	sha := newJob(2, "", Options{SHA256: "bb"}, time.Now())
+	if got := sha.Subject(); got != "sha256:bb" {
+		t.Errorf("Subject = %q, want sha256:bb", got)
+	}
+}
+
+func TestHashImportRetryClearsDerivedURL(t *testing.T) {
+	j := newJob(1, "", Options{Kind: KindHashImport, MD5: "aa"}, time.Now())
+	j.SetURL("http://booru/posts/9") // the walk resolved a post
+	j.Fail(ErrCodeDownloadFailed, "boom", time.Now())
+	if err := j.reset(false); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if j.URL != "" || j.MD5 != "aa" || j.Kind != KindHashImport {
+		t.Errorf("retry state: url=%q md5=%q kind=%s, want re-walk from the hash", j.URL, j.MD5, j.Kind)
+	}
+}
+
+func TestLookupRetryKeepsKindAndHash(t *testing.T) {
+	j := newJob(1, "", Options{Kind: KindLookup, Backend: BackendPTR, SHA256: "cc", ImageID: 7}, time.Now())
+	j.Fail(ErrCodeHashNotFound, "nobody has it", time.Now())
+	if err := j.reset(false); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if j.Kind != KindLookup || j.Backend != BackendPTR || j.SHA256 != "cc" || j.ImageID != 7 {
+		t.Errorf("retry dropped lookup identity: %+v", j.jobState)
+	}
+}

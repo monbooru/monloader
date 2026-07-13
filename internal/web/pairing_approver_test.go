@@ -61,6 +61,20 @@ func TestExtensionPairingHandshake(t *testing.T) {
 	}
 }
 
+// The monbooru peer name belongs to the dedicated pairing flow; an extension
+// request under it would mint a phantom "connected to monbooru" state.
+func TestExtPairRequestRejectsReservedApp(t *testing.T) {
+	srv := newWebServer(t, "http://mb", "")
+	h := srv.Handler()
+	for _, app := range []string{"monbooru", "MonBooru"} {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest("POST", "/api/v1/pair/request", strings.NewReader(`{"app":"`+app+`"}`)))
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("app %q code = %d, want 400", app, rr.Code)
+		}
+	}
+}
+
 func TestExtPairingEmptyScopesMintsReadOnly(t *testing.T) {
 	srv := newWebServer(t, "http://mb", "")
 	h := srv.Handler()

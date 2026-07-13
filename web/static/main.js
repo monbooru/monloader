@@ -134,6 +134,13 @@ document.body.addEventListener("click", function (e) {
 // native confirm(). A destructive action carries data-confirm-danger, which
 // reddens the OK button and lands focus on cancel so an accidental Enter does
 // not commit it.
+// The queue poll's trigger filter reads this: swapping #queue-rows while the
+// pop-in is open would detach the button whose confirmed request is pending,
+// and htmx silently drops a request from a detached element.
+function confirmOpen() {
+  var dlg = document.getElementById("confirm-dialog");
+  return !!(dlg && dlg.open);
+}
 function showConfirm(message, onOk, okLabel, danger) {
   var dlg = document.getElementById("confirm-dialog");
   if (!dlg) {
@@ -171,6 +178,24 @@ document.body.addEventListener("htmx:confirm", function (e) {
   showConfirm(e.detail.question, function () { e.detail.issueRequest(true); }, okLabel, danger);
 });
 
+// htmx raises htmx:confirm only for requests it issues itself, so an hx-confirm
+// on a plain form (the ptr delete) would be inert; intercept the native submit
+// and route it through the same pop-in. form.submit() re-fires no submit event,
+// so a confirmed form posts without looping back here.
+document.body.addEventListener("submit", function (e) {
+  var form = e.target;
+  if (!form || !form.hasAttribute || !form.hasAttribute("hx-confirm")) {
+    return;
+  }
+  if (form.hasAttribute("hx-get") || form.hasAttribute("hx-post") ||
+      form.hasAttribute("hx-put") || form.hasAttribute("hx-patch") || form.hasAttribute("hx-delete")) {
+    return;
+  }
+  e.preventDefault();
+  showConfirm(form.getAttribute("hx-confirm"), function () { form.submit(); },
+    form.dataset.confirmOk, form.hasAttribute("data-confirm-danger"));
+});
+
 // The per-token privileges dialog closes itself on a successful save; the
 // scopes cell and the parent flash arrive as OOB swaps.
 document.body.addEventListener("token-saved", function (e) {
@@ -178,4 +203,60 @@ document.body.addEventListener("token-saved", function (e) {
   if (!id) return;
   var dlg = document.getElementById(id);
   if (dlg && dlg.open) dlg.close();
+});
+
+// Lookup-chain dialog: drag a source between or within the two columns; on
+// save the queried column's top-to-bottom order becomes the chain order, so
+// the form serializes the lists into the order-<name> fields the handler
+// already reads.
+var chainDragging = null;
+document.body.addEventListener("dragstart", function (e) {
+  var li = e.target.closest && e.target.closest("#chain-dialog li");
+  if (!li) {
+    return;
+  }
+  chainDragging = li;
+  e.dataTransfer.effectAllowed = "move";
+  // Firefox refuses to start a drag with no payload attached.
+  e.dataTransfer.setData("text/plain", li.dataset.name);
+});
+document.body.addEventListener("dragover", function (e) {
+  if (!chainDragging) {
+    return;
+  }
+  var list = e.target.closest && e.target.closest("#chain-dialog ul");
+  if (!list) {
+    return;
+  }
+  e.preventDefault();
+  var before = null;
+  list.querySelectorAll("li").forEach(function (li) {
+    if (li !== chainDragging && !before && e.clientY < li.getBoundingClientRect().top + li.offsetHeight / 2) {
+      before = li;
+    }
+  });
+  if (before !== chainDragging.nextSibling || chainDragging.parentNode !== list) {
+    list.insertBefore(chainDragging, before);
+  }
+});
+document.body.addEventListener("dragend", function () {
+  chainDragging = null;
+});
+document.addEventListener("DOMContentLoaded", function () {
+  var form = document.getElementById("chain-form");
+  if (!form) {
+    return;
+  }
+  form.addEventListener("submit", function () {
+    form.querySelectorAll("input[name^='order-']").forEach(function (i) { i.remove(); });
+    var add = function (name, value) {
+      var input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "order-" + name;
+      input.value = value;
+      form.appendChild(input);
+    };
+    document.querySelectorAll("#chain-on li").forEach(function (li, i) { add(li.dataset.name, i + 1); });
+    document.querySelectorAll("#chain-off li").forEach(function (li) { add(li.dataset.name, ""); });
+  });
 });

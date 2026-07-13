@@ -1,0 +1,4 @@
+{{define "postbtn"}}<form method="POST" action="{{.Action}}"{{if .Inline}} style="display:inline"{{end}}>
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  <button type="submit"{{if .Title}} title="{{.Title}}"{{end}}>{{.Label}}</button>
+</form>{{end}}

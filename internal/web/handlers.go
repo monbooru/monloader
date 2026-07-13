@@ -16,11 +16,14 @@ import (
 	"github.com/leqwin/monloader/internal/gdl"
 	"github.com/leqwin/monloader/internal/mapping"
 	"github.com/leqwin/monloader/internal/monbooru"
+	"github.com/leqwin/monloader/internal/ptr"
 	"github.com/leqwin/monloader/internal/queue"
 )
 
 func (s *Server) addScreen(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "add", s.base(r, "add", s.booruName()))
+	data := s.base(r, "add", s.titleName())
+	data["Lookup"] = s.lookupStatus()
+	s.render(w, "add", data)
 }
 
 // notFound serves a themed page for unmatched browser routes and a JSON error
@@ -53,14 +56,27 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 	}
 	target := strings.TrimSpace(r.FormValue("url"))
 	if target == "" {
-		flashFragment(w, "err", "enter a URL")
+		flashFragment(w, "err", "enter a URL or an md5 hash")
 		return
 	}
-	if !validURL(target) {
-		flashFragment(w, "err", "enter a valid http(s) URL")
+	// A pasted md5 (bare or prefixed) imports the post carrying that hash via
+	// the lookup walk. A sha256 has no file to import here: it keys a PTR tag
+	// lookup, which runs from monbooru against an image it already holds.
+	if md5, ok := hashImportTarget(target); ok {
+		if len(s.mapper.LookupSites()) == 0 {
+			flashFragment(w, "err", "md5 lookup is off - give a site a chain position in the settings lookup section")
+			return
+		}
+		s.queue.EnqueueHashImport(md5, queue.Options{})
+	} else if looksLikeSHA256(target) {
+		flashFragment(w, "err", sha256AddHint(s.ptr.Enabled()))
 		return
+	} else if !config.IsHTTPURL(target) {
+		flashFragment(w, "err", "enter a valid http(s) URL or an md5 hash")
+		return
+	} else {
+		s.queue.Enqueue(target, queue.Options{})
 	}
-	s.queue.Enqueue(target, queue.Options{})
 	// Refresh the rows in place when adding from the queue screen; redirecting
 	// would reload the page and drop the operator's expand/collapse state.
 	if onQueueScreen(r) {
@@ -72,11 +88,62 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("HX-Redirect", "/queue")
 }
 
-// validURL reports whether s is an absolute http(s) URL with a host - enough to
-// reject typos and non-URLs at the add bar before they reach the queue.
-func validURL(s string) bool {
-	u, err := url.Parse(s)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+// hashImportTarget recognizes an md5 pasted into the add bar - bare or with an
+// "md5:" prefix - returning the lower-cased hash. The prefix lets an operator
+// force the hash reading of an ambiguous string, but a bare 32-hex string is
+// treated as a hash too, since nothing else looks like one.
+func hashImportTarget(s string) (string, bool) {
+	s = strings.TrimPrefix(s, "md5:")
+	if config.IsHexHash(s, 32) {
+		return strings.ToLower(s), true
+	}
+	return "", false
+}
+
+// looksLikeSHA256 reports whether s is a bare 64-hex string, so the add bar can
+// explain that a sha256 cannot be imported rather than failing it as a bad URL.
+func looksLikeSHA256(s string) bool {
+	return config.IsHexHash(strings.TrimPrefix(s, "sha256:"), 64)
+}
+
+// sha256AddHint explains what a sha256 does at the add bar: it is not an import
+// key but a PTR tag-lookup key, used from monbooru. The wording depends on
+// whether the PTR is available to do that lookup at all.
+func sha256AddHint(ptrEnabled bool) string {
+	if ptrEnabled {
+		return "a sha256 is for looking tags up from the PTR (via monbooru), not for importing here - paste an md5 or a URL"
+	}
+	return "a sha256 looks tags up from the PTR, which is not synced yet - enable it on the ptr page"
+}
+
+// lookupStatusView backs the add-bar status line: which chain sources a booru
+// lookup queries, and whether the PTR (sha256) backend is on.
+type lookupStatusView struct {
+	BooruSources []string
+	PTREnabled   bool
+	PTRSyncing   bool
+}
+
+// lookupStatus snapshots the two lookup backends for the add-bar status line.
+// BooruSources lists the chain entries that would actually be queried - a
+// source missing its credential is left out, like the chain leaves it out -
+// with the similarity services marked.
+func (s *Server) lookupStatus() lookupStatusView {
+	st := s.ptr.Status()
+	view := lookupStatusView{
+		PTREnabled: st.Enabled,
+		PTRSyncing: st.Enabled && st.State != ptr.StateReady,
+	}
+	for _, src := range s.mapper.LookupChain() {
+		if src.Similarity {
+			if _, missing := s.sim.Missing(src.Name); !missing {
+				view.BooruSources = append(view.BooruSources, src.Name+" (similarity)")
+			}
+		} else if _, needs := s.siteNeedsCredential(src.Name); !needs {
+			view.BooruSources = append(view.BooruSources, src.Name)
+		}
+	}
+	return view
 }
 
 // onQueueScreen reports whether the htmx request was issued from /queue.
@@ -91,7 +158,7 @@ func flashFragment(w http.ResponseWriter, kind, msg string) {
 }
 
 func (s *Server) queueScreen(w http.ResponseWriter, r *http.Request) {
-	data := s.base(r, "queue", "queue - "+s.booruName())
+	data := s.base(r, "queue", "queue - "+s.titleName())
 	s.fillQueue(r, data)
 	s.render(w, "queue", data)
 }
@@ -113,7 +180,7 @@ func (s *Server) queueRowItems(w http.ResponseWriter, r *http.Request) {
 	jobs, _ := s.queue.List(queue.ListOptions{})
 	for _, g := range groupJobs(jobs) {
 		if g.Root == root {
-			s.render(w, "queue_items_capped", map[string]any{"Items": g.Items, "MonbooruURL": s.monbooruWebBase()})
+			s.render(w, "queue_items_capped", map[string]any{"Items": g.Items, "MonbooruURL": s.monbooruWebBase(), "Site": g.Lead.Site})
 			return
 		}
 	}
@@ -186,6 +253,7 @@ func (s *Server) fillQueue(r *http.Request, data map[string]any) {
 	jobs, _ := s.queue.List(queue.ListOptions{})
 	data["Groups"] = groupJobs(jobs)
 	data["MonbooruURL"] = s.monbooruWebBase()
+	data["Lookup"] = s.lookupStatus()
 }
 
 // monbooruWebBase is the browser-facing monbooru base for image links: the
@@ -205,41 +273,38 @@ func (s *Server) monbooruWebLink() string {
 	return strings.TrimRight(s.cfg.Current().Monbooru.WebURL, "/")
 }
 
+// jobAction parses the row's {id}, runs one queue action on it, and re-renders
+// the rows; a refused action just re-renders (the poll reports the state).
+func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, action func(id int64)) {
+	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
+		action(id)
+	}
+	s.queueRows(w, r)
+}
+
 // retryJob re-queues a finished job. With ?force=1 the re-run bypasses the
 // download-archive so a post already fetched (e.g. since deleted in monbooru)
 // is downloaded again.
 func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
-	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-		_ = s.queue.Retry(id, r.URL.Query().Get("force") == "1")
-	}
-	s.queueRows(w, r)
+	s.jobAction(w, r, func(id int64) { _ = s.queue.Retry(id, r.URL.Query().Get("force") == "1") })
 }
 
 // continueJob enqueues a follow-up job for the next window of a capped job, so
 // the user can keep pulling a truncated search past the per-job cap.
 func (s *Server) continueJob(w http.ResponseWriter, r *http.Request) {
-	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-		_, _ = s.queue.Continue(id)
-	}
-	s.queueRows(w, r)
+	s.jobAction(w, r, func(id int64) { _, _ = s.queue.Continue(id) })
 }
 
 // continueAllJob starts a fetch-all chain: the queue keeps pulling the next
 // window until the capped search runs short, instead of one click per window.
 func (s *Server) continueAllJob(w http.ResponseWriter, r *http.Request) {
-	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-		_, _ = s.queue.ContinueAll(id)
-	}
-	s.queueRows(w, r)
+	s.jobAction(w, r, func(id int64) { _, _ = s.queue.ContinueAll(id) })
 }
 
 // deleteJob cancels or removes a queue row. The row collapses a continue-series,
 // so it clears every window in the series, not just the one clicked.
 func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
-	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-		_ = s.queue.CancelSeries(id)
-	}
-	s.queueRows(w, r)
+	s.jobAction(w, r, func(id int64) { _ = s.queue.CancelSeries(id) })
 }
 
 // clearQueue drops the finished-job history; running and pending jobs stay.
@@ -314,7 +379,7 @@ func (s *Server) siteRows(cats []string, csrf string) []siteRow {
 }
 
 func (s *Server) settingsScreen(w http.ResponseWriter, r *http.Request) {
-	data := s.base(r, "settings", "settings - "+s.booruName())
+	data := s.base(r, "settings", "settings - "+s.titleName())
 	data["Cfg"] = s.cfg.Current()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
@@ -329,6 +394,8 @@ func (s *Server) settingsScreen(w http.ResponseWriter, r *http.Request) {
 	csrf := s.csrfToken(sessionFromContext(r.Context()))
 	data["BooruSites"] = s.siteRows(s.mapper.CuratedByKind(mapping.KindBooru), csrf)
 	data["MangaSites"] = s.siteRows(s.mapper.CuratedByKind(mapping.KindManga), csrf)
+	data["LookupPanel"] = s.lookupPanel(csrf)
+	data["PTRDiskBytes"] = s.ptr.Status().DiskBytes
 	data["Stats"] = s.gatherStats()
 	data["MonbooruPaired"] = s.hasPairedToken("monbooru")
 	data["MonbooruPairWaiting"] = s.getPairAttempt() != nil
@@ -453,15 +520,14 @@ func (s *Server) gatherStats() statsData {
 }
 
 // loginInfo maps a profile auth kind to a settings label and whether a
-// required credential is missing.
+// required credential is missing (per the shared rule the lookup walk also
+// gates on).
 func loginInfo(auth string, site *config.Site) (string, bool) {
 	switch auth {
 	case "api_optional":
 		return "api (opt)", false
-	case "api_required":
-		return "api key", site == nil || site.APIKey == ""
-	case "cookies":
-		return "cookies", site == nil || site.Cookies == ""
+	case "api_required", "cookies":
+		return mapping.RequiredCredential(auth, site)
 	default:
 		return "none", false
 	}
@@ -486,6 +552,10 @@ func sectionForPath(path string) string {
 		return "monbooru"
 	case strings.HasPrefix(path, "/settings/downloader"):
 		return "downloads"
+	case strings.HasPrefix(path, "/settings/lookup"):
+		return "lookup"
+	case strings.HasPrefix(path, "/settings/ptr"):
+		return "ptr"
 	case strings.HasPrefix(path, "/settings/sites"):
 		return "sites"
 	case strings.HasPrefix(path, "/settings/raw"):
@@ -590,6 +660,21 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 	}
 	s.rewriteGDLConfig()
 	s.redirectFlash(w, r, "ok", "site "+name+" saved")
+}
+
+// parseLookupOrder reads one chain-dialog position field: blank or 0 opts the
+// source out, a positive integer is its chain position, anything else is an
+// error.
+func parseLookupOrder(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("lookup order must be a positive number or blank")
+	}
+	return n, nil
 }
 
 // resetSite drops a site's per-site credentials block so it reverts to the

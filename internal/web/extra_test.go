@@ -13,7 +13,9 @@ import (
 	"github.com/leqwin/monloader/internal/gdl"
 	"github.com/leqwin/monloader/internal/mapping"
 	"github.com/leqwin/monloader/internal/monbooru"
+	"github.com/leqwin/monloader/internal/ptr"
 	"github.com/leqwin/monloader/internal/queue"
+	"github.com/leqwin/monloader/internal/similarity"
 	"github.com/leqwin/monloader/internal/sitestate"
 )
 
@@ -27,14 +29,17 @@ func leadJob(id int64, status queue.JobStatus, url string) *queue.Job {
 	return j
 }
 
-// itemsProc drives a job to a created + a failed item so the queue_rows
-// partial exercises the monbooru-link and error-code branches.
+// itemsProc drives a job to a created + an enriched + a failed item so the
+// queue_rows partial exercises the monbooru-link and error-code branches.
 type itemsProc struct{}
 
 func (itemsProc) Process(_ context.Context, job *queue.Job) error {
+	job.SetSite("danbooru")
 	job.SetItems([]queue.Item{
 		{PostID: "a", Num: 1, URL: "https://example.com/posts/100"},
 		{PostID: "b", Num: 2},
+		{PostID: "c", Num: 3},
+		{URL: "https://danbooru.donmai.us/posts/7"},
 	})
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemDownloaded })
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemUploaded })
@@ -48,6 +53,18 @@ func (itemsProc) Process(_ context.Context, job *queue.Job) error {
 		it.Status = queue.ItemFailed
 		it.Outcome = queue.OutcomeFailed
 		it.ErrorCode = queue.ErrCodeMonbooruRejected
+	})
+	job.UpdateItem(2, func(it *queue.Item) { it.Status = queue.ItemDownloaded })
+	job.UpdateItem(2, func(it *queue.Item) { it.Status = queue.ItemUploaded })
+	job.UpdateItem(2, func(it *queue.Item) {
+		it.Status = queue.ItemDone
+		it.Outcome = queue.OutcomeEnriched
+		it.MonbooruID = 9
+	})
+	job.UpdateItem(3, func(it *queue.Item) {
+		it.Status = queue.ItemDone
+		it.Outcome = queue.OutcomeEnriched
+		it.MonbooruID = 9
 	})
 	return nil
 }
@@ -66,7 +83,7 @@ func serverWith(t *testing.T, proc queue.Processor) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := NewServer(provider, filepath.Join(t.TempDir(), "monloader.toml"), q, monbooru.New(provider), fakeRunner{}, mapper, []gdl.Extractor{}, "1.32.1", sitestate.New())
+	srv, err := NewServer(provider, filepath.Join(t.TempDir(), "monloader.toml"), q, monbooru.New(provider), fakeRunner{}, mapper, []gdl.Extractor{}, "1.32.1", sitestate.New(), ptr.NewEngine(cfg.PTR), similarity.New(provider, mapper.CanonicalPostURL, mapper.PostURLFor))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,9 +248,11 @@ func TestQueueRowsRendersItems(t *testing.T) {
 		t.Error("a finished job's items should load lazily, not inline in the poll")
 	}
 
-	// The items load from the per-group endpoint.
+	// The items load from the per-group endpoint. An enriched item has no
+	// sha256, so its view link falls back to the monbooru id; a source link
+	// with no post id is labeled with the job's site.
 	_, items := get(t, ts, "/internal/queue-rows/"+itoa(id)+"/items")
-	for _, want := range []string{"/i/abc123", ">view</a>", `<a href="https://example.com/posts/100"`, "o-created", "o-failed", "monbooru_rejected"} {
+	for _, want := range []string{"/i/abc123", "/images/9", ">view</a>", `<a href="https://example.com/posts/100"`, ">danbooru</a>", "o-created", "o-enriched", "o-failed", "monbooru_rejected"} {
 		if !strings.Contains(items, want) {
 			t.Errorf("items fragment missing %q", want)
 		}
@@ -473,20 +492,20 @@ func TestServeCustomAssets(t *testing.T) {
 }
 
 // Unset branding leaves the bundled assets and the "monloader" wordmark in
-// place across the landing (h1) and topbar (span) surfaces; nothing points at
-// the override route.
+// place across the landing (h1) and topbar (span) surfaces (the browser tab
+// alone capitalizes it); nothing points at the override route.
 func TestBrandingDefaults(t *testing.T) {
 	srv := serverWith(t, noopProc{})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	_, landing := get(t, ts, "/")
-	for _, want := range []string{`href="/static/favicon.png"`, `src="/static/logo.png"`, `<h1>monloader</h1>`, `<title>monloader</title>`} {
+	for _, want := range []string{`href="/static/favicon.png"`, `src="/static/logo.png"`, `<h1>monloader</h1>`, `<title>Monloader</title>`} {
 		if !strings.Contains(landing, want) {
 			t.Errorf("default landing page missing %q", want)
 		}
 	}
 	_, queue := get(t, ts, "/queue")
-	for _, want := range []string{`src="/static/logo.png"`, `<span>monloader</span>`, `<title>queue - monloader</title>`} {
+	for _, want := range []string{`src="/static/logo.png"`, `<span>monloader</span>`, `<title>queue - Monloader</title>`} {
 		if !strings.Contains(queue, want) {
 			t.Errorf("default queue page missing %q", want)
 		}
@@ -581,11 +600,7 @@ func TestLoginPageRedirectsWhenNoPassword(t *testing.T) {
 }
 
 func TestLogoutClearsSession(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "secret")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "secret")
 
 	// Establish a session.
 	id, err := srv.sessions.New(7)

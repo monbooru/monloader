@@ -8,7 +8,6 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -69,6 +68,16 @@ type fakeRunner struct {
 	// fetchMeta / fetchErr back FetchMeta (the metadata-only source refetch).
 	fetchMeta map[string]any
 	fetchErr  error
+	// fetchByURL routes FetchMeta by exact URL (the lookup walk hits one URL
+	// per site); a URL not in the map falls back to fetchMeta / fetchErr.
+	// gotFetchURLs records the calls so a test can assert the walk order.
+	fetchByURL   map[string]fetchResp
+	gotFetchURLs []string
+}
+
+type fetchResp struct {
+	meta map[string]any
+	err  error
 }
 
 func (f *fakeRunner) Resolve(ctx context.Context, url, rng string, deep bool) (gdl.ResolveResult, error) {
@@ -91,6 +100,10 @@ func (f *fakeRunner) Resolve(ctx context.Context, url, rng string, deep bool) (g
 }
 
 func (f *fakeRunner) FetchMeta(ctx context.Context, url string) (map[string]any, error) {
+	f.gotFetchURLs = append(f.gotFetchURLs, url)
+	if r, ok := f.fetchByURL[url]; ok {
+		return r.meta, r.err
+	}
 	if f.fetchErr != nil {
 		return nil, f.fetchErr
 	}
@@ -286,19 +299,7 @@ func directlinkItem() gdl.Item {
 
 func testEnv(t *testing.T, fake gdl.Runner, handler http.HandlerFunc) (*queue.Queue, func()) {
 	t.Helper()
-	srv := httptest.NewServer(handler)
-	cfg := config.Default()
-	cfg.Monbooru.APIURL = srv.URL
-	cfg.Monbooru.APIToken = "tok"
-	mapper, err := mapping.New(config.NewProvider(cfg))
-	if err != nil {
-		t.Fatalf("mapper: %v", err)
-	}
-	proc := New(fake, mapper, monbooru.New(config.NewProvider(cfg)), config.NewProvider(cfg), t.TempDir(), sitestate.New())
-	q := queue.New(proc, 1, 100)
-	q.Start()
-	cleanup := func() { q.Close(); srv.Close() }
-	return q, cleanup
+	return lookupEnvCfg(t, fake, handler, config.Default(), nil, nil)
 }
 
 func waitJob(t *testing.T, q *queue.Queue, id int64) *queue.Job {
@@ -879,7 +880,7 @@ func TestProcessRecordsSiteReach(t *testing.T) {
 		t.Fatal(err)
 	}
 	tracker := sitestate.New()
-	proc := New(fake, mapper, monbooru.New(config.NewProvider(cfg)), config.NewProvider(cfg), t.TempDir(), tracker)
+	proc := New(fake, mapper, monbooru.New(config.NewProvider(cfg)), config.NewProvider(cfg), t.TempDir(), tracker, nil, nil)
 	q := queue.New(proc, 1, 100)
 	q.Start()
 	defer q.Close()

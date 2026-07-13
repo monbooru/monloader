@@ -3,6 +3,7 @@ package mapping
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/leqwin/monloader/internal/config"
@@ -18,6 +19,26 @@ func newMapper(t *testing.T, cfg *config.Config) *Mapper {
 		t.Fatalf("New mapper: %v", err)
 	}
 	return m
+}
+
+// assertTags fails for each tag missing from got.
+func assertTags(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	for _, tag := range want {
+		if !slices.Contains(got, tag) {
+			t.Errorf("missing %q in %v", tag, got)
+		}
+	}
+}
+
+// assertNoTags fails for each tag unexpectedly present in got.
+func assertNoTags(t *testing.T, got []string, reject ...string) {
+	t.Helper()
+	for _, tag := range reject {
+		if slices.Contains(got, tag) {
+			t.Errorf("unexpected %q in %v", tag, got)
+		}
+	}
 }
 
 func TestMapDanbooruPost(t *testing.T) {
@@ -82,6 +103,40 @@ func TestMapDanbooruCommentaryFallsBackToOriginal(t *testing.T) {
 	})
 	if pf.Commentary != "only the original" {
 		t.Errorf("commentary = %q, want the original description", pf.Commentary)
+	}
+}
+
+// The fallback is per field: a translated title alone must not discard a
+// present original description.
+func TestMapDanbooruCommentaryTitleOnlyTranslationKeepsBody(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "danbooru",
+		"id":       float64(1),
+		"artist_commentary": map[string]any{
+			"translated_title":     "Title",
+			"original_description": "the original body",
+		},
+	})
+	if pf.Commentary != "Title\n\nthe original body" {
+		t.Errorf("commentary = %q, want the title over the original body", pf.Commentary)
+	}
+}
+
+// Entity-encoded markup must be stripped like literal markup: decoding after
+// the strip would hand monbooru live tags in a field promised to be plain.
+func TestMapCommentaryStripsEntityEncodedMarkup(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "danbooru",
+		"id":       float64(1),
+		"artist_commentary": map[string]any{
+			"translated_description": "see &lt;img src=x onerror=alert(1)&gt; here &amp; now",
+		},
+	})
+	if strings.ContainsAny(pf.Commentary, "<>") {
+		t.Errorf("commentary still carries markup: %q", pf.Commentary)
+	}
+	if !strings.Contains(pf.Commentary, "&") {
+		t.Errorf("commentary should keep the decoded ampersand: %q", pf.Commentary)
 	}
 }
 
@@ -185,6 +240,90 @@ func TestMapGenericNotesDropped(t *testing.T) {
 	}
 }
 
+func TestMapDanbooruOriginalSource(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "danbooru",
+		"id":       float64(1),
+		"source":   "http://tksn.web.infoseek.co.jp/",
+	})
+	if pf.Original != "http://tksn.web.infoseek.co.jp/" {
+		t.Errorf("original = %q, want the post's source field", pf.Original)
+	}
+}
+
+func TestMapE621OriginalSources(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "e621",
+		"id":       float64(1),
+		"sources":  []any{"https://www.pixiv.net/artworks/1", " https://twitter.com/a/2 ", ""},
+	})
+	if pf.Original != "https://www.pixiv.net/artworks/1\nhttps://twitter.com/a/2" {
+		t.Errorf("original = %q, want the sources list newline-joined", pf.Original)
+	}
+}
+
+func TestMapDanbooruParentURL(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category":  "danbooru",
+		"id":        float64(2),
+		"parent_id": float64(11514474),
+	})
+	if pf.ParentURL != "https://danbooru.donmai.us/posts/11514474" {
+		t.Errorf("parent url = %q, want the parent's canonical post page", pf.ParentURL)
+	}
+}
+
+func TestMapE621ParentURLFromRelationships(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category":      "e621",
+		"id":            float64(2),
+		"relationships": map[string]any{"parent_id": float64(9)},
+	})
+	if pf.ParentURL != "https://e621.net/posts/9" {
+		t.Errorf("parent url = %q, want the nested relationships parent", pf.ParentURL)
+	}
+}
+
+func TestMapParentIDZeroOrAbsentMeansNone(t *testing.T) {
+	// gelbooru marks "no parent" with 0 rather than null.
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category":  "gelbooru",
+		"id":        float64(2),
+		"parent_id": float64(0),
+	})
+	if pf.ParentURL != "" {
+		t.Errorf("parent url = %q, want empty for parent_id 0", pf.ParentURL)
+	}
+	pf = newMapper(t, nil).Map(map[string]any{
+		"category": "danbooru",
+		"id":       float64(2),
+	})
+	if pf.ParentURL != "" {
+		t.Errorf("parent url = %q, want empty when no parent field", pf.ParentURL)
+	}
+}
+
+func TestMapPhilomenaOriginalSourceURL(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category":   "derpibooru",
+		"id":         float64(1),
+		"source_url": "https://example.com/art/3",
+	})
+	if pf.Original != "https://example.com/art/3" {
+		t.Errorf("original = %q, want source_url", pf.Original)
+	}
+}
+
+func TestMapOriginalAbsent(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "danbooru",
+		"id":       float64(1),
+	})
+	if pf.Original != "" {
+		t.Errorf("original = %q, want empty when the post declares none", pf.Original)
+	}
+}
+
 func TestMapE621Description(t *testing.T) {
 	pf := newMapper(t, nil).Map(map[string]any{
 		"category":     "e621",
@@ -254,11 +393,7 @@ func TestMapMoebooruStringTags(t *testing.T) {
 		t.Errorf("konachan rating q = %q, want questionable", pf.Rating)
 	}
 	// Tag fields arrive as space-joined strings and must still split.
-	for _, tag := range []string{"landscape", "scenery", "artist:scenicartist", "copyright:original"} {
-		if !slices.Contains(pf.Tags, tag) {
-			t.Errorf("missing %q in %v", tag, pf.Tags)
-		}
-	}
+	assertTags(t, pf.Tags, "landscape", "scenery", "artist:scenicartist", "copyright:original")
 	if u := m.PostURL(meta); u != "https://konachan.com/post/show/345678" {
 		t.Errorf("url = %q", u)
 	}
@@ -364,11 +499,7 @@ func TestMapNhentaiGallery(t *testing.T) {
 		"meta:doujinshi",  // type -> meta
 		"rating:explicit", // adult site with no source rating defaults to explicit
 	}
-	for _, tag := range want {
-		if !slices.Contains(pf.Tags, tag) {
-			t.Errorf("missing %q in %v", tag, pf.Tags)
-		}
-	}
+	assertTags(t, pf.Tags, want...)
 	if pf.Rating != RatingExplicit {
 		t.Errorf("nhentai rating = %q, want explicit (adult default)", pf.Rating)
 	}
@@ -417,11 +548,7 @@ func TestMapMangadexGallery(t *testing.T) {
 		"romance", "slice_of_life", // flat tags -> general, normalized
 		"rating:questionable",
 	}
-	for _, tag := range want {
-		if !slices.Contains(pf.Tags, tag) {
-			t.Errorf("missing %q in %v", tag, pf.Tags)
-		}
-	}
+	assertTags(t, pf.Tags, want...)
 }
 
 func TestDefaultRatingOnlyForAdultSites(t *testing.T) {
@@ -451,11 +578,21 @@ func TestMapMangaFieldVariants(t *testing.T) {
 		"parodies":  []any{"some_series"},
 		"character": []any{"hero"},
 	})
-	for _, tag := range []string{"artist:writer", "artist:penciller", "action", "romance", "copyright:some_series", "character:hero"} {
-		if !slices.Contains(pf.Tags, tag) {
-			t.Errorf("missing %q in %v", tag, pf.Tags)
-		}
-	}
+	assertTags(t, pf.Tags, "artist:writer", "artist:penciller", "action", "romance", "copyright:some_series", "character:hero")
+}
+
+// Several manga extractors (dynasty-scans) emit their credit fields as a
+// single string; a multi-word name must stay one tag, and a comma-joined
+// string still names several.
+func TestMapMangaStringCredits(t *testing.T) {
+	pf := newMapper(t, nil).Map(map[string]any{
+		"category": "dynastyscans",
+		"author":   "Nakatani Nio",
+		"group":    "4s",
+		"parody":   "Series One, Series Two",
+	})
+	assertTags(t, pf.Tags, "artist:nakatani_nio", "artist:4s", "copyright:series_one", "copyright:series_two")
+	assertNoTags(t, pf.Tags, "artist:nakatani", "artist:nio")
 }
 
 func TestNamespacedFlatTags(t *testing.T) {
@@ -473,11 +610,7 @@ func TestNamespacedFlatTags(t *testing.T) {
 			"Source:Pixiv", // source -> meta
 		},
 	})
-	for _, tag := range []string{"artist:some_artist", "copyright:some_franchise", "character:some_hero", "hakama", "meta:pixiv"} {
-		if !slices.Contains(pf.Tags, tag) {
-			t.Errorf("missing %q in %v", tag, pf.Tags)
-		}
-	}
+	assertTags(t, pf.Tags, "artist:some_artist", "copyright:some_franchise", "character:some_hero", "hakama", "meta:pixiv")
 	// An unrecognized namespace keeps the tag verbatim (no split on an incidental
 	// colon), still normalized.
 	pf2 := newMapper(t, nil).Map(map[string]any{"category": "zerochan", "id": float64(1), "tags": []any{"OS:Windows"}})
@@ -510,11 +643,7 @@ func TestMapZerochanNormalizesSpacedTags(t *testing.T) {
 		"meta:fanart", // Source -> meta
 		"meta:pixiv",
 	}
-	for _, tag := range want {
-		if !slices.Contains(pf.Tags, tag) {
-			t.Errorf("missing %q in %v", tag, pf.Tags)
-		}
-	}
+	assertTags(t, pf.Tags, want...)
 	if u := m.PostURL(meta); u != "https://www.zerochan.net/7654321" {
 		t.Errorf("url = %q", u)
 	}
@@ -536,11 +665,7 @@ func TestMapExhentaiNormalizesSpacedTags(t *testing.T) {
 		"ai_generated", "rough_translation", // tags_other
 		"rating:explicit", // adult default; the numeric "1.64" is not a content rating
 	}
-	for _, tag := range want {
-		if !slices.Contains(pf.Tags, tag) {
-			t.Errorf("missing %q in %v", tag, pf.Tags)
-		}
-	}
+	assertTags(t, pf.Tags, want...)
 	if pf.Rating != RatingExplicit {
 		t.Errorf("rating = %q, want explicit", pf.Rating)
 	}
@@ -603,11 +728,7 @@ func TestMapPhilomenaRatingFromTag(t *testing.T) {
 	if slices.Contains(pf.Tags, "safe") {
 		t.Errorf("the rating tag should not also be a content tag: %v", pf.Tags)
 	}
-	for _, tag := range []string{"solo", "pony", "spread_wings", "gradient_background", "artist:some_artist"} {
-		if !slices.Contains(pf.Tags, tag) {
-			t.Errorf("missing %q in %v", tag, pf.Tags)
-		}
-	}
+	assertTags(t, pf.Tags, "solo", "pony", "spread_wings", "gradient_background", "artist:some_artist")
 	if u := m.PostURL(meta); u != "https://twibooru.org/7654321" {
 		t.Errorf("url = %q", u)
 	}
@@ -663,11 +784,7 @@ func TestGenericFallback(t *testing.T) {
 	if pf.Rating != RatingGeneral {
 		t.Errorf("generic s = %q, want general", pf.Rating)
 	}
-	for _, tag := range []string{"foo", "artist:bar", "baz", "rating:general"} {
-		if !slices.Contains(pf.Tags, tag) {
-			t.Errorf("missing %q in %v", tag, pf.Tags)
-		}
-	}
+	assertTags(t, pf.Tags, "foo", "artist:bar", "baz", "rating:general")
 }
 
 func TestMapDirectlink(t *testing.T) {

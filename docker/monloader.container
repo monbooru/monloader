@@ -8,6 +8,7 @@ NoNewPrivileges=true
 DropCapability=ALL
 
 Volume=/path/to/monloader/config:/config
+# Volume=/path/to/monloader/ptr:/ptr
 
 Environment=MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8081
 Environment=MONLOADER_MONBOORU_API_URL=http://monbooru:8080

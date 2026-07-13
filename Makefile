@@ -1,4 +1,4 @@
-.PHONY: build test lint coverage
+.PHONY: build test lint coverage ptr-smoke
 
 VERSION  := $(shell cat VERSION.md 2>/dev/null | tr -d '[:space:]')
 REPO_URL := $(shell cat REPOSITORY.md 2>/dev/null | tr -d '[:space:]')
@@ -16,3 +16,7 @@ lint:
 coverage:
 	go test -coverprofile=coverage.out $(shell go list ./... | grep -v '/cmd/')
 	go tool cover -html=coverage.out -o coverage.html
+
+# Live smoke test against the real Hydrus PTR 
+ptr-smoke:
+	go test -tags ptrsmoke -run TestPTRSmoke -v ./internal/ptr

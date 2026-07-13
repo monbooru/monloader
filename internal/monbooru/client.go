@@ -26,12 +26,15 @@ type PushMeta struct {
 	Filename        string
 	Tags            []string
 	Source          string
+	PostID          string
 	URL             string
 	Collection      string
 	CollectionOrder int
 	Via             string
 	Folder          string
 	Commentary      string
+	Original        string
+	ParentURL       string
 	Notes           []NoteBox
 }
 
@@ -156,10 +159,14 @@ func (c *Client) PushImageFile(ctx context.Context, path string, meta PushMeta, 
 type EnrichPayload struct {
 	Tags       []string  `json:"tags"`
 	Source     string    `json:"source"`
+	PostID     string    `json:"post_id,omitempty"`
 	URL        string    `json:"url"`
 	SourceMD5  string    `json:"source_md5,omitempty"`
 	Verify     bool      `json:"verify"`
+	Similarity float64   `json:"similarity,omitempty"`
 	Commentary string    `json:"commentary,omitempty"`
+	Original   string    `json:"original,omitempty"`
+	ParentURL  string    `json:"parent_url,omitempty"`
 	Notes      []NoteBox `json:"notes,omitempty"`
 }
 
@@ -172,6 +179,12 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 	if gallery != "" {
 		endpoint += "?gallery=" + url.QueryEscape(gallery)
 	}
+	payload.Source = trimToLen(payload.Source, maxSourceLen)
+	payload.PostID = trimToLen(payload.PostID, maxPostIDLen)
+	payload.URL = trimToLen(payload.URL, maxURLLen)
+	payload.Commentary = trimToLen(payload.Commentary, maxCommentaryLen)
+	payload.Original = trimToLen(payload.Original, maxOriginalLen)
+	payload.ParentURL = trimToLen(payload.ParentURL, maxURLLen)
 	buf, err := json.Marshal(payload)
 	if err != nil {
 		return nil, &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: err.Error()}
@@ -222,6 +235,24 @@ func (c *Client) ReportFetchOutcome(ctx context.Context, imageID int64, gallery,
 		return fmt.Errorf("monbooru fetch-status returned %s", resp.Status)
 	}
 	return nil
+}
+
+// FetchThumbnail downloads an image's static thumbnail - the downscaled query
+// bytes a similarity lookup uploads, so the original never leaves the LAN. A
+// thumbnail is a few KB, comfortably inside do()'s bounded body read.
+func (c *Client) FetchThumbnail(ctx context.Context, imageID int64, gallery string) ([]byte, error) {
+	endpoint := c.base() + "/api/v1/images/" + strconv.FormatInt(imageID, 10) + "/thumbnail"
+	if gallery != "" {
+		endpoint += "?gallery=" + url.QueryEscape(gallery)
+	}
+	resp, body, err := c.do(ctx, http.MethodGet, endpoint, "", nil, c.token())
+	if err != nil {
+		return nil, transportError(ctx, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: apiErrMessage(body, resp.Status)}
+	}
+	return body, nil
 }
 
 // imagesEndpoint is the push URL with the optional gallery selector.
@@ -315,8 +346,10 @@ func writeFilePart(w *multipart.Writer, filename string, src io.Reader) error {
 // trim before the push - a directlink's submitted URL can blow past 2048.
 const (
 	maxSourceLen     = 200
+	maxPostIDLen     = 64
 	maxURLLen        = 2048
 	maxCommentaryLen = 10000
+	maxOriginalLen   = 2048
 )
 
 // trimToLen caps s to max bytes without splitting a multibyte rune.
@@ -349,11 +382,20 @@ func writeMetaFields(w *multipart.Writer, meta PushMeta) error {
 	if meta.Source != "" {
 		_ = w.WriteField("source", trimToLen(meta.Source, maxSourceLen))
 	}
+	if meta.PostID != "" {
+		_ = w.WriteField("post_id", trimToLen(meta.PostID, maxPostIDLen))
+	}
 	if meta.URL != "" {
 		_ = w.WriteField("url", trimToLen(meta.URL, maxURLLen))
 	}
 	if meta.Commentary != "" {
 		_ = w.WriteField("commentary", trimToLen(meta.Commentary, maxCommentaryLen))
+	}
+	if meta.Original != "" {
+		_ = w.WriteField("original", trimToLen(meta.Original, maxOriginalLen))
+	}
+	if meta.ParentURL != "" {
+		_ = w.WriteField("parent_url", trimToLen(meta.ParentURL, maxURLLen))
 	}
 	if len(meta.Notes) > 0 {
 		if notesJSON, err := json.Marshal(meta.Notes); err == nil {

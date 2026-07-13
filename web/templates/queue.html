@@ -1,34 +1,37 @@
 {{define "queue"}}{{template "doc_head" .}}
 {{template "topbar" .}}
 {{template "monbooru_banner" .}}
+<div class="content-scroll">
 <main id="content" class="content-wide">
   <form class="add-bar" hx-post="/" hx-target="#add-flash" hx-swap="innerHTML"
         hx-on::after-request="if (event.detail.xhr.getResponseHeader('HX-Retarget')) this.reset()">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="add-row">
       <div class="search-input-wrap">
-        <input type="text" name="url" autocomplete="off" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}} placeholder="add a url">
+        <input type="text" name="url" autocomplete="off" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}} placeholder="paste a booru URL or an md5 hash - post, pool, tag search, artist...">
       </div>
       <button type="submit" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}}>download</button>
       <button type="button" hx-post="/queue/clear" hx-target="#queue-rows" hx-swap="innerHTML"
-              hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}' hx-confirm="clear recent history?"
+              hx-confirm="clear recent history?"
               data-confirm-ok="clear" data-confirm-danger>clear</button>
     </div>
   </form>
+  {{template "lookup_status" .}}
   <div id="add-flash" class="hint"></div>
   <div class="table-scroll">
   <table class="queue-table">
     <thead>
       <tr><th>status</th><th>url</th><th>site</th><th>gallery</th><th>summary</th><th></th></tr>
     </thead>
-    <!-- The action buttons in the rows inherit the target, swap, and CSRF
-         header from here, so each carries only its verb. -->
-    <tbody id="queue-rows" hx-get="/internal/queue-rows" hx-trigger="load, every 2s"
-           hx-target="#queue-rows" hx-swap="innerHTML" hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'>
+    <!-- The action buttons in the rows inherit the target and swap from
+         here (and the CSRF header from body), so each carries only its verb. -->
+    <tbody id="queue-rows" hx-get="/internal/queue-rows" hx-trigger="load, every 2s [!confirmOpen()]"
+           hx-target="#queue-rows" hx-swap="innerHTML">
       {{template "queue_rows" .}}
     </tbody>
   </table>
   </div>
 </main>
+</div>
 {{template "footer" .}}
 {{template "doc_foot" .}}{{end}}

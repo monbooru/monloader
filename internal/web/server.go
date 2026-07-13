@@ -18,7 +18,9 @@ import (
 	"github.com/leqwin/monloader/internal/logx"
 	"github.com/leqwin/monloader/internal/mapping"
 	"github.com/leqwin/monloader/internal/monbooru"
+	"github.com/leqwin/monloader/internal/ptr"
 	"github.com/leqwin/monloader/internal/queue"
+	"github.com/leqwin/monloader/internal/similarity"
 	"github.com/leqwin/monloader/internal/sitestate"
 	webFS "github.com/leqwin/monloader/web"
 )
@@ -47,6 +49,8 @@ type Server struct {
 	extractors []gdl.Extractor
 	gdlVersion string
 	siteState  *sitestate.Tracker
+	ptr        ptrEngine
+	sim        simService
 
 	// statusMu guards the cached footer-light probe result. base() seeds each
 	// page's initial render from it so the light shows its last known state at
@@ -67,7 +71,7 @@ type Server struct {
 // result and gdlVersion the bundled gallery-dl version (both feed the API and
 // settings); siteState is the shared "last reached" tracker the settings sites
 // table reads and the test probe writes (the pipeline writes it on a fetch).
-func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, extractors []gdl.Extractor, gdlVersion string, siteState *sitestate.Tracker) (*Server, error) {
+func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, extractors []gdl.Extractor, gdlVersion string, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client) (*Server, error) {
 	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(webFS.FS, "templates/*.html", "templates/partials/*.html")
 	if err != nil {
 		return nil, err
@@ -87,6 +91,8 @@ func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *
 		extractors: extractors,
 		gdlVersion: gdlVersion,
 		siteState:  siteState,
+		ptr:        ptrEngine,
+		sim:        sim,
 		sessions:   NewSessionStore(),
 		csrfSecret: mustRandBytes(32),
 		tmpl:       tmpl,
@@ -122,14 +128,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /internal/monbooru-status", s.monbooruStatus)
 	mux.HandleFunc("GET /internal/queue-pause", s.queuePauseToggle)
 
+	mux.HandleFunc("GET /ptr", s.ptrScreen)
+	mux.HandleFunc("GET /internal/ptr-status", s.ptrStatusFragment)
+	mux.HandleFunc("POST /ptr/enable", s.ptrEnable)
+	mux.HandleFunc("POST /ptr/pause", s.ptrPause)
+	mux.HandleFunc("POST /ptr/resume", s.ptrResume)
+	mux.HandleFunc("POST /ptr/retry", s.ptrRetry)
+
 	mux.HandleFunc("GET /settings", s.settingsScreen)
 	mux.HandleFunc("POST /settings/monbooru", s.saveMonbooru)
 	mux.HandleFunc("POST /settings/monbooru/test", s.testMonbooru)
 	mux.HandleFunc("POST /settings/downloader", s.saveDownloader)
+	mux.HandleFunc("POST /settings/lookup", s.saveLookup)
+	mux.HandleFunc("POST /settings/lookup/chain", s.saveLookupChain)
+	mux.HandleFunc("POST /settings/lookup/test/{source}", s.testLookupSource)
 	mux.HandleFunc("POST /settings/sites", s.saveSite)
 	mux.HandleFunc("POST /settings/sites/{name}/reset", s.resetSite)
 	mux.HandleFunc("POST /settings/sites/{name}/test", s.testSite)
 	mux.HandleFunc("POST /settings/raw", s.saveRaw)
+	mux.HandleFunc("POST /settings/ptr", s.savePTR)
+	mux.HandleFunc("POST /settings/ptr/delete", s.ptrDelete)
 
 	mux.HandleFunc("POST /settings/auth/password", s.settingsPasswordPost)
 	mux.HandleFunc("POST /settings/auth/remove-password", s.settingsRemovePasswordPost)
@@ -156,7 +174,11 @@ func (s *Server) Handler() http.Handler {
 	// precedence for the add screen.
 	mux.HandleFunc("GET /", s.notFound)
 
-	api.New(s.queue, s.runner, s.mapper, s.cfg, s.extractors, Version, s.gdlVersion, s.siteState).Mount(mux)
+	var ptrSvc api.PTRService
+	if s.ptr != nil {
+		ptrSvc = s.ptr
+	}
+	api.New(s.queue, s.runner, s.mapper, s.cfg, s.extractors, Version, s.gdlVersion, s.siteState, ptrSvc).Mount(mux)
 
 	var h http.Handler = mux
 	h = s.CSRFMiddleware(h)
@@ -180,6 +202,8 @@ func templateFuncs() template.FuncMap {
 		},
 		"humanBytes":  humanBytes,
 		"humanSince":  humanSince,
+		"humanDue":    humanDue,
+		"humanDate":   humanDate,
 		"stampUTC":    stampUTC,
 		"join":        strings.Join,
 		"itemCap":     func() int { return maxQueueItems },
@@ -268,7 +292,7 @@ func humanBytes(b int64) string {
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/internal/queue-rows" || r.URL.Path == "/internal/monbooru-status" || r.URL.Path == "/internal/queue-pause" || r.URL.Path == "/health" {
+		if r.URL.Path == "/internal/queue-rows" || r.URL.Path == "/internal/monbooru-status" || r.URL.Path == "/internal/queue-pause" || r.URL.Path == "/internal/ptr-status" || r.URL.Path == "/health" {
 			logx.Debugf("%s %s", r.Method, r.URL.Path)
 		} else {
 			logx.Infof("%s %s", r.Method, r.URL.Path)
@@ -322,27 +346,28 @@ func (s *Server) render(w http.ResponseWriter, name string, data any) {
 	_, _ = buf.WriteTo(w)
 }
 
-func (s *Server) serveCustomCSS(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Current().Server.CustomCSS == "" {
+// serveConfigured serves an operator-supplied file; an empty config 404s so
+// the layout falls back to the bundled asset.
+func serveConfigured(w http.ResponseWriter, r *http.Request, path string) {
+	if path == "" {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, s.cfg.Current().Server.CustomCSS)
+	http.ServeFile(w, r, path)
+}
+
+func (s *Server) serveCustomCSS(w http.ResponseWriter, r *http.Request) {
+	serveConfigured(w, r, s.cfg.Current().Server.CustomCSS)
 }
 
 // serveCustomLogo serves the operator-supplied logo/favicon pointed at by
-// server.logo. Same shape as serveCustomCSS - an empty config 404s so the
-// layout falls back to the bundled logo and favicon.
+// server.logo.
 func (s *Server) serveCustomLogo(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Current().Server.BooruLogo == "" {
-		http.NotFound(w, r)
-		return
-	}
-	http.ServeFile(w, r, s.cfg.Current().Server.BooruLogo)
+	serveConfigured(w, r, s.cfg.Current().Server.BooruLogo)
 }
 
 // booruName resolves server.name with a "monloader" fallback so every
-// title and wordmark callsite reads one source of truth.
+// wordmark callsite reads one source of truth.
 func (s *Server) booruName() string {
 	if name := s.cfg.Current().Server.BooruName; name != "" {
 		return name
@@ -350,24 +375,28 @@ func (s *Server) booruName() string {
 	return "monloader"
 }
 
-// booruLogoURL points the topbar logo at /custom.logo when an override is
-// configured, the bundled logo otherwise. A configured server.logo backs
-// both surfaces; only the unset fallback differs from booruFaviconURL.
-func (s *Server) booruLogoURL() string {
-	if s.cfg.Current().Server.BooruLogo != "" {
-		return "/custom.logo"
+// titleName is booruName for the browser tab: the stock name is capitalized
+// there, while an operator-set server.name is used verbatim.
+func (s *Server) titleName() string {
+	if name := s.cfg.Current().Server.BooruName; name != "" {
+		return name
 	}
-	return "/static/logo.png"
+	return "Monloader"
 }
 
-// booruFaviconURL points the favicon link at /custom.logo when an override
-// is configured, the bundled favicon otherwise.
-func (s *Server) booruFaviconURL() string {
+// configuredAsset points at /custom.logo when a server.logo override is
+// configured, the given bundled asset otherwise. One override backs both the
+// topbar logo and the favicon; only the unset fallback differs.
+func (s *Server) configuredAsset(fallback string) string {
 	if s.cfg.Current().Server.BooruLogo != "" {
 		return "/custom.logo"
 	}
-	return "/static/favicon.png"
+	return fallback
 }
+
+func (s *Server) booruLogoURL() string { return s.configuredAsset("/static/logo.png") }
+
+func (s *Server) booruFaviconURL() string { return s.configuredAsset("/static/favicon.png") }
 
 // updateConfig applies fn to a fresh copy of the running config and, once it is
 // persisted, publishes that copy through the provider. The current snapshot is

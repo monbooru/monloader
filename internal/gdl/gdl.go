@@ -181,15 +181,14 @@ func rangeArgs(rng string, deep bool) []string {
 // per-extractor value.
 func resolveOffArgs(flatTagSites, metadataSites, notesSites []string) []string {
 	var args []string
-	for _, s := range flatTagSites {
-		args = append(args, "-o", "extractor."+s+".tags=false")
+	off := func(sites []string, opt string) {
+		for _, s := range sites {
+			args = append(args, "-o", "extractor."+s+"."+opt+"=false")
+		}
 	}
-	for _, s := range metadataSites {
-		args = append(args, "-o", "extractor."+s+".metadata=false")
-	}
-	for _, s := range notesSites {
-		args = append(args, "-o", "extractor."+s+".notes=false")
-	}
+	off(flatTagSites, "tags")
+	off(metadataSites, "metadata")
+	off(notesSites, "notes")
 	return args
 }
 

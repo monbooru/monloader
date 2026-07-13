@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -45,9 +47,22 @@ func fullConfig() *Config {
 			},
 		},
 		Log: LogConfig{Level: "debug"},
+		PTR: PTRConfig{
+			Enabled: true, DataPath: "/data/ptr", Address: "https://ptr.example:45871",
+			AccessKey: "deadbeef", FetchSleep: 2.0, MinFreeGB: 40,
+		},
+		Lookup: LookupConfig{
+			MinSimilarity: 90,
+			Iqdb:          LookupService{Order: 2},
+			Saucenao:      LookupService{Order: 3, APIKey: "sn-key"},
+		},
 		Sites: []Site{
-			{Name: "gelbooru", APIKey: "k", UserID: "u", Gallery: "art"},
+			{Name: "danbooru", LookupOrder: 1},
+			{Name: "gelbooru", APIKey: "k", UserID: "u", Gallery: "art", LookupOrder: 2},
+			{Name: "rule34", LookupOrder: 3},
 			{Name: "e621", Username: "user", APIKey: "k2", Gallery: "furry"},
+			{Name: "yandere", LookupOrder: 5},
+			{Name: "konachan", LookupOrder: 6},
 			{Name: "sankaku", Cookies: "/config/cookies/sankaku.txt"},
 		},
 		TagOverrides: []TagOverride{
@@ -71,6 +86,91 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(want, got) {
 		t.Errorf("round-trip mismatch:\n want %+v\n got  %+v", want, got)
+	}
+}
+
+// loadLegacy writes a raw pre-similarity config (no [lookup] section - Save
+// would add one) and loads it, so the seeding tests exercise a real upgrade.
+func loadLegacy(t *testing.T, body string) *Config {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "monloader.toml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return got
+}
+
+func TestLoadSeedsLookupDefaultsForExistingInstall(t *testing.T) {
+	// An existing config that predates hash lookup: a gelbooru block with a key
+	// (no order), and no other lookup sites.
+	got := loadLegacy(t, "[[sites]]\nname = \"gelbooru\"\napi_key = \"k\"\n")
+	// The absent defaults are seeded with their chain positions...
+	for name, order := range map[string]int{"danbooru": 1, "rule34": 5, "e621": 6, "yandere": 7, "konachan": 8} {
+		if site := got.FindSite(name); site == nil || site.LookupOrder != order {
+			t.Errorf("%s should be seeded at order %d, got %+v", name, order, site)
+		}
+	}
+	// ...but the existing gelbooru block keeps its key and its (unset) order.
+	if g := got.FindSite("gelbooru"); g.APIKey != "k" || g.LookupOrder != 0 {
+		t.Errorf("an existing site block must not be clobbered by the seed, got %+v", g)
+	}
+	// The similarity services slot in behind danbooru.
+	if got.Lookup.Iqdb.Order != 2 || got.Lookup.Saucenao.Order != 3 {
+		t.Errorf("services should be seeded at 2/3, got %+v", got.Lookup)
+	}
+
+	// A config that already names danbooru (here with the order cleared) keeps
+	// its choice - the seed does not re-add or renumber it.
+	got = loadLegacy(t, "[[sites]]\nname = \"danbooru\"\nlookup_order = 0\n")
+	if got.FindSite("danbooru").LookupOrder != 0 {
+		t.Errorf("a config that cleared danbooru's order should be respected, got %+v", got.Sites)
+	}
+}
+
+func TestSeedRenumbersUncustomizedWalk(t *testing.T) {
+	// A pre-similarity file holding the full old walk (danbooru..konachan at
+	// 1-6) was never customized, so the upgrade renumbers it into the current
+	// chain instead of appending the services after it.
+	var body strings.Builder
+	for name, order := range legacyLookupOrders {
+		fmt.Fprintf(&body, "[[sites]]\nname = %q\nlookup_order = %d\n", name, order)
+	}
+	got := loadLegacy(t, body.String())
+	for _, d := range defaultLookupSites {
+		if s := got.FindSite(d.Name); s == nil || s.LookupOrder != d.LookupOrder {
+			t.Errorf("%s should be renumbered to %d, got %+v", d.Name, d.LookupOrder, s)
+		}
+	}
+	if got.Lookup.Iqdb.Order != 2 || got.Lookup.Saucenao.Order != 3 {
+		t.Errorf("services should be seeded at 2/3, got %+v", got.Lookup)
+	}
+}
+
+func TestSeedAppendsServicesAfterCustomWalk(t *testing.T) {
+	// An operator-arranged walk keeps its orders; the services land at the end
+	// for the operator to reorder.
+	got := loadLegacy(t, "[[sites]]\nname = \"danbooru\"\nlookup_order = 9\n")
+	if got.FindSite("danbooru").LookupOrder != 9 {
+		t.Errorf("a custom order must not be renumbered, got %+v", got.FindSite("danbooru"))
+	}
+	if got.Lookup.Iqdb.Order != 10 || got.Lookup.Saucenao.Order != 11 {
+		t.Errorf("services should append after the highest order, got %+v", got.Lookup)
+	}
+}
+
+func TestSeedLeavesPresentLookupSectionAlone(t *testing.T) {
+	// A [lookup] section with the services switched off is a deliberate choice;
+	// re-seeding would resurrect them on every load.
+	got := loadLegacy(t, "[lookup]\nmin_similarity = 70\n[lookup.iqdb]\norder = 0\n[lookup.saucenao]\norder = 0\n")
+	if got.Lookup.Iqdb.Order != 0 || got.Lookup.Saucenao.Order != 0 {
+		t.Errorf("cleared services must stay cleared, got %+v", got.Lookup)
+	}
+	if got.Lookup.MinSimilarity != 70 {
+		t.Errorf("min_similarity = %d, want the file's 70", got.Lookup.MinSimilarity)
 	}
 }
 
@@ -101,6 +201,12 @@ func TestFirstRunWritesDefaults(t *testing.T) {
 	}
 	if onDisk.Log.Level != "warn" {
 		t.Errorf("log.level = %q, want warn", onDisk.Log.Level)
+	}
+	if len(onDisk.Sites) != len(defaultLookupSites) || onDisk.Sites[0].Name != "danbooru" || onDisk.Sites[0].LookupOrder != 1 {
+		t.Errorf("default sites = %+v, want the seeded lookup defaults led by danbooru", onDisk.Sites)
+	}
+	if onDisk.Lookup.MinSimilarity != 80 || onDisk.Lookup.Iqdb.Order != 2 || onDisk.Lookup.Saucenao.Order != 3 {
+		t.Errorf("default lookup = %+v, want min 80 with iqdb/saucenao at 2/3", onDisk.Lookup)
 	}
 }
 
@@ -176,6 +282,17 @@ func TestValidateSnapsAndRejects(t *testing.T) {
 	if cfg.Auth.SessionLifetimeDays != 7 {
 		t.Errorf("SessionLifetimeDays snapped to %d, want 7", cfg.Auth.SessionLifetimeDays)
 	}
+	cfg.Lookup.MinSimilarity = 150
+	cfg.Lookup.Iqdb.Order = -1
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if cfg.Lookup.MinSimilarity != 80 {
+		t.Errorf("MinSimilarity snapped to %d, want 80", cfg.Lookup.MinSimilarity)
+	}
+	if cfg.Lookup.Iqdb.Order != 0 {
+		t.Errorf("a negative service order snapped to %d, want 0", cfg.Lookup.Iqdb.Order)
+	}
 
 	// Rejects: a missing host:port, and enable_password without a hash.
 	bad := Default()
@@ -216,6 +333,14 @@ func TestAllEnvOverrides(t *testing.T) {
 		"MONLOADER_AUTH_ENABLE_PASSWORD":         "false",
 		"MONLOADER_AUTH_PASSWORD_HASH":           "$2b$10$xxxxxxxxxxxxxxxxxxxxxx",
 		"MONLOADER_LOG_LEVEL":                    "info",
+		"MONLOADER_PTR_ENABLED":                  "true",
+		"MONLOADER_PTR_DATA_PATH":                "/mnt/ptr",
+		"MONLOADER_PTR_ADDRESS":                  "https://ptr.test:45871",
+		"MONLOADER_PTR_ACCESS_KEY":               "abc123",
+		"MONLOADER_PTR_FETCH_SLEEP":              "2.5",
+		"MONLOADER_PTR_MIN_FREE_GB":              "80",
+		"MONLOADER_LOOKUP_SAUCENAO_API_KEY":      "sn",
+		"MONLOADER_LOOKUP_MIN_SIMILARITY":        "65",
 	}
 	for k, v := range env {
 		t.Setenv(k, v)
@@ -243,6 +368,14 @@ func TestAllEnvOverrides(t *testing.T) {
 		{"cookies", got.GalleryDL.CookiesDir, "/c/cookies"},
 		{"sleep", got.GalleryDL.SleepRequest, 3.5},
 		{"loglevel", got.Log.Level, "info"},
+		{"ptr_enabled", got.PTR.Enabled, true},
+		{"ptr_data", got.PTR.DataPath, "/mnt/ptr"},
+		{"ptr_addr", got.PTR.Address, "https://ptr.test:45871"},
+		{"ptr_key", got.PTR.AccessKey, "abc123"},
+		{"ptr_sleep", got.PTR.FetchSleep, 2.5},
+		{"ptr_minfree", got.PTR.MinFreeGB, 80},
+		{"saucenao_key", got.Lookup.Saucenao.APIKey, "sn"},
+		{"min_similarity", got.Lookup.MinSimilarity, 65},
 	}
 	for _, c := range checks {
 		if c.got != c.want {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/leqwin/monloader/internal/config"
 	"github.com/leqwin/monloader/internal/gdl"
+	"github.com/leqwin/monloader/internal/kwdict"
 )
 
 // liveDownloadOne runs the real gallery-dl through the managed-config download
@@ -134,6 +135,57 @@ func TestLiveMappingFamilies(t *testing.T) {
 				t.Errorf("rating = %q, want %s (%s)", pf.Rating, tc.rating, tc.ratingWhy)
 			}
 		})
+	}
+}
+
+// TestLiveLookupDanbooruMD5 takes a live post's md5 (from a resolve of a SFW
+// search) and re-finds the same post through the danbooru md5 search template,
+// which is the booru hash lookup's plumbing against the real site. A
+// danbooru-side change to the md5: metatag or a gallery-dl change to the
+// tag-search extractor fails here while the fixed-input tests stay green.
+func TestLiveLookupDanbooruMD5(t *testing.T) {
+	cfg := config.Default()
+	cfg.GalleryDL.BinaryPath = "gallery-dl"
+	dir := t.TempDir()
+	cfg.GalleryDL.ConfigPath = filepath.Join(dir, "gallery-dl.json")
+	cfg.GalleryDL.ArchivePath = ""
+	mapper, err := New(config.NewProvider(cfg))
+	if err != nil {
+		t.Fatalf("mapper: %v", err)
+	}
+	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites()); err != nil {
+		t.Fatalf("WriteManagedConfig: %v", err)
+	}
+	tool := gdl.New(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites())
+	if tool.Version(context.Background()) == "" {
+		t.Skip("real gallery-dl not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	// Seed via the capped resolve pass: a bare FetchMeta on a broad search
+	// would fetch full metadata for the whole first page. The md5 rides the
+	// resolve's base fields.
+	seed, err := tool.Resolve(ctx, "https://danbooru.donmai.us/posts?tags=landscape+rating:general", "1-1", false)
+	if err != nil {
+		t.Fatalf("seed resolve: %v", err)
+	}
+	if len(seed.Items) == 0 {
+		t.Fatal("seed search resolved no posts")
+	}
+	md5, _ := seed.Items[0].Meta["md5"].(string)
+	if md5 == "" {
+		t.Fatal("live post carried no md5")
+	}
+	found, err := tool.FetchMeta(ctx, mapper.LookupURL("danbooru", md5))
+	if err != nil {
+		t.Fatalf("md5 lookup: %v", err)
+	}
+	if kwdict.ID(found) != seed.Items[0].ID {
+		t.Errorf("md5 lookup found post %s, want %s", kwdict.ID(found), seed.Items[0].ID)
+	}
+	if pf := mapper.Map(found); len(pf.Tags) == 0 {
+		t.Error("looked-up post mapped to no tags")
 	}
 }
 

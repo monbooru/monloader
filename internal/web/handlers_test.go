@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -16,6 +18,7 @@ import (
 	"github.com/leqwin/monloader/internal/config"
 	"github.com/leqwin/monloader/internal/gdl"
 	"github.com/leqwin/monloader/internal/queue"
+	"github.com/leqwin/monloader/internal/similarity"
 )
 
 // readBody drains and closes a response body, returning it as a string.
@@ -40,11 +43,7 @@ func postForm(t *testing.T, ts *httptest.Server, srv *Server, path string, vals 
 }
 
 func TestEnqueueEmptyURL(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 	resp := postForm(t, ts, srv, "/", url.Values{"url": {""}})
 	if body := readBody(t, resp); !strings.Contains(body, "enter a URL") {
 		t.Errorf("empty url should flash an error, got %q", body)
@@ -52,11 +51,7 @@ func TestEnqueueEmptyURL(t *testing.T) {
 }
 
 func TestEnqueueRejectsInvalidURL(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 	for _, bad := range []string{"not a url", "gelbooru.com/post/1", "ftp://x/y", "https://"} {
 		body := readBody(t, postForm(t, ts, srv, "/", url.Values{"url": {bad}}))
 		if !strings.Contains(body, "valid") {
@@ -94,10 +89,12 @@ func TestSettingsNeverEchoesSecrets(t *testing.T) {
 	const (
 		mbToken = "MB-SECRET-TOKEN-zzz"
 		siteKey = "SITE-SECRET-KEY-zzz"
+		snaoKey = "SAUCENAO-SECRET-KEY-zzz"
 	)
 	if err := srv.updateConfig(func(c *config.Config) error {
 		c.Monbooru.APIToken = mbToken
 		c.Sites = append(c.Sites, config.Site{Name: "gelbooru", APIKey: siteKey})
+		c.Lookup.Saucenao.APIKey = snaoKey
 		return nil
 	}); err != nil {
 		t.Fatalf("updateConfig: %v", err)
@@ -121,9 +118,10 @@ func TestSettingsNeverEchoesSecrets(t *testing.T) {
 		t.Fatalf("GET /settings = %d, want 200 (authenticated)", resp.StatusCode)
 	}
 	for name, secret := range map[string]string{
-		"monbooru token": mbToken,
-		"site api key":   siteKey,
-		"password hash":  pwHash,
+		"monbooru token":   mbToken,
+		"site api key":     siteKey,
+		"saucenao api key": snaoKey,
+		"password hash":    pwHash,
 	} {
 		if strings.Contains(body, secret) {
 			t.Errorf("settings page leaked the %s", name)
@@ -132,11 +130,7 @@ func TestSettingsNeverEchoesSecrets(t *testing.T) {
 }
 
 func TestSaveMonbooru(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	resp := postForm(t, ts, srv, "/settings/monbooru", url.Values{
 		"api_url":         {"http://mb2:8080"},
@@ -173,11 +167,7 @@ func TestMonbooruWebBase(t *testing.T) {
 }
 
 func TestSaveDownloader(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	resp := postForm(t, ts, srv, "/settings/downloader", url.Values{
 		"concurrency":       {"3"},
@@ -193,11 +183,7 @@ func TestSaveDownloader(t *testing.T) {
 }
 
 func TestSaveSite(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	postForm(t, ts, srv, "/settings/sites", url.Values{
 		"name":    {"gelbooru"},
@@ -211,8 +197,14 @@ func TestSaveSite(t *testing.T) {
 	}
 	// Updating the same site mutates it in place rather than duplicating.
 	postForm(t, ts, srv, "/settings/sites", url.Values{"name": {"gelbooru"}, "gallery": {"newart"}}).Body.Close()
-	if n := len(srv.cfg.Current().Sites); n != 1 {
-		t.Errorf("expected 1 site after update, got %d", n)
+	n := 0
+	for _, s := range srv.cfg.Current().Sites {
+		if s.Name == "gelbooru" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("expected 1 gelbooru site after update, got %d", n)
 	}
 	if srv.cfg.Current().FindSite("gelbooru").Gallery != "newart" {
 		t.Errorf("site gallery not updated")
@@ -220,11 +212,7 @@ func TestSaveSite(t *testing.T) {
 }
 
 func TestResetSite(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	postForm(t, ts, srv, "/settings/sites", url.Values{"name": {"gelbooru"}, "api_key": {"K"}, "gallery": {"art"}}).Body.Close()
 	if srv.cfg.Current().FindSite("gelbooru") == nil {
@@ -241,11 +229,7 @@ func TestResetSite(t *testing.T) {
 }
 
 func TestSaveRawValidAndInvalid(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	postForm(t, ts, srv, "/settings/raw", url.Values{"raw_config": {`{"extractor":{"timeout":30}}`}}).Body.Close()
 	if srv.cfg.Current().GalleryDL.RawConfig == "" {
@@ -276,11 +260,7 @@ func TestTestMonbooruButton(t *testing.T) {
 }
 
 func TestTestSiteButton(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	resp := postForm(t, ts, srv, "/settings/sites/danbooru/test", url.Values{})
 	got := readBody(t, resp)
@@ -311,11 +291,7 @@ func TestTestSiteButton(t *testing.T) {
 // reads "blocked", and a site missing a required credential reads "needs ..."
 // regardless of the raw gallery-dl error.
 func TestTestSiteStateWords(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	probe := func(site string, res gdl.ProbeResult) string {
 		srv.runner = fakeRunner{probe: res}
@@ -345,11 +321,7 @@ func TestTestSiteStateWords(t *testing.T) {
 }
 
 func TestQueueActions(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	id := srv.queue.Enqueue("http://x", queue.Options{})
 	// Retry and cancel both render the rows partial (200).
@@ -373,11 +345,7 @@ func TestQueueActions(t *testing.T) {
 // TestForceDownloadRetry checks that the queue's force-download button
 // (retry?force=1) re-queues the job with the archive bypass set.
 func TestForceDownloadRetry(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	id := srv.queue.Enqueue("http://x", queue.Options{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -481,11 +449,7 @@ func TestAuthPasswordChangeRemove(t *testing.T) {
 }
 
 func TestAuthTokenCreate(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	resp := postForm(t, ts, srv, "/settings/auth/tokens", url.Values{"name": {"ci"}})
 	if trig := resp.Header.Get("HX-Trigger"); trig != "token-created" {
@@ -506,11 +470,7 @@ func TestAuthTokenCreate(t *testing.T) {
 }
 
 func TestNotFound(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	_, ts := serveWeb(t, "")
 
 	if code, body := get(t, ts, "/no-such-page"); code != http.StatusNotFound {
 		t.Errorf("GET /no-such-page = %d, want 404", code)
@@ -530,11 +490,7 @@ func TestNotFound(t *testing.T) {
 }
 
 func TestAuthTokenPrivileges(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	readBody(t, postForm(t, ts, srv, "/settings/auth/tokens", url.Values{"name": {"ci"}}))
 	id := srv.cfg.Current().Auth.Tokens[0].ID
@@ -600,11 +556,7 @@ func TestPairedTokenPrivilegesLocked(t *testing.T) {
 }
 
 func TestClearQueueButton(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 	resp := postForm(t, ts, srv, "/queue/clear", url.Values{})
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -627,11 +579,7 @@ func TestStatsRSS(t *testing.T) {
 }
 
 func TestLoginFlow(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "secret")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "secret")
 
 	// Login page renders.
 	if code, body := get(t, ts, "/login"); code != 200 || !strings.Contains(body, "password") {
@@ -673,3 +621,247 @@ func TestLoginFlow(t *testing.T) {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+func TestAddBarHashImport(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+
+	// A bare md5 and the prefixed form both enqueue a hash import; the hash is
+	// lower-cased.
+	for _, target := range []string{"0123456789ABCDEF0123456789abcdef", "md5:0123456789abcdef0123456789abcdef"} {
+		postForm(t, ts, srv, "/", url.Values{"url": {target}}).Body.Close()
+	}
+	jobs, total := srv.queue.List(queue.ListOptions{})
+	if total != 2 {
+		t.Fatalf("want 2 hash-import jobs, got %d", total)
+	}
+	for _, j := range jobs {
+		if j.Kind != queue.KindHashImport || j.MD5 != "0123456789abcdef0123456789abcdef" {
+			t.Errorf("job kind=%s md5=%q, want a hash import on the lower-cased md5", j.Kind, j.MD5)
+		}
+	}
+}
+
+func TestAddBarSHA256Rejected(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+
+	sha := strings.Repeat("a", 64)
+	body := readBody(t, postForm(t, ts, srv, "/", url.Values{"url": {sha}}))
+	// With the PTR off (the default), the hint points at enabling it.
+	if !strings.Contains(body, "sha256") || !strings.Contains(body, "ptr page") {
+		t.Errorf("a sha256 paste should point at the ptr page, got %q", body)
+	}
+	if _, total := srv.queue.List(queue.ListOptions{}); total != 0 {
+		t.Errorf("a sha256 must not enqueue, queue has %d", total)
+	}
+}
+
+func TestAddBarMD5RejectedWhenNoLookupSite(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+	// Clear danbooru's seeded order so no site is queried.
+	if err := srv.updateConfig(func(c *config.Config) error {
+		c.Sites = []config.Site{{Name: "danbooru", LookupOrder: 0}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := readBody(t, postForm(t, ts, srv, "/", url.Values{"url": {"0123456789abcdef0123456789abcdef"}}))
+	if !strings.Contains(body, "md5 lookup is off") {
+		t.Errorf("md5 import with no lookup site should flash the off hint, got %q", body)
+	}
+	if _, total := srv.queue.List(queue.ListOptions{}); total != 0 {
+		t.Errorf("nothing should enqueue when md5 lookup is off, queue has %d", total)
+	}
+}
+
+func TestAddBarShowsLookupStatus(t *testing.T) {
+	_, ts := serveWeb(t, "")
+
+	body := httpGet(t, ts.URL+"/")
+	// Default seeds danbooru, so the booru chain is on; the PTR is off.
+	if !strings.Contains(body, "lookup-status") || !strings.Contains(body, "booru lookup:") || !strings.Contains(body, "sha256 lookup:") {
+		t.Errorf("home page should show the lookup status line, got %q", truncate(body))
+	}
+	// The hover title lists the queryable chain: danbooru works anonymously,
+	// the services and the keyed sites are skipped without credentials.
+	if !strings.Contains(body, "queries danbooru") || strings.Contains(body, "iqdb (similarity)") {
+		t.Errorf("status title should list only the queryable sources, got %q", truncate(body))
+	}
+}
+
+func TestSaveSiteIgnoresStaleLookupOrder(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+
+	// The site dialog no longer carries the field; a stale form posting one
+	// must not disturb the chain (gelbooru keeps its seeded position).
+	postForm(t, ts, srv, "/settings/sites", url.Values{"name": {"gelbooru"}, "api_key": {"k"}, "lookup_order": {"9"}}).Body.Close()
+	site := srv.cfg.Current().FindSite("gelbooru")
+	if site.APIKey != "k" || site.LookupOrder != 4 {
+		t.Errorf("gelbooru = %+v, want the key saved and the seeded order 4 kept", site)
+	}
+}
+
+func TestSaveLookupChain(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+
+	// Reorder across both number spaces; a blank clears saucenao out.
+	postForm(t, ts, srv, "/settings/lookup/chain", url.Values{
+		"order-iqdb":     {"1"},
+		"order-danbooru": {"2"},
+		"order-yandere":  {"3"},
+		"order-saucenao": {""},
+	}).Body.Close()
+	cfg := srv.cfg.Current()
+	if cfg.Lookup.Iqdb.Order != 1 || cfg.Lookup.Saucenao.Order != 0 {
+		t.Errorf("service orders = %+v, want iqdb 1 and saucenao cleared", cfg.Lookup)
+	}
+	if cfg.FindSite("danbooru").LookupOrder != 2 || cfg.FindSite("yandere").LookupOrder != 3 {
+		t.Errorf("site orders wrong: %+v", cfg.Sites)
+	}
+
+	// A templateless site cannot join the chain.
+	resp := postForm(t, ts, srv, "/settings/lookup/chain", url.Values{"order-nhentai": {"1"}})
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+	if !strings.Contains(loc, "does+not+support+md5+lookup") {
+		t.Errorf("order on a templateless site should be refused, got redirect %q", loc)
+	}
+	if s := srv.cfg.Current().FindSite("nhentai"); s != nil && s.LookupOrder != 0 {
+		t.Errorf("nhentai should not have kept an order: %+v", s)
+	}
+}
+
+func TestSaveLookup(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+
+	postForm(t, ts, srv, "/settings/lookup", url.Values{"min_similarity": {"90"}}).Body.Close()
+	if got := srv.cfg.Current().Lookup.MinSimilarity; got != 90 {
+		t.Errorf("min_similarity = %d, want 90", got)
+	}
+	resp := postForm(t, ts, srv, "/settings/lookup", url.Values{"min_similarity": {"150"}})
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+	if !strings.Contains(loc, "kind=err") || srv.cfg.Current().Lookup.MinSimilarity != 90 {
+		t.Errorf("an out-of-range floor should be refused, got %q and %d", loc, srv.cfg.Current().Lookup.MinSimilarity)
+	}
+
+	// The saucenao key saves like a site credential: blank keeps it.
+	postForm(t, ts, srv, "/settings/lookup", url.Values{"api_key": {"sk-1"}}).Body.Close()
+	postForm(t, ts, srv, "/settings/lookup", url.Values{"api_key": {""}, "min_similarity": {"85"}}).Body.Close()
+	if cfg := srv.cfg.Current(); cfg.Lookup.Saucenao.APIKey != "sk-1" || cfg.Lookup.MinSimilarity != 85 {
+		t.Errorf("lookup = %+v, want the key kept and the floor updated", cfg.Lookup)
+	}
+}
+
+// stubSim is a simService for the panel and its test button.
+type stubSim struct {
+	missing map[string]string
+	res     similarity.Result
+	err     error
+}
+
+func (s *stubSim) Missing(service string) (string, bool) {
+	label, ok := s.missing[service]
+	return label, ok
+}
+
+func (s *stubSim) Search(context.Context, string, []byte) (similarity.Result, error) {
+	return s.res, s.err
+}
+
+func (s *stubSim) LimitedUntil(service string) time.Time { return time.Time{} }
+
+// stubMetaRunner scripts FetchMeta for the exact-md5 test button.
+type stubMetaRunner struct {
+	fakeRunner
+	err  error
+	urls []string
+}
+
+func (s *stubMetaRunner) FetchMeta(_ context.Context, url string) (map[string]any, error) {
+	s.urls = append(s.urls, url)
+	return nil, s.err
+}
+
+func TestLookupPanelRenders(t *testing.T) {
+	mb := monbooruStub()
+	defer mb.Close()
+	srv := newWebServer(t, mb.URL, "")
+	srv.sim = &stubSim{missing: map[string]string{"iqdb": "danbooru api key", "saucenao": "api key"}}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := httpGet(t, ts.URL+"/settings")
+	// The default chain renders both source kinds with their states.
+	for _, want := range []string{
+		"exact md5", "similarity",
+		"needs danbooru api key", "needs api key",
+		"uses the danbooru site credentials", "api key: not set",
+		"min similarity", "chain-dialog", "saucenao-dialog",
+		`id="chain-on"`, `id="chain-off"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("settings page missing %q", want)
+		}
+	}
+	// The sites tables no longer carry the order column.
+	if strings.Contains(body, "se-field-lookup") || strings.Contains(body, `name="lookup_order"`) {
+		t.Error("the site dialog should have dropped its lookup-order field")
+	}
+}
+
+func TestLookupTestButton(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+
+	post := func(service string) string {
+		req, _ := http.NewRequest("POST", ts.URL+"/settings/lookup/test/"+service, nil)
+		req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return readBody(t, resp)
+	}
+
+	srv.sim = &stubSim{missing: map[string]string{"saucenao": "api key"}}
+	if body := post("saucenao"); !strings.Contains(body, "needs api key") {
+		t.Errorf("keyless saucenao test = %q", body)
+	}
+	srv.sim = &stubSim{res: similarity.Result{DailyRemaining: 94}}
+	if body := post("saucenao"); !strings.Contains(body, "ok, 94 queries left today") {
+		t.Errorf("saucenao test = %q, want the quota note", body)
+	}
+	srv.sim = &stubSim{res: similarity.Result{DailyRemaining: -1}}
+	if body := post("iqdb"); !strings.Contains(body, ">ok<") {
+		t.Errorf("iqdb test = %q, want a bare ok", body)
+	}
+	srv.sim = &stubSim{err: &queue.CodedError{Code: queue.ErrCodeRateLimited, Msg: "cooling down"}}
+	if body := post("iqdb"); !strings.Contains(body, "rate limited") {
+		t.Errorf("limited test = %q", body)
+	}
+	// An exact-md5 site is testable too: its search runs with the probe
+	// image's md5, and "no match" (mapping_failed) is the successful round
+	// trip.
+	mr := &stubMetaRunner{err: &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: "no post metadata"}}
+	srv.runner = mr
+	if body := post("danbooru"); !strings.Contains(body, ">ok<") {
+		t.Errorf("danbooru md5 test = %q, want ok on a clean miss", body)
+	}
+	sum := md5.Sum(similarity.ProbeImage())
+	if len(mr.urls) != 1 || !strings.Contains(mr.urls[0], hex.EncodeToString(sum[:])) {
+		t.Errorf("fetches = %v, want one search for the probe md5", mr.urls)
+	}
+	srv.runner = &stubMetaRunner{err: &queue.CodedError{Code: queue.ErrCodeAuthRequired, Msg: "401"}}
+	if body := post("danbooru"); !strings.Contains(body, "auth rejected") {
+		t.Errorf("danbooru md5 test = %q, want auth rejected", body)
+	}
+	if body := post("gelbooru"); !strings.Contains(body, "needs api key") {
+		t.Errorf("keyless gelbooru test = %q", body)
+	}
+	if resp, err := http.Post(ts.URL+"/settings/lookup/test/nosuch", "", nil); err == nil {
+		if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusForbidden {
+			t.Errorf("unknown service = %d, want a refusal", resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+}

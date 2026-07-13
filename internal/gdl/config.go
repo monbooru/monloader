@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 
 	"github.com/leqwin/monloader/internal/config"
@@ -53,31 +52,18 @@ func WriteManagedConfig(cfg *config.Config, flatTagSites, metadataSites, notesSi
 	// Danbooru-family sites need the metadata include to emit artist commentary
 	// and notes; merge it into whatever block flat-tag already created.
 	for _, site := range metadataSites {
-		block, _ := extractor[site].(map[string]any)
-		if block == nil {
-			block = map[string]any{}
-		}
-		block["metadata"] = "artist_commentary,notes"
-		extractor[site] = block
+		blockFor(extractor, site)["metadata"] = "artist_commentary,notes"
 	}
 
 	// The gelbooru family emits its note boxes only behind notes:true, parsed
 	// from the same post page the tags fetch already loads.
 	for _, site := range notesSites {
-		block, _ := extractor[site].(map[string]any)
-		if block == nil {
-			block = map[string]any{}
-		}
-		block["notes"] = true
-		extractor[site] = block
+		blockFor(extractor, site)["notes"] = true
 	}
 
 	// Overlay per-site credentials, keeping any tags:true already set.
 	for _, site := range cfg.Sites {
-		block, _ := extractor[site.Name].(map[string]any)
-		if block == nil {
-			block = map[string]any{}
-		}
+		block := blockFor(extractor, site.Name)
 		// A lone username (no key) makes the danbooru/e621 family prompt for a
 		// password and abort in the non-TTY subprocess, so only send it with a key.
 		if site.Username != "" && site.APIKey != "" {
@@ -98,8 +84,10 @@ func WriteManagedConfig(cfg *config.Config, flatTagSites, metadataSites, notesSi
 		if slices.Contains(flatTagSites, site.Name) {
 			block["tags"] = true
 		}
-		if len(block) > 0 {
-			extractor[site.Name] = block
+		if len(block) == 0 {
+			// A site row carrying only a gallery or lookup order sets nothing
+			// here; keep the managed file free of empty blocks.
+			delete(extractor, site.Name)
 		}
 	}
 
@@ -121,31 +109,24 @@ func WriteManagedConfig(cfg *config.Config, flatTagSites, metadataSites, notesSi
 	if path == "" {
 		return fmt.Errorf("gallerydl.config_path is empty")
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating gallery-dl config dir: %w", err)
-	}
-	// Write to a temp file and rename so a crash mid-write cannot leave a
-	// truncated config a later gallery-dl run would load broken.
-	tmp, err := os.CreateTemp(dir, ".gallery-dl.json.*")
-	if err != nil {
-		return fmt.Errorf("creating temp config: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+	if err := config.WriteFileAtomic(path, func(f *os.File) error {
+		_, err := f.Write(data)
+		return err
+	}); err != nil {
 		return fmt.Errorf("writing managed config: %w", err)
 	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("closing temp config: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("renaming managed config: %w", err)
-	}
 	return nil
+}
+
+// blockFor returns a site's extractor block, creating and storing an empty one
+// when absent; mutations through the returned map land in place.
+func blockFor(extractor map[string]any, site string) map[string]any {
+	block, _ := extractor[site].(map[string]any)
+	if block == nil {
+		block = map[string]any{}
+		extractor[site] = block
+	}
+	return block
 }
 
 // mergeMaps deep-merges src into dst: nested maps merge recursively, and a

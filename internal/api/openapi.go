@@ -98,7 +98,7 @@ func (h *Handler) endpoints() []endpoint {
 			Request: &reqBody{
 				Required: []string{"url"},
 				Props: []prop{
-					{Name: "url", Type: "string", Description: "A booru post, pool, tag-search, or artist URL gallery-dl supports"},
+					{Name: "url", Type: "string", Description: "A booru post, pool, tag-search, or artist URL gallery-dl supports; or \"md5:<32 hex>\" to find and import the post carrying that file hash via the lookup walk"},
 					{Name: "options", Type: "object", Props: []prop{
 						{Name: "gallery", Type: "string", Description: "Target monbooru gallery; overrides the per-source default"},
 						{Name: "folder", Type: "string", Description: "Destination subfolder under the gallery"},
@@ -223,6 +223,61 @@ func (h *Handler) endpoints() []endpoint {
 			Handler: h.metadata,
 		},
 		{
+			Method: "POST", Path: "/api/v1/lookup",
+			Summary: "Find tags for a file hash and enrich a monbooru image", OperationID: "lookupHash",
+			Description: "Look a file hash up - the booru backend walks the sites given a lookup order " +
+				"in settings using their md5 search, the ptr backend queries the local PTR index by " +
+				"sha256, the all backend runs both (skipping the PTR when it is disabled) - and fold " +
+				"the tags found into the monbooru image it names. The queued job reports the enriched " +
+				"outcome, or failed with hash_not_found when no source knows the hash.",
+			Request: &reqBody{
+				Required: []string{"image_id", "backend"},
+				Props: []prop{
+					{Name: "image_id", Type: "integer", Description: "monbooru image to enrich"},
+					{Name: "backend", Type: "string", Description: "\"booru\", \"ptr\", or \"all\""},
+					{Name: "md5", Type: "string", Description: "32-hex file md5, required by the booru and all backends"},
+					{Name: "sha256", Type: "string", Description: "64-hex file sha256, required by the ptr backend, and by the all backend while the ptr sync is enabled"},
+					{Name: "gallery", Type: "string", Description: "Gallery holding the image; empty uses monbooru's active gallery"},
+				},
+			},
+			Responses: []response{
+				{Status: "202", Description: "Lookup queued; poll GET /api/v1/queue/{id}", Ref: "EnqueueResponse"},
+				{Status: "400", Description: "Missing image_id, unknown backend, or a malformed hash", Ref: "Error"},
+				{Status: "409", Description: "The ptr backend is disabled", Ref: "Error"},
+			},
+			Handler: h.lookup,
+		},
+		{
+			Method: "GET", Path: "/api/v1/ptr/status",
+			Summary: "PTR sync status and capability", OperationID: "ptrStatus",
+			Description: "Report whether the Hydrus PTR lookup backend is enabled and, when it is, its " +
+				"sync state, progress, and index counts. Always answers, so a caller's capability " +
+				"check is one unconditional GET; a run without the PTR built in reports disabled.",
+			Responses: []response{
+				{Status: "200", Description: "PTR status", Ref: "PTRStatus"},
+			},
+			Handler: h.ptrStatus,
+		},
+		{
+			Method: "POST", Path: "/api/v1/ptr/tags",
+			Summary: "Query the PTR alias / implication graph", OperationID: "ptrTags",
+			Description: "For each monbooru-form tag, return the PTR's ideal spelling, the tags that alias " +
+				"to it, and its implications, mapped back to monbooru form. Batched so a caller can sweep " +
+				"its tag list page by page.",
+			Request: &reqBody{
+				Required: []string{"tags"},
+				Props: []prop{
+					{Name: "tags", Type: "array", Items: &prop{Type: "string"}, Description: "monbooru-form tag names, at most 500"},
+				},
+			},
+			Responses: []response{
+				{Status: "200", Description: "Per-tag graph answers", Ref: "PTRTagResults"},
+				{Status: "400", Description: "Empty or over-long tag list", Ref: "Error"},
+				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
+			},
+			Handler: h.ptrTags,
+		},
+		{
 			Method: "GET", Path: "/api/v1/sites",
 			Summary: "List supported sites", OperationID: "listSites",
 			Params: []param{{Name: "q", In: "query", Description: "Substring filter on category/subcategory"}},
@@ -276,7 +331,7 @@ var apiSchemas = []apiSchema{
 	{Name: "Summary", Props: []prop{
 		{Name: "created", Type: "integer"},
 		{Name: "duplicate", Type: "integer"},
-		{Name: "enriched", Type: "integer", Description: "Metadata-only refetches that merged tags into an image monbooru already holds"},
+		{Name: "enriched", Type: "integer", Description: "Source refetches and hash lookups that merged tags into an image monbooru already holds"},
 		{Name: "skipped", Type: "integer", Description: "Posts the gallery-dl archive already had, or files monbooru cannot ingest"},
 		{Name: "failed", Type: "integer"},
 		{Name: "canceled", Type: "integer", Description: "Items aborted by a job cancel, kept out of failed"},
@@ -299,8 +354,11 @@ var apiSchemas = []apiSchema{
 		{Name: "id", Type: "integer"},
 		{Name: "url", Type: "string"},
 		{Name: "status", Type: "string", Description: "queued, running, succeeded, partial, failed, canceled"},
-		{Name: "kind", Type: "string", Description: "download (the default, omitted) or metadata: a source refetch that enriches an existing image instead of pushing a new file"},
-		{Name: "image_id", Type: "integer", Description: "monbooru image a metadata job enriches"},
+		{Name: "kind", Type: "string", Description: "download (the default, omitted), metadata (a source refetch that enriches an existing image), lookup (a hash lookup that enriches an existing image), or hash_import (an md5 resolved to a post and imported)"},
+		{Name: "image_id", Type: "integer", Description: "monbooru image a metadata or lookup job enriches"},
+		{Name: "backend", Type: "string", Description: "Lookup source (booru or ptr) for a lookup job"},
+		{Name: "md5", Type: "string", Description: "File md5 a lookup or hash import is keyed on"},
+		{Name: "sha256", Type: "string", Description: "File sha256 a ptr lookup is keyed on"},
 		{Name: "site", Type: "string", Description: "gallery-dl category, set after resolve"},
 		{Name: "gallery", Type: "string", Description: "target monbooru gallery"},
 		{Name: "folder", Type: "string", Description: "destination subfolder under the gallery"},
@@ -345,6 +403,30 @@ var apiSchemas = []apiSchema{
 	}},
 	{Name: "EnqueueResponse", Props: []prop{
 		{Name: "job_id", Type: "integer"},
+	}},
+	{Name: "PTRStatus", Props: []prop{
+		{Name: "enabled", Type: "boolean"},
+		{Name: "state", Type: "string", Description: "disabled, syncing, ready, paused, error"},
+		{Name: "progress", Type: "object", Props: []prop{
+			{Name: "update_index", Type: "integer", Description: "the update index being applied"},
+			{Name: "update_count", Type: "integer", Description: "total updates the server publishes"},
+			{Name: "downloaded_bytes", Type: "integer", Description: "compressed bytes fetched this session"},
+			{Name: "download_rate", Type: "integer", Description: "current download rate in bytes per second while syncing"},
+		}},
+		{Name: "counts", Type: "object", Props: []prop{
+			{Name: "hashes", Type: "integer"},
+			{Name: "tags", Type: "integer"},
+			{Name: "mappings", Type: "integer"},
+			{Name: "siblings", Type: "integer"},
+			{Name: "parents", Type: "integer"},
+		}},
+		{Name: "disk_bytes", Type: "integer"},
+		{Name: "next_update_due", Type: "integer", Description: "unix time the next update is expected"},
+		{Name: "covered_through", Type: "integer", Description: "unix time the synced data reaches; absent until an update has been applied"},
+		{Name: "error", Type: "string"},
+	}},
+	{Name: "PTRTagResults", Props: []prop{
+		{Name: "results", Type: "object", Description: "map of the queried tag to its PTR ideal, aliases, and implications (monbooru form); known=false when the PTR does not have the tag"},
 	}},
 }
 

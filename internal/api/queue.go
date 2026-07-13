@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/leqwin/monloader/internal/config"
 	"github.com/leqwin/monloader/internal/queue"
 )
 
@@ -38,7 +39,15 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "url is required")
 		return
 	}
-	if !validEnqueueURL(body.URL) {
+	// "md5:<hash>" imports the post carrying that hash via the lookup walk.
+	// The prefix is required on the API so a bare hash is never mistaken for a
+	// malformed URL; the web add bar accepts both forms.
+	md5, isHash := strings.CutPrefix(body.URL, "md5:")
+	if isHash && !config.IsHexHash(md5, 32) {
+		apiError(w, http.StatusBadRequest, "invalid_request", "md5: must carry a 32-hex hash")
+		return
+	}
+	if !isHash && !config.IsHTTPURL(body.URL) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "url must be an http(s) URL")
 		return
 	}
@@ -65,7 +74,12 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 		opts.Priority = true
 	}
 
-	id := h.queue.Enqueue(body.URL, opts)
+	var id int64
+	if isHash {
+		id = h.queue.EnqueueHashImport(strings.ToLower(md5), opts)
+	} else {
+		id = h.queue.Enqueue(body.URL, opts)
+	}
 
 	if wait > 0 {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(wait)*time.Second)
@@ -98,11 +112,75 @@ func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "image_id is required")
 		return
 	}
-	if !validEnqueueURL(body.URL) {
+	if !config.IsHTTPURL(body.URL) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "url must be an http(s) URL")
 		return
 	}
 	id := h.queue.EnqueueMetadata(body.ImageID, body.Gallery, body.URL)
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id})
+}
+
+type lookupRequest struct {
+	ImageID int64  `json:"image_id"`
+	Backend string `json:"backend"`
+	MD5     string `json:"md5"`
+	SHA256  string `json:"sha256"`
+	Gallery string `json:"gallery"`
+}
+
+// lookup handles POST /api/v1/lookup: monbooru asks monloader to find tags for
+// an image by file hash - the booru backend walks the opted-in sites' md5
+// search, the ptr backend queries the local PTR index by sha256 - and enrich
+// the image with what it finds. Returns 202 with the queued job id.
+func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
+	var body lookupRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if body.ImageID <= 0 {
+		apiError(w, http.StatusBadRequest, "invalid_request", "image_id is required")
+		return
+	}
+	switch body.Backend {
+	case queue.BackendBooru:
+		if !config.IsHexHash(body.MD5, 32) {
+			apiError(w, http.StatusBadRequest, "invalid_request", "the booru backend needs a 32-hex md5")
+			return
+		}
+	case queue.BackendPTR:
+		if !config.IsHexHash(body.SHA256, 64) {
+			apiError(w, http.StatusBadRequest, "invalid_request", "the ptr backend needs a 64-hex sha256")
+			return
+		}
+		if h.ptr == nil || !h.ptr.Enabled() {
+			// Refuse rather than queue a job doomed to fail, so monbooru's button
+			// can degrade in place if its capability check was stale.
+			apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr lookup backend is disabled")
+			return
+		}
+	case queue.BackendAll:
+		// "all" means "whatever is enabled": a disabled PTR is not a conflict
+		// here, the job just runs the booru walk alone, so the sha256 is only
+		// demanded while the PTR could use it.
+		if !config.IsHexHash(body.MD5, 32) {
+			apiError(w, http.StatusBadRequest, "invalid_request", "the all backend needs a 32-hex md5")
+			return
+		}
+		if h.ptr != nil && h.ptr.Enabled() && !config.IsHexHash(body.SHA256, 64) {
+			apiError(w, http.StatusBadRequest, "invalid_request", "the all backend needs a 64-hex sha256 while the ptr is enabled")
+			return
+		}
+		if body.SHA256 != "" && !config.IsHexHash(body.SHA256, 64) {
+			apiError(w, http.StatusBadRequest, "invalid_request", "sha256 must be 64 hex characters")
+			return
+		}
+	default:
+		apiError(w, http.StatusBadRequest, "invalid_request", "backend must be \"booru\", \"ptr\", or \"all\"")
+		return
+	}
+	id := h.queue.EnqueueLookup(body.ImageID, body.Gallery, body.Backend,
+		strings.ToLower(body.MD5), strings.ToLower(body.SHA256))
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id})
 }
 
@@ -120,13 +198,6 @@ func waitSeconds(r *http.Request) int {
 		n = maxWaitSeconds
 	}
 	return n
-}
-
-// validEnqueueURL mirrors the web add-bar check: an absolute http(s) URL with a
-// host, rejecting non-URLs at the boundary instead of failing them at resolve.
-func validEnqueueURL(s string) bool {
-	u, err := url.Parse(s)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 // listJobs handles GET /api/v1/queue with optional status filter and

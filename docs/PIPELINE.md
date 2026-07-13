@@ -23,7 +23,7 @@ Every item ends with one of six outcomes, never silently dropped:
 |---|---|
 | `created` | new image accepted by monbooru (HTTP 201) |
 | `duplicate` | monbooru already had this sha256 (HTTP 200, alias); any new tags merge in |
-| `enriched` | a metadata-only source refetch merged tags into an image monbooru already holds |
+| `enriched` | a metadata-only source refetch, or a hash lookup, merged tags into an image monbooru already holds |
 | `skipped_archive` | gallery-dl's archive already had this post; not fetched |
 | `skipped_unsupported` | monbooru cannot ingest this file type; not pushed |
 | `failed` | something went wrong; carries an `error_code` |
@@ -47,6 +47,8 @@ A `failed` item carries one of these stable codes :
 | `monbooru_unreachable` | the push got no HTTP response (connect / timeout) |
 | `monbooru_rejected` | monbooru returned a 4xx/5xx other than the duplicate 200 |
 | `hash_mismatch` | a metadata refetch found the source no longer serves the file monbooru stored, so nothing was merged |
+| `hash_not_found` | a hash lookup found no site (or the PTR index) holding the hash |
+| `ptr_unavailable` | a PTR lookup was requested while the PTR backend is off; normally refused as a `409` when the lookup is enqueued |
 | `canceled` | the job was canceled while the item was in flight |
 
 The job's `summary` aggregates the counts:
@@ -72,6 +74,41 @@ by kind:
 
 Manga/comic sites are flagged in their profile; see [MAPPING.md](MAPPING.md) for
 the per-site details.
+
+## Finding tags by file hash
+
+An image already in monbooru can be tagged from its file hash, without a URL.
+Both paths walk the lookup chain set in settings (see [SITES.md](SITES.md)) -
+exact md5 searches and image-similarity services in one configured order -
+first match wins.
+
+- **Hash import** - paste a file's md5 (bare, or `md5:<hash>`) into the add bar,
+  or POST `{ "url": "md5:<hash>" }` to `/api/v1/queue`. The walk finds the post
+  carrying that file and imports it like a submitted single post, so the file
+  lands in monbooru with a `created` or `duplicate` outcome. A hash carries no
+  image to search by similarity, so an import uses the chain's exact-md5
+  sources only. A pasted sha256 is refused: boorus index the md5 of the
+  original upload, not a sha256.
+- **Lookup enrich** - `POST /api/v1/lookup` with an `image_id`, `backend`, and
+  hash finds the tags for a file monbooru already holds and merges them in
+  (`enriched`), without re-downloading. The `booru` backend walks the full
+  chain: an exact md5 search matches only the original uploaded bytes, while a
+  similarity source (iqdb, saucenao) queries by the image's thumbnail and so
+  also finds a resized or re-encoded copy - the queue row then names the
+  service and score. The `ptr` backend keys on sha256 and runs only when the
+  PTR sync is enabled (off by default). This is the endpoint monbooru's "fetch
+  tags" button calls.
+
+When a similarity service finds the image but none of its candidate posts can
+be fetched through gallery-dl (a missing credential, a deleted post), the best
+candidate is still recorded as the image's source - no tags, the queue row
+marked `source only`. A confident hit outside the supported sites (an anime
+database, pixiv, twitter) gets the same treatment when no supported site
+matched: its URL is recorded as the source, labeled by its host. When no source holds the file at all the item is
+`hash_not_found`, listing every source asked and why it missed or was skipped;
+a similarity service that found nothing usable lists its closest candidates
+with their scores - under the `min_similarity` floor, or on a site monloader
+cannot fetch - so a near-miss stays visible.
 
 ## Dispatcher pages
 

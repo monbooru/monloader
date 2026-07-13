@@ -24,8 +24,25 @@ import (
 	"github.com/leqwin/monloader/internal/mapping"
 	"github.com/leqwin/monloader/internal/monbooru"
 	"github.com/leqwin/monloader/internal/queue"
+	"github.com/leqwin/monloader/internal/similarity"
 	"github.com/leqwin/monloader/internal/sitestate"
 )
+
+// PTRService is the PTR lookup surface the pipeline needs: whether the backend
+// is available and the tags for a sha256. A nil service means the PTR is not
+// built into this run.
+type PTRService interface {
+	Enabled() bool
+	TagsForHash(hashHex string) (tags []string, ok bool, err error)
+}
+
+// SimilarityService is the image-similarity surface the lookup chain needs:
+// whether a service lacks its credential, and the candidate posts it offers
+// for an image. A nil service leaves the chain's similarity sources out.
+type SimilarityService interface {
+	Missing(service string) (label string, missing bool)
+	Search(ctx context.Context, service string, image []byte) (similarity.Result, error)
+}
 
 // Processor runs a job end to end and satisfies queue.Processor.
 type Processor struct {
@@ -35,14 +52,17 @@ type Processor struct {
 	cfg       *config.Provider
 	workRoot  string
 	siteState *sitestate.Tracker
+	ptr       PTRService
+	sim       SimilarityService
 }
 
 // New builds a Processor. workRoot is the parent of the per-job scratch
 // directories (the ephemeral /work mount in the container); siteState records
 // a successful resolve so the settings page can show when each site was last
-// reached.
-func New(runner gdl.Runner, mapper *mapping.Mapper, client *monbooru.Client, cfg *config.Provider, workRoot string, siteState *sitestate.Tracker) *Processor {
-	return &Processor{runner: runner, mapper: mapper, client: client, cfg: cfg, workRoot: workRoot, siteState: siteState}
+// reached; ptr answers PTR-backend hash lookups and sim the lookup chain's
+// similarity queries (each nil when not built into the run).
+func New(runner gdl.Runner, mapper *mapping.Mapper, client *monbooru.Client, cfg *config.Provider, workRoot string, siteState *sitestate.Tracker, ptr PTRService, sim SimilarityService) *Processor {
+	return &Processor{runner: runner, mapper: mapper, client: client, cfg: cfg, workRoot: workRoot, siteState: siteState, ptr: ptr, sim: sim}
 }
 
 var _ queue.Processor = (*Processor)(nil)
@@ -54,10 +74,20 @@ var _ queue.Processor = (*Processor)(nil)
 func (p *Processor) Process(ctx context.Context, job *queue.Job) error {
 	snap := job.Snapshot()
 
-	if snap.Kind == queue.KindMetadata {
+	switch snap.Kind {
+	case queue.KindMetadata:
 		return p.processMetadata(ctx, job, snap)
+	case queue.KindLookup:
+		return p.processLookup(ctx, job, snap)
+	case queue.KindHashImport:
+		return p.processHashImport(ctx, job, snap)
 	}
+	return p.processDownload(ctx, job, snap)
+}
 
+// processDownload is the normal pipeline for a submitted URL: resolve,
+// download, map, push.
+func (p *Processor) processDownload(ctx context.Context, job, snap *queue.Job) error {
 	rng, limit := p.rangeFor(snap)
 	res, err := p.runner.Resolve(ctx, snap.URL, rng, false)
 	if err != nil {
@@ -120,35 +150,56 @@ func (p *Processor) processMetadata(ctx context.Context, job *queue.Job, snap *q
 	job.SetItems([]queue.Item{{URL: snap.URL, Status: queue.ItemPending}})
 	meta, err := p.runner.FetchMeta(ctx, snap.URL)
 	if err != nil {
-		code := errorCode(err)
-		failItem(job, 0, code, err.Error())
-		// A fetch that never reaches enrich leaves monbooru's detail poll with
-		// no outcome; report it so the pill stops instead of spinning.
-		if rerr := p.client.ReportFetchOutcome(ctx, snap.ImageID, snap.Gallery, code, err.Error()); rerr != nil {
-			logx.Warnf("queue: job %d fetch-status report failed: %v", snap.ID, rerr)
-		}
+		p.failEnrichFetch(ctx, job, snap, err)
 		return nil
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	p.enrichFromMeta(ctx, job, snap, meta, snap.URL, kwdict.String(meta, "md5"), 0)
+	return nil
+}
+
+// enrichFromMeta maps a post's metadata and folds it into the job's monbooru
+// image, driving the job's single item to enriched or failed. sim carries the
+// similarity score when the post was found by a similarity service (0 for an
+// exact match or a refetch), so monbooru marks the origin as such.
+func (p *Processor) enrichFromMeta(ctx context.Context, job, snap *queue.Job, meta map[string]any, url, md5 string, sim float64) {
 	// Label the row's site like a download job's, even though nothing is fetched.
 	job.SetSite(kwdict.String(meta, "category"))
-	pf := p.mapper.Map(meta)
-	payload := monbooru.EnrichPayload{
-		Tags:       pf.Tags,
-		Source:     pf.Source,
-		URL:        snap.URL,
-		SourceMD5:  kwdict.String(meta, "md5"),
-		Verify:     true,
-		Commentary: pf.Commentary,
-		Notes:      toNoteBoxes(pf.Notes),
-	}
-	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, payload)
+	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, p.mapEnrichPayload(meta, url, md5, sim))
 	if err != nil {
 		failItem(job, 0, errorCode(err), err.Error())
-		return nil
+		return
 	}
+	p.markEnriched(job, snap, res, url)
+}
+
+// mapEnrichPayload maps a post's metadata into the enrich body an exact or
+// similarity match sends. sim carries the similarity score when a service
+// found the post (0 for an exact match or a refetch), so monbooru marks the
+// origin as such.
+func (p *Processor) mapEnrichPayload(meta map[string]any, url, md5 string, sim float64) monbooru.EnrichPayload {
+	pf := p.mapper.Map(meta)
+	return monbooru.EnrichPayload{
+		Tags:       pf.Tags,
+		Source:     pf.Source,
+		PostID:     kwdict.ID(meta),
+		URL:        url,
+		SourceMD5:  md5,
+		Verify:     true,
+		Similarity: sim,
+		Commentary: pf.Commentary,
+		Original:   pf.Original,
+		ParentURL:  pf.ParentURL,
+		Notes:      toNoteBoxes(pf.Notes),
+	}
+}
+
+// markEnriched walks the job's single item to the enriched terminal state,
+// attaching the monbooru id, the merge note, and (when the item has none) the
+// source url.
+func (p *Processor) markEnriched(job, snap *queue.Job, res *monbooru.Result, url string) {
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemDownloaded })
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemUploaded })
 	job.UpdateItem(0, func(it *queue.Item) {
@@ -156,8 +207,28 @@ func (p *Processor) processMetadata(ctx context.Context, job *queue.Job, snap *q
 		it.Outcome = queue.OutcomeEnriched
 		it.MonbooruID = snap.ImageID
 		it.MergeNote = res.MergeNote
+		if it.URL == "" {
+			it.URL = url
+		}
 	})
-	return nil
+}
+
+// failEnrichFetch records a fetch that died before enrich ran. A fetch that
+// never reaches enrich leaves monbooru's detail poll with no outcome; the
+// advisory report lets the pill stop instead of spinning. The report carries
+// the bare message - the code already travels in the state field, and
+// monbooru renders the message verbatim.
+func (p *Processor) failEnrichFetch(ctx context.Context, job, snap *queue.Job, err error) {
+	code := errorCode(err)
+	msg := err.Error()
+	var ce *queue.CodedError
+	if errors.As(err, &ce) {
+		msg = ce.Msg
+	}
+	failItem(job, 0, code, err.Error())
+	if rerr := p.client.ReportFetchOutcome(ctx, snap.ImageID, snap.Gallery, code, msg); rerr != nil {
+		logx.Warnf("queue: job %d fetch-status report failed: %v", snap.ID, rerr)
+	}
 }
 
 // processDispatch handles a URL that resolved to Message.Queue handoffs instead
@@ -363,12 +434,15 @@ func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded
 			Filename:        filepath.Base(d.Path),
 			Tags:            pf.Tags,
 			Source:          pf.Source,
+			PostID:          kwdict.ID(d.Meta),
 			URL:             p.itemURL(d.Meta, submittedURL),
 			Collection:      pf.Collection,
 			CollectionOrder: order,
 			Via:             pf.Via,
 			Folder:          folder,
 			Commentary:      pf.Commentary,
+			Original:        pf.Original,
+			ParentURL:       pf.ParentURL,
 			Notes:           toNoteBoxes(pf.Notes),
 		}
 		p.pushOne(ctx, job, i, d.Path, meta, gallery)
@@ -376,8 +450,8 @@ func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded
 }
 
 // toNoteBoxes converts the mapper's note boxes into the push client's shape.
-// A pool bundle carries no per-post commentary or notes, so aggregatePool omits
-// them.
+// A pool bundle carries no per-post commentary, original, or notes, so
+// aggregatePool omits them.
 func toNoteBoxes(in []mapping.NoteBox) []monbooru.NoteBox {
 	if len(in) == 0 {
 		return nil

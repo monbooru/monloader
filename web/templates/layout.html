@@ -10,7 +10,7 @@
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/main.js" defer></script>
 </head>
-<body>
+<body hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'>
 {{end}}
 
 {{define "topbar"}}
@@ -18,15 +18,13 @@
     <a href="/" id="logo"><img src="{{.BooruLogo}}" alt="" class="topbar-logo"><span>{{.BooruName}}</span></a>
     <nav>
       <a href="/queue" {{if eq .ActiveNav "queue"}}class="active"{{end}}>Queue</a>
+      <a href="/ptr" {{if eq .ActiveNav "ptr"}}class="active"{{end}}>PTR</a>
       <a href="/settings" {{if eq .ActiveNav "settings"}}class="active"{{end}}>Settings</a>
     </nav>
     <div id="topbar-right">
       {{template "pause_toggle" .}}
       {{if .AuthEnabled}}
-      <form method="POST" action="/logout" style="display:inline">
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <button type="submit">logout</button>
-      </form>
+      {{template "postbtn" dict "Action" "/logout" "CSRF" .CSRFToken "Label" "logout" "Inline" true}}
       {{end}}
     </div>
   </div>

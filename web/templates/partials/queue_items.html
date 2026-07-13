@@ -1,14 +1,14 @@
 {{define "queue_items"}}{{range .Items}}
 <div class="item-row">
-  <span class="item-num" title="{{if .Num}}#{{.Num}}{{else}}{{.PostID}}{{end}}">{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{if .Num}}#{{.Num}}{{else if .PostID}}{{.PostID}}{{else}}source{{end}}</a>{{else}}{{if .Num}}#{{.Num}}{{else if .PostID}}{{.PostID}}{{else}}-{{end}}{{end}}</span>
+  <span class="item-num" title="{{if .Num}}#{{.Num}}{{else}}{{.PostID}}{{end}}">{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{if .Num}}#{{.Num}}{{else if .PostID}}{{.PostID}}{{else if $.Site}}{{$.Site}}{{else}}source{{end}}</a>{{else}}{{if .Num}}#{{.Num}}{{else if .PostID}}{{.PostID}}{{else}}-{{end}}{{end}}</span>
   {{if eq .ErrorCode "canceled"}}<span class="o-canceled">canceled</span>{{else}}<span class="o-{{.Outcome}}">{{if .Outcome}}{{.Outcome}}{{else}}{{.Status}}{{end}}</span>{{if .MergeNote}} <span class="o-merge" title="folded into the existing image">({{.MergeNote}})</span>{{end}}{{end}}
-  <span class="item-result">{{if ne .ErrorCode "canceled"}}{{if .SHA256}}<a href="{{$.MonbooruURL}}/i/{{.SHA256}}" target="_blank" rel="noopener">view</a>{{end}}{{if .TagWarnings}}<span class="o-warn" title="{{join .TagWarnings ", "}}">{{len .TagWarnings}} tag warning{{if ne (len .TagWarnings) 1}}s{{end}}</span>{{end}}{{if .ErrorCode}}<span class="o-failed" title="{{.Error}}">{{.ErrorCode}}</span>{{end}}{{end}}</span>
+  <span class="item-result">{{if ne .ErrorCode "canceled"}}{{if .SHA256}}<a href="{{$.MonbooruURL}}/i/{{.SHA256}}" target="_blank" rel="noopener">view</a>{{else if .MonbooruID}}<a href="{{$.MonbooruURL}}/images/{{.MonbooruID}}" target="_blank" rel="noopener">view</a>{{end}}{{if .TagWarnings}}<span class="o-warn" title="{{join .TagWarnings ", "}}">{{len .TagWarnings}} tag warning{{if ne (len .TagWarnings) 1}}s{{end}}</span>{{end}}{{if .ErrorCode}}<span class="o-failed" title="{{.Error}}">{{.ErrorCode}}</span>{{end}}{{end}}</span>
 </div>
 {{end}}{{end}}
 
-{{define "queue_items_capped"}}{{$cap := itemCap}}{{if gt (len .Items) $cap}}{{$rest := slice .Items $cap (len .Items)}}{{template "queue_items" (dict "Items" (slice .Items 0 $cap) "MonbooruURL" .MonbooruURL)}}
+{{define "queue_items_capped"}}{{$cap := itemCap}}{{if gt (len .Items) $cap}}{{$rest := slice .Items $cap (len .Items)}}{{template "queue_items" (dict "Items" (slice .Items 0 $cap) "MonbooruURL" .MonbooruURL "Site" .Site)}}
 <details class="more-items">
   <summary>+{{len $rest}} more{{$bd := moreSummary $rest}}{{if $bd}} ({{$bd}}){{end}}</summary>
-  <div class="job-items">{{template "queue_items" (dict "Items" $rest "MonbooruURL" .MonbooruURL)}}</div>
+  <div class="job-items">{{template "queue_items" (dict "Items" $rest "MonbooruURL" .MonbooruURL "Site" .Site)}}</div>
 </details>
 {{else}}{{template "queue_items" .}}{{end}}{{end}}

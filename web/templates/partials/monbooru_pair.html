@@ -1,5 +1,5 @@
 {{define "monbooru_pair"}}
-<div id="monbooru-pair"{{if .Waiting}} hx-post="/settings/monbooru/pair/poll" hx-trigger="every 2s" hx-swap="outerHTML" hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'{{end}}>
+<div id="monbooru-pair"{{if .Waiting}} hx-post="/settings/monbooru/pair/poll" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
   {{$csrf := .CSRFToken}}
   {{if .Paired}}
   <p class="field-hint">connected to monbooru.

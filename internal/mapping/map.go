@@ -1,6 +1,7 @@
 package mapping
 
 import (
+	"fmt"
 	"html"
 	"regexp"
 	"sort"
@@ -31,6 +32,8 @@ type PushFields struct {
 	Collection      string
 	CollectionOrder int
 	Commentary      string
+	Original        string
+	ParentURL       string
 	Notes           []NoteBox
 }
 
@@ -48,15 +51,85 @@ type NoteBox struct {
 type Mapper struct {
 	profiles map[string]Profile
 	cfg      *config.Provider
+	// hostSite indexes each curated profile's post-URL host so a similarity
+	// service's result URL can be recognized and rebuilt canonically.
+	hostSite map[string]string
 }
 
 // New builds a Mapper from the embedded profiles and the config provider.
+// A configured lookup order on a site whose profile has no md5 template is
+// rejected here rather than in the config package, which cannot see the
+// profiles without an import cycle; boot fails with the same operator
+// experience as a config validation error.
 func New(cfg *config.Provider) (*Mapper, error) {
 	profiles, err := loadProfiles()
 	if err != nil {
 		return nil, err
 	}
-	return &Mapper{profiles: profiles, cfg: cfg}, nil
+	m := &Mapper{profiles: profiles, cfg: cfg, hostSite: hostIndex(profiles)}
+	for _, site := range cfg.Current().Sites {
+		if site.LookupOrder > 0 && m.LookupURL(site.Name, "") == "" {
+			return nil, fmt.Errorf("site %q has lookup_order set but no md5 lookup support", site.Name)
+		}
+	}
+	return m, nil
+}
+
+// LookupSource is one entry of the unified lookup chain: a site's exact-md5
+// search, or an image-similarity service when Similarity is set.
+type LookupSource struct {
+	Name       string
+	Similarity bool
+}
+
+// LookupChain is the unified lookup walk: the sites whose [[sites]] block
+// carries a lookup order and the similarity services with one, merged on the
+// shared number space, ascending (ties by name). A source without an order is
+// never queried, so opting in is as explicit as configuring a credential.
+func (m *Mapper) LookupChain() []LookupSource {
+	type entry struct {
+		src   LookupSource
+		order int
+	}
+	var entries []entry
+	cfg := m.cfg.Current()
+	for _, site := range cfg.Sites {
+		if site.LookupOrder > 0 && m.LookupURL(site.Name, "") != "" {
+			entries = append(entries, entry{LookupSource{Name: site.Name}, site.LookupOrder})
+		}
+	}
+	for name, svc := range map[string]config.LookupService{
+		"iqdb":     cfg.Lookup.Iqdb,
+		"saucenao": cfg.Lookup.Saucenao,
+	} {
+		if svc.Order > 0 {
+			entries = append(entries, entry{LookupSource{Name: name, Similarity: true}, svc.Order})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].order != entries[j].order {
+			return entries[i].order < entries[j].order
+		}
+		return entries[i].src.Name < entries[j].src.Name
+	})
+	out := make([]LookupSource, len(entries))
+	for i, e := range entries {
+		out[i] = e.src
+	}
+	return out
+}
+
+// LookupSites is the chain's exact-md5 half: the site sources in chain order.
+// A hash import walks only these - a pasted hash carries no image bytes for a
+// similarity query - and they rank the candidates a similarity hit offers.
+func (m *Mapper) LookupSites() []string {
+	var out []string
+	for _, src := range m.LookupChain() {
+		if !src.Similarity {
+			out = append(out, src.Name)
+		}
+	}
+	return out
 }
 
 // Gallery resolves the target monbooru gallery for a site: the per-source
@@ -125,7 +198,7 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	// tags_<category> keys; fold those in for manga-kind sources.
 	if profile.Kind == KindManga {
 		for _, f := range mangaTagFields {
-			for _, name := range parseTagField(meta[f.field]) {
+			for _, name := range parseNameField(meta[f.field]) {
 				add(formatTag(f.category, name))
 			}
 		}
@@ -146,18 +219,67 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 
 	if kwdict.String(meta, "subcategory") == "pool" {
 		pf.Collection = PoolName(meta)
-		pf.CollectionOrder = kwdict.Int(meta, "num")
+		pf.CollectionOrder = kwdict.Num(meta)
 	}
 
 	pf.Commentary = commentaryFor(profile.Family, meta)
+	pf.Original = originalFor(meta)
+	if id := parentPostID(meta); id != "" {
+		pf.ParentURL = m.PostURLFor(category, id)
+	}
 	pf.Notes = notesFor(profile, meta)
 
 	return pf
 }
 
+// parentPostID returns the id of the post's declared parent, "" when none.
+// Boorus emit parent_id at the top level (0, null, or absent for none); the
+// e621 family nests it under relationships.
+func parentPostID(meta map[string]any) string {
+	if id := kwdict.String(meta, "parent_id"); id != "" && id != "0" {
+		return id
+	}
+	if rel, ok := meta["relationships"].(map[string]any); ok {
+		if id := kwdict.String(rel, "parent_id"); id != "" && id != "0" {
+			return id
+		}
+	}
+	return ""
+}
+
+// originalFor reads the booru post's own source field - the upstream artist
+// URL (pixiv, twitter), sometimes a dead host or free text. Most families
+// carry a single `source` string; e621 a `sources` list, philomena a
+// `source_url` string plus a `source_urls` list. Several entries join with
+// newlines, matching monbooru's one-per-line render.
+func originalFor(meta map[string]any) string {
+	if s := strings.TrimSpace(kwdict.String(meta, "source")); s != "" {
+		return s
+	}
+	for _, key := range []string{"sources", "source_urls"} {
+		raw, ok := meta[key].([]any)
+		if !ok {
+			continue
+		}
+		var out []string
+		for _, v := range raw {
+			if s, ok := v.(string); ok {
+				if s = strings.TrimSpace(s); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		if len(out) > 0 {
+			return strings.Join(out, "\n")
+		}
+	}
+	return strings.TrimSpace(kwdict.String(meta, "source_url"))
+}
+
 // commentaryFor reduces a post's artist commentary to a single plain-text body.
-// Danbooru carries a nested artist_commentary object (translated preferred over
-// the original, title folded in as the first line); e621 a flat description.
+// Danbooru carries a nested artist_commentary object (each field translated
+// preferred over its original, so a title-only translation still keeps the
+// original body; title folded in as the first line); e621 a flat description.
 func commentaryFor(family string, meta map[string]any) string {
 	switch family {
 	case FamilyDanbooru:
@@ -167,8 +289,10 @@ func commentaryFor(family string, meta map[string]any) string {
 		}
 		title := kwdict.String(ac, "translated_title")
 		desc := kwdict.String(ac, "translated_description")
-		if title == "" && desc == "" {
+		if title == "" {
 			title = kwdict.String(ac, "original_title")
+		}
+		if desc == "" {
 			desc = kwdict.String(ac, "original_description")
 		}
 		return joinCommentary(title, desc)
@@ -231,16 +355,18 @@ var (
 )
 
 // plainText reduces a booru's HTML note body (or commentary) to plain text so
-// monbooru stores something safe to render: <br> and CRLF become newlines,
-// remaining tags are stripped, and entities are decoded. DText markup, which is
-// not HTML, is left as readable text.
+// monbooru stores something safe to render: entities are decoded first so
+// entity-encoded markup is stripped like literal markup instead of being
+// reintroduced after the strip, then <br> and CRLF become newlines and the
+// remaining tags are dropped. DText markup, which is not HTML, is left as
+// readable text.
 func plainText(s string) string {
 	if s == "" {
 		return ""
 	}
+	s = html.UnescapeString(s)
 	s = brRe.ReplaceAllString(s, "\n")
 	s = tagRe.ReplaceAllString(s, "")
-	s = html.UnescapeString(s)
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
 	return strings.TrimSpace(s)

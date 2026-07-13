@@ -5,7 +5,6 @@
   <table class="token-table">
     <thead><tr><th>name</th><th>created</th><th>scopes</th><th>config</th><th>revoke</th></tr></thead>
     <tbody>
-      {{$csrf := .CSRFToken}}
       {{range .Tokens}}
       <tr>
         <td>{{.Name}}{{if .Paired}} <span class="badge badge-ok">paired</span>{{end}}</td>
@@ -19,7 +18,6 @@
         <td>{{if .Paired}}<span class="hint">via pairing</span>{{else}}<button class="btn-danger"
               hx-delete="/settings/auth/tokens/{{.ID}}"
               hx-target="#flash-auth" hx-swap="innerHTML"
-              hx-headers='{"X-CSRF-Token": "{{$csrf}}"}'
               hx-confirm="revoke token {{.Name}}?"
               data-confirm-ok="revoke"
               data-confirm-danger="any integration using this token stops working immediately.">revoke</button>{{end}}</td>

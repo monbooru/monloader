@@ -12,7 +12,7 @@ RUN VERSION=$(cat VERSION.md 2>/dev/null | tr -d '[:space:]') && \
 
 # Stage 2: runtime. Needs Python for the gallery-dl subprocess.
 FROM python:3.13-slim-trixie
-RUN pip install --no-cache-dir gallery-dl==1.32.4
+RUN pip install --no-cache-dir gallery-dl==1.32.6
 
 COPY --from=build /monloader /usr/local/bin/monloader
 

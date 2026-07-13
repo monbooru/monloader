@@ -69,6 +69,8 @@ const (
 	ErrCodeHashMismatch        = "hash_mismatch"
 	ErrCodeMappingFailed       = "mapping_failed"
 	ErrCodeCanceled            = "canceled"
+	ErrCodeHashNotFound        = "hash_not_found"
+	ErrCodePTRUnavailable      = "ptr_unavailable"
 )
 
 // Summary aggregates per-item outcomes for the queue view and the API.
@@ -109,12 +111,27 @@ type Item struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// JobKind distinguishes a normal download from a metadata-only source refetch.
+// JobKind distinguishes a normal download from a metadata-only source refetch
+// and the two hash-keyed jobs.
 type JobKind string
 
 const (
 	KindDownload JobKind = "download"
 	KindMetadata JobKind = "metadata"
+	// KindLookup finds tags for a hash (on the booru walk or the PTR index)
+	// and enriches an existing monbooru image; nothing is downloaded.
+	KindLookup JobKind = "lookup"
+	// KindHashImport resolves an md5 to a post via the booru walk, then
+	// downloads and pushes it like a submitted single post.
+	KindHashImport JobKind = "hash_import"
+)
+
+// Lookup backends a KindLookup job can query. BackendAll runs every backend
+// that is available: the PTR when enabled, then the booru walk.
+const (
+	BackendBooru = "booru"
+	BackendPTR   = "ptr"
+	BackendAll   = "all"
 )
 
 // jobState is the job's data, split from the lock so Snapshot can copy it
@@ -129,12 +146,19 @@ type jobState struct {
 	// Kind is "download" (the default) or "metadata": a source refetch that
 	// re-reads URL for its tags/commentary/notes and enriches ImageID (an image
 	// monbooru already holds) instead of downloading and pushing a new file.
-	Kind     JobKind `json:"kind,omitempty"`
-	ImageID  int64   `json:"image_id,omitempty"`
-	Site     string  `json:"site"`
-	Gallery  string  `json:"gallery"`
-	Folder   string  `json:"folder,omitempty"`
-	MaxItems int     `json:"max_items,omitempty"`
+	Kind    JobKind `json:"kind,omitempty"`
+	ImageID int64   `json:"image_id,omitempty"`
+	// Backend picks the lookup source ("booru", "ptr", or "all") for a lookup
+	// job; MD5 / SHA256 carry the hash a lookup or hash import is keyed on. A
+	// hash-keyed job starts with no URL, so the row shows the hash instead
+	// (Subject) until a hash import's walk resolves one.
+	Backend  string `json:"backend,omitempty"`
+	MD5      string `json:"md5,omitempty"`
+	SHA256   string `json:"sha256,omitempty"`
+	Site     string `json:"site"`
+	Gallery  string `json:"gallery"`
+	Folder   string `json:"folder,omitempty"`
+	MaxItems int    `json:"max_items,omitempty"`
 	// Offset skips this many leading posts before the job's window, so a
 	// continue on a capped search fetches the next batch via --range.
 	Offset int `json:"-"`
@@ -223,6 +247,9 @@ func newJob(id int64, url string, opts Options, now time.Time) *Job {
 			Status:    JobQueued,
 			Kind:      opts.Kind,
 			ImageID:   opts.ImageID,
+			Backend:   opts.Backend,
+			MD5:       opts.MD5,
+			SHA256:    opts.SHA256,
 			Site:      opts.Site,
 			Gallery:   opts.Gallery,
 			Folder:    opts.Folder,
@@ -255,6 +282,30 @@ func (j *Job) SetSite(site string) {
 	j.mu.Lock()
 	j.Site = site
 	j.mu.Unlock()
+}
+
+// SetURL records the post URL a hash import's walk resolved, so the row reads
+// like a normal download's from then on.
+func (j *Job) SetURL(url string) {
+	j.mu.Lock()
+	j.URL = url
+	j.mu.Unlock()
+}
+
+// Subject is the row label: the URL, or the hash a lookup / hash import was
+// keyed on while no URL is known yet.
+func (j *Job) Subject() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	switch {
+	case j.URL != "":
+		return j.URL
+	case j.MD5 != "":
+		return "md5:" + j.MD5
+	case j.SHA256 != "":
+		return "sha256:" + j.SHA256
+	}
+	return ""
 }
 
 // SetGallery records the effective monbooru gallery the processor resolved
@@ -402,12 +453,21 @@ func (j *Job) reset(force bool) error {
 		return fmt.Errorf("cannot retry a %s job", j.Status)
 	}
 	j.priorItems = priorImports(j.Items)
+	url := j.URL
+	if j.Kind == KindHashImport {
+		// The URL was derived by the walk; clear it so the retry re-resolves
+		// the hash rather than trusting a post that may have moved.
+		url = ""
+	}
 	j.jobState = jobState{
 		ID:      j.ID,
-		URL:     j.URL,
+		URL:     url,
 		Status:  JobQueued,
 		Kind:    j.Kind,
 		ImageID: j.ImageID,
+		Backend: j.Backend,
+		MD5:     j.MD5,
+		SHA256:  j.SHA256,
 		Gallery: j.Gallery,
 		Folder:  j.Folder,
 		// A job that did not fully import has items whose download landed in the

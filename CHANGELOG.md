@@ -1,5 +1,22 @@
 # Changelog
 
+## [v1.4.0] - 2026-07-13
+### Added
+- A new PTR page syncs the hydrus Public Tag Repository to a local hash-and-tag index. ([#7](https://github.com/leqwin/monloader/issues/7))
+- Imported posts now record their original artist source and link derivatives to their parent post. ([#8](https://github.com/leqwin/monloader/issues/8))
+- Look up a post by its md5 hash to import it or enrich an existing image. 
+- Reverse-image lookup finds candidate posts on iqdb and SauceNAO when no hash matches.
+- Order the lookup sources into a chain and test each one from Settings.
+
+### Changed
+- Bundled gallery-dl updated to 1.32.6.
+
+### Fixed
+- Bottom bar is always visible ([#10](https://github.com/leqwin/monloader/issues/10))
+- Manga imports no longer split multi-word artist or group names into separate tags.
+- Imported commentary and notes no longer drop text or leave stray HTML markup.
+- Confirming a queue action no longer silently fails when the queue list refreshes.
+
 ## [v1.3.0] - 2026-07-04
 ### Added
 - Queue rows show batch progress next to the item count. ([#3](https://github.com/leqwin/monloader/issues/3))

@@ -8,15 +8,17 @@
     <div class="add-row">
       <div class="search-input-wrap">
         <input id="add-input" type="text" name="url" autocomplete="off" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}}
-               placeholder="paste a booru URL - post, pool, tag search, artist...">
+               placeholder="paste a booru URL or an md5 hash - post, pool, tag search, artist...">
       </div>
       <button type="submit" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}}>download</button>
     </div>
   </form>
+  {{template "lookup_status" .}}
   <div class="hint"><a href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">see the supported sites</a></div>
   <div id="add-flash" class="hint"></div>
   <div class="links">
     <a href="/queue">[ queue ]</a>
+    <a href="/ptr">[ ptr ]</a>
     <a href="/settings">[ settings ]</a>
     {{if .MonbooruWebURL}}<a href="{{.MonbooruWebURL}}">[ go to monbooru ]</a>{{end}}
   </div>

@@ -9,9 +9,19 @@ import (
 	"github.com/leqwin/monloader/internal/config"
 	"github.com/leqwin/monloader/internal/gdl"
 	"github.com/leqwin/monloader/internal/mapping"
+	"github.com/leqwin/monloader/internal/ptr"
 	"github.com/leqwin/monloader/internal/queue"
 	"github.com/leqwin/monloader/internal/sitestate"
 )
+
+// PTRService is the PTR surface the API exposes: capability + progress for the
+// status endpoint, and the tag-graph query. A nil service means the PTR is not
+// built into the run (status reports disabled).
+type PTRService interface {
+	Status() ptr.Status
+	TagGraph(names []string) (map[string]ptr.TagInfo, error)
+	Enabled() bool
+}
 
 // Handler serves monloader's own /api/v1/ surface.
 type Handler struct {
@@ -23,12 +33,14 @@ type Handler struct {
 	version    string
 	gdlVersion string
 	siteState  *sitestate.Tracker
+	ptr        PTRService
 }
 
 // New builds the API handler. extractors is the cached --list-extractors
 // result; version and gdlVersion feed /health; siteState is the shared "last
-// reached" tracker the test probe records into.
-func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, extractors []gdl.Extractor, version, gdlVersion string, siteState *sitestate.Tracker) *Handler {
+// reached" tracker the test probe records into; ptr backs the PTR endpoints
+// (nil when the PTR is not built into the run).
+func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, extractors []gdl.Extractor, version, gdlVersion string, siteState *sitestate.Tracker, ptrSvc PTRService) *Handler {
 	return &Handler{
 		queue:      q,
 		runner:     runner,
@@ -38,6 +50,7 @@ func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.
 		version:    version,
 		gdlVersion: gdlVersion,
 		siteState:  siteState,
+		ptr:        ptrSvc,
 	}
 }
 

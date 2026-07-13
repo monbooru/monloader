@@ -127,7 +127,7 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 // attempt.
 func (s *Server) loginData(errMsg string) map[string]any {
 	data := map[string]any{
-		"Title":        "Login - " + s.booruName(),
+		"Title":        "Login - " + s.titleName(),
 		"CSRFToken":    s.csrfToken("anon"),
 		"Conn":         "checking",
 		"BooruName":    s.booruName(),

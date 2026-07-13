@@ -7,6 +7,8 @@
       <a href="#monsender">monsender</a>
       <a href="#auth">authentication</a>
       <a href="#downloads">downloads</a>
+      <a href="#ptr">ptr</a>
+      <a href="#lookup">lookup</a>
       <a href="#sites">sites</a>
       <a href="#advanced">advanced</a>
       <a href="#stats">stats</a>
@@ -102,10 +104,141 @@
     </form>
   </section>
 
+  <section class="settings-section" id="ptr">
+    <h2>ptr</h2>
+    {{if eq .FlashSection "ptr"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
+    <p class="field-hint">Storage and repository settings for the Public Tag Repository index; the sync itself is driven from the <a href="/ptr">PTR page</a>. Changes apply on restart.</p>
+    <form method="POST" action="/settings/ptr" id="ptr-form">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div class="downloads-grid">
+        <div class="field">
+          <label>data path</label>
+          <input type="text" name="data_path" value="{{.Cfg.PTR.DataPath}}">
+          <span class="field-hint">dedicated index volume</span>
+        </div>
+        <div class="field">
+          <label>address</label>
+          <input type="text" name="address" value="{{.Cfg.PTR.Address}}">
+          <span class="field-hint">repository to sync from</span>
+        </div>
+        <div class="field">
+          <label>access key</label>
+          <input type="password" name="access_key" placeholder="{{if .Cfg.PTR.AccessKey}}(set - leave blank to keep){{else}}(unset - uses the public read-only key){{end}}">
+          <span class="field-hint">only needed for a private repository or a personal account</span>
+        </div>
+        <div class="field">
+          <label>fetch sleep (s)</label>
+          <input type="text" name="fetch_sleep" value="{{.Cfg.PTR.FetchSleep}}">
+          <span class="field-hint">delay between update downloads</span>
+        </div>
+        <div class="field">
+          <label>min free GB</label>
+          <input type="text" name="min_free_gb" value="{{.Cfg.PTR.MinFreeGB}}">
+          <span class="field-hint">refuse the initial sync below this free space</span>
+        </div>
+      </div>
+    </form>
+    <div class="settings-sub">
+      <h4>danger</h4>
+      <form method="POST" action="/settings/ptr/delete" hx-confirm="delete the ptr index and turn off the lookup? re-enabling re-syncs from scratch." data-confirm-ok="delete" data-confirm-danger>
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <button type="submit" class="danger">delete ptr data</button>
+        <span class="field-hint">removes the {{if .PTRDiskBytes}}{{humanBytes .PTRDiskBytes}} {{end}}index and disables the ptr lookup.</span>
+      </form>
+    </div>
+    <div class="section-actions">
+      <button type="submit" form="ptr-form">save</button>
+    </div>
+  </section>
+
+  <section class="settings-section" id="lookup">
+    <h2>lookup</h2>
+    {{if eq .FlashSection "lookup"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
+    <p class="field-hint">Lookup sites find an image's source booru post by file hash or visual similarity; the chain is queried top to bottom until one matches.</p>
+    {{if .LookupPanel.Chain}}
+    <div class="table-scroll">
+    <table class="sites-table chain-table">
+      <thead><tr><th>#</th><th>source</th><th>kind</th><th>credentials</th><th>state</th><th>action</th></tr></thead>
+      <tbody>
+      {{range .LookupPanel.Chain}}
+      <tr>
+        <td>{{.Position}}</td>
+        <td>{{.Name}}</td>
+        <td><span class="badge">{{if .Similarity}}similarity{{else}}exact md5{{end}}</span></td>
+        <td{{if .Note}} title="{{.Note}}"{{end}}>{{if .Note}}<span class="hint">{{.Note}}</span>{{else}}-{{end}}</td>
+        <td class="site-state" id="lk-state-{{.Name}}" title="{{.State}}">{{if .Warn}}<span class="flash-warn">{{.State}}</span>{{else}}<span class="flash-ok">{{.State}}</span>{{end}}</td>
+        <td class="site-actions"><span class="actions">
+          <button type="button" hx-post="/settings/lookup/test/{{.Name}}" hx-target="#lk-state-{{.Name}}" hx-swap="innerHTML"
+                  hx-on::before-request="document.getElementById('lk-state-{{.Name}}').innerHTML='<span class=&quot;hint&quot;>testing...</span>'"
+                  title="{{if .Similarity}}run one real query with a built-in probe image{{else}}run one real md5 search with the probe image's md5{{end}}">test</button>
+          {{if eq .Name "saucenao"}}<button type="button" onclick="document.getElementById('saucenao-dialog').showModal()">key</button>{{end}}
+        </span></td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}
+    <p class="hint">nothing is queried - give a source a position via edit order.</p>
+    {{end}}
+    <div class="section-actions">
+      <form method="POST" action="/settings/lookup" class="lookup-minsim">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <label>min similarity %</label>
+        <input type="number" name="min_similarity" min="1" max="100" step="1" value="{{.LookupPanel.MinSimilarity}}">
+        <button type="submit">save</button>
+      </form>
+      <button type="button" onclick="document.getElementById('chain-dialog').showModal()">edit order</button>
+    </div>
+    <p class="field-hint">A lookup in the Public Tag Repository (PTR) is also run if you enable it on the <a href="/ptr">PTR page</a>.</p>
+
+    <dialog id="chain-dialog">
+      <form method="POST" action="/settings/lookup/chain" id="chain-form">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <p>edit the <strong>lookup chain</strong> order</p>
+        <p class="field-hint">Drag a source between the columns; the queried column is asked top to bottom.</p>
+        <div class="chain-cols">
+          <div class="chain-col">
+            <h4>queried</h4>
+            <ul id="chain-on">
+              {{range .LookupPanel.DialogOn}}<li draggable="true" data-name="{{.Name}}">{{.Name}}{{if .Similarity}} <span class="hint">(similarity)</span>{{end}}</li>
+              {{end}}
+            </ul>
+          </div>
+          <div class="chain-col">
+            <h4>not queried</h4>
+            <ul id="chain-off">
+              {{range .LookupPanel.DialogOff}}<li draggable="true" data-name="{{.Name}}">{{.Name}}{{if .Similarity}} <span class="hint">(similarity)</span>{{end}}</li>
+              {{end}}
+            </ul>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" onclick="document.getElementById('chain-dialog').close()">cancel</button>
+          <button type="submit">save chain</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="saucenao-dialog">
+      <form method="POST" action="/settings/lookup">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <p>edit the <strong>saucenao</strong> api key</p>
+        <div class="field"><label>api key</label>
+          <input type="password" name="api_key" placeholder="{{if .LookupPanel.SaucenaoKeySet}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
+        <p class="field-hint">From saucenao.com account settings; the service is skipped until one is set. Queries upload the image's thumbnail to saucenao.com.</p>
+        <div class="dialog-actions">
+          <button type="button" onclick="document.getElementById('saucenao-dialog').close()">cancel</button>
+          <button type="submit">save key</button>
+        </div>
+      </form>
+    </dialog>
+  </section>
+
   <section class="settings-section" id="sites">
     <h2 class="sites-title"><span>sites <span class="hint">({{len .BooruSites}} boorus, {{len .MangaSites}} manga / comics)</span></span><a class="sites-title-link" href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">gallery-dl supported sites</a></h2>
     {{if eq .FlashSection "sites"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
-    <p class="field-hint">login - <strong>none</strong>: no auth &middot; <strong>api (opt)</strong>: optional key, higher rate limits &middot; <strong>api key</strong>: key required &middot; <strong>cookies</strong>: needs a cookies file</p>
+    <p class="field-hint">Download credentials and per-site targets; the lookup chain is configured in the lookup section above. login - <strong>none</strong>: no auth &middot; <strong>api (opt)</strong>: optional key, higher rate limits &middot; <strong>api key</strong>: key required &middot; <strong>cookies</strong>: needs a cookies file</p>
 
     {{template "sites_table" (dict "Heading" "boorus" "Rows" .BooruSites)}}
     {{template "sites_table" (dict "Heading" "manga / comics" "Rows" .MangaSites)}}

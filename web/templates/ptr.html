@@ -1,0 +1,73 @@
+{{define "ptr"}}{{template "doc_head" .}}
+{{template "topbar" .}}
+<div class="content-scroll">
+<main id="content" class="ptr-shell">
+  <h1>Public Tag Repository</h1>
+  <p class="field-hint">Download a local copy of the Hydrus PTR. Off by default; when enabled it allows monloader to answer sha256 lookups offline.</p>
+  {{if .Flash}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
+  <div id="ptr-body"{{if eq .PTR.Status.State "syncing"}} hx-get="/internal/ptr-status" hx-trigger="every 2s" hx-swap="innerHTML"{{end}}>
+    {{template "ptr_body" .}}
+  </div>
+</main>
+</div>
+{{template "footer" .}}
+{{template "doc_foot" .}}{{end}}
+
+{{define "ptr_body"}}{{with .PTR}}
+{{if .PathMissing}}<p class="flash-warn">the data path {{.DataPath}} does not exist. In docker, mount a volume there before enabling: an index created inside the container is lost when the container is recreated.</p>{{end}}
+{{if eq .Status.State "disabled"}}
+<section class="settings-section">
+  <h2>disabled</h2>
+  <p>Enabling downloads the repository's full tag history and keeps a local index (tens of GB).</p>
+  <table class="stats-table">
+    <tbody>
+      <tr><th>repository</th><td>{{.Address}}</td></tr>
+      <tr><th>data path</th><td>{{.DataPath}}</td></tr>
+      <tr><th>free space</th><td>{{if .FreeBytes}}{{humanBytes .FreeBytes}}{{else}}unknown{{end}}{{if .MinFreeGB}} (needs {{.MinFreeGB}} GB to start){{end}}</td></tr>
+    </tbody>
+  </table>
+  {{template "postbtn" dict "Action" "/ptr/enable" "CSRF" .CSRFToken "Label" "enable ptr sync"}}
+</section>
+{{else}}
+<section class="settings-section">
+  <h2>status: <span class="ptr-state ptr-state-{{.Status.State}}">{{.Status.State}}</span></h2>
+  {{if eq .Status.State "syncing"}}
+  <p class="field-hint">The initial sync downloads the full tag history and can take several hours; it runs in the background.</p>
+  <p>update {{.Status.Progress.UpdateIndex}} / {{.Status.Progress.UpdateCount}} &middot; {{humanBytes .Status.Progress.DownloadedBytes}} downloaded{{if .Status.Progress.DownloadRate}} &middot; {{humanBytes .Status.Progress.DownloadRate}}/s{{end}}</p>
+  <div class="ptr-progress">
+    <div class="ptr-bar"><div class="ptr-bar-fill" style="width:{{.Percent}}%"></div></div>
+    <form method="POST" action="/ptr/pause"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><button type="submit">pause</button></form>
+  </div>
+  {{else if eq .Status.State "paused"}}
+  <p>sync paused at update {{.Status.Progress.UpdateIndex}}.</p>
+  <form method="POST" action="/ptr/resume"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><button type="submit">resume</button></form>
+  {{else if eq .Status.State "error"}}
+  <p class="flash-err" title="{{.Status.Error}}">{{.Status.Error}}</p>
+  <form method="POST" action="/ptr/retry"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><button type="submit">retry</button></form>
+  {{else}}
+  <p>caught up{{if .Status.NextUpdateDue}} &middot; next update {{humanDue .Status.NextUpdateDue}}{{end}}.</p>
+  {{end}}
+  <table class="stats-table">
+    <tbody>
+      <tr><th>repository</th><td>{{.Address}}</td></tr>
+      <tr><th>data path</th><td>{{.DataPath}} &middot; {{humanBytes .Status.DiskBytes}} used{{if .FreeBytes}}, {{humanBytes .FreeBytes}} free{{end}}</td></tr>
+      {{if .Status.CoveredThrough}}<tr><th>coverage</th><td>data through {{humanDate .Status.CoveredThrough}}</td></tr>{{end}}
+    </tbody>
+  </table>
+</section>
+
+<section class="settings-section">
+  <h2>index</h2>
+  <table class="stats-table">
+    <tbody>
+      <tr><th>hashes</th><td>{{.Status.Counts.Hashes}}</td></tr>
+      <tr><th>tags</th><td>{{.Status.Counts.Tags}}</td></tr>
+      <tr><th>mappings</th><td>{{.Status.Counts.Mappings}}</td></tr>
+      <tr><th>aliases</th><td>{{.Status.Counts.Siblings}}</td></tr>
+      <tr><th>implications</th><td>{{.Status.Counts.Parents}}</td></tr>
+    </tbody>
+  </table>
+</section>
+{{end}}
+<p class="field-hint">the data path and the index delete are in <a href="/settings#ptr">settings</a>.</p>
+{{end}}{{end}}

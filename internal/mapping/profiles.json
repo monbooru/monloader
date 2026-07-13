@@ -3,6 +3,7 @@
     "family": "danbooru",
     "kind": "booru",
     "post_url_template": "https://danbooru.donmai.us/posts/{id}",
+    "md5_search_template": "https://danbooru.donmai.us/posts?tags=md5:{md5}",
     "auth": "api_optional",
     "example": "https://danbooru.donmai.us/posts/11514474"
   },
@@ -10,6 +11,7 @@
     "family": "danbooru",
     "kind": "booru",
     "post_url_template": "https://aibooru.online/posts/{id}",
+    "md5_search_template": "https://aibooru.online/posts?tags=md5:{md5}",
     "auth": "api_optional",
     "example": "https://aibooru.online/posts/12345"
   },
@@ -17,6 +19,7 @@
     "family": "danbooru",
     "kind": "booru",
     "post_url_template": "https://booru.allthefallen.moe/posts/{id}",
+    "md5_search_template": "https://booru.allthefallen.moe/posts?tags=md5:{md5}",
     "auth": "api_optional",
     "example": "https://booru.allthefallen.moe/posts/1536822"
   },
@@ -24,6 +27,7 @@
     "family": "e621",
     "kind": "booru",
     "post_url_template": "https://e621.net/posts/{id}",
+    "md5_search_template": "https://e621.net/posts?tags=md5:{md5}",
     "auth": "api_optional",
     "example": "https://e621.net/posts/6451436"
   },
@@ -31,6 +35,7 @@
     "family": "e621",
     "kind": "booru",
     "post_url_template": "https://e926.net/posts/{id}",
+    "md5_search_template": "https://e926.net/posts?tags=md5:{md5}",
     "auth": "api_optional",
     "example": "https://e926.net/posts/6451436"
   },
@@ -38,6 +43,7 @@
     "family": "e621",
     "kind": "booru",
     "post_url_template": "https://e6ai.net/posts/{id}",
+    "md5_search_template": "https://e6ai.net/posts?tags=md5:{md5}",
     "auth": "api_optional",
     "example": "https://e6ai.net/posts/167836"
   },
@@ -45,6 +51,7 @@
     "family": "moebooru",
     "kind": "booru",
     "post_url_template": "https://konachan.com/post/show/{id}",
+    "md5_search_template": "https://konachan.com/post?tags=md5:{md5}",
     "auth": "none",
     "example": "https://konachan.com/post/show/404703"
   },
@@ -52,6 +59,7 @@
     "family": "moebooru",
     "kind": "booru",
     "post_url_template": "https://yande.re/post/show/{id}",
+    "md5_search_template": "https://yande.re/post?tags=md5:{md5}",
     "auth": "none",
     "example": "https://yande.re/post/show/1211519"
   },
@@ -59,6 +67,7 @@
     "family": "moebooru",
     "kind": "booru",
     "post_url_template": "https://www.sakugabooru.com/post/show/{id}",
+    "md5_search_template": "https://www.sakugabooru.com/post?tags=md5:{md5}",
     "auth": "none",
     "example": "https://www.sakugabooru.com/post/show/307545"
   },
@@ -66,6 +75,7 @@
     "family": "moebooru",
     "kind": "booru",
     "post_url_template": "https://lolibooru.moe/post/show/{id}",
+    "md5_search_template": "https://lolibooru.moe/post?tags=md5:{md5}",
     "auth": "none",
     "example": "https://lolibooru.moe/post/show/281305/"
   },
@@ -73,6 +83,7 @@
     "family": "moebooru",
     "kind": "booru",
     "post_url_template": "http://behoimi.org/post/show/{id}",
+    "md5_search_template": "http://behoimi.org/post?tags=md5:{md5}",
     "auth": "none",
     "example": "http://behoimi.org/post/show/140852"
   },
@@ -80,6 +91,7 @@
     "family": "gelbooru_v02",
     "kind": "booru",
     "post_url_template": "https://gelbooru.com/index.php?page=post&s=view&id={id}",
+    "md5_search_template": "https://gelbooru.com/index.php?page=post&s=list&tags=md5:{md5}",
     "auth": "api_required",
     "example": "https://gelbooru.com/index.php?page=post&s=view&id=14215005"
   },
@@ -87,6 +99,7 @@
     "family": "gelbooru_v02",
     "kind": "booru",
     "post_url_template": "https://rule34.xxx/index.php?page=post&s=view&id={id}",
+    "md5_search_template": "https://rule34.xxx/index.php?page=post&s=list&tags=md5:{md5}",
     "auth": "api_required",
     "example": "https://rule34.xxx/index.php?page=post&s=view&id=17052960"
   },
@@ -94,6 +107,7 @@
     "family": "gelbooru_v02",
     "kind": "booru",
     "post_url_template": "https://safebooru.org/index.php?page=post&s=view&id={id}",
+    "md5_search_template": "https://safebooru.org/index.php?page=post&s=list&tags=md5:{md5}",
     "auth": "none",
     "example": "https://safebooru.org/index.php?page=post&s=view&id=6828308",
     "rating_overrides": { "q": "general" }
@@ -102,6 +116,7 @@
     "family": "gelbooru_v02",
     "kind": "booru",
     "post_url_template": "https://realbooru.com/index.php?page=post&s=view&id={id}",
+    "md5_search_template": "https://realbooru.com/index.php?page=post&s=list&tags=md5:{md5}",
     "auth": "none",
     "example": "https://realbooru.com/index.php?page=post&s=view&id=994177"
   },
@@ -109,6 +124,7 @@
     "family": "gelbooru_v02",
     "kind": "booru",
     "post_url_template": "https://tbib.org/index.php?page=post&s=view&id={id}",
+    "md5_search_template": "https://tbib.org/index.php?page=post&s=list&tags=md5:{md5}",
     "auth": "none",
     "example": "https://tbib.org/index.php?page=post&s=view&id=28057363"
   },
@@ -116,6 +132,7 @@
     "family": "gelbooru_v02",
     "kind": "booru",
     "post_url_template": "https://xbooru.com/index.php?page=post&s=view&id={id}",
+    "md5_search_template": "https://xbooru.com/index.php?page=post&s=list&tags=md5:{md5}",
     "auth": "none",
     "example": "https://xbooru.com/index.php?page=post&s=view&id=1254724"
   },
@@ -123,6 +140,7 @@
     "family": "gelbooru_v02",
     "kind": "booru",
     "post_url_template": "https://hypnohub.net/index.php?page=post&s=view&id={id}",
+    "md5_search_template": "https://hypnohub.net/index.php?page=post&s=list&tags=md5:{md5}",
     "auth": "none",
     "example": "https://hypnohub.net/index.php?page=post&s=view&id=273231"
   },
@@ -165,6 +183,7 @@
     "family": "generic",
     "kind": "booru",
     "post_url_template": "https://sankaku.app/posts/{id}",
+    "md5_search_template": "https://chan.sankakucomplex.com/?tags=md5:{md5}",
     "auth": "cookies",
     "example": "https://sankaku.app/it/posts/vkr3EelGKMZ",
     "needs_tags": true,
@@ -174,6 +193,7 @@
     "family": "generic",
     "kind": "booru",
     "post_url_template": "https://www.idolcomplex.com/posts/{id}",
+    "md5_search_template": "https://idol.sankakucomplex.com/?tags=md5:{md5}",
     "auth": "cookies",
     "example": "https://www.idolcomplex.com/posts/6ea43jg5M3v",
     "needs_tags": true,

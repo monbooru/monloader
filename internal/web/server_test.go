@@ -17,7 +17,9 @@ import (
 	"github.com/leqwin/monloader/internal/gdl"
 	"github.com/leqwin/monloader/internal/mapping"
 	"github.com/leqwin/monloader/internal/monbooru"
+	"github.com/leqwin/monloader/internal/ptr"
 	"github.com/leqwin/monloader/internal/queue"
+	"github.com/leqwin/monloader/internal/similarity"
 	"github.com/leqwin/monloader/internal/sitestate"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -58,6 +60,19 @@ func monbooruStub() *httptest.Server {
 	}))
 }
 
+// serveWeb is the stub-monbooru-backed server most handler tests start from;
+// cleanup rides t. Tests that need the stub's URL afterwards build the pieces
+// themselves.
+func serveWeb(t *testing.T, password string) (*Server, *httptest.Server) {
+	t.Helper()
+	mb := monbooruStub()
+	t.Cleanup(mb.Close)
+	srv := newWebServer(t, mb.URL, password)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return srv, ts
+}
+
 func newWebServer(t *testing.T, monbooruURL, password string) *Server {
 	t.Helper()
 	cfg := config.Default()
@@ -79,7 +94,7 @@ func newWebServer(t *testing.T, monbooruURL, password string) *Server {
 		t.Fatal(err)
 	}
 	extractors := []gdl.Extractor{{Category: "danbooru", Subcategory: "post", Example: "https://example.com/posts/1"}}
-	srv, err := NewServer(provider, filepath.Join(t.TempDir(), "monloader.toml"), q, monbooru.New(provider), fakeRunner{}, mapper, extractors, "1.32.1", sitestate.New())
+	srv, err := NewServer(provider, filepath.Join(t.TempDir(), "monloader.toml"), q, monbooru.New(provider), fakeRunner{}, mapper, extractors, "1.32.1", sitestate.New(), ptr.NewEngine(cfg.PTR), similarity.New(provider, mapper.CanonicalPostURL, mapper.PostURLFor))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,8 +144,8 @@ func TestQueueScreenHasPoll(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("status = %d", status)
 	}
-	if !strings.Contains(body, `hx-trigger="load, every 2s"`) {
-		t.Error("queue screen should poll every 2s")
+	if !strings.Contains(body, `hx-trigger="load, every 2s [!confirmOpen()]"`) {
+		t.Error("queue screen should poll every 2s, held while the confirm pop-in is open")
 	}
 	if !strings.Contains(body, "queue-rows") {
 		t.Error("queue screen should have the rows container")
@@ -165,11 +180,7 @@ func TestSettingsScreenSections(t *testing.T) {
 }
 
 func TestDefaultGalleryWarning(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	srv, ts := serveWeb(t, "")
 
 	// Without a monbooru pairing the default-gallery field is hidden entirely.
 	if _, body := get(t, ts, "/settings"); strings.Contains(body, `name="default_gallery"`) {
@@ -449,11 +460,7 @@ func TestConnLightUnconfigured(t *testing.T) {
 // URL set but no token, the probe is skipped and the state reads "unpaired", so
 // a first-run instance never claims its token was rejected.
 func TestConnLightUnpaired(t *testing.T) {
-	mb := monbooruStub()
-	defer mb.Close()
-	srv := newWebServer(t, mb.URL, "")
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	_, ts := serveWeb(t, "")
 	_, body := get(t, ts, "/internal/monbooru-status")
 	if !strings.Contains(body, `data-conn="unpaired"`) {
 		t.Errorf("configured-but-unpaired light should report unpaired, got %q", body)

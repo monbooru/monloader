@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,6 +27,8 @@ type Config struct {
 	GalleryDL       GalleryDLConfig  `toml:"gallerydl"`
 	Auth            AuthConfig       `toml:"auth"`
 	Log             LogConfig        `toml:"log"`
+	PTR             PTRConfig        `toml:"ptr"`
+	Lookup          LookupConfig     `toml:"lookup"`
 	Sites           []Site           `toml:"sites"`
 	TagOverrides    []TagOverride    `toml:"tag_overrides"`
 	RatingOverrides []RatingOverride `toml:"rating_overrides"`
@@ -126,6 +129,30 @@ func GenerateSecret() string {
 	return hex.EncodeToString(buf)
 }
 
+// IsHexHash reports whether s is exactly n hex characters (either case). The
+// web add bar and the API share it to recognize md5 and sha256 inputs.
+func IsHexHash(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// IsHTTPURL reports whether s is an absolute http(s) URL with a host - the
+// boundary check the web add bar and the API apply so a typo or non-URL is
+// rejected at the door instead of failing at resolve.
+func IsHTTPURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
 func newTokenID() string {
 	buf := make([]byte, 8)
 	_, _ = rand.Read(buf)
@@ -155,13 +182,7 @@ func ValidateTokenName(name string) error {
 // so the id, secret, and timestamp are stable across both applications.
 func GenerateToken(name string, scopes []string) (Token, string) {
 	secret := GenerateSecret()
-	return Token{
-		ID:        newTokenID(),
-		Name:      name,
-		TokenHash: HashToken(secret),
-		Scopes:    scopes,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-	}, secret
+	return TokenFromSecret(name, secret, scopes), secret
 }
 
 // TokenFromSecret builds a token whose hash matches a caller-provided secret.
@@ -225,6 +246,59 @@ type LogConfig struct {
 	Level string `toml:"level"`
 }
 
+// PTRConfig controls the optional Hydrus Public Tag Repository thin client. It
+// is disabled by default and downloads nothing until enabled; once enabled it
+// streams the repository's update history into a local SQLite index on its own
+// volume (never /config) and answers hash -> tags lookups by sha256.
+type PTRConfig struct {
+	Enabled bool `toml:"enabled"`
+	// DataPath is the dedicated volume holding the index; kept off /config so the
+	// tens-of-GB database never bloats the small config volume.
+	DataPath string `toml:"data_path"`
+	Address  string `toml:"address"`
+	// AccessKey authenticates every request; empty uses the PTR's published
+	// public read-only key.
+	AccessKey  string  `toml:"access_key"`
+	FetchSleep float64 `toml:"fetch_sleep"`
+	// MinFreeGB refuses to start the initial sync when the data volume has less
+	// free space, so a multi-tens-of-GB stream cannot fill the disk.
+	MinFreeGB int `toml:"min_free_gb"`
+}
+
+// PublicAccessKey is the PTR's published read-only access key (hydrus docs,
+// access_keys.html). It is not a secret; an operator may override it with a
+// personal or private-repository key via [ptr].access_key.
+const PublicAccessKey = "4a285629721ca442541ef2c15ea17d1f7f7578b0c3f4f5f2a05f8f0ab297786f"
+
+// EffectiveAccessKey is the configured access key, or the public key when none
+// is set.
+func (p PTRConfig) EffectiveAccessKey() string {
+	if p.AccessKey != "" {
+		return p.AccessKey
+	}
+	return PublicAccessKey
+}
+
+// LookupConfig parameterizes the hash-lookup chain's similarity stage: the
+// two image-similarity services and the score floor a candidate must clear.
+// A service's chain position shares one number space with the sites'
+// lookup_order, so exact-md5 searches and similarity queries interleave.
+type LookupConfig struct {
+	// MinSimilarity is the percent score below which a similarity candidate
+	// is ignored (1-100).
+	MinSimilarity int           `toml:"min_similarity"`
+	Iqdb          LookupService `toml:"iqdb"`
+	Saucenao      LookupService `toml:"saucenao"`
+}
+
+// LookupService is one similarity service's settings. Order is its chain
+// position (0 or absent = never queried). APIKey is saucenao's key; iqdb
+// authenticates with the danbooru [[sites]] credentials instead.
+type LookupService struct {
+	Order  int    `toml:"order"`
+	APIKey string `toml:"api_key,omitempty"`
+}
+
 // Site is one repeatable [[sites]] block: credentials and a per-source
 // target gallery, written into the managed gallery-dl config. Name is the
 // gallery-dl category (e.g. "gelbooru", "e621").
@@ -235,6 +309,9 @@ type Site struct {
 	UserID   string `toml:"user_id"`
 	Gallery  string `toml:"gallery"`
 	Cookies  string `toml:"cookies"`
+	// LookupOrder is the site's position in the booru hash-lookup walk
+	// (1 = first); 0 or absent keeps the site out of the walk entirely.
+	LookupOrder int `toml:"lookup_order,omitempty"`
 }
 
 // TagOverride routes a gallery-dl tag-category suffix to a monbooru
@@ -281,7 +358,45 @@ func Default() *Config {
 		Log: LogConfig{
 			Level: "warn",
 		},
+		PTR: PTRConfig{
+			DataPath:   "/ptr",
+			Address:    "https://ptr.hydrus.network:45871",
+			FetchSleep: 1.0,
+			MinFreeGB:  80,
+		},
+		Lookup: LookupConfig{
+			MinSimilarity: defaultMinSimilarity,
+			Iqdb:          LookupService{Order: 2},
+			Saucenao:      LookupService{Order: 3},
+		},
+		Sites: append([]Site(nil), defaultLookupSites...),
 	}
+}
+
+// defaultMinSimilarity is the similarity floor a candidate must clear: an
+// exact copy scores near 100 and the first wrong candidate far below (the
+// live probe saw 96 vs 20), so 80 separates cleanly.
+const defaultMinSimilarity = 80
+
+// defaultLookupSites is the exact-md5 half of the lookup chain a fresh
+// install gets. danbooru leads (best tags, free anonymous md5 metatag) with
+// the similarity services at 2-3 right behind it; gelbooru and rule34 are the
+// largest coverage but need an api key, so the chain skips them until one is
+// configured; e621, yandere, and konachan add anonymous reach.
+var defaultLookupSites = []Site{
+	{Name: "danbooru", LookupOrder: 1},
+	{Name: "gelbooru", LookupOrder: 4},
+	{Name: "rule34", LookupOrder: 5},
+	{Name: "e621", LookupOrder: 6},
+	{Name: "yandere", LookupOrder: 7},
+	{Name: "konachan", LookupOrder: 8},
+}
+
+// legacyLookupOrders is the walk seeded before the similarity services
+// existed. A config whose ordered sites all still match it was never
+// customized, so the upgrade seeding may renumber it into the current chain.
+var legacyLookupOrders = map[string]int{
+	"danbooru": 1, "gelbooru": 2, "rule34": 3, "e621": 4, "yandere": 5, "konachan": 6,
 }
 
 // Load reads the config (creating it with defaults when absent), applies
@@ -308,6 +423,50 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// seedLookupDefaults gives an existing config the same lookup defaults a fresh
+// install gets. A default site is added only when it has no block, so an
+// install that has configured a site (or cleared its order) keeps its choice.
+// A config with no [lookup] section predates the similarity services: when its
+// site orders were never customized they are renumbered into the current
+// chain, otherwise the services are appended after the operator's own order;
+// either way a cleared site stays cleared. A present [lookup] section - even
+// one with the services switched off - is never touched.
+func seedLookupDefaults(cfg *Config, hasLookup bool) {
+	legacy := true
+	for _, s := range cfg.Sites {
+		if s.LookupOrder > 0 && legacyLookupOrders[s.Name] != s.LookupOrder {
+			legacy = false
+			break
+		}
+	}
+	for _, d := range defaultLookupSites {
+		if cfg.FindSite(d.Name) == nil {
+			cfg.Sites = append(cfg.Sites, d)
+		}
+	}
+	if hasLookup {
+		return
+	}
+	if legacy {
+		for _, d := range defaultLookupSites {
+			if s := cfg.FindSite(d.Name); s.LookupOrder > 0 {
+				s.LookupOrder = d.LookupOrder
+			}
+		}
+		cfg.Lookup.Iqdb.Order = 2
+		cfg.Lookup.Saucenao.Order = 3
+		return
+	}
+	max := 0
+	for _, s := range cfg.Sites {
+		if s.LookupOrder > max {
+			max = s.LookupOrder
+		}
+	}
+	cfg.Lookup.Iqdb.Order = max + 1
+	cfg.Lookup.Saucenao.Order = max + 2
+}
+
 // LoadFromFile decodes the config file (or defaults when absent) and validates
 // it, without applying MONLOADER_* env overrides. This is the persistence
 // view: a settings save writes this layer so an ephemeral env value (e.g. a
@@ -315,14 +474,18 @@ func Load(path string) (*Config, error) {
 func LoadFromFile(path string) (*Config, error) {
 	cfg := Default()
 	if _, err := os.Stat(path); err == nil {
-		// Null the slices so the file's entries replace the (empty)
-		// defaults rather than appending to them.
+		// Null the slices and the lookup section so the file's entries replace
+		// the defaults rather than appending to (or resurrecting) them; the
+		// seeding below restores the defaults a pre-similarity file lacks.
 		cfg.Sites = nil
 		cfg.TagOverrides = nil
 		cfg.RatingOverrides = nil
-		if _, err := toml.DecodeFile(path, cfg); err != nil {
+		cfg.Lookup = LookupConfig{}
+		md, err := toml.DecodeFile(path, cfg)
+		if err != nil {
 			return nil, fmt.Errorf("parsing config file %q: %w", path, err)
 		}
+		seedLookupDefaults(cfg, md.IsDefined("lookup"))
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("checking config file: %w", err)
 	}
@@ -334,21 +497,34 @@ func LoadFromFile(path string) (*Config, error) {
 
 // Save marshals cfg to TOML and writes atomically to path.
 func Save(cfg *Config, path string) error {
+	return WriteFileAtomic(path, func(f *os.File) error {
+		if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+			return fmt.Errorf("encoding config: %w", err)
+		}
+		return nil
+	})
+}
+
+// WriteFileAtomic writes a file through a temp-then-rename in its directory,
+// so a crash mid-write can never leave a truncated file a later reader would
+// load broken. write streams the content into the temp file; both the config
+// and the managed gallery-dl config go through here.
+func WriteFileAtomic(path string, write func(f *os.File) error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating config directory: %w", err)
+		return fmt.Errorf("creating directory: %w", err)
 	}
-	tmpFile, err := os.CreateTemp(dir, ".monloader.toml.*")
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
-	tmpName := tmpFile.Name()
-	if err := toml.NewEncoder(tmpFile).Encode(cfg); err != nil {
-		tmpFile.Close()
+	tmpName := tmp.Name()
+	if err := write(tmp); err != nil {
+		tmp.Close()
 		os.Remove(tmpName)
-		return fmt.Errorf("encoding config: %w", err)
+		return err
 	}
-	if err := tmpFile.Close(); err != nil {
+	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("closing temp file: %w", err)
 	}
@@ -418,6 +594,10 @@ func applyEnvOverrides(cfg *Config) {
 		{"MONLOADER_GALLERYDL_COOKIES_DIR", &cfg.GalleryDL.CookiesDir},
 		{"MONLOADER_AUTH_PASSWORD_HASH", &cfg.Auth.PasswordHash},
 		{"MONLOADER_LOG_LEVEL", &cfg.Log.Level},
+		{"MONLOADER_PTR_DATA_PATH", &cfg.PTR.DataPath},
+		{"MONLOADER_PTR_ADDRESS", &cfg.PTR.Address},
+		{"MONLOADER_PTR_ACCESS_KEY", &cfg.PTR.AccessKey},
+		{"MONLOADER_LOOKUP_SAUCENAO_API_KEY", &cfg.Lookup.Saucenao.APIKey},
 	} {
 		if v := os.Getenv(o.env); v != "" {
 			*o.dst = v
@@ -429,6 +609,8 @@ func applyEnvOverrides(cfg *Config) {
 	}{
 		{"MONLOADER_DOWNLOADER_CONCURRENCY", &cfg.Downloader.Concurrency},
 		{"MONLOADER_DOWNLOADER_MAX_ITEMS_PER_JOB", &cfg.Downloader.MaxItemsPerJob},
+		{"MONLOADER_PTR_MIN_FREE_GB", &cfg.PTR.MinFreeGB},
+		{"MONLOADER_LOOKUP_MIN_SIMILARITY", &cfg.Lookup.MinSimilarity},
 	} {
 		if v := os.Getenv(o.env); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
@@ -441,9 +623,22 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.GalleryDL.SleepRequest = f
 		}
 	}
-	if v := os.Getenv("MONLOADER_AUTH_ENABLE_PASSWORD"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Auth.EnablePassword = b
+	if v := os.Getenv("MONLOADER_PTR_FETCH_SLEEP"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.PTR.FetchSleep = f
+		}
+	}
+	for _, o := range []struct {
+		env string
+		dst *bool
+	}{
+		{"MONLOADER_AUTH_ENABLE_PASSWORD", &cfg.Auth.EnablePassword},
+		{"MONLOADER_PTR_ENABLED", &cfg.PTR.Enabled},
+	} {
+		if v := os.Getenv(o.env); v != "" {
+			if b, err := strconv.ParseBool(v); err == nil {
+				*o.dst = b
+			}
 		}
 	}
 }
@@ -485,6 +680,24 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "warn"
+	}
+	if cfg.PTR.FetchSleep < 0 {
+		cfg.PTR.FetchSleep = 0
+	}
+	if cfg.PTR.Enabled && strings.TrimSpace(cfg.PTR.DataPath) == "" {
+		return fmt.Errorf("ptr.enabled is true but ptr.data_path is empty")
+	}
+	// An out-of-range similarity floor would either drop every candidate or
+	// accept garbage; snap a user-fixable typo to the default like the worker
+	// count above.
+	if cfg.Lookup.MinSimilarity < 1 || cfg.Lookup.MinSimilarity > 100 {
+		cfg.Lookup.MinSimilarity = defaultMinSimilarity
+	}
+	if cfg.Lookup.Iqdb.Order < 0 {
+		cfg.Lookup.Iqdb.Order = 0
+	}
+	if cfg.Lookup.Saucenao.Order < 0 {
+		cfg.Lookup.Saucenao.Order = 0
 	}
 	return nil
 }

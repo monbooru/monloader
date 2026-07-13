@@ -44,6 +44,11 @@ type Options struct {
 	// a zero-value Kind is a normal download.
 	Kind    JobKind
 	ImageID int64
+	// Backend, MD5, and SHA256 parameterize the hash-keyed kinds (see
+	// EnqueueLookup and EnqueueHashImport).
+	Backend string
+	MD5     string
+	SHA256  string
 }
 
 // Processor runs a job's full pipeline (resolve, download, map, push). It is
@@ -149,7 +154,8 @@ func (q *Queue) Enqueue(url string, opts Options) int64 {
 	// A fresh add (not a continuation) of a URL a recent job failed to fully
 	// import re-downloads past the archive, so a post whose push failed before is
 	// re-pushed rather than archive-skipped - the recovery a retry already does.
-	if opts.Root == 0 && q.lastRunUnimportedLocked(url) {
+	// Hash-keyed jobs enqueue with no URL, which must not match one another here.
+	if opts.Root == 0 && url != "" && q.lastRunUnimportedLocked(url) {
 		j.Force = true
 	}
 	q.index[id] = j
@@ -165,6 +171,24 @@ func (q *Queue) Enqueue(url string, opts Options) int64 {
 // does not wait behind a bulk download.
 func (q *Queue) EnqueueMetadata(imageID int64, gallery, url string) int64 {
 	return q.Enqueue(url, Options{Kind: KindMetadata, ImageID: imageID, Gallery: gallery, Priority: true})
+}
+
+// EnqueueLookup queues a hash lookup: find tags for the hash on the chosen
+// backend and enrich monbooru image imageID. Prioritized like a metadata
+// refetch - it answers a person waiting on an image page.
+func (q *Queue) EnqueueLookup(imageID int64, gallery, backend, md5, sha256 string) int64 {
+	return q.Enqueue("", Options{
+		Kind: KindLookup, ImageID: imageID, Gallery: gallery,
+		Backend: backend, MD5: md5, SHA256: sha256, Priority: true,
+	})
+}
+
+// EnqueueHashImport queues a hash import: resolve the md5 to a post via the
+// lookup walk, then download and push it like a submitted single post.
+func (q *Queue) EnqueueHashImport(md5 string, opts Options) int64 {
+	opts.Kind = KindHashImport
+	opts.MD5 = md5
+	return q.Enqueue("", opts)
 }
 
 // Get returns a snapshot of the job with the given id.

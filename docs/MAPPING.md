@@ -67,11 +67,22 @@ rating. A real source rating always wins.
 A bare media URL (gallery-dl's `directlink` extractor) has no booru post: the
 `source` is the file's host and the `url` is the file URL itself.
 
-## Commentary and notes
+## Commentary, original source, and notes
 
 Danbooru-family posts carry the artist's **commentary** and some families carry positional
 **notes** boxes overlaid on the image. Note bodies are reduced to plain text and pushed with their pixel coordinates.
-Monbooru overwrites a source's commentary and notes on each re-pull.
+Most boorus also declare the post's **original source** (the upstream artist URL, like Pixiv or Twitter);
+monloader reads it from the post's `source` field (`sources` list on e621, `source_url` on philomena boorus)
+and pushes it as the origin's original source, several entries joined one per line.
+Monbooru overwrites a source's commentary, original source, and notes on each re-pull.
+
+## Parent posts
+
+A post that declares a parent (booru parent/child, e.g. an edit or variant
+set) is pushed with the parent's canonical post URL. Once both posts are in
+the monbooru gallery - whichever arrived first - monbooru links the pair as a
+derivative relation, with the parent as the source. Pairs already related (or
+marked not related) in monbooru are left alone.
 
 ## Override tables
 
@@ -121,6 +132,7 @@ change. There are two levels:
   | `family` | `danbooru`, `e621`, `moebooru`, `gelbooru_v02`, `philomena`, or `generic` - picks the rating semantics and the per-category tag regime |
   | `kind` | `booru` (default) or `manga` - a manga gallery bundles its pages into one cbz |
   | `post_url_template` | the canonical post URL with `{id}` substituted (e.g. `https://danbooru.donmai.us/posts/{id}`) |
+  | `md5_search_template` | the site's md5 search URL with `{md5}` substituted, a form gallery-dl's tag-search extractor matches (e.g. `https://danbooru.donmai.us/posts?tags=md5:{md5}`); set it to make the site eligible for hash lookup |
   | `auth` | `none`, `api_optional`, `api_required`, or `cookies` - drives the settings login indicator |
   | `example` | a representative URL for the per-site test probe |
   | `category_overrides` | per-suffix tag-category remaps baked into the profile |

@@ -149,6 +149,11 @@ func pairJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// pairError writes the {code, error} shape every pairing refusal shares.
+func pairError(w http.ResponseWriter, status int, code, msg string) {
+	pairJSON(w, status, map[string]string{"code": code, "error": msg})
+}
+
 // removePairingLocal drops the token issued to a peer and, for the monbooru
 // pairing, the credential used to push back. It removes only locally - callers
 // that want the far end gone too notify the peer separately.
@@ -172,11 +177,11 @@ func (s *Server) extPairTeardown(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Current()
 	tok := cfg.FindTokenByHash(config.HashToken(strings.TrimPrefix(got, prefix)))
 	if !strings.HasPrefix(got, prefix) || tok == nil || tok.Paired == "" {
-		pairJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized", "error": "pairing token required"})
+		pairError(w, http.StatusUnauthorized, "unauthorized", "pairing token required")
 		return
 	}
 	if err := s.removePairingLocal(tok.Paired); err != nil {
-		pairJSON(w, http.StatusInternalServerError, map[string]string{"code": "remove_failed", "error": err.Error()})
+		pairError(w, http.StatusInternalServerError, "remove_failed", err.Error())
 		return
 	}
 	logx.Infof("pairing: %s removed the pairing remotely", tok.Paired)
@@ -192,16 +197,23 @@ func (s *Server) extPairRequest(w http.ResponseWriter, r *http.Request) {
 		RequestedScopes []string `json:"requested_scopes"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil || body.App == "" {
-		pairJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_request", "error": "app and a JSON body are required"})
+		pairError(w, http.StatusBadRequest, "invalid_request", "app and a JSON body are required")
+		return
+	}
+	// The monbooru peer name is minted only by the dedicated pairing flow; an
+	// extension request approved under it would flip the monbooru panel to a
+	// phantom "connected" state.
+	if strings.EqualFold(body.App, "monbooru") {
+		pairError(w, http.StatusBadRequest, "invalid_request", "app name \"monbooru\" is reserved")
 		return
 	}
 	if s.hasPairedToken(body.App) {
-		pairJSON(w, http.StatusConflict, map[string]string{"code": "already_paired", "error": "already paired with " + body.App + "; remove the existing pairing first"})
+		pairError(w, http.StatusConflict, "already_paired", "already paired with "+body.App+"; remove the existing pairing first")
 		return
 	}
 	id, ok := s.pairs.create(body.App, r.RemoteAddr, body.RequestedScopes)
 	if !ok {
-		pairJSON(w, http.StatusTooManyRequests, map[string]string{"code": "too_many_requests", "error": "too many pending pairing requests"})
+		pairError(w, http.StatusTooManyRequests, "too_many_requests", "too many pending pairing requests")
 		return
 	}
 	logx.Infof("pairing: request from %s", body.App)
@@ -214,7 +226,7 @@ func (s *Server) extPairStatus(w http.ResponseWriter, r *http.Request) {
 	setPairCORS(w, r)
 	req, ok := s.pairs.get(r.URL.Query().Get("id"))
 	if !ok {
-		pairJSON(w, http.StatusNotFound, map[string]string{"code": "not_found", "error": "unknown pairing request"})
+		pairError(w, http.StatusNotFound, "not_found", "unknown pairing request")
 		return
 	}
 	if req.State != pairApproved {
@@ -228,7 +240,7 @@ func (s *Server) extPairStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	secret, err := s.mintExtToken(cr)
 	if err != nil {
-		pairJSON(w, http.StatusInternalServerError, map[string]string{"code": "mint_failed", "error": err.Error()})
+		pairError(w, http.StatusInternalServerError, "mint_failed", err.Error())
 		return
 	}
 	s.pairs.remove(cr.ID)

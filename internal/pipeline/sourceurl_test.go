@@ -29,6 +29,27 @@ func TestPipelineItemCarriesSourceURL(t *testing.T) {
 	}
 }
 
+// A post that declares a parent carries the parent's canonical post URL on
+// the push, so monbooru can link the pair as a derivative relation.
+func TestPipelinePushCarriesParentURL(t *testing.T) {
+	item := danbooruPost("100002")
+	item.Meta["parent_id"] = float64(100001)
+	fake := &fakeRunner{resolved: []gdl.Item{item}, writeIdx: []int{0}}
+	var gotParent string
+	q, cleanup := testEnv(t, fake, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(32 << 20)
+		gotParent = r.FormValue("parent_url")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":7002}`))
+	})
+	defer cleanup()
+
+	waitJob(t, q, q.Enqueue("https://danbooru.donmai.us/posts/100002", queue.Options{}))
+	if gotParent != "https://danbooru.donmai.us/posts/100001" {
+		t.Errorf("pushed parent_url = %q, want the parent's post page", gotParent)
+	}
+}
+
 // A directlink (a bare media URL) has no booru post, but monloader still
 // provides the file's host as the source and the rebuilt file URL, both as the
 // queue item URL and the fields pushed to monbooru.

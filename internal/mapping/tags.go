@@ -30,6 +30,24 @@ func parseTagField(v any) []string {
 	}
 }
 
+// parseNameField reads a manga credit field (author, group, parody, ...) that
+// gallery-dl emits as either a list or a string. Unlike parseTagField it never
+// splits on whitespace: a string credit is one name ("Nakatani Nio"), or
+// several joined with commas, and splitting on spaces would fragment a
+// multi-word name into per-word tags.
+func parseNameField(v any) []string {
+	if s, ok := v.(string); ok {
+		var out []string
+		for _, name := range strings.Split(s, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				out = append(out, name)
+			}
+		}
+		return out
+	}
+	return parseTagField(v)
+}
+
 // tagSuffixes returns the per-category suffixes present in meta as
 // `tags_<suffix>` keys, sorted for deterministic output. The combined `tags`
 // key and the `tag_string_*` variants are not per-category fields and are

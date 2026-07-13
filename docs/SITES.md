@@ -49,6 +49,38 @@ For each site you use, the Settings page exposes:
 Saving a site rewrites the managed `gallery-dl.json` from the config; that file
 is never hand-edited.
 
+## The lookup chain
+
+Finding tags by file hash (see [PIPELINE.md](PIPELINE.md)) walks one ordered
+chain of sources and stops at the first match. A source is either:
+
+- **An exact md5 search** on a site whose booru indexes md5 - precise
+  but blind to a re-encoded or resized copy.
+- **A similarity service**: danbooru's iqdb instance (`iqdb`) or SauceNAO
+  (`saucenao`). These find visually matching posts (including re-encodes)
+  by uploading the image's thumbnail and
+  answering with candidate post URLs and scores. The best candidate at or
+  above the **min similarity** floor (default 80%) is then fetched through
+  gallery-dl like any pasted URL.
+
+The chain is edited in the Settings **lookup** section: drag a source between
+the dialog's **queried** and **not queried** columns; the queried column is
+asked top to bottom. 
+
+A source missing its credential is skipped (it costs nothing until
+configured):
+
+- `iqdb` uploads are refused by danbooru without API authentication, so it
+  uses the **danbooru** site block's username and api key. The account must
+  be at least Member level (email verified) - danbooru denies uploads from
+  restricted accounts even with a valid key. 
+- `saucenao` needs its own api key (free registration at saucenao.com; the
+  free tier allows roughly 100 queries a day, and monloader backs off while
+  the service reports the limit reached). Set it via the **key** dialog in
+  the lookup section.
+- The exact searches follow the sites' auth kinds.
+
+
 ## Cookies files
 
 For a `cookies` site, export your logged-in session as a `cookies.txt` and place it
@@ -68,13 +100,29 @@ The Settings rows write `[[sites]]` blocks. You can edit them directly instead:
 
 ```toml
 [[sites]]
-name    = "gelbooru"   # gallery-dl category
-api_key = ""
-user_id = ""
-gallery = "art"        # per-source target; empty = default_gallery
+name         = "gelbooru"   # gallery-dl category
+api_key      = ""
+user_id      = ""
+gallery      = "art"        # per-source target; empty = default_gallery
+lookup_order = 4            # lookup-chain position; omit to skip the site
 
 [[sites]]
 ...
+```
+
+The similarity services live in their own section, sharing the same number
+space:
+
+```toml
+[lookup]
+min_similarity = 80         # percent; candidates below are ignored
+
+[lookup.iqdb]
+order = 2                   # uses the danbooru [[sites]] credentials
+
+[lookup.saucenao]
+order   = 3
+api_key = ""                # from saucenao.com account settings
 ```
 
 `name` is the gallery-dl category. How a site's tags and rating are mapped, and

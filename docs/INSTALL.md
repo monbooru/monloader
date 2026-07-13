@@ -24,21 +24,14 @@ On first run monloader writes `/config/monloader.toml` with defaults and a
 managed `gallery-dl.json` alongside it. Most settings are editable from the
 Settings page.
 
-## Setting the token by hand
 
-Pairing is the simplest path, but you can supply a monbooru API token yourself
-instead. Generate a token in monbooru
-(**Settings -> Authentication**) and pass it as
-`MONLOADER_MONBOORU_API_TOKEN` (or set `[monbooru].api_token` in the TOML). A
-hand-set token pushes fine, but the footer connection light and the
-default-gallery dropdown stay hidden - they appear only once a pairing exists -
-so set `[monbooru].default_gallery` in the TOML if you want a fixed target.
 
 ## Volume layout
 
 | Mount | Purpose |
 |---|---|
 | `/config` | `monloader.toml`, the managed `gallery-dl.json`, the gallery-dl download-archive, and cookies files. |
+| `/ptr` | Optional. The local Hydrus PTR tag index, only when you enable the PTR lookup. Expect >70GB. See [PTR.md](PTR.md). |
 
 ## Environment variables
 
@@ -63,6 +56,14 @@ All override the TOML config. Pattern: `MONLOADER_{SECTION}_{KEY}`.
 | `MONLOADER_AUTH_ENABLE_PASSWORD` | `auth.enable_password` | bool |
 | `MONLOADER_AUTH_PASSWORD_HASH` | `auth.password_hash` | string |
 | `MONLOADER_LOG_LEVEL` | `log.level` | `warn` / `info` / `debug` |
+| `MONLOADER_PTR_ENABLED` | `ptr.enabled` | bool |
+| `MONLOADER_PTR_DATA_PATH` | `ptr.data_path` | string |
+| `MONLOADER_PTR_ADDRESS` | `ptr.address` | string |
+| `MONLOADER_PTR_ACCESS_KEY` | `ptr.access_key` | string |
+| `MONLOADER_PTR_FETCH_SLEEP` | `ptr.fetch_sleep` | float |
+| `MONLOADER_PTR_MIN_FREE_GB` | `ptr.min_free_gb` | int |
+| `MONLOADER_LOOKUP_MIN_SIMILARITY` | `lookup.min_similarity` | int |
+| `MONLOADER_LOOKUP_SAUCENAO_API_KEY` | `lookup.saucenao.api_key` | string |
 
 ## Custom CSS
 

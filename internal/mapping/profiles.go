@@ -4,8 +4,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
+	"strings"
 
+	"github.com/leqwin/monloader/internal/config"
 	"github.com/leqwin/monloader/internal/gdl"
 )
 
@@ -32,9 +35,13 @@ const (
 // it is carried here because gallery-dl's --list-extractors blanks the category
 // for the booru base extractors, so it cannot be looked up by category there.
 type Profile struct {
-	Family            string            `json:"family"`
-	Kind              string            `json:"kind,omitempty"`
-	PostURL           string            `json:"post_url_template"`
+	Family  string `json:"family"`
+	Kind    string `json:"kind,omitempty"`
+	PostURL string `json:"post_url_template"`
+	// MD5Search is the site's md5 search URL with {md5} substituted - a
+	// tag-search form gallery-dl's extractors match, so the hash lookup rides
+	// the normal resolve path. Absent for sites that do not index md5.
+	MD5Search         string            `json:"md5_search_template,omitempty"`
 	Auth              string            `json:"auth"`
 	Example           string            `json:"example,omitempty"`
 	CategoryOverrides map[string]string `json:"category_overrides,omitempty"`
@@ -63,6 +70,20 @@ func loadProfiles() (map[string]Profile, error) {
 		return nil, fmt.Errorf("decoding embedded profiles.json: %w", err)
 	}
 	return profiles, nil
+}
+
+// RequiredCredential names the credential a profile's auth kind demands and
+// whether the site config lacks it. The optional and none kinds demand
+// nothing. Both the lookup walk and the settings sites table gate on this, so
+// the two views cannot disagree about what a site needs.
+func RequiredCredential(auth string, site *config.Site) (label string, missing bool) {
+	switch auth {
+	case "api_required":
+		return "api key", site == nil || site.APIKey == ""
+	case "cookies":
+		return "cookies", site == nil || site.Cookies == ""
+	}
+	return "", false
 }
 
 // genericProfile is the fallback for any gallery-dl category without a
@@ -103,6 +124,135 @@ func (m *Mapper) ExampleURL(extractors []gdl.Extractor, category string) string 
 	return ""
 }
 
+// LookupURL builds a site's md5 search URL, or "" when its profile carries no
+// template (the site does not index md5, so it cannot be looked up).
+func (m *Mapper) LookupURL(category, md5 string) string {
+	p, ok := m.profiles[category]
+	if !ok || p.MD5Search == "" {
+		return ""
+	}
+	return strings.ReplaceAll(p.MD5Search, "{md5}", md5)
+}
+
+// PostURLFor builds a category's canonical post URL from a bare post id, or
+// "" when its profile carries no template.
+func (m *Mapper) PostURLFor(category, id string) string {
+	p, ok := m.profiles[category]
+	if !ok || p.PostURL == "" || id == "" {
+		return ""
+	}
+	return strings.ReplaceAll(p.PostURL, "{id}", id)
+}
+
+// hostIndex maps each templated profile's post-URL host (lowercased, www
+// stripped) to its category, so a URL can be recognized by host alone.
+func hostIndex(profiles map[string]Profile) map[string]string {
+	idx := map[string]string{}
+	for category, p := range profiles {
+		if p.PostURL == "" {
+			continue
+		}
+		if u, err := url.Parse(p.PostURL); err == nil && u.Host != "" {
+			idx[strings.TrimPrefix(strings.ToLower(u.Host), "www.")] = category
+		}
+	}
+	return idx
+}
+
+// CanonicalPostURL recognizes a curated site's post URL in any of its
+// historical forms - similarity services return links in decade-old
+// "post/show" shapes - and rebuilds it through the profile's template. The
+// host names the site; the id is the "id" query parameter or an all-digit
+// path segment sitting in a post position, so a curated-host link that is not
+// a post (/users/999, /pools/456) is dropped rather than rebuilt into one.
+func (m *Mapper) CanonicalPostURL(rawURL string) (site, canonical string, ok bool) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "", "", false
+	}
+	category, ok := m.hostSite[strings.TrimPrefix(strings.ToLower(u.Host), "www.")]
+	if !ok {
+		return "", "", false
+	}
+	id := u.Query().Get("id")
+	if id == "" {
+		id = postIDFromPath(u.Path, m.profiles[category].PostURL)
+	}
+	if id == "" || !allDigits(id) {
+		return "", "", false
+	}
+	return category, m.PostURLFor(category, id), true
+}
+
+// postPathMarkers are the segments that may precede a post id across the
+// families' current and historical URL shapes: /posts/123, /post/show/123,
+// /post/view/123.
+var postPathMarkers = map[string]bool{"posts": true, "post": true, "show": true, "view": true}
+
+// postIDFromPath finds the post id in a URL path: the last all-digit segment
+// in a post position - after a generic post marker, after the segment the
+// site's own template puts before {id}, or leading the path when the template
+// puts {id} first (zerochan, twibooru).
+func postIDFromPath(path, template string) string {
+	marker, rootOK := templateIDPosition(template)
+	segs := pathSegments(path)
+	var id string
+	for i, seg := range segs {
+		if !allDigits(seg) {
+			continue
+		}
+		switch {
+		case i == 0:
+			if rootOK {
+				id = seg
+			}
+		case postPathMarkers[segs[i-1]] || (marker != "" && segs[i-1] == marker):
+			id = seg
+		}
+	}
+	return id
+}
+
+// templateIDPosition locates {id} in a post-URL template's path: the segment
+// before it, and whether it leads the path. A template carrying {id} only in
+// its query (the gelbooru family) yields neither, so for such a site only the
+// id parameter or a generic marker names a post.
+func templateIDPosition(template string) (marker string, rootOK bool) {
+	u, err := url.Parse(template)
+	if err != nil {
+		return "", false
+	}
+	segs := pathSegments(u.Path)
+	for i, seg := range segs {
+		if strings.Contains(seg, "{id}") {
+			if i == 0 {
+				return "", true
+			}
+			return segs[i-1], false
+		}
+	}
+	return "", false
+}
+
+func pathSegments(path string) []string {
+	var out []string
+	for _, seg := range strings.Split(path, "/") {
+		if seg != "" {
+			out = append(out, seg)
+		}
+	}
+	return out
+}
+
+func allDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
 // KindOf returns a category's curated kind (KindBooru or KindManga). Unmapped
 // or unspecified sites are booru-shaped, so they push per post rather than
 // bundling into a cbz.
@@ -126,49 +276,45 @@ func needsNotesFamily(family string) bool {
 	return family == FamilyMoebooru || family == FamilyGelbooruV02
 }
 
+// curatedWhere returns the curated categories whose profile matches pred,
+// sorted.
+func (m *Mapper) curatedWhere(pred func(Profile) bool) []string {
+	var out []string
+	for category, p := range m.profiles {
+		if pred(p) {
+			out = append(out, category)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // CuratedCategories returns every curated gallery-dl category, sorted. The
 // sites endpoint surfaces each as a named entry so a multi-instance family
 // (gallery-dl lists the danbooru family only as danbooru.donmai.us) stays
 // recognizable by its other instance hosts, e.g. aibooru.online.
 func (m *Mapper) CuratedCategories() []string {
-	out := make([]string, 0, len(m.profiles))
-	for c := range m.profiles {
-		out = append(out, c)
-	}
-	sort.Strings(out)
-	return out
+	return m.curatedWhere(func(Profile) bool { return true })
 }
 
 // CuratedByKind returns the curated categories of a given kind (KindBooru or
 // KindManga), sorted, so the settings page can group them into two tables. A
 // profile with no kind set counts as a booru.
 func (m *Mapper) CuratedByKind(kind string) []string {
-	out := make([]string, 0, len(m.profiles))
-	for c, p := range m.profiles {
+	return m.curatedWhere(func(p Profile) bool {
 		pk := p.Kind
 		if pk == "" {
 			pk = KindBooru
 		}
-		if pk == kind {
-			out = append(out, c)
-		}
-	}
-	sort.Strings(out)
-	return out
+		return pk == kind
+	})
 }
 
 // FlatTagSites returns the curated categories whose family needs
 // `tags: true`, sorted. The gallery-dl config writer consumes this so those
 // sites emit categorized tags.
 func (m *Mapper) FlatTagSites() []string {
-	var out []string
-	for category, p := range m.profiles {
-		if needsTagsFamily(p.Family) || p.NeedsTags {
-			out = append(out, category)
-		}
-	}
-	sort.Strings(out)
-	return out
+	return m.curatedWhere(func(p Profile) bool { return needsTagsFamily(p.Family) || p.NeedsTags })
 }
 
 // MetadataSites returns the curated categories whose extractor needs
@@ -177,14 +323,7 @@ func (m *Mapper) FlatTagSites() []string {
 // (one extra request per noted post - the description rides the default post
 // fields, and the commentary token is ignored).
 func (m *Mapper) MetadataSites() []string {
-	var out []string
-	for category, p := range m.profiles {
-		if p.Family == FamilyDanbooru || p.Family == FamilyE621 {
-			out = append(out, category)
-		}
-	}
-	sort.Strings(out)
-	return out
+	return m.curatedWhere(func(p Profile) bool { return p.Family == FamilyDanbooru || p.Family == FamilyE621 })
 }
 
 // NotesSites returns the curated categories whose extractor emits positional
@@ -193,12 +332,5 @@ func (m *Mapper) MetadataSites() []string {
 // fetch already loads; sankaku-like sites (HasNotes) ask their notes API for
 // posts flagged as noted.
 func (m *Mapper) NotesSites() []string {
-	var out []string
-	for category, p := range m.profiles {
-		if needsNotesFamily(p.Family) || p.HasNotes {
-			out = append(out, category)
-		}
-	}
-	sort.Strings(out)
-	return out
+	return m.curatedWhere(func(p Profile) bool { return needsNotesFamily(p.Family) || p.HasNotes })
 }

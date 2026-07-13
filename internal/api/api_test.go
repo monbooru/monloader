@@ -102,7 +102,7 @@ func serveCfgTracked(t *testing.T, cfg *config.Config) (*httptest.Server, *sites
 		{Category: "weirdsite", Subcategory: "post", Example: "https://weird.example/1"},
 	}
 	siteState := sitestate.New()
-	h := New(q, fakeRunner{probe: gdl.ProbeResult{Status: gdl.ProbeOK}}, mapper, config.NewProvider(cfg), extractors, "v1.2.3", "1.32.1", siteState)
+	h := New(q, fakeRunner{probe: gdl.ProbeResult{Status: gdl.ProbeOK}}, mapper, config.NewProvider(cfg), extractors, "v1.2.3", "1.32.1", siteState, testPTR)
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)
@@ -742,4 +742,107 @@ func collectRefs(v any, out *[]string) {
 
 func itoa(n int64) string {
 	return strconv.FormatInt(n, 10)
+}
+
+func TestLookupEnqueues(t *testing.T) {
+	srv := newTestServer(t, "")
+	md5 := "0123456789ABCDEF0123456789abcdef"
+	resp, body := doJSON(t, "POST", srv.URL+"/api/v1/lookup", "",
+		`{"image_id":42,"backend":"booru","md5":"`+md5+`","gallery":"art"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %v", resp.StatusCode, body)
+	}
+	id, ok := body["job_id"].(float64)
+	if !ok {
+		t.Fatalf("expected job_id, got %v", body)
+	}
+	resp, job := doJSON(t, "GET", srv.URL+"/api/v1/queue/"+strconv.FormatInt(int64(id), 10), "", "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("get job status = %d", resp.StatusCode)
+	}
+	// The hash is normalized to lower case on the way in.
+	if job["kind"] != "lookup" || job["backend"] != "booru" || job["image_id"] != float64(42) ||
+		job["md5"] != strings.ToLower(md5) {
+		t.Errorf("job = %v, want a booru lookup keyed on the md5", job)
+	}
+
+	// The all backend queues without the PTR gate: a disabled PTR just means
+	// the job runs the booru walk alone.
+	resp, body = doJSON(t, "POST", srv.URL+"/api/v1/lookup", "",
+		`{"image_id":42,"backend":"all","md5":"`+md5+`","sha256":"`+strings.Repeat("a", 64)+`"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("all backend status = %d, want 202: %v", resp.StatusCode, body)
+	}
+
+	// With the PTR off the sha256 has no consumer, so an md5 alone queues too.
+	resp, body = doJSON(t, "POST", srv.URL+"/api/v1/lookup", "",
+		`{"image_id":42,"backend":"all","md5":"`+md5+`"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("all backend md5-only status = %d, want 202: %v", resp.StatusCode, body)
+	}
+}
+
+// The sha256 requirement on the all backend follows the PTR: demanded while it
+// is enabled, waived while it is off.
+func TestLookupAllRequiresSHA256WhenPTREnabled(t *testing.T) {
+	withPTR(t, &stubPTR{enabled: true})
+	srv := newTestServer(t, "")
+	resp, body := doJSON(t, "POST", srv.URL+"/api/v1/lookup", "",
+		`{"image_id":1,"backend":"all","md5":"0123456789abcdef0123456789abcdef"}`)
+	if resp.StatusCode != http.StatusBadRequest || body["code"] != "invalid_request" {
+		t.Errorf("all without sha256 (ptr on) = %d %v, want 400 invalid_request", resp.StatusCode, body)
+	}
+}
+
+func TestLookupValidation(t *testing.T) {
+	srv := newTestServer(t, "")
+	for _, tc := range []struct {
+		name, body string
+		status     int
+		code       string
+	}{
+		{"missing image_id", `{"backend":"booru","md5":"0123456789abcdef0123456789abcdef"}`, http.StatusBadRequest, "invalid_request"},
+		{"unknown backend", `{"image_id":1,"backend":"hydrus","md5":"0123456789abcdef0123456789abcdef"}`, http.StatusBadRequest, "invalid_request"},
+		{"missing backend", `{"image_id":1,"md5":"0123456789abcdef0123456789abcdef"}`, http.StatusBadRequest, "invalid_request"},
+		{"short md5", `{"image_id":1,"backend":"booru","md5":"abc"}`, http.StatusBadRequest, "invalid_request"},
+		{"non-hex md5", `{"image_id":1,"backend":"booru","md5":"zz23456789abcdef0123456789abcdef"}`, http.StatusBadRequest, "invalid_request"},
+		{"booru with only sha256", `{"image_id":1,"backend":"booru","sha256":"` + strings.Repeat("a", 64) + `"}`, http.StatusBadRequest, "invalid_request"},
+		{"ptr bad sha256", `{"image_id":1,"backend":"ptr","sha256":"abc"}`, http.StatusBadRequest, "invalid_request"},
+		{"ptr disabled", `{"image_id":1,"backend":"ptr","sha256":"` + strings.Repeat("a", 64) + `"}`, http.StatusConflict, "ptr_unavailable"},
+		{"all with only sha256", `{"image_id":1,"backend":"all","sha256":"` + strings.Repeat("a", 64) + `"}`, http.StatusBadRequest, "invalid_request"},
+		{"all with bad sha256", `{"image_id":1,"backend":"all","md5":"0123456789abcdef0123456789abcdef","sha256":"abc"}`, http.StatusBadRequest, "invalid_request"},
+		{"invalid json", `{`, http.StatusBadRequest, "invalid_request"},
+	} {
+		resp, body := doJSON(t, "POST", srv.URL+"/api/v1/lookup", "", tc.body)
+		if resp.StatusCode != tc.status {
+			t.Errorf("%s: status = %d, want %d", tc.name, resp.StatusCode, tc.status)
+		}
+		if body["code"] != tc.code {
+			t.Errorf("%s: code = %v, want %s", tc.name, body["code"], tc.code)
+		}
+	}
+}
+
+func TestEnqueueMD5FormImports(t *testing.T) {
+	srv := newTestServer(t, "")
+	resp, body := doJSON(t, "POST", srv.URL+"/api/v1/queue", "",
+		`{"url":"md5:0123456789abcdef0123456789abcdef","options":{"gallery":"art"}}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %v", resp.StatusCode, body)
+	}
+	id := int64(body["job_id"].(float64))
+	_, job := doJSON(t, "GET", srv.URL+"/api/v1/queue/"+strconv.FormatInt(id, 10), "", "")
+	if job["kind"] != "hash_import" || job["md5"] != "0123456789abcdef0123456789abcdef" || job["gallery"] != "art" {
+		t.Errorf("job = %v, want a hash import keyed on the md5", job)
+	}
+	// A malformed hash behind the prefix is a 400, not a URL error pass-through;
+	// a bare hash without the prefix stays a URL error.
+	resp, _ = doJSON(t, "POST", srv.URL+"/api/v1/queue", "", `{"url":"md5:xyz"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("md5:xyz status = %d, want 400", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, "POST", srv.URL+"/api/v1/queue", "", `{"url":"0123456789abcdef0123456789abcdef"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bare hash status = %d, want 400", resp.StatusCode)
+	}
 }

@@ -3,8 +3,8 @@
 {{range .Groups}}
 <tr class="job-row">
   <td class="st-{{.Lead.Status}}">{{.Lead.Status}}</td>
-  <td class="queue-url">{{.Lead.URL}}</td>
-  <td>{{.Lead.Site}}</td>
+  <td class="queue-url">{{.Lead.Subject}}</td>
+  <td>{{if .Lead.Kind}}<span class="job-kind" title="{{.Lead.Kind}} job">{{if eq .Lead.Kind "lookup"}}{{if eq .Lead.Backend "all"}}lookup{{else}}lookup:{{.Lead.Backend}}{{end}}{{else if eq .Lead.Kind "hash_import"}}import{{else}}{{.Lead.Kind}}{{end}}</span> {{end}}{{.Lead.Site}}</td>
   <td>{{.Lead.Gallery}}</td>
   <td class="queue-summary">
     {{if and (eq .Summary.Total 0) .Lead.ErrorCode}}
@@ -53,7 +53,7 @@
   <td colspan="6">
     <details data-job="{{.Root}}" open{{if not $active}} id="job-{{.Root}}" hx-preserve="true" hx-get="/internal/queue-rows/{{.Root}}/items" hx-trigger="load once" hx-target="find .job-items" hx-swap="innerHTML"{{end}}>
       <summary>{{len .Items}} item{{if ne (len .Items) 1}}s{{end}}{{$ph := .Phase}}{{if $ph}} <span class="job-phase job-phase-{{$ph}}">{{if eq $ph "downloading"}}downloading...{{else if eq $ph "pushing"}}pushing...{{else}}finished{{end}}</span>{{end}}</summary>
-      <div class="job-items">{{if $active}}{{template "queue_items_capped" (dict "Items" .Items "MonbooruURL" $.MonbooruURL)}}{{end}}</div>
+      <div class="job-items">{{if $active}}{{template "queue_items_capped" (dict "Items" .Items "MonbooruURL" $.MonbooruURL "Site" .Lead.Site)}}{{end}}</div>
     </details>
   </td>
 </tr>

@@ -38,7 +38,7 @@ func tempFile(t *testing.T, data []byte) string {
 
 func TestPushImageCreatedBareBody(t *testing.T) {
 	data := []byte("the image bytes")
-	var gotGallery, gotAuth, gotVia, gotSource, gotURL, gotCollection, gotOrder, gotTags, gotFilename string
+	var gotGallery, gotAuth, gotVia, gotSource, gotPostID, gotURL, gotOriginal, gotCollection, gotOrder, gotTags, gotFilename string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotGallery = r.URL.Query().Get("gallery")
 		gotAuth = r.Header.Get("Authorization")
@@ -47,7 +47,9 @@ func TestPushImageCreatedBareBody(t *testing.T) {
 		}
 		gotVia = r.FormValue("via")
 		gotSource = r.FormValue("source")
+		gotPostID = r.FormValue("post_id")
 		gotURL = r.FormValue("url")
+		gotOriginal = r.FormValue("original")
 		gotCollection = r.FormValue("collection")
 		gotOrder = r.FormValue("collection_order")
 		gotTags = r.FormValue("tags")
@@ -71,7 +73,9 @@ func TestPushImageCreatedBareBody(t *testing.T) {
 		Filename:        "post.jpg",
 		Tags:            []string{"1girl", "artist:x", "rating:general"},
 		Source:          "danbooru",
+		PostID:          "1",
 		URL:             "https://example.com/posts/1",
+		Original:        "https://www.pixiv.net/artworks/9",
 		Collection:      "pool name",
 		CollectionOrder: 2,
 		Via:             "monloader",
@@ -98,6 +102,12 @@ func TestPushImageCreatedBareBody(t *testing.T) {
 	}
 	if gotVia != "monloader" || gotSource != "danbooru" || gotURL != "https://example.com/posts/1" {
 		t.Errorf("provenance fields wrong: via=%q source=%q url=%q", gotVia, gotSource, gotURL)
+	}
+	if gotPostID != "1" {
+		t.Errorf("post_id field = %q, want 1", gotPostID)
+	}
+	if gotOriginal != "https://www.pixiv.net/artworks/9" {
+		t.Errorf("original field = %q, want the upstream source", gotOriginal)
 	}
 	if gotCollection != "pool name" || gotOrder != "2" {
 		t.Errorf("collection fields wrong: %q / %q", gotCollection, gotOrder)
@@ -153,7 +163,8 @@ func TestEnrichImageEnriched(t *testing.T) {
 	defer srv.Close()
 
 	res, err := testClient(srv.URL, "tok").EnrichImage(context.Background(), 42, "mygallery", EnrichPayload{
-		Tags: []string{"1girl"}, Source: "danbooru", URL: "https://d/1", SourceMD5: "abc", Verify: true, Commentary: "hi",
+		Tags: []string{"1girl"}, Source: "danbooru", PostID: "1", URL: "https://d/1", SourceMD5: "abc", Verify: true, Commentary: "hi",
+		Original: "https://www.pixiv.net/artworks/9",
 	})
 	if err != nil {
 		t.Fatalf("EnrichImage: %v", err)
@@ -175,6 +186,96 @@ func TestEnrichImageEnriched(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, `"verify":true`) || !strings.Contains(gotBody, `"commentary":"hi"`) {
 		t.Errorf("body missing verify/commentary: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"original":"https://www.pixiv.net/artworks/9"`) {
+		t.Errorf("body missing original: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"post_id":"1"`) {
+		t.Errorf("body missing post_id: %s", gotBody)
+	}
+}
+
+// The enrich payload trims to the same caps as the file-push form fields, so a
+// long-commentary refetch cannot be rejected where the same post's download
+// push would succeed.
+func TestEnrichImageTrimsLikePush(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	long := strings.Repeat("x", maxCommentaryLen+100)
+	_, err := testClient(srv.URL, "tok").EnrichImage(context.Background(), 1, "", EnrichPayload{
+		Source:     strings.Repeat("s", maxSourceLen+10),
+		PostID:     strings.Repeat("i", maxPostIDLen+10),
+		URL:        strings.Repeat("u", maxURLLen+10),
+		Commentary: long,
+		ParentURL:  strings.Repeat("p", maxURLLen+10),
+	})
+	if err != nil {
+		t.Fatalf("EnrichImage: %v", err)
+	}
+	var got EnrichPayload
+	if err := json.Unmarshal([]byte(gotBody), &got); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	for _, f := range []struct {
+		name string
+		len  int
+		max  int
+	}{
+		{"source", len(got.Source), maxSourceLen},
+		{"post_id", len(got.PostID), maxPostIDLen},
+		{"url", len(got.URL), maxURLLen},
+		{"commentary", len(got.Commentary), maxCommentaryLen},
+		{"parent_url", len(got.ParentURL), maxURLLen},
+	} {
+		if f.len != f.max {
+			t.Errorf("%s length = %d, want trimmed to %d", f.name, f.len, f.max)
+		}
+	}
+}
+
+func TestFetchThumbnail(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("jpegbytes"))
+	}))
+	defer srv.Close()
+
+	got, err := testClient(srv.URL, "tok").FetchThumbnail(context.Background(), 42, "mygallery")
+	if err != nil {
+		t.Fatalf("FetchThumbnail: %v", err)
+	}
+	if string(got) != "jpegbytes" {
+		t.Errorf("body = %q", got)
+	}
+	if gotPath != "/api/v1/images/42/thumbnail?gallery=mygallery" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("auth = %q", gotAuth)
+	}
+}
+
+func TestFetchThumbnailMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "image or thumbnail not found"})
+	}))
+	defer srv.Close()
+
+	_, err := testClient(srv.URL, "tok").FetchThumbnail(context.Background(), 42, "")
+	var ce *queue.CodedError
+	if !errors.As(err, &ce) || ce.Code != queue.ErrCodeMonbooruRejected {
+		t.Fatalf("err = %v, want CodedError monbooru_rejected", err)
 	}
 }
 

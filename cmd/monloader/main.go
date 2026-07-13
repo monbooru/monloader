@@ -18,7 +18,9 @@ import (
 	"github.com/leqwin/monloader/internal/mapping"
 	"github.com/leqwin/monloader/internal/monbooru"
 	"github.com/leqwin/monloader/internal/pipeline"
+	"github.com/leqwin/monloader/internal/ptr"
 	"github.com/leqwin/monloader/internal/queue"
+	"github.com/leqwin/monloader/internal/similarity"
 	"github.com/leqwin/monloader/internal/sitestate"
 	internalweb "github.com/leqwin/monloader/internal/web"
 	"golang.org/x/crypto/bcrypt"
@@ -90,12 +92,21 @@ func main() {
 	// One tracker shared by the pipeline and the web server: both record a reach
 	// (on a fetch and on a test probe), and the settings sites table reads it.
 	siteState := sitestate.New()
-	proc := pipeline.New(runner, mapper, client, provider, workRoot, siteState)
+
+	// The PTR thin client runs only when enabled; its context lives for the app
+	// so the sync goroutine stops within the shutdown drain.
+	ptrCtx, ptrCancel := context.WithCancel(context.Background())
+	defer ptrCancel()
+	ptrEngine := ptr.NewEngine(cfg.PTR)
+	ptrEngine.Start(ptrCtx)
+
+	sim := similarity.New(provider, mapper.CanonicalPostURL, mapper.PostURLFor)
+	proc := pipeline.New(runner, mapper, client, provider, workRoot, siteState, ptrEngine, sim)
 
 	q := queue.New(proc, cfg.Downloader.Concurrency, 100)
 	q.Start()
 
-	srv, err := internalweb.NewServer(provider, *configPath, q, client, runner, mapper, extractors, gdlVersion, siteState)
+	srv, err := internalweb.NewServer(provider, *configPath, q, client, runner, mapper, extractors, gdlVersion, siteState, ptrEngine, sim)
 	if err != nil {
 		log.Fatalf("FATAL creating web server: %v", err)
 	}
@@ -124,7 +135,8 @@ func main() {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutCtx)
-	q.Close() // cancels the in-flight job and waits for workers to exit
+	q.Close()           // cancels the in-flight job and waits for workers to exit
+	ptrEngine.Disable() // stops the sync goroutine and closes the index
 }
 
 // resolveWorkRoot picks the scratch directory for gallery-dl output: the
