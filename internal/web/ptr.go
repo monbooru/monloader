@@ -167,12 +167,13 @@ func (s *Server) ptrRedirect(w http.ResponseWriter, r *http.Request, kind, msg s
 	http.Redirect(w, r, "/ptr?kind="+kind+"&msg="+url.QueryEscape(msg), http.StatusSeeOther)
 }
 
-// humanDate formats a unix time as a UTC calendar date, or "" when unset.
+// humanDate formats a unix time as a calendar date in the process timezone,
+// or "" when unset.
 func humanDate(unix int64) string {
 	if unix <= 0 {
 		return ""
 	}
-	return time.Unix(unix, 0).UTC().Format("2006-01-02")
+	return time.Unix(unix, 0).In(time.Local).Format("2006-01-02")
 }
 
 // humanDue formats a unix due time as a short "in 14h" note, or "" when unset.

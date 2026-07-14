@@ -25,10 +25,12 @@ import (
 	webFS "github.com/leqwin/monloader/web"
 )
 
-// Version and RepoURL are set at build time via -ldflags (see the Makefile).
+// Version, RepoURL and DocURL are set at build time via -ldflags (see the
+// Makefile); DocURL comes from DOC.md.
 var (
 	Version = "dev"
 	RepoURL = "https://github.com/leqwin/monloader"
+	DocURL  = "https://leqwin.github.io/mondocs/addons/monloader/index.html"
 )
 
 // Server renders the three-screen htmx UI and mounts the JSON API on the same
@@ -204,7 +206,7 @@ func templateFuncs() template.FuncMap {
 		"humanSince":  humanSince,
 		"humanDue":    humanDue,
 		"humanDate":   humanDate,
-		"stampUTC":    stampUTC,
+		"stampLocal":  stampLocal,
 		"join":        strings.Join,
 		"itemCap":     func() int { return maxQueueItems },
 		"moreSummary": moreSummary,
@@ -271,9 +273,12 @@ func humanSince(t time.Time) string {
 	}
 }
 
-// stampUTC is the absolute form shown on hover beside the relative time.
-func stampUTC(t time.Time) string {
-	return t.UTC().Format("2006-01-02 15:04 UTC")
+// stampLocal is the absolute form shown on hover beside the relative time,
+// in the process timezone (time.Local, driven by TZ) so it matches the
+// operator's wall clock. The zone name is part of the format rather than a
+// fixed "UTC", so the stamp still says which clock it is on.
+func stampLocal(t time.Time) string {
+	return t.In(time.Local).Format("2006-01-02 15:04 MST")
 }
 
 // humanBytes formats a byte count with binary units (KiB, MiB, ...).
@@ -312,6 +317,7 @@ func (s *Server) base(r *http.Request, nav, title string) map[string]any {
 		"Version":          Version,
 		"GalleryDLVersion": s.gdlVersion,
 		"RepoURL":          RepoURL,
+		"DocURL":           DocURL,
 		"CustomCSS":        s.cfg.Current().Server.CustomCSS != "",
 		"BooruName":        s.booruName(),
 		"BooruLogo":        s.booruLogoURL(),

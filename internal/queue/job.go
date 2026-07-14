@@ -188,6 +188,12 @@ type jobState struct {
 	CreatedAt  time.Time `json:"created_at"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
+	// StatusChangedAt is stamped by every Status write, for the queue row's
+	// "how long in this state" note. Kept rather than derived from the three
+	// timestamps above because a retry re-queues a job while keeping its
+	// original CreatedAt, which would then read as the change time. The API
+	// carries the raw timestamps, so it is not on the wire.
+	StatusChangedAt time.Time `json:"-"`
 }
 
 // Job is a queued URL and its resolved items. The mutex guards every mutable
@@ -242,23 +248,24 @@ func validItemTransition(from, to ItemStatus) bool {
 func newJob(id int64, url string, opts Options, now time.Time) *Job {
 	return &Job{
 		jobState: jobState{
-			ID:        id,
-			URL:       url,
-			Status:    JobQueued,
-			Kind:      opts.Kind,
-			ImageID:   opts.ImageID,
-			Backend:   opts.Backend,
-			MD5:       opts.MD5,
-			SHA256:    opts.SHA256,
-			Site:      opts.Site,
-			Gallery:   opts.Gallery,
-			Folder:    opts.Folder,
-			MaxItems:  opts.MaxItems,
-			Offset:    opts.Offset,
-			Root:      opts.Root,
-			Auto:      opts.Auto,
-			Priority:  opts.Priority,
-			CreatedAt: now,
+			ID:              id,
+			URL:             url,
+			Status:          JobQueued,
+			Kind:            opts.Kind,
+			ImageID:         opts.ImageID,
+			Backend:         opts.Backend,
+			MD5:             opts.MD5,
+			SHA256:          opts.SHA256,
+			Site:            opts.Site,
+			Gallery:         opts.Gallery,
+			Folder:          opts.Folder,
+			MaxItems:        opts.MaxItems,
+			Offset:          opts.Offset,
+			Root:            opts.Root,
+			Auto:            opts.Auto,
+			Priority:        opts.Priority,
+			CreatedAt:       now,
+			StatusChangedAt: now,
 		},
 		done: make(chan struct{}),
 	}
@@ -274,6 +281,7 @@ func (j *Job) start(now time.Time) error {
 	}
 	j.Status = JobRunning
 	j.StartedAt = now
+	j.StatusChangedAt = now
 	return nil
 }
 
@@ -369,6 +377,14 @@ func (j *Job) status() JobStatus {
 	return j.Status
 }
 
+// finishedAt reads the job's terminal timestamp under the lock, for the
+// history sweep scanning the ring while holding the queue lock.
+func (j *Job) finishedAt() time.Time {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.FinishedAt
+}
+
 // seriesKey identifies the continue-series a job belongs to. Root is set for
 // every job routed through Enqueue; the fallback covers a job built directly.
 // Both fields are immutable after creation, so no lock is taken.
@@ -446,7 +462,7 @@ func (j *Job) cancel(now time.Time) {
 // summary, error, site, and timestamps zero out, and done is re-armed. The
 // re-run bypasses the download-archive when force is set or the prior run did
 // not fully import (failed or partial).
-func (j *Job) reset(force bool) error {
+func (j *Job) reset(force bool, now time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if !validJobTransition(j.Status, JobQueued) {
@@ -473,13 +489,14 @@ func (j *Job) reset(force bool) error {
 		// A job that did not fully import has items whose download landed in the
 		// archive but whose push never reached monbooru; retrying past the archive
 		// re-downloads and re-pushes them instead of archive-skipping them.
-		Force:     force || j.Status == JobFailed || j.Status == JobPartial,
-		MaxItems:  j.MaxItems,
-		Offset:    j.Offset,
-		Root:      j.Root,
-		Auto:      j.Auto,
-		Priority:  j.Priority,
-		CreatedAt: j.CreatedAt,
+		Force:           force || j.Status == JobFailed || j.Status == JobPartial,
+		MaxItems:        j.MaxItems,
+		Offset:          j.Offset,
+		Root:            j.Root,
+		Auto:            j.Auto,
+		Priority:        j.Priority,
+		CreatedAt:       j.CreatedAt,
+		StatusChangedAt: now,
 	}
 	j.finalized = false
 	j.done = make(chan struct{})
@@ -509,6 +526,7 @@ func (j *Job) failPendingItems(code, msg string) {
 func (j *Job) markFinishedLocked(now time.Time) {
 	j.finalized = true
 	j.FinishedAt = now
+	j.StatusChangedAt = now
 }
 
 // signalDone closes the done channel exactly once. Called by the queue once

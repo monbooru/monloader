@@ -97,6 +97,11 @@
           <input type="text" name="default_folder" value="{{.Cfg.Downloader.DefaultFolder}}">
           <span class="field-hint">monbooru subfolder for pushes</span>
         </div>
+        <div class="field">
+          <label>clear history after (days)</label>
+          <input type="text" name="history_retention_days" value="{{.Cfg.Downloader.HistoryRetentionDays}}">
+          <span class="field-hint">drop finished downloads from the queue; 0 keeps them</span>
+        </div>
       </div>
       <div class="section-actions">
         <button type="submit">save</button>

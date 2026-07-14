@@ -1,5 +1,17 @@
 # Changelog
 
+## [v1.4.1] - 2026-07-14
+### Added
+- Queue rows show how long a job has been in its current status.
+- Finished jobs age out of history after `downloader.history_retention_days` (default 7).
+
+### Changed
+- Displayed timestamps follow the TZ timezone instead of always showing UTC.
+- User documentation moved.
+
+### Fixed
+- A fully-synced PTR index no longer holds ~500 MB resident while sitting idle.
+
 ## [v1.4.0] - 2026-07-13
 ### Added
 - A new PTR page syncs the hydrus Public Tag Repository to a local hash-and-tag index. ([#7](https://github.com/leqwin/monloader/issues/7))

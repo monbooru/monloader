@@ -146,6 +146,7 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 
 .token-scope-list { list-style: none; padding-left: 0; margin: 8px 0; }
 .queue-summary span { display: block; white-space: nowrap; }
+.job-time { display: block; color: var(--fg-dim); font-size: 12px; }
 .queue-table .job-row:has(+ .items-row) td { border-bottom: none; }
 .items-row td { border-top: none; padding-top: 0; }
 .items-row details { margin-left: 16px; border-left: 2px solid var(--accent); padding-left: 12px; }

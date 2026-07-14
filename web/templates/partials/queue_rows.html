@@ -2,7 +2,7 @@
 {{if not .Groups}}<tr><td colspan="6" class="hint">queue is empty</td></tr>{{end}}
 {{range .Groups}}
 <tr class="job-row">
-  <td class="st-{{.Lead.Status}}">{{.Lead.Status}}</td>
+  <td class="st-{{.Lead.Status}}">{{.Lead.Status}}<span class="job-time" title="{{stampLocal .Lead.StatusChangedAt}}">{{humanSince .Lead.StatusChangedAt}}</span></td>
   <td class="queue-url">{{.Lead.Subject}}</td>
   <td>{{if .Lead.Kind}}<span class="job-kind" title="{{.Lead.Kind}} job">{{if eq .Lead.Kind "lookup"}}{{if eq .Lead.Backend "all"}}lookup{{else}}lookup:{{.Lead.Backend}}{{end}}{{else if eq .Lead.Kind "hash_import"}}import{{else}}{{.Lead.Kind}}{{end}}</span> {{end}}{{.Lead.Site}}</td>
   <td>{{.Lead.Gallery}}</td>

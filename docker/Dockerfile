@@ -6,8 +6,9 @@ RUN go mod download
 COPY . .
 RUN VERSION=$(cat VERSION.md 2>/dev/null | tr -d '[:space:]') && \
     REPO=$(cat REPOSITORY.md 2>/dev/null | tr -d '[:space:]') && \
+    DOC=$(cat DOC.md 2>/dev/null | tr -d '[:space:]') && \
     CGO_ENABLED=0 go build \
-      -ldflags="-s -w -X 'github.com/leqwin/monloader/internal/web.Version=${VERSION}' -X 'github.com/leqwin/monloader/internal/web.RepoURL=${REPO}'" \
+      -ldflags="-s -w -X 'github.com/leqwin/monloader/internal/web.Version=${VERSION}' -X 'github.com/leqwin/monloader/internal/web.RepoURL=${REPO}' -X 'github.com/leqwin/monloader/internal/web.DocURL=${DOC}'" \
       -o /monloader ./cmd/monloader
 
 # Stage 2: runtime. Needs Python for the gallery-dl subprocess.

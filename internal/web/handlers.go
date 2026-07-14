@@ -614,6 +614,11 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 		if n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("max_items_per_job"))); err == nil && n > 0 {
 			c.Downloader.MaxItemsPerJob = n
 		}
+		// Zero is meaningful here (keep history until the ring evicts it), so
+		// unlike the caps above it is accepted rather than treated as unset.
+		if n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("history_retention_days"))); err == nil && n >= 0 {
+			c.Downloader.HistoryRetentionDays = n
+		}
 		c.Downloader.DefaultFolder = strings.TrimSpace(r.FormValue("default_folder"))
 		return nil
 	})
@@ -622,6 +627,7 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.rewriteGDLConfig()
+	s.queue.SetRetention(s.cfg.Current().Downloader.HistoryRetention())
 	s.redirectFlash(w, r, "ok", "download settings saved")
 }
 
@@ -755,7 +761,7 @@ func siteState(w http.ResponseWriter, kind, msg, detail string, lastReached time
 		fmt.Fprintf(w, `<span class="flash-%s">%s</span>`, kind, html.EscapeString(msg))
 	}
 	if !lastReached.IsZero() {
-		fmt.Fprintf(w, ` <span class="site-last" title="last reached %s">%s</span>`, stampUTC(lastReached), humanSince(lastReached))
+		fmt.Fprintf(w, ` <span class="site-last" title="last reached %s">%s</span>`, stampLocal(lastReached), humanSince(lastReached))
 	}
 }
 

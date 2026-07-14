@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	// Embed the zoneinfo database so TZ resolves to a real location even
+	// on a base image that ships no tzdata files.
+	_ "time/tzdata"
 
 	"github.com/leqwin/monloader/internal/config"
 	"github.com/leqwin/monloader/internal/gdl"
@@ -104,6 +107,7 @@ func main() {
 	proc := pipeline.New(runner, mapper, client, provider, workRoot, siteState, ptrEngine, sim)
 
 	q := queue.New(proc, cfg.Downloader.Concurrency, 100)
+	q.SetRetention(cfg.Downloader.HistoryRetention())
 	q.Start()
 
 	srv, err := internalweb.NewServer(provider, *configPath, q, client, runner, mapper, extractors, gdlVersion, siteState, ptrEngine, sim)

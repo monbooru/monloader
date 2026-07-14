@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -58,10 +59,13 @@ CREATE INDEX IF NOT EXISTS tags_by_name ON tags(tag);
 CREATE INDEX IF NOT EXISTS siblings_by_good ON siblings(good_tag_id);
 `
 
-// Store is the local PTR index over SQLite.
+// Store is the local PTR index over SQLite. The replay gets its own handle:
+// the page cache is per connection, and only the replay's randomly-landing
+// inserts are worth a large one (see replayCacheKB).
 type Store struct {
-	db   *sql.DB
-	path string
+	db     *sql.DB
+	replay *sql.DB
+	path   string
 }
 
 // Counts is the row census the status endpoint and the ptr page show.
@@ -76,6 +80,45 @@ type Counts struct {
 // ErrSchemaMismatch means the on-disk index was written by a different schema
 // version and must be rebuilt (delete and re-sync).
 var ErrSchemaMismatch = fmt.Errorf("ptr index schema mismatch; rebuild required")
+
+// Page-cache budgets, in KB (sqlite's negative cache_size form), one per
+// handle. Only the replay earns a large cache: its inserts land randomly in
+// the mappings and hashes B-trees, which end far past any cache, so keeping
+// the hot upper levels resident is what keeps the insert rate from sagging as
+// the index grows. Nothing on the shared handle benefits - a lookup is a
+// B-tree descent touching a handful of pages, and the census is a sequential
+// scan that streams the whole index past the cache reusing nothing, so a large
+// budget there is pollution the per-connection, never-shrinking cache then
+// holds onto. A small one also bounds what the pool can hold at once.
+const (
+	replayCacheKB = 256 * 1024
+	queryCacheKB  = 16 * 1024
+)
+
+// dsn builds a connection string for one handle. WAL with normal synchronous
+// fsyncs only at each slice-transaction commit, so a crash loses at most the
+// slice in flight, which the cursor makes resumable.
+func dsn(path string, cacheKB int) string {
+	return "file:" + path +
+		"?_pragma=busy_timeout(10000)" +
+		"&_pragma=journal_mode(wal)" +
+		"&_pragma=synchronous(normal)" +
+		"&_pragma=cache_size(-" + strconv.Itoa(cacheKB) + ")" +
+		"&_pragma=temp_store(memory)"
+}
+
+// idleConnWindow bounds how long the pool parks an idle connection. The page
+// cache is per connection and only ever grows, so a connection that filled it
+// during a sync would pin its cache for the life of the process - the pool
+// keeps idle connections forever otherwise. Closing one hands the pages back
+// to the OS; a GC cannot, since the memory is sqlite's rather than the Go
+// heap's. The window outlasts the gap between two slice transactions
+// (fetch_sleep, seconds) so a running sync keeps its warm cache, and undercuts
+// the engine's caught-up poll so an idle index is not held open by the poll
+// refreshing the timer. A lookup after the pool drains reopens cold, which
+// costs it well under a millisecond of B-tree descent. A var so tests can
+// shorten it.
+var idleConnWindow = 2 * time.Minute
 
 // OpenStore opens (creating if absent) the index under dataPath. The pragmas
 // favor a large sequential build: WAL with normal synchronous fsyncs only at
@@ -93,29 +136,28 @@ func OpenStore(dataPath string) (*Store, error) {
 		return nil, err
 	}
 	path := filepath.Join(dataPath, dbFile)
-	// 256 MB of page cache: the mappings and hashes B-trees end far past any
-	// cache, and their keys land randomly, so keeping the hot upper tree
-	// levels resident is what keeps the insert rate from sagging as the
-	// index grows.
-	dsn := "file:" + path +
-		"?_pragma=busy_timeout(10000)" +
-		"&_pragma=journal_mode(wal)" +
-		"&_pragma=synchronous(normal)" +
-		"&_pragma=cache_size(-262144)" +
-		"&_pragma=temp_store(memory)"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", dsn(path, queryCacheKB))
 	if err != nil {
 		return nil, fmt.Errorf("opening ptr index: %w", err)
 	}
-	// A single writer serializes the sync replay; reads share it.
 	db.SetMaxOpenConns(4)
-	if _, err := db.Exec(schema); err != nil {
+	db.SetConnMaxIdleTime(idleConnWindow)
+	// A single writer serializes the sync replay, on its own handle so its
+	// large page cache cannot spread to the pool the lookups share.
+	replay, err := sql.Open("sqlite", dsn(path, replayCacheKB))
+	if err != nil {
 		_ = db.Close()
+		return nil, fmt.Errorf("opening ptr index: %w", err)
+	}
+	replay.SetMaxOpenConns(1)
+	replay.SetConnMaxIdleTime(idleConnWindow)
+	s := &Store{db: db, replay: replay, path: path}
+	if _, err := db.Exec(schema); err != nil {
+		_ = s.Close()
 		return nil, fmt.Errorf("creating ptr schema: %w", err)
 	}
-	s := &Store{db: db, path: path}
 	if err := s.checkSchemaVersion(); err != nil {
-		_ = db.Close()
+		_ = s.Close()
 		return nil, err
 	}
 	return s, nil
@@ -185,7 +227,13 @@ func (s *Store) checkSchemaVersion() error {
 }
 
 // Close closes the index.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	err := s.db.Close()
+	if rerr := s.replay.Close(); err == nil {
+		err = rerr
+	}
+	return err
+}
 
 // Path is the index file path.
 func (s *Store) Path() string { return s.path }
@@ -247,7 +295,7 @@ func (s *Store) SetCoveredThrough(ts int64) error {
 // syncs); the small tables are re-counted in-transaction when touched, which
 // keeps the sibling upsert exact. It returns the new census.
 func (s *Store) Replay(index uint64, coveredThrough int64, updates []*Update) (c Counts, err error) {
-	tx, err := s.db.Begin()
+	tx, err := s.replay.Begin()
 	if err != nil {
 		return c, err
 	}

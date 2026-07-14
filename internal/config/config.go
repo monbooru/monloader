@@ -67,6 +67,14 @@ type DownloaderConfig struct {
 	Concurrency    int    `toml:"concurrency"`
 	MaxItemsPerJob int    `toml:"max_items_per_job"`
 	DefaultFolder  string `toml:"default_folder"`
+	// HistoryRetentionDays drops a finished job from the queue's recent-history
+	// ring once it is this old; 0 keeps it until the ring's bound evicts it.
+	HistoryRetentionDays int `toml:"history_retention_days"`
+}
+
+// HistoryRetention is the retention window as a duration, for the queue.
+func (d DownloaderConfig) HistoryRetention() time.Duration {
+	return time.Duration(d.HistoryRetentionDays) * 24 * time.Hour
 }
 
 // GalleryDLConfig controls the gallery-dl subprocess. ConfigPath is the
@@ -341,9 +349,10 @@ func Default() *Config {
 			APIURL: "http://monbooru:8080",
 		},
 		Downloader: DownloaderConfig{
-			Concurrency:    1,
-			MaxItemsPerJob: 200,
-			DefaultFolder:  "downloads",
+			Concurrency:          1,
+			MaxItemsPerJob:       200,
+			DefaultFolder:        "downloads",
+			HistoryRetentionDays: 7,
 		},
 		GalleryDL: GalleryDLConfig{
 			BinaryPath:   "gallery-dl",
@@ -609,6 +618,7 @@ func applyEnvOverrides(cfg *Config) {
 	}{
 		{"MONLOADER_DOWNLOADER_CONCURRENCY", &cfg.Downloader.Concurrency},
 		{"MONLOADER_DOWNLOADER_MAX_ITEMS_PER_JOB", &cfg.Downloader.MaxItemsPerJob},
+		{"MONLOADER_DOWNLOADER_HISTORY_RETENTION_DAYS", &cfg.Downloader.HistoryRetentionDays},
 		{"MONLOADER_PTR_MIN_FREE_GB", &cfg.PTR.MinFreeGB},
 		{"MONLOADER_LOOKUP_MIN_SIMILARITY", &cfg.Lookup.MinSimilarity},
 	} {
@@ -671,6 +681,11 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Downloader.MaxItemsPerJob <= 0 {
 		cfg.Downloader.MaxItemsPerJob = 200
+	}
+	// A negative window would expire every job the moment it finished; read it
+	// as "no age limit" rather than fail a user-fixable typo.
+	if cfg.Downloader.HistoryRetentionDays < 0 {
+		cfg.Downloader.HistoryRetentionDays = 0
 	}
 	if cfg.GalleryDL.SleepRequest < 0 {
 		cfg.GalleryDL.SleepRequest = 0

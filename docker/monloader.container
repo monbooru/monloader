@@ -13,6 +13,7 @@ Volume=/path/to/monloader/config:/config
 Environment=MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8081
 Environment=MONLOADER_MONBOORU_API_URL=http://monbooru:8080
 Environment=MONLOADER_MONBOORU_WEB_URL=http://localhost:8080
+#Environment=TZ=Etc/UTC
 
 HealthCmd=["/usr/local/bin/monloader","healthcheck","-config","/config/monloader.toml"]
 HealthInterval=30s

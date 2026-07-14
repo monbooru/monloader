@@ -170,15 +170,25 @@ func TestSaveDownloader(t *testing.T) {
 	srv, ts := serveWeb(t, "")
 
 	resp := postForm(t, ts, srv, "/settings/downloader", url.Values{
-		"concurrency":       {"3"},
-		"sleep_request":     {"2.5"},
-		"max_items_per_job": {"42"},
-		"default_folder":    {"incoming"},
+		"concurrency":            {"3"},
+		"sleep_request":          {"2.5"},
+		"max_items_per_job":      {"42"},
+		"default_folder":         {"incoming"},
+		"history_retention_days": {"3"},
 	})
 	resp.Body.Close()
 	if srv.cfg.Current().Downloader.Concurrency != 3 || srv.cfg.Current().GalleryDL.SleepRequest != 2.5 ||
-		srv.cfg.Current().Downloader.MaxItemsPerJob != 42 || srv.cfg.Current().Downloader.DefaultFolder != "incoming" {
+		srv.cfg.Current().Downloader.MaxItemsPerJob != 42 || srv.cfg.Current().Downloader.DefaultFolder != "incoming" ||
+		srv.cfg.Current().Downloader.HistoryRetentionDays != 3 {
 		t.Errorf("downloader config not saved: %+v %+v", srv.cfg.Current().Downloader, srv.cfg.Current().GalleryDL.SleepRequest)
+	}
+
+	// Zero turns the age limit off, so it must be saved rather than read as an
+	// unset field the way the caps above are.
+	resp = postForm(t, ts, srv, "/settings/downloader", url.Values{"history_retention_days": {"0"}})
+	resp.Body.Close()
+	if got := srv.cfg.Current().Downloader.HistoryRetentionDays; got != 0 {
+		t.Errorf("history_retention_days = %d, want 0 to be accepted as no age limit", got)
 	}
 }
 

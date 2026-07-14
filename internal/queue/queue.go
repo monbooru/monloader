@@ -75,8 +75,11 @@ type Queue struct {
 	finished    []*Job
 	index       map[int64]*Job
 	maxFinished int
-	nextID      int64
-	closed      bool
+	// retention drops finished jobs older than this from the ring; zero keeps
+	// them until the bound evicts them.
+	retention time.Duration
+	nextID    int64
+	closed    bool
 	// paused holds a global download pause: workers finish the job in flight
 	// but pick up no new one while set, so submissions queue behind a manual
 	// resume. It survives no restart (the queue itself is in memory).
@@ -117,6 +120,15 @@ func New(proc Processor, workers, maxFinished int) *Queue {
 // the queue is built, so changing downloader.concurrency takes effect only on
 // restart.
 func (q *Queue) Workers() int { return q.workers }
+
+// SetRetention bounds how long a finished job stays in the recent-history
+// ring; zero or less keeps every job the bound allows. Settable rather than
+// fixed at New so a settings save takes effect without a restart.
+func (q *Queue) SetRetention(d time.Duration) {
+	q.mu.Lock()
+	q.retention = d
+	q.mu.Unlock()
+}
 
 // Pause holds the queue: workers finish any job already running but start no
 // new one until Resume. Submissions still enqueue and wait their turn.
@@ -213,6 +225,10 @@ type ListOptions struct {
 // paginated, plus the total number of matching jobs (pre-pagination).
 func (q *Queue) List(opts ListOptions) ([]*Job, int) {
 	q.mu.Lock()
+	// Every caller that shows history reads it through here, so aging the ring
+	// on the way out keeps expired jobs from surfacing without a sweep timer of
+	// its own; the queue view's poll drives it often enough.
+	q.sweepFinishedLocked(q.now())
 	all := make([]*Job, 0, len(q.index))
 	for _, j := range q.index {
 		all = append(all, j)
@@ -258,7 +274,7 @@ func (q *Queue) Retry(id int64, force bool) error {
 	if j == nil {
 		return ErrNotFound
 	}
-	if err := j.reset(force); err != nil {
+	if err := j.reset(force, q.now()); err != nil {
 		return err
 	}
 	q.removeFromFinishedLocked(id)
@@ -476,6 +492,30 @@ func (q *Queue) removeFromFinishedLocked(id int64) {
 			return
 		}
 	}
+}
+
+// sweepFinishedLocked drops finished jobs whose terminal time is older than
+// the retention window, so an instance left running for weeks does not show
+// history from weeks ago. Caller holds mu.
+func (q *Queue) sweepFinishedLocked(now time.Time) {
+	if q.retention <= 0 {
+		return
+	}
+	cutoff := now.Add(-q.retention)
+	kept := q.finished[:0]
+	for _, j := range q.finished {
+		if j.finishedAt().Before(cutoff) {
+			delete(q.index, j.ID)
+			continue
+		}
+		kept = append(kept, j)
+	}
+	// Null the vacated tail before reslicing, for the reason pushFinishedLocked
+	// gives: a dropped job stays reachable in the backing array otherwise.
+	for i := len(kept); i < len(q.finished); i++ {
+		q.finished[i] = nil
+	}
+	q.finished = kept
 }
 
 // pushFinishedLocked appends a finished job to the ring and evicts the

@@ -146,7 +146,7 @@ func TestRetryKeepsBackLinkOnArchiveSkip(t *testing.T) {
 	})
 	j.Finalize(time.Now())
 
-	if err := j.reset(false); err != nil {
+	if err := j.reset(false, time.Now()); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	j.SetItems([]Item{{PostID: "489"}})
@@ -237,6 +237,92 @@ func TestRingEvictsPastBound(t *testing.T) {
 		if _, ok := q.index[kept]; !ok {
 			t.Errorf("job %d should still be indexed", kept)
 		}
+	}
+}
+
+func TestListSweepsFinishedPastRetention(t *testing.T) {
+	// White-box: park three finished jobs at known ages behind a 7-day window
+	// and confirm List drops only the ones past it, index included.
+	q := New(noopProcessor{}, 1, 100)
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	q.now = func() time.Time { return now }
+	q.SetRetention(7 * 24 * time.Hour)
+
+	ages := map[int64]time.Duration{
+		1: 8 * 24 * time.Hour, // past the window
+		2: 7*24*time.Hour + 1, // just past it
+		3: 6 * 24 * time.Hour, // inside it
+	}
+	for _, id := range []int64{1, 2, 3} {
+		j := newJob(id, "u", Options{}, now.Add(-ages[id]))
+		j.Finalize(now.Add(-ages[id]))
+		q.index[id] = j
+		q.pushFinishedLocked(j)
+	}
+	pending := newJob(99, "u", Options{}, now)
+	q.index[99] = pending
+	q.pending = append(q.pending, pending)
+
+	got, total := q.List(ListOptions{})
+	if total != 2 || len(got) != 2 {
+		t.Fatalf("List = %v (total %d), want the two jobs inside the window", idsOf(got), total)
+	}
+	for _, gone := range []int64{1, 2} {
+		if _, ok := q.index[gone]; ok {
+			t.Errorf("job %d is past the retention window and should be de-indexed", gone)
+		}
+	}
+	if len(q.finished) != 1 || q.finished[0].ID != 3 {
+		t.Errorf("finished ring = %v, want only job 3", idsOf(q.finished))
+	}
+	if _, ok := q.index[99]; !ok || len(q.pending) != 1 {
+		t.Error("a pending job has no terminal time and must survive the sweep")
+	}
+
+	// Zero retention is "no age limit": the stale jobs would have stayed.
+	q2 := New(noopProcessor{}, 1, 100)
+	q2.now = func() time.Time { return now }
+	old := newJob(1, "u", Options{}, now.Add(-30*24*time.Hour))
+	old.Finalize(now.Add(-30 * 24 * time.Hour))
+	q2.index[1] = old
+	q2.pushFinishedLocked(old)
+	if _, total := q2.List(ListOptions{}); total != 1 {
+		t.Errorf("with retention unset a 30-day-old job should remain, got total %d", total)
+	}
+}
+
+func TestStatusChangedAtTracksEveryTransition(t *testing.T) {
+	created := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	j := newJob(1, "u", Options{}, created)
+	if !j.StatusChangedAt.Equal(created) {
+		t.Errorf("queued StatusChangedAt = %v, want the creation time %v", j.StatusChangedAt, created)
+	}
+
+	started := created.Add(time.Hour)
+	if err := j.start(started); err != nil {
+		t.Fatal(err)
+	}
+	if !j.StatusChangedAt.Equal(started) {
+		t.Errorf("running StatusChangedAt = %v, want the start time %v", j.StatusChangedAt, started)
+	}
+
+	finished := started.Add(time.Minute)
+	j.Finalize(finished)
+	if !j.StatusChangedAt.Equal(finished) {
+		t.Errorf("succeeded StatusChangedAt = %v, want the finish time %v", j.StatusChangedAt, finished)
+	}
+
+	// A retry re-queues the job days later while keeping CreatedAt, which is
+	// why the stamp is kept rather than derived from the other timestamps.
+	requeued := finished.Add(72 * time.Hour)
+	if err := j.reset(false, requeued); err != nil {
+		t.Fatal(err)
+	}
+	if !j.StatusChangedAt.Equal(requeued) {
+		t.Errorf("re-queued StatusChangedAt = %v, want the retry time %v", j.StatusChangedAt, requeued)
+	}
+	if !j.CreatedAt.Equal(created) {
+		t.Errorf("CreatedAt = %v, want the original %v", j.CreatedAt, created)
 	}
 }
 
@@ -733,7 +819,7 @@ func TestHashImportRetryClearsDerivedURL(t *testing.T) {
 	j := newJob(1, "", Options{Kind: KindHashImport, MD5: "aa"}, time.Now())
 	j.SetURL("http://booru/posts/9") // the walk resolved a post
 	j.Fail(ErrCodeDownloadFailed, "boom", time.Now())
-	if err := j.reset(false); err != nil {
+	if err := j.reset(false, time.Now()); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	if j.URL != "" || j.MD5 != "aa" || j.Kind != KindHashImport {
@@ -744,7 +830,7 @@ func TestHashImportRetryClearsDerivedURL(t *testing.T) {
 func TestLookupRetryKeepsKindAndHash(t *testing.T) {
 	j := newJob(1, "", Options{Kind: KindLookup, Backend: BackendPTR, SHA256: "cc", ImageID: 7}, time.Now())
 	j.Fail(ErrCodeHashNotFound, "nobody has it", time.Now())
-	if err := j.reset(false); err != nil {
+	if err := j.reset(false, time.Now()); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	if j.Kind != KindLookup || j.Backend != BackendPTR || j.SHA256 != "cc" || j.ImageID != 7 {

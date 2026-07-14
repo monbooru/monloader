@@ -43,13 +43,9 @@ flowchart LR
     web -->|paste URL| loader
     loader -->|push images, tags, source| booru
 
-    booru -.->|lookup by hash + TODO: PTR contribution| loader
+    booru -.->|lookup by hash| loader
     loader -.->|reverse lookup: md5 + similarity| web
-    ptr -.->|sync: sha256 tags + aliases + implications| loader
-
-    loader -.->|TODO: upload adds + removal petitions| ptr
-
-    linkStyle 7 stroke:#d9a441,color:#d9a441,stroke-width:2px,stroke-dasharray:5 4;
+    ptr <-.->|"sync: sha256 tags + aliases + implications<br/>contribute back (planned)"| loader
 
     classDef hub  fill:#5c6bc0,stroke:#9fa8da,stroke-width:3px,color:#ffffff;
     classDef tool fill:#16161c,stroke:#5c6bc0,stroke-width:1.5px,color:#e2e2e8;
@@ -79,7 +75,7 @@ monloader ships in monbooru's `docker/docker-compose.yml` :
 4. Back in monloader, pick a **default gallery** and **save**.
 5. Paste a URL into the command bar on the home screen and press Enter.
 
-See [docs/README.md](docs/README.md) for installation, configuration, sites and credentials, metadata mapping, the REST API, and building from source.
+See the [monloader documentation](https://leqwin.github.io/mondocs/addons/monloader/index.html) for help.
 
 ---
 

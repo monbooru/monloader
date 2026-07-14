@@ -32,7 +32,7 @@
 
 {{define "footer"}}
   <footer id="footer">
-    <div class="footer-line">{{template "conn_light" .}}{{if .MonbooruPaired}} &middot; {{end}}<a href="{{.RepoURL}}" target="_blank" rel="noopener">monloader</a> {{.Version}}{{if .GalleryDLVersion}} &middot; <a href="https://github.com/mikf/gallery-dl" target="_blank" rel="noopener">gallery-dl</a> {{.GalleryDLVersion}}{{end}} &middot; <a href="/api/v1/docs" target="_blank" rel="noopener">API</a></div>
+    <div class="footer-line">{{template "conn_light" .}}{{if .MonbooruPaired}} &middot; {{end}}<a href="{{.RepoURL}}" target="_blank" rel="noopener">monloader</a> {{.Version}}{{if .GalleryDLVersion}} &middot; <a href="https://github.com/mikf/gallery-dl" target="_blank" rel="noopener">gallery-dl</a> {{.GalleryDLVersion}}{{end}} &middot; <a href="{{.DocURL}}" target="_blank" rel="noopener">help</a> &middot; <a href="/api/v1/docs" target="_blank" rel="noopener">API</a></div>
   </footer>
 {{end}}
 

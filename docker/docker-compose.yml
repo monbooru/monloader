@@ -20,4 +20,5 @@ services:
       - MONLOADER_MONBOORU_API_URL=http://monbooru:8080
       # Browser URL: how you reach monbooru in the browser
       - MONLOADER_MONBOORU_WEB_URL=http://localhost:8080
+      # - TZ=Etc/UTC
     restart: unless-stopped

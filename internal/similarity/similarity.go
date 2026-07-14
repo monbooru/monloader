@@ -125,7 +125,9 @@ func (c *Client) limit(service string, d time.Duration) {
 // its rate-limit cooldown is refused locally without a request.
 func (c *Client) Search(ctx context.Context, service string, img []byte) (Result, error) {
 	if until := c.LimitedUntil(service); time.Now().Before(until) {
-		return Result{}, &queue.CodedError{Code: queue.ErrCodeRateLimited, Msg: "cooling down until " + until.UTC().Format("15:04:05")}
+		// The cooldown is read off a wall clock, so name it in the process
+		// timezone; a bare UTC clock time would not match the one on screen.
+		return Result{}, &queue.CodedError{Code: queue.ErrCodeRateLimited, Msg: "cooling down until " + until.In(time.Local).Format("15:04:05")}
 	}
 	switch service {
 	case "iqdb":
