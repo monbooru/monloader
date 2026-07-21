@@ -43,6 +43,25 @@ jobs:
             ghcr.io/${{ steps.img.outputs.NAME }}:latest
             ghcr.io/${{ steps.img.outputs.NAME }}:${{ github.ref_name }}
 
+      - name: Login to GHCR (legacy namespace)
+        continue-on-error: true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: leqwin
+          password: ${{ secrets.GHCR_LEGACY_TOKEN }}
+
+      - name: Push to legacy namespace
+        continue-on-error: true
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/leqwin/monloader:latest
+            ghcr.io/leqwin/monloader:${{ github.ref_name }}
+
   release:
     runs-on: ubuntu-latest
     needs: docker
