@@ -17,15 +17,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/gdl"
-	"github.com/leqwin/monloader/internal/kwdict"
-	"github.com/leqwin/monloader/internal/logx"
-	"github.com/leqwin/monloader/internal/mapping"
-	"github.com/leqwin/monloader/internal/monbooru"
-	"github.com/leqwin/monloader/internal/queue"
-	"github.com/leqwin/monloader/internal/similarity"
-	"github.com/leqwin/monloader/internal/sitestate"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/gdl"
+	"github.com/monbooru/monloader/internal/kwdict"
+	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/monbooru"
+	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/similarity"
+	"github.com/monbooru/monloader/internal/sitestate"
 )
 
 // PTRService is the PTR lookup surface the pipeline needs: whether the backend
@@ -75,6 +75,8 @@ func (p *Processor) Process(ctx context.Context, job *queue.Job) error {
 	snap := job.Snapshot()
 
 	switch snap.Kind {
+	case queue.KindContrib:
+		return p.processContrib(ctx, job, snap)
 	case queue.KindMetadata:
 		return p.processMetadata(ctx, job, snap)
 	case queue.KindLookup:
@@ -128,8 +130,13 @@ func (p *Processor) processDownload(ctx context.Context, job, snap *queue.Job) e
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		resolved = whole.Items
-		rng = ""
+		// A re-resolve that comes back short (a rate limit, a flaky page) would
+		// empty a work the capped pass proved non-empty, which then downloads
+		// every page and pushes none; keep the capped window instead.
+		if len(whole.Items) >= len(resolved) {
+			resolved = whole.Items
+			rng = ""
+		}
 	} else if limit > 0 && len(resolved) >= limit {
 		// A resolve that returned the full cap likely truncated a larger source,
 		// so flag and log it; the row and the API then say the import was capped
@@ -198,15 +205,20 @@ func (p *Processor) mapEnrichPayload(meta map[string]any, url, md5 string, sim f
 
 // markEnriched walks the job's single item to the enriched terminal state,
 // attaching the monbooru id, the merge note, and (when the item has none) the
-// source url.
+// source url. An enrich that merged nothing says so, so a repeat lookup does
+// not read as a fresh enrichment.
 func (p *Processor) markEnriched(job, snap *queue.Job, res *monbooru.Result, url string) {
+	note := res.MergeNote
+	if note == "" {
+		note = "no new tags"
+	}
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemDownloaded })
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemUploaded })
 	job.UpdateItem(0, func(it *queue.Item) {
 		it.Status = queue.ItemDone
 		it.Outcome = queue.OutcomeEnriched
 		it.MonbooruID = snap.ImageID
-		it.MergeNote = res.MergeNote
+		it.MergeNote = note
 		if it.URL == "" {
 			it.URL = url
 		}
@@ -719,8 +731,14 @@ func buildCBZFile(pages []string, dest string) error {
 		return err
 	}
 	zw := zip.NewWriter(f)
+	// Readers order pages by an alphabetical entry-name sort, so the zero
+	// padding must cover the last page's digits or page 1000 sorts before 999.
+	width := len(strconv.Itoa(len(pages)))
+	if width < 3 {
+		width = 3
+	}
 	for i, p := range pages {
-		fw, err := zw.Create(fmt.Sprintf("%03d%s", i+1, filepath.Ext(p)))
+		fw, err := zw.Create(fmt.Sprintf("%0*d%s", width, i+1, filepath.Ext(p)))
 		if err != nil {
 			f.Close()
 			return err

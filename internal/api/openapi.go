@@ -20,7 +20,10 @@ type endpoint struct {
 	Description string
 	// NoAuth marks the endpoints outside the bearer gate (/health and the two
 	// self-doc routes), which set their own CORS.
-	NoAuth    bool
+	NoAuth bool
+	// ReadScope marks a POST that only reads (the contribution preview),
+	// so a read-scoped token suffices despite the method.
+	ReadScope bool
 	Params    []param
 	Request   *reqBody
 	Responses []response
@@ -262,8 +265,8 @@ func (h *Handler) endpoints() []endpoint {
 			Method: "POST", Path: "/api/v1/ptr/tags",
 			Summary: "Query the PTR alias / implication graph", OperationID: "ptrTags",
 			Description: "For each monbooru-form tag, return the PTR's ideal spelling, the tags that alias " +
-				"to it, and its implications, mapped back to monbooru form. Batched so a caller can sweep " +
-				"its tag list page by page.",
+				"to it, its implications, and the tags that imply it (direct children, at most 200), " +
+				"mapped back to monbooru form. Batched so a caller can sweep its tag list page by page.",
 			Request: &reqBody{
 				Required: []string{"tags"},
 				Props: []prop{
@@ -276,6 +279,158 @@ func (h *Handler) endpoints() []endpoint {
 				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
 			},
 			Handler: h.ptrTags,
+		},
+		{
+			Method: "POST", Path: "/api/v1/ptr/account",
+			Summary: "Create the personal PTR contribution account", OperationID: "ptrAccountCreate",
+			Description: "Run the repository's open auto-creation once and store the resulting access " +
+				"key as the instance's personal account, shared by sync and uploads. Refused while a " +
+				"personal key is already set; replacing an account is a deliberate manual step " +
+				"(clear the key in settings first).",
+			Responses: []response{
+				{Status: "200", Description: "Account created and key stored"},
+				{Status: "409", Description: "PTR disabled, or a personal key already exists", Ref: "Error"},
+				{Status: "503", Description: "The repository is not taking new accounts right now", Ref: "Error"},
+			},
+			Handler: h.ptrAccountCreate,
+		},
+		{
+			Method: "POST", Path: "/api/v1/ptr/contrib/preview", ReadScope: true,
+			Summary: "Preview a file's contribution diff", OperationID: "ptrContribPreview",
+			Description: "For one file's sha256 and its monbooru-form tags, answer the two-way diff " +
+				"against the synced PTR copy: which tags a send would add (with the exact PTR spelling " +
+				"and a per-tag status of new, known, ineligible, filtered, or unsent) and which " +
+				"PTR-current tags the submitted list lacks (the removal-petition candidates; both " +
+				"sides compare on the display view, so alias spellings and implied tags never read " +
+				"as diffs). provisional is true while the index is still syncing, so the diff may " +
+				"overstate what is new.",
+			Request: &reqBody{
+				Required: []string{"sha256", "tags"},
+				Props: []prop{
+					{Name: "sha256", Type: "string", Description: "the file's sha256, 64 lowercase hex characters"},
+					{Name: "tags", Type: "array", Items: &prop{Type: "string"}, Description: "the file's storage tags in monbooru form (non-implied, non-alias, rating excluded)"},
+					{Name: "implied", Type: "array", Items: &prop{Type: "string"}, Description: "the file's implied tags, context only: never offered as adds, but they suppress removal petitions like submitted tags do"},
+				},
+			},
+			Responses: []response{
+				{Status: "200", Description: "The two-way diff", Ref: "PTRContribPreview"},
+				{Status: "400", Description: "Malformed hash or body", Ref: "Error"},
+				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
+			},
+			Handler: h.ptrContribPreview,
+		},
+		{
+			Method: "POST", Path: "/api/v1/ptr/contrib/pair-preview", ReadScope: true,
+			Summary: "Resolve a relation pair's contribution direction", OperationID: "ptrContribPairPreview",
+			Description: "For a sibling (a=bad, b=good) or parent (a=child, b=parent) pair in monbooru " +
+				"form, report the exact PTR spellings and which direction a contribution takes: suggest " +
+				"(absent from the PTR), petition (current on the PTR), pending (already in the ledger " +
+				"awaiting janitors), conflict (a sibling holds the reverse), covered (both spellings " +
+				"already resolve to one ideal), or ineligible.",
+			Request: &reqBody{
+				Required: []string{"kind", "a", "b"},
+				Props: []prop{
+					{Name: "kind", Type: "string", Description: "sibling or parent"},
+					{Name: "a", Type: "string", Description: "the alias (sibling) or carrying tag (parent), monbooru form"},
+					{Name: "b", Type: "string", Description: "the canonical (sibling) or implied tag (parent), monbooru form"},
+				},
+			},
+			Responses: []response{
+				{Status: "200", Description: "The pair's direction and PTR spellings"},
+				{Status: "400", Description: "Malformed body or kind", Ref: "Error"},
+				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
+			},
+			Handler: h.ptrContribPairPreview,
+		},
+		{
+			Method: "POST", Path: "/api/v1/ptr/contrib",
+			Summary: "Stage contributions and send them", OperationID: "ptrContribStage",
+			Description: "Stage items (tags in monbooru form; monloader maps and validates) and, by " +
+				"default, commit them in the same call as one queue send job. Per-item results report " +
+				"staged, duplicate, already_known, already_suggested, not_on_ptr, conflict, ineligible, " +
+				"or invalid_reason; one refused item never sinks the rest. A reason is required on every " +
+				"kind except mapping_add. With commit true the account is validated synchronously first.",
+			Request: &reqBody{
+				Required: []string{"items"},
+				Props: []prop{
+					{Name: "commit", Type: "boolean", Description: "send the accepted items now as one queue job (default true)"},
+					{Name: "origin", Type: "string", Description: "display provenance for the ledger, e.g. \"image 42\""},
+					{Name: "items", Type: "array", Items: &prop{Type: "object", Props: []prop{
+						{Name: "kind", Type: "string", Description: "mapping_add, mapping_petition, sibling, parent, sibling_petition, or parent_petition"},
+						{Name: "sha256", Type: "string", Description: "the file hash, for the mapping kinds"},
+						{Name: "tag", Type: "string", Description: "the tag in monbooru form, for the mapping kinds"},
+						{Name: "bad", Type: "string", Description: "the alias name, for the sibling kinds"},
+						{Name: "good", Type: "string", Description: "the canonical name, for the sibling kinds"},
+						{Name: "child", Type: "string", Description: "the carrying tag, for the parent kinds"},
+						{Name: "parent", Type: "string", Description: "the implied tag, for the parent kinds"},
+						{Name: "reason", Type: "string", Description: "the janitor-facing reason; required on every kind except mapping_add"},
+					}}},
+				},
+			},
+			Responses: []response{
+				{Status: "200", Description: "Per-item results; nothing was accepted for sending"},
+				{Status: "202", Description: "Per-item results plus the send job id"},
+				{Status: "400", Description: "Malformed body", Ref: "Error"},
+				{Status: "409", Description: "ptr_unavailable, ptr_account_required, ptr_banned, or ptr_syncing", Ref: "Error"},
+			},
+			Handler: h.ptrContribStage,
+		},
+		{
+			Method: "GET", Path: "/api/v1/ptr/contrib",
+			Summary: "Contribution ledger", OperationID: "ptrContribLedger",
+			Description: "The unsent backlog (staged and failed items with errors), counts by kind and " +
+				"status, and the newest slice of the committed history with each row's janitor outcome.",
+			Responses: []response{
+				{Status: "200", Description: "Unsent items, counts, and history"},
+				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
+			},
+			Handler: h.ptrContribLedger,
+		},
+		{
+			Method: "DELETE", Path: "/api/v1/ptr/contrib/{id}",
+			Summary: "Rescind one unsent item", OperationID: "ptrContribRescind",
+			Description: "Delete one staged or failed item exactly - nothing ever left the machine.",
+			Params:      []param{{Name: "id", In: "path", Required: true, Description: "Unsent item id"}},
+			Responses: []response{
+				{Status: "204", Description: "Rescinded"},
+				{Status: "404", Description: "No unsent item with that id", Ref: "Error"},
+				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
+			},
+			Handler: h.ptrContribRescind,
+		},
+		{
+			Method: "DELETE", Path: "/api/v1/ptr/contrib",
+			Summary: "Rescind every unsent item", OperationID: "ptrContribRescindAll",
+			Responses: []response{
+				{Status: "200", Description: "Count of rescinded items"},
+				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
+			},
+			Handler: h.ptrContribRescindAll,
+		},
+		{
+			Method: "POST", Path: "/api/v1/ptr/contrib/commit",
+			Summary: "Send the unsent backlog", OperationID: "ptrContribCommit",
+			Description: "Queue one send job over every staged and failed item - the retry path for " +
+				"failed leftovers. Refused while another send is queued or running.",
+			Responses: []response{
+				{Status: "202", Description: "The send job id"},
+				{Status: "409", Description: "ptr_unavailable, ptr_account_required, ptr_banned, ptr_syncing, or already_running", Ref: "Error"},
+			},
+			Handler: h.ptrContribCommit,
+		},
+		{
+			Method: "POST", Path: "/api/v1/ptr/contrib/log/{id}/rescind",
+			Summary: "Rescind a committed mapping add", OperationID: "ptrContribLogRescind",
+			Description: "Stage and send a removal petition for the same tag and hash with a fixed " +
+				"reason, and mark the ledger row rescinded. Committed suggestions and petitions cannot " +
+				"be withdrawn - the protocol reserves their resolution for janitors.",
+			Params: []param{{Name: "id", In: "path", Required: true, Description: "Ledger row id"}},
+			Responses: []response{
+				{Status: "202", Description: "The send job id"},
+				{Status: "404", Description: "No ledger row with that id", Ref: "Error"},
+				{Status: "409", Description: "not_rescindable, or an account refusal", Ref: "Error"},
+			},
+			Handler: h.ptrContribLogRescind,
 		},
 		{
 			Method: "GET", Path: "/api/v1/sites",
@@ -353,10 +508,10 @@ var apiSchemas = []apiSchema{
 	{Name: "Job", Props: []prop{
 		{Name: "id", Type: "integer"},
 		{Name: "url", Type: "string"},
-		{Name: "status", Type: "string", Description: "queued, running, succeeded, partial, failed, canceled"},
-		{Name: "kind", Type: "string", Description: "download (the default, omitted), metadata (a source refetch that enriches an existing image), lookup (a hash lookup that enriches an existing image), or hash_import (an md5 resolved to a post and imported)"},
+		{Name: "status", Type: "string", Description: "queued, running, succeeded, partial, failed, canceled, interrupted (was running when the process died; requeue to re-run)"},
+		{Name: "kind", Type: "string", Description: "download (the default, omitted), metadata (a source refetch that enriches an existing image), lookup (a hash lookup that enriches an existing image), hash_import (an md5 resolved to a post and imported), or contrib (a PTR contribution send)"},
 		{Name: "image_id", Type: "integer", Description: "monbooru image a metadata or lookup job enriches"},
-		{Name: "backend", Type: "string", Description: "Lookup source (booru or ptr) for a lookup job"},
+		{Name: "backend", Type: "string", Description: "Lookup source (booru, ptr, or all) for a lookup job"},
 		{Name: "md5", Type: "string", Description: "File md5 a lookup or hash import is keyed on"},
 		{Name: "sha256", Type: "string", Description: "File sha256 a ptr lookup is keyed on"},
 		{Name: "site", Type: "string", Description: "gallery-dl category, set after resolve"},
@@ -365,6 +520,7 @@ var apiSchemas = []apiSchema{
 		{Name: "max_items", Type: "integer", Description: "per-job item cap supplied at enqueue"},
 		{Name: "force", Type: "boolean", Description: "Last/next run bypasses the gallery-dl archive (set by a forced retry)"},
 		{Name: "summary", Ref: "Summary"},
+		{Name: "note", Type: "string", Description: "The job's result line (a contribution send's commit summary); empty for other kinds"},
 		{Name: "capped", Type: "boolean", Description: "The resolve hit the per-job item cap, so more posts may remain"},
 		{Name: "cap", Type: "integer", Description: "The applied item cap when capped is true"},
 		{Name: "root", Type: "integer", Description: "Originating job of a continue-series; a capped search and its continuations share it. Self for a standalone job"},
@@ -410,8 +566,11 @@ var apiSchemas = []apiSchema{
 		{Name: "progress", Type: "object", Props: []prop{
 			{Name: "update_index", Type: "integer", Description: "the update index being applied"},
 			{Name: "update_count", Type: "integer", Description: "total updates the server publishes"},
+			{Name: "blobs_done", Type: "integer", Description: "update blobs applied; over blobs_total this is the volume-weighted sync fraction (0 until the blob census is known)"},
+			{Name: "blobs_total", Type: "integer", Description: "update blobs the server publishes"},
 			{Name: "downloaded_bytes", Type: "integer", Description: "compressed bytes fetched this session"},
-			{Name: "download_rate", Type: "integer", Description: "current download rate in bytes per second while syncing"},
+			{Name: "download_rate", Type: "integer", Description: "average fetch rate in bytes per second over the pass's network time, while syncing"},
+			{Name: "process_rate", Type: "integer", Description: "rows replayed into the index per second of replay time, while syncing"},
 		}},
 		{Name: "counts", Type: "object", Props: []prop{
 			{Name: "hashes", Type: "integer"},
@@ -424,9 +583,29 @@ var apiSchemas = []apiSchema{
 		{Name: "next_update_due", Type: "integer", Description: "unix time the next update is expected"},
 		{Name: "covered_through", Type: "integer", Description: "unix time the synced data reaches; absent until an update has been applied"},
 		{Name: "error", Type: "string"},
+		{Name: "contrib", Type: "object", Description: "contribution gate; absent while the PTR is off", Props: []prop{
+			{Name: "account", Type: "boolean", Description: "a personal (non-public) access key is set; every contribution surface gates on this"},
+			{Name: "banned", Type: "boolean", Description: "the account is banned; contribution surfaces hide, sync stays allowed"},
+			{Name: "unsent", Type: "integer", Description: "staged or failed items awaiting a send"},
+			{Name: "failed", Type: "integer", Description: "items whose last send failed, kept for retry"},
+		}},
 	}},
 	{Name: "PTRTagResults", Props: []prop{
-		{Name: "results", Type: "object", Description: "map of the queried tag to its PTR ideal, aliases, and implications (monbooru form); known=false when the PTR does not have the tag"},
+		{Name: "results", Type: "object", Description: "map of the queried tag to its PTR ideal, aliases, implications, and implied_by (monbooru form); known=false when the PTR does not have the tag"},
+	}},
+	{Name: "PTRContribPreview", Props: []prop{
+		{Name: "provisional", Type: "boolean", Description: "the index is still syncing; the diff may overstate what is new"},
+		{Name: "to_add", Type: "array", Items: &prop{Type: "object", Props: []prop{
+			{Name: "tag", Type: "string", Description: "the submitted monbooru-form tag"},
+			{Name: "ptr", Type: "string", Description: "the exact PTR spelling a send would use; empty when ineligible"},
+			{Name: "status", Type: "string", Description: "new, known, ineligible, filtered, or unsent"},
+			{Name: "note", Type: "string", Description: "why the tag is ineligible or filtered"},
+		}}},
+		{Name: "ptr_only", Type: "array", Items: &prop{Type: "object", Props: []prop{
+			{Name: "tag", Type: "string", Description: "monbooru form of a PTR-current tag the submitted list lacks"},
+			{Name: "ptr", Type: "string", Description: "the raw PTR spelling a removal petition would target"},
+			{Name: "petitionable", Type: "boolean", Description: "false when a removal for this tag and hash is already staged or awaiting janitor review"},
+		}}},
 	}},
 }
 
@@ -463,7 +642,7 @@ func buildSpec(baseURL, version string, eps []endpoint) map[string]any {
 					"type":         "http",
 					"scheme":       "bearer",
 					"bearerFormat": "token",
-					"description":  "Required on every endpoint except /health, /api/v1/openapi.json, and /api/v1/docs. Use a named, scoped token from Settings -> Authentication (read: queue/sites; write: enqueue/manage); the API is disabled until at least one token exists.",
+					"description":  "Required on every endpoint except /health, /api/v1/openapi.json, /api/v1/docs, and the unauthenticated /api/v1/pair/* pairing bootstrap (not listed in this document). Use a named, scoped token from Settings -> Authentication (read: queue/sites; write: enqueue/manage); the API is disabled until at least one token exists.",
 				},
 			},
 			"schemas": schemas,
@@ -644,7 +823,7 @@ var docsTemplate = template.Must(template.New("api-docs").Parse(`<!DOCTYPE html>
  <h1>{{.Title}}</h1>
  <p class="muted">Version {{.Version}} &middot; base URL <code>{{.BaseURL}}</code></p>
  {{if .APIProtected}}
- <p style="color:#22aa44;border:1px solid #22aa44;padding:4px 8px;">An API token is configured: send <code>Authorization: Bearer &lt;token&gt;</code> (with a scope covering the method) on every endpoint except <code>/health</code>, <code>/api/v1/openapi.json</code>, and <code>/api/v1/docs</code>.</p>
+ <p style="color:#22aa44;border:1px solid #22aa44;padding:4px 8px;">An API token is configured: send <code>Authorization: Bearer &lt;token&gt;</code> (with a scope covering the method) on every endpoint except <code>/health</code>, <code>/api/v1/openapi.json</code>, and <code>/api/v1/docs</code>. The <code>/api/v1/pair/*</code> family (the monsender pairing bootstrap: <code>POST /api/v1/pair/request</code>, <code>GET /api/v1/pair/status</code>, <code>POST /api/v1/pair/remove</code>) is also unauthenticated by design - it is how a client obtains a token - and is not listed below.</p>
  {{else}}
  <p style="color:#ffaa00;border:1px solid #ffaa00;padding:4px 8px;">No API token is configured, so the API is disabled (every authenticated endpoint returns <code>503 api_disabled</code>). Create one in Settings -&gt; Authentication.</p>
  {{end}}

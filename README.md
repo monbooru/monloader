@@ -1,10 +1,10 @@
 # monloader
 
-Download images from the web into [monbooru](https://github.com/leqwin/monbooru) and backfill tags for the files already in it.
+Download images from the web into [monbooru](https://github.com/monbooru/monbooru) and backfill tags for the files already in it.
 
 Paste a direct URL, an image or search from an online booru/gallery or [any site supported by gallery-dl](https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md) and monloader fetches the files and per-post metadata, maps it onto monbooru's data model, and pushes each file into a monbooru gallery over the REST API.
 
-It also runs in reverse: for a file monbooru already holds, monloader looks up its tags by md5 and by image similarity (iqdb, SauceNAO) across the boorus and/or from an optional local copy of the [Hydrus Public Tag Repository](https://hydrusnetwork.github.io/hydrus/PTR.html), and folds them back into the image.
+It also runs in reverse: for a file monbooru already holds, monloader looks up its tags by md5 and by image similarity (iqdb, SauceNAO) across the boorus and/or from an optional local copy of the [Hydrus Public Tag Repository](https://hydrusnetwork.github.io/hydrus/PTR.html), and applies them to the image.
 
 <table>
   <tr>
@@ -45,7 +45,7 @@ flowchart LR
 
     booru -.->|lookup by hash| loader
     loader -.->|reverse lookup: md5 + similarity| web
-    ptr <-.->|"sync: sha256 tags + aliases + implications<br/>contribute back (planned)"| loader
+    ptr <-.->|"sync: sha256 tags + aliases + implications<br/>contribute back"| loader
 
     classDef hub  fill:#5c6bc0,stroke:#9fa8da,stroke-width:3px,color:#ffffff;
     classDef tool fill:#16161c,stroke:#5c6bc0,stroke-width:1.5px,color:#e2e2e8;
@@ -56,9 +56,9 @@ flowchart LR
     class web,ptr src;
 ```
 
-- **[monbooru](https://github.com/leqwin/monbooru)** : self-hosted booru; organizes, tags, and serves your collection.
+- **[monbooru](https://github.com/monbooru/monbooru)** : self-hosted booru; organizes, tags, and serves your collection.
 - **monloader** : this application; fetches files and per-post metadata (via gallery-dl) and pushes them into a monbooru gallery over the REST API; also answers monbooru's reverse lookups (boorus, IQDB/SauceNAO, Hydrus PTR) and source refetches.
-- **[monsender](https://github.com/leqwin/monsender)** : browser extension; sends the URL of the page you're currently browsing to monloader.
+- **[monsender](https://github.com/monbooru/monsender)** : browser extension; sends the URL of the page you're currently browsing to monloader.
 
 ---
 
@@ -70,12 +70,12 @@ monloader ships in monbooru's `docker/docker-compose.yml` :
    ```bash
    docker compose up -d monloader
    ```
-2. Open monloader at `http://localhost:8081`, go to **Settings -> monbooru**, and click **connect to monbooru** (the default api url `http://monbooru:8080` works on the shared compose network).
+2. Open monloader at `http://localhost:8081`, go to **Settings -> pairing**, and click **connect to monbooru** (the default api url in the monbooru section, `http://monbooru:8080`, works on the shared compose network).
 3. In monbooru, approve the pairing request in its monloader settings. monloader stores the token monbooru issues; there are no keys to copy by hand.
 4. Back in monloader, pick a **default gallery** and **save**.
 5. Paste a URL into the command bar on the home screen and press Enter.
 
-See the [monloader documentation](https://leqwin.github.io/mondocs/addons/monloader/index.html) for help.
+See the [monloader documentation](https://monbooru.github.io/mondocs/addons/monloader/index.html) for help.
 
 ---
 

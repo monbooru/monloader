@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/logx"
 )
 
 // State is the sync engine's lifecycle state, surfaced verbatim by the status
@@ -32,14 +32,24 @@ const gib = 1 << 30
 // last applied update's absolute index and UpdateCount the server's published
 // total, so index over count is a true fraction even on a resumed sync.
 type Progress struct {
-	UpdateIndex     uint64 `json:"update_index"`
-	UpdateCount     uint64 `json:"update_count"`
+	UpdateIndex uint64 `json:"update_index"`
+	UpdateCount uint64 `json:"update_count"`
+	// BlobsDone over BlobsTotal is the volume-weighted fraction the progress
+	// bar shows: blob count tracks the repository's row volume (blobs are
+	// row-capped) where the update count does not, so the update fraction ran
+	// far ahead of the real work. Zero until the applied-blob census is known.
+	BlobsDone       uint64 `json:"blobs_done"`
+	BlobsTotal      uint64 `json:"blobs_total"`
 	DownloadedBytes int64  `json:"downloaded_bytes"`
 	// DownloadRate is the current pass's average fetch speed in bytes per
-	// second, reported only while syncing. Downloaded bytes are the compressed
-	// wire size, so this tracks the network stream, not how fast the on-disk
-	// index grows.
+	// second, over time spent fetching only (the pacing sleep included, so it
+	// is the effective stream rate). Replay time is excluded: a disk-bound
+	// sync must not read as a stalled network.
 	DownloadRate int64 `json:"download_rate"`
+	// ProcessRate is rows replayed into the index per second of replay time.
+	// Against DownloadRate it says which side - the network or the index
+	// build - bounds a slow sync.
+	ProcessRate int64 `json:"process_rate"`
 }
 
 // Status is the engine snapshot the API and page render.
@@ -55,6 +65,9 @@ type Status struct {
 	// alone does not say.
 	CoveredThrough int64  `json:"covered_through,omitempty"`
 	Error          string `json:"error,omitempty"`
+	// Contrib is the contribution gate (personal account present, ban
+	// state, unsent backlog); absent while the PTR is off.
+	Contrib *ContribStatus `json:"contrib,omitempty"`
 }
 
 // Engine owns the optional PTR sync: one background goroutine streaming the
@@ -76,23 +89,42 @@ type Engine struct {
 	// store==nil guard and launch two sync loops against one index.
 	enableMu sync.Mutex
 
-	mu       sync.Mutex
-	store    *Store
-	state    State
-	progress Progress
-	// passStart and passStartBytes anchor the download-rate window to the start
-	// of the current sync pass; a resume begins a new pass and so a new window,
-	// which keeps paused time out of the rate.
-	passStart      time.Time
-	passStartBytes int64
-	counts         Counts
-	nextDue        int64
-	covered        int64
-	errMsg         string
-	paused         bool
-	cancel         context.CancelFunc
-	wake           chan struct{} // buffered: nudges the loop to re-check (resume/retry)
-	done           chan struct{} // closed when the goroutine exits
+	// createMu serializes account auto-creation so two concurrent calls can't
+	// both pass the no-key check and mint two accounts under one operator.
+	createMu sync.Mutex
+
+	mu    sync.Mutex
+	store *Store
+	state State
+	// everReady records that the index reached the caught-up state at least
+	// once, so a partial initial sync that is now paused or errored still
+	// reads as provisional while a fully-synced index never does.
+	everReady bool
+	progress  Progress
+	// The rate window: bytes, fetch and replay time, and rows since the
+	// current sync pass began. A resume begins a new pass and so a new
+	// window, which keeps paused time out of the rates.
+	passBytes     int64
+	passFetchDur  time.Duration
+	passReplayDur time.Duration
+	passRows      int64
+	counts        Counts
+	nextDue       int64
+	covered       int64
+	errMsg        string
+	paused        bool
+	cancel        context.CancelFunc
+	wake          chan struct{} // buffered: nudges the loop to re-check (resume/retry)
+	done          chan struct{} // closed when the goroutine exits
+	// account is the last-fetched contribution account state, cached so
+	// the page poll and the status gate read it without a network trip.
+	account   *Account
+	accountAt time.Time
+	// contrib is the staged-contributions store, opened beside the index.
+	contrib *ContribStore
+	// tagFilter caches the repository's filter from the last commit's
+	// fetch, feeding the preview's filtered verdicts without a request.
+	tagFilter *TagFilter
 }
 
 // NewEngine builds the engine from the PTR config.
@@ -150,10 +182,16 @@ func (e *Engine) Enable() error {
 	if err != nil {
 		return err
 	}
+	contrib, err := OpenContribStore(e.cfg.DataPath)
+	if err != nil {
+		// Contributions degrade without their store; the sync must not.
+		logx.Warnf("ptr: contribution store unavailable: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(e.baseCtx)
 	e.mu.Lock()
 	e.store = store
+	e.contrib = contrib
 	e.state = StateSyncing
 	e.errMsg = ""
 	e.cancel = cancel
@@ -197,6 +235,10 @@ func (e *Engine) Disable() {
 	if store != nil {
 		_ = store.Close()
 	}
+	if e.contrib != nil {
+		_ = e.contrib.Close()
+		e.contrib = nil
+	}
 	e.store = nil
 	e.state = StateDisabled
 	e.progress = Progress{}
@@ -208,7 +250,9 @@ func (e *Engine) Disable() {
 	e.mu.Unlock()
 }
 
-// Delete stops the sync and removes the index files entirely.
+// Delete stops the sync and removes the index files entirely, the
+// contribution store included: pending and historical contributions go
+// with the data, as the settings confirm warns.
 func (e *Engine) Delete() error {
 	e.Disable()
 	for _, suffix := range []string{"", "-wal", "-shm"} {
@@ -216,7 +260,7 @@ func (e *Engine) Delete() error {
 			return err
 		}
 	}
-	return nil
+	return RemoveContribStore(e.cfg.DataPath)
 }
 
 // Pause holds the sync after the slice in flight; Resume lifts it. The nudge
@@ -289,10 +333,16 @@ func (e *Engine) Status() Status {
 	if e.store != nil {
 		st.DiskBytes = indexDiskBytes(e.cfg.DataPath)
 	}
-	if e.state == StateSyncing && !e.passStart.IsZero() {
-		if secs := time.Since(e.passStart).Seconds(); secs > 0 {
-			st.Progress.DownloadRate = int64(float64(e.progress.DownloadedBytes-e.passStartBytes) / secs)
+	if e.state == StateSyncing {
+		if secs := e.passFetchDur.Seconds(); secs > 0 {
+			st.Progress.DownloadRate = int64(float64(e.passBytes) / secs)
 		}
+		if secs := e.passReplayDur.Seconds(); secs > 0 {
+			st.Progress.ProcessRate = int64(float64(e.passRows) / secs)
+		}
+	}
+	if st.Enabled {
+		st.Contrib = e.contribStatusLocked()
 	}
 	return st
 }
@@ -330,6 +380,11 @@ func (e *Engine) loop(ctx context.Context) {
 		logx.Warnf("ptr: seeding the row census failed: %v", err)
 	}
 	e.loadCounts()
+	if err := e.seedBlobBaseline(ctx); err != nil && ctx.Err() == nil {
+		// Without the baseline the pass skips the blob fraction and the bar
+		// falls back to the update fraction; nothing else degrades.
+		logx.Warnf("ptr: seeding the blob census failed: %v", err)
+	}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -362,6 +417,7 @@ func (e *Engine) loop(ctx context.Context) {
 			}
 		default:
 			e.setState(StateReady, "")
+			e.trackContribOutcomes()
 			if !e.waitWake(ctx, e.readyWait()) {
 				return
 			}
@@ -421,6 +477,14 @@ func (e *Engine) syncPass(ctx context.Context) error {
 			return fmt.Errorf("repository manifest did not advance past update %d", since)
 		}
 		e.setProgressTotal(last + 1)
+		if applied, ok, err := e.store.BlobsApplied(); err == nil && ok {
+			var remaining uint64
+			for _, entry := range slice.Updates {
+				remaining += uint64(len(entry.Hashes))
+			}
+			e.setBlobProgress(applied, applied+remaining)
+		}
+		prev, havePrev := uint64(0), false
 		for _, entry := range slice.Updates {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -428,11 +492,48 @@ func (e *Engine) syncPass(ctx context.Context) error {
 			if e.isPaused() {
 				return errPaused
 			}
+			// Replay must run in ascending index order (each pass advances the
+			// cursor to the entry's index): a manifest entry below the cursor
+			// or out of order would drive the cursor backward, so fail the
+			// pass instead of applying it.
+			if entry.Index < since || (havePrev && entry.Index <= prev) {
+				return fmt.Errorf("repository manifest entry %d out of order (cursor %d)", entry.Index, since)
+			}
+			prev, havePrev = entry.Index, true
 			if err := e.applyEntry(ctx, entry); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+// seedBlobBaseline fills the applied-blob census on an index synced before it
+// was recorded: without an anchor the blob fraction cannot be computed, so the
+// cursor's manifest is re-fetched once from zero and the already-applied
+// entries' blobs are counted - nothing is downloaded or re-applied. A no-op
+// once the census exists; a fresh index starts it at zero.
+func (e *Engine) seedBlobBaseline(ctx context.Context) error {
+	if _, ok, err := e.store.BlobsApplied(); err != nil || ok {
+		return err
+	}
+	cur, ok, err := e.store.Cursor()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return e.store.SeedBlobsApplied(0)
+	}
+	slice, err := e.client.Metadata(ctx, 0)
+	if err != nil {
+		return err
+	}
+	var n uint64
+	for _, entry := range slice.Updates {
+		if entry.Index <= cur {
+			n += uint64(len(entry.Hashes))
+		}
+	}
+	return e.store.SeedBlobsApplied(n)
 }
 
 // backfillCovered fills the coverage timestamp on an index synced before it
@@ -470,35 +571,48 @@ func (e *Engine) backfillCovered(ctx context.Context) error {
 	return nil
 }
 
-// maxEntryBlobs bounds how many blobs one manifest entry may list. A real
-// index carries a couple, but the count is server-controlled and every blob
-// (each up to the inflate cap) is buffered until the entry replays, so an
-// unbounded entry could grow memory with the manifest.
-const maxEntryBlobs = 64
+// maxEntryBlobs bounds how many blobs one manifest entry may list. Blobs are
+// buffered compressed (a couple of MB each on the real PTR, which has
+// published entries past 100 blobs), so the cap is a guard against a hostile
+// manifest growing memory without bound, not a size a real entry reaches.
+const maxEntryBlobs = 256
 
-// applyEntry fetches one update index's blobs, parses them, and replays them as
-// one transaction, then advances the progress and the census Replay returned.
+// applyEntry fetches one update index's blobs and replays them as one
+// transaction, then advances the progress, the census, and the rate window
+// with what Replay returned.
 func (e *Engine) applyEntry(ctx context.Context, entry UpdateEntry) error {
 	if len(entry.Hashes) > maxEntryBlobs {
 		return fmt.Errorf("update %d lists %d blobs, over the %d cap", entry.Index, len(entry.Hashes), maxEntryBlobs)
 	}
-	updates := make([]*Update, 0, len(entry.Hashes))
+	blobs := make([][]byte, 0, len(entry.Hashes))
 	var bytes int64
+	var fetchDur time.Duration
 	for _, h := range entry.Hashes {
-		up, n, err := e.client.updateWithSize(ctx, h)
+		fetchStart := time.Now()
+		raw, err := e.client.updateRaw(ctx, h)
+		fetchDur += time.Since(fetchStart)
 		if err != nil {
 			return err
 		}
-		updates = append(updates, up)
-		bytes += n
+		blobs = append(blobs, raw)
+		bytes += int64(len(raw))
 	}
-	counts, err := e.store.Replay(entry.Index, entry.End, updates)
+	replayStart := time.Now()
+	counts, rows, err := e.store.Replay(entry.Index, entry.End, blobs)
 	if err != nil {
 		return err
 	}
+	replayDur := time.Since(replayStart)
 	e.mu.Lock()
 	e.progress.UpdateIndex = entry.Index
+	if e.progress.BlobsTotal > 0 {
+		e.progress.BlobsDone += uint64(len(entry.Hashes))
+	}
 	e.progress.DownloadedBytes += bytes
+	e.passBytes += bytes
+	e.passRows += rows
+	e.passFetchDur += fetchDur
+	e.passReplayDur += replayDur
 	e.counts = counts
 	if entry.End > 0 {
 		e.covered = entry.End
@@ -516,6 +630,9 @@ func (e *Engine) isPaused() bool {
 func (e *Engine) setState(s State, msg string) {
 	e.mu.Lock()
 	e.state = s
+	if s == StateReady {
+		e.everReady = true
+	}
 	e.errMsg = msg
 	e.mu.Unlock()
 }
@@ -532,12 +649,19 @@ func (e *Engine) setProgressTotal(n uint64) {
 	e.mu.Unlock()
 }
 
-// markPassStart stamps the current pass's start time and byte baseline, the
-// window Status divides to report the download rate.
+func (e *Engine) setBlobProgress(done, total uint64) {
+	e.mu.Lock()
+	e.progress.BlobsDone = done
+	e.progress.BlobsTotal = total
+	e.mu.Unlock()
+}
+
+// markPassStart resets the rate window Status divides to report the pass's
+// download and processing rates.
 func (e *Engine) markPassStart() {
 	e.mu.Lock()
-	e.passStart = time.Now()
-	e.passStartBytes = e.progress.DownloadedBytes
+	e.passBytes, e.passRows = 0, 0
+	e.passFetchDur, e.passReplayDur = 0, 0
 	e.mu.Unlock()
 }
 

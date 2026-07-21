@@ -3,7 +3,7 @@ package gdl
 import (
 	"strings"
 
-	"github.com/leqwin/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/queue"
 )
 
 // classifyError maps a non-zero gallery-dl exit plus its stderr to a stable

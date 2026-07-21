@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/mapping"
-	"github.com/leqwin/monloader/internal/queue"
-	"github.com/leqwin/monloader/internal/similarity"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/similarity"
 )
 
 // simService is the similarity surface the web layer drives: credential state

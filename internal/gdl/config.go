@@ -6,7 +6,7 @@ import (
 	"os"
 	"slices"
 
-	"github.com/leqwin/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/config"
 )
 
 // WriteManagedConfig writes the gallery-dl config file the app controls: the

@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/kwdict"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/kwdict"
 )
 
 // Via is the origin label stamped on every pushed image and its initial tags.

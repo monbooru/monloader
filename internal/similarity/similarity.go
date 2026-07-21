@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/queue"
 )
 
 // Candidate is one post a service offered for the queried image.

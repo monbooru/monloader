@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/logx"
 )
 
 const (
@@ -49,7 +49,9 @@ func newPairStore() *pairStore { return &pairStore{m: map[string]*pairReq{}} }
 
 func pairID() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }
 

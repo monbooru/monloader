@@ -6,8 +6,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/leqwin/monloader/internal/logx"
-	"github.com/leqwin/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/queue"
 )
 
 // ListExtractors runs `gallery-dl --list-extractors` and parses the blocks into

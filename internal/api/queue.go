@@ -2,15 +2,14 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/queue"
 )
 
 // maxWaitSeconds caps the synchronous enqueue wait so a caller can never pin a
@@ -31,7 +30,7 @@ type enqueueRequest struct {
 // returns the resolved job inline if it finished in time.
 func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 	var body enqueueRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeBody(w, r, &body); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
 	}
@@ -104,7 +103,7 @@ type metadataRequest struct {
 // enrich the monbooru image it names. Returns 202 with the queued job id.
 func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
 	var body metadataRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeBody(w, r, &body); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
 	}
@@ -134,7 +133,7 @@ type lookupRequest struct {
 // the image with what it finds. Returns 202 with the queued job id.
 func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 	var body lookupRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeBody(w, r, &body); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
 	}

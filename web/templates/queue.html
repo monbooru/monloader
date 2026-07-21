@@ -14,6 +14,9 @@
       <button type="button" hx-post="/queue/clear" hx-target="#queue-rows" hx-swap="innerHTML"
               hx-confirm="clear recent history?"
               data-confirm-ok="clear" data-confirm-danger>clear</button>
+      <button type="button" hx-post="/queue/cancel-pending" hx-target="#queue-rows" hx-swap="innerHTML"
+              hx-confirm="cancel every job that has not started?"
+              data-confirm-ok="cancel pending" data-confirm-danger>cancel pending</button>
     </div>
   </form>
   {{template "lookup_status" .}}
@@ -21,17 +24,36 @@
   <div class="table-scroll">
   <table class="queue-table">
     <thead>
-      <tr><th>status</th><th>url</th><th>site</th><th>gallery</th><th>summary</th><th></th></tr>
+      <tr><th>status</th><th>url</th><th>type</th><th>site</th><th>gallery</th><th>summary</th><th></th></tr>
     </thead>
     <!-- The action buttons in the rows inherit the target and swap from
          here (and the CSRF header from body), so each carries only its verb. -->
     <tbody id="queue-rows" hx-get="/internal/queue-rows" hx-trigger="load, every 2s [!confirmOpen()]"
-           hx-target="#queue-rows" hx-swap="innerHTML">
+           hx-target="#queue-rows" hx-swap="innerHTML" hx-vals='js:{page: queuePageNum()}'>
       {{template "queue_rows" .}}
     </tbody>
   </table>
   </div>
 </main>
 </div>
+<script>
+  // The queue tbody polls every 2s and replaces itself; keep the chosen page
+  // across polls by reading it from a variable the poll's hx-vals evaluates.
+  // The page is mirrored into the URL so a reload or a copied link lands on
+  // the same page (the server clamps ?page= itself).
+  function queuePageNum() {
+    if (!window.__queuePage) {
+      window.__queuePage = parseInt(new URLSearchParams(location.search).get('page'), 10) || 1;
+    }
+    return window.__queuePage;
+  }
+  function queuePage(n) {
+    window.__queuePage = n;
+    var url = new URL(location);
+    if (n > 1) { url.searchParams.set('page', n); } else { url.searchParams.delete('page'); }
+    history.replaceState(null, '', url);
+    htmx.ajax('GET', '/internal/queue-rows', { target: '#queue-rows', swap: 'innerHTML', values: { page: n } });
+  }
+</script>
 {{template "footer" .}}
 {{template "doc_foot" .}}{{end}}

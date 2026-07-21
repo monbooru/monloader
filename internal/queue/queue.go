@@ -3,9 +3,12 @@ package queue
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/monbooru/monloader/internal/logx"
 )
 
 // defaultMaxFinished bounds the recent-history ring.
@@ -17,6 +20,10 @@ var ErrNotFound = errors.New("job not found")
 // ErrNotCapped is returned by Continue for a job that did not hit the cap, so
 // there is no next window to fetch.
 var ErrNotCapped = errors.New("job was not capped")
+
+// ErrNotRunning is returned by CancelLive for a job that has already finished,
+// so a cancel never falls through to a removal.
+var ErrNotRunning = errors.New("job is not running")
 
 // Options carries per-job settings supplied at enqueue time.
 // Empty fields fall back to the configured defaults inside the processor.
@@ -49,6 +56,10 @@ type Options struct {
 	Backend string
 	MD5     string
 	SHA256  string
+	// ContribIDs / ContribBacklog parameterize a KindContrib send: the
+	// staged rows the job claims, or the whole unsent set.
+	ContribIDs     []int64
+	ContribBacklog bool
 }
 
 // Processor runs a job's full pipeline (resolve, download, map, push). It is
@@ -89,6 +100,11 @@ type Queue struct {
 	workers int
 	wg      sync.WaitGroup
 
+	// store is the durable mirror, nil when /config is unavailable.
+	// Written to only outside q.mu so a slow disk never stalls the
+	// queue's readers; the in-memory state stays authoritative.
+	store *Store
+
 	// now is the clock, overridable in tests.
 	now func() time.Time
 }
@@ -120,6 +136,80 @@ func New(proc Processor, workers, maxFinished int) *Queue {
 // the queue is built, so changing downloader.concurrency takes effect only on
 // restart.
 func (q *Queue) Workers() int { return q.workers }
+
+// UseStore attaches the durable mirror and rehydrates from it. Call
+// before Start: finished rows reload into the history ring, queued rows
+// re-enter the FIFO (processing resumes where it left off), and rows
+// that were running when the process died come back as interrupted -
+// requeueable with one click, never auto-resumed, because silently
+// restarting a large job on every crash would surprise the operator.
+func (q *Queue) UseStore(st *Store) {
+	jobs, err := st.LoadJobs()
+	if err != nil {
+		logx.Warnf("queue: store reload failed, history lost: %v", err)
+	}
+	// The jobs are exclusively owned until placed in the index below, so
+	// the terminal mutations need no locks.
+	var interrupted []*Job
+	now := q.now()
+	for _, j := range jobs {
+		switch j.Status {
+		case JobQueued:
+		case JobRunning:
+			j.Status = JobInterrupted
+			j.FinishedAt = now
+			j.StatusChangedAt = now
+			j.finalized = true
+			interrupted = append(interrupted, j)
+		default:
+			j.finalized = true
+		}
+		if j.finalized {
+			close(j.done)
+		}
+	}
+	var evicted []int64
+	q.mu.Lock()
+	q.store = st
+	for _, j := range jobs {
+		if j.ID > q.nextID {
+			q.nextID = j.ID
+		}
+		q.index[j.ID] = j
+		if j.Status == JobQueued {
+			q.pushPendingLocked(j)
+		} else {
+			evicted = append(evicted, q.pushFinishedLocked(j)...)
+		}
+	}
+	q.mu.Unlock()
+	q.persistDelete(evicted)
+	for _, j := range interrupted {
+		q.persist(j)
+	}
+}
+
+// persist mirrors one job's current state to the store, best-effort.
+// Never called with q.mu held.
+func (q *Queue) persist(j *Job) {
+	if q.store == nil {
+		return
+	}
+	if err := q.store.SaveJob(j.Snapshot()); err != nil {
+		logx.Warnf("queue: store write for job %d failed: %v", j.ID, err)
+	}
+}
+
+// persistDelete drops rows from the store, best-effort. Never called
+// with q.mu held.
+func (q *Queue) persistDelete(ids []int64) {
+	if q.store == nil || len(ids) == 0 {
+		return
+	}
+	if err := q.store.DeleteJobs(ids); err != nil {
+		logx.Warnf("queue: store delete failed: %v", err)
+	}
+}
 
 // SetRetention bounds how long a finished job stays in the recent-history
 // ring; zero or less keeps every job the bound allows. Settable rather than
@@ -157,6 +247,15 @@ func (q *Queue) Paused() bool {
 // ahead of bulk jobs when opts.Priority is set.
 func (q *Queue) Enqueue(url string, opts Options) int64 {
 	q.mu.Lock()
+	j := q.enqueueLocked(url, opts)
+	q.mu.Unlock()
+	q.persist(j)
+	return j.ID
+}
+
+// enqueueLocked creates and queues the job. Caller holds mu and persists
+// the returned job after unlocking.
+func (q *Queue) enqueueLocked(url string, opts Options) *Job {
 	q.nextID++
 	id := q.nextID
 	j := newJob(id, url, opts, q.now())
@@ -173,8 +272,7 @@ func (q *Queue) Enqueue(url string, opts Options) int64 {
 	q.index[id] = j
 	q.pushPendingLocked(j)
 	q.cond.Broadcast()
-	q.mu.Unlock()
-	return id
+	return j
 }
 
 // EnqueueMetadata queues a metadata-only source refetch: it re-reads url for
@@ -203,6 +301,32 @@ func (q *Queue) EnqueueHashImport(md5 string, opts Options) int64 {
 	return q.Enqueue("", opts)
 }
 
+// EnqueueContrib queues a PTR contribution send over the given staged
+// row ids, or the whole unsent backlog when backlog is set. Prioritized:
+// a monbooru confirm is waiting on it.
+func (q *Queue) EnqueueContrib(ids []int64, backlog bool) int64 {
+	return q.Enqueue("", Options{Kind: KindContrib, ContribIDs: ids, ContribBacklog: backlog, Priority: true})
+}
+
+// ContribSendLive reports whether a contribution send is queued or
+// running - the backlog retry's already_running guard (per-confirm
+// sends claim disjoint rows and need none).
+func (q *Queue) ContribSendLive() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, j := range q.running {
+		if j.Kind == KindContrib {
+			return true
+		}
+	}
+	for _, j := range q.pending {
+		if j.Kind == KindContrib {
+			return true
+		}
+	}
+	return false
+}
+
 // Get returns a snapshot of the job with the given id.
 func (q *Queue) Get(id int64) (*Job, error) {
 	q.mu.Lock()
@@ -219,6 +343,10 @@ type ListOptions struct {
 	Status JobStatus // "" = every status
 	Limit  int       // 0 = no limit
 	Page   int       // 1-based; <=1 means the first page
+	// OmitItems leaves each snapshot's item list empty (the summary is still
+	// computed), for a caller that groups and pages the rows first and then
+	// fetches the items of the page it renders.
+	OmitItems bool
 }
 
 // List returns job snapshots newest-first, filtered by status and
@@ -228,17 +356,18 @@ func (q *Queue) List(opts ListOptions) ([]*Job, int) {
 	// Every caller that shows history reads it through here, so aging the ring
 	// on the way out keeps expired jobs from surfacing without a sweep timer of
 	// its own; the queue view's poll drives it often enough.
-	q.sweepFinishedLocked(q.now())
+	swept := q.sweepFinishedLocked(q.now())
 	all := make([]*Job, 0, len(q.index))
 	for _, j := range q.index {
 		all = append(all, j)
 	}
 	q.mu.Unlock()
+	q.persistDelete(swept)
 
 	// Snapshot outside the queue lock, then filter on the stable copy.
 	snaps := make([]*Job, 0, len(all))
 	for _, j := range all {
-		s := j.Snapshot()
+		s := j.snapshot(!opts.OmitItems)
 		if opts.Status == "" || s.Status == opts.Status {
 			snaps = append(snaps, s)
 		}
@@ -269,17 +398,20 @@ func (q *Queue) List(opts ListOptions) ([]*Job, int) {
 // again.
 func (q *Queue) Retry(id int64, force bool) error {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	j := q.index[id]
 	if j == nil {
+		q.mu.Unlock()
 		return ErrNotFound
 	}
 	if err := j.reset(force, q.now()); err != nil {
+		q.mu.Unlock()
 		return err
 	}
 	q.removeFromFinishedLocked(id)
 	q.pushPendingLocked(j)
 	q.cond.Broadcast()
+	q.mu.Unlock()
+	q.persist(j)
 	return nil
 }
 
@@ -294,32 +426,40 @@ func (q *Queue) Continue(id int64) (int64, error) { return q.continueFrom(id, fa
 func (q *Queue) ContinueAll(id int64) (int64, error) { return q.continueFrom(id, true) }
 
 func (q *Queue) continueFrom(id int64, auto bool) (int64, error) {
-	src, err := q.Get(id)
-	if err != nil {
-		return 0, err
+	// One lock hold from the high-water read to the enqueue: two concurrent
+	// continues for a series would otherwise both read the same offset and
+	// fetch overlapping windows.
+	q.mu.Lock()
+	j := q.index[id]
+	if j == nil {
+		q.mu.Unlock()
+		return 0, ErrNotFound
 	}
+	src := j.Snapshot()
 	if !src.Capped {
+		q.mu.Unlock()
 		return 0, ErrNotCapped
 	}
 	// Advance past the furthest window the series has fetched, not just the one
 	// this call names, so a continue from a non-latest window cannot re-fetch a
 	// window an earlier one already took.
-	return q.Enqueue(src.URL, Options{
+	next := q.enqueueLocked(src.URL, Options{
 		Gallery:  src.Gallery,
 		Folder:   src.Folder,
 		MaxItems: src.Cap,
-		Offset:   q.seriesHighWater(src.seriesKey()),
+		Offset:   q.seriesHighWaterLocked(src.seriesKey()),
 		Root:     src.seriesKey(),
 		Site:     src.Site,
 		Auto:     auto,
-	}), nil
+	})
+	q.mu.Unlock()
+	q.persist(next)
+	return next.ID, nil
 }
 
-// seriesHighWater returns the offset just past the furthest window any job in
-// the series has fetched.
-func (q *Queue) seriesHighWater(root int64) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+// seriesHighWaterLocked returns the offset just past the furthest window any
+// job in the series has fetched. Caller holds mu.
+func (q *Queue) seriesHighWaterLocked(root int64) int {
 	high := 0
 	for _, j := range q.index {
 		if j.seriesKey() != root {
@@ -346,6 +486,32 @@ func (q *Queue) autoContinue(j *Job) {
 		return
 	}
 	_, _ = q.continueFrom(s.ID, true)
+}
+
+// reconcileSeries clears the capped flag across a continue-series once a
+// continuation resolves short of the cap (or empty): the source has run out,
+// so leaving any window capped would keep advertising "more available" and
+// let further continues fetch provably empty windows. A canceled or failed
+// window proves nothing about the source and reconciles nothing.
+func (q *Queue) reconcileSeries(j *Job) {
+	s := j.Snapshot()
+	if s.Capped || s.Root == 0 || s.Root == s.ID {
+		return
+	}
+	if s.Status != JobSucceeded && s.Status != JobPartial {
+		return
+	}
+	q.mu.Lock()
+	var cleared []*Job
+	for _, other := range q.index {
+		if other.seriesKey() == s.Root && other.clearCapped() {
+			cleared = append(cleared, other)
+		}
+	}
+	q.mu.Unlock()
+	for _, other := range cleared {
+		q.persist(other)
+	}
 }
 
 // CancelSeries stops id's continue-series (the originating capped job and its
@@ -380,6 +546,24 @@ func (q *Queue) CancelSeries(id int64) error {
 	return nil
 }
 
+// CancelLive stops id's series only while it is still queued or running. The
+// queue row's cancel and remove buttons differ only by the state the last poll
+// saw, so a cancel clicked on a row that finished in the meantime must refuse
+// rather than fall through to the removal CancelSeries would perform.
+func (q *Queue) CancelLive(id int64) error {
+	q.mu.Lock()
+	j := q.index[id]
+	live := j != nil && q.isLiveLocked(id)
+	q.mu.Unlock()
+	switch {
+	case j == nil:
+		return ErrNotFound
+	case !live:
+		return ErrNotRunning
+	}
+	return q.CancelSeries(id)
+}
+
 // isLiveLocked reports whether the job is still queued or running, i.e. not yet
 // moved to the finished ring. Caller holds mu.
 func (q *Queue) isLiveLocked(id int64) bool {
@@ -399,20 +583,51 @@ func (q *Queue) isLiveLocked(id int64) bool {
 // pending or finished job is removed from tracking entirely.
 func (q *Queue) Cancel(id int64) error {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	j := q.index[id]
 	if j == nil {
+		q.mu.Unlock()
 		return ErrNotFound
 	}
 	if cancel, ok := q.cancels[id]; ok {
 		cancel()
+		q.mu.Unlock()
 		return nil
 	}
 	// Not running: drop it from the pending FIFO or the finished ring.
 	q.removeFromPendingLocked(id)
 	q.removeFromFinishedLocked(id)
 	delete(q.index, id)
+	q.mu.Unlock()
+	q.settleDropped(j)
+	q.persistDelete([]int64{id})
 	return nil
+}
+
+// settleDropped finalizes a job removed without ever running, so a caller
+// parked in Wait returns with its terminal snapshot instead of blocking out
+// the whole wait window. Both steps no-op on an already-finished job.
+func (q *Queue) settleDropped(j *Job) {
+	j.cancel(q.now())
+	j.signalDone()
+}
+
+// CancelPending drops every queued job that has not started: the FIFO
+// empties in one sweep, mirroring what a per-job cancel does to each.
+// Running jobs and history are untouched.
+func (q *Queue) CancelPending() {
+	q.mu.Lock()
+	ids := make([]int64, 0, len(q.pending))
+	for _, j := range q.pending {
+		ids = append(ids, j.ID)
+		delete(q.index, j.ID)
+	}
+	dropped := q.pending
+	q.pending = nil
+	q.mu.Unlock()
+	for _, j := range dropped {
+		q.settleDropped(j)
+	}
+	q.persistDelete(ids)
 }
 
 // Wait blocks until the job reaches a terminal state or ctx is done,
@@ -437,11 +652,14 @@ func (q *Queue) Wait(ctx context.Context, id int64) (*Job, error) {
 // items they held. Running and pending jobs are left untouched.
 func (q *Queue) Clear() {
 	q.mu.Lock()
+	ids := make([]int64, 0, len(q.finished))
 	for _, j := range q.finished {
 		delete(q.index, j.ID)
+		ids = append(ids, j.ID)
 	}
 	q.finished = nil
 	q.mu.Unlock()
+	q.persistDelete(ids)
 }
 
 // pushPendingLocked appends bulk jobs to the FIFO tail and inserts priority
@@ -462,50 +680,44 @@ func (q *Queue) pushPendingLocked(j *Job) {
 }
 
 func (q *Queue) removeFromPendingLocked(id int64) {
-	for i, j := range q.pending {
-		if j.ID == id {
-			q.pending = append(q.pending[:i], q.pending[i+1:]...)
-			return
-		}
-	}
+	// slices.DeleteFunc also zeroes the vacated tail, so the removed *Job
+	// does not stay reachable from the backing array.
+	q.pending = slices.DeleteFunc(q.pending, func(j *Job) bool { return j.ID == id })
 }
 
 // lastRunUnimportedLocked reports whether the most recent finished job for url
-// did not fully import (failed or partial), so its posts may sit in gallery-dl's
-// archive without having reached monbooru. Caller holds mu.
+// did not fully import - anything but succeeded - so its posts may sit in
+// gallery-dl's archive without having reached monbooru. Caller holds mu.
 func (q *Queue) lastRunUnimportedLocked(url string) bool {
 	unimported := false
 	for _, j := range q.finished {
 		if j.URL != url {
 			continue
 		}
-		st := j.status()
-		unimported = st == JobFailed || st == JobPartial
+		unimported = j.status() != JobSucceeded
 	}
 	return unimported
 }
 
 func (q *Queue) removeFromFinishedLocked(id int64) {
-	for i, j := range q.finished {
-		if j.ID == id {
-			q.finished = append(q.finished[:i], q.finished[i+1:]...)
-			return
-		}
-	}
+	q.finished = slices.DeleteFunc(q.finished, func(j *Job) bool { return j.ID == id })
 }
 
 // sweepFinishedLocked drops finished jobs whose terminal time is older than
 // the retention window, so an instance left running for weeks does not show
-// history from weeks ago. Caller holds mu.
-func (q *Queue) sweepFinishedLocked(now time.Time) {
+// history from weeks ago. Returns the dropped ids for the store delete.
+// Caller holds mu.
+func (q *Queue) sweepFinishedLocked(now time.Time) []int64 {
 	if q.retention <= 0 {
-		return
+		return nil
 	}
+	var dropped []int64
 	cutoff := now.Add(-q.retention)
 	kept := q.finished[:0]
 	for _, j := range q.finished {
 		if j.finishedAt().Before(cutoff) {
 			delete(q.index, j.ID)
+			dropped = append(dropped, j.ID)
 			continue
 		}
 		kept = append(kept, j)
@@ -516,12 +728,15 @@ func (q *Queue) sweepFinishedLocked(now time.Time) {
 		q.finished[i] = nil
 	}
 	q.finished = kept
+	return dropped
 }
 
 // pushFinishedLocked appends a finished job to the ring and evicts the
-// oldest entries past the bound, dropping them from the index too. Caller
-// holds mu.
-func (q *Queue) pushFinishedLocked(j *Job) {
+// oldest entries past the bound, dropping them from the index too.
+// Returns the evicted ids so the caller can drop their store rows
+// outside the lock. Caller holds mu.
+func (q *Queue) pushFinishedLocked(j *Job) []int64 {
+	var evictedIDs []int64
 	q.finished = append(q.finished, j)
 	for len(q.finished) > q.maxFinished {
 		evicted := q.finished[0]
@@ -531,5 +746,7 @@ func (q *Queue) pushFinishedLocked(j *Job) {
 		q.finished[0] = nil
 		q.finished = q.finished[1:]
 		delete(q.index, evicted.ID)
+		evictedIDs = append(evictedIDs, evicted.ID)
 	}
+	return evictedIDs
 }

@@ -1,13 +1,12 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/leqwin/monloader/internal/gdl"
+	"github.com/monbooru/monloader/internal/gdl"
 )
 
 // SiteEntry is one supported site for GET /api/v1/sites. Curated entries carry
@@ -81,7 +80,7 @@ func (h *Handler) testSite(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			URL string `json:"url"`
 		}
-		if json.NewDecoder(r.Body).Decode(&body) == nil {
+		if decodeBody(w, r, &body) == nil {
 			probeURL = strings.TrimSpace(body.URL)
 		}
 	}

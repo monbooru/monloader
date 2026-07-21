@@ -4,10 +4,15 @@
 <main id="content" class="ptr-shell">
   <h1>Public Tag Repository</h1>
   <p class="field-hint">Download a local copy of the Hydrus PTR. Off by default; when enabled it allows monloader to answer sha256 lookups offline.</p>
+  <p class="field-hint">the data path and the index delete are in <a href="/settings#ptr">settings</a>.</p>
   {{if .Flash}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
   <div id="ptr-body"{{if eq .PTR.Status.State "syncing"}} hx-get="/internal/ptr-status" hx-trigger="every 2s" hx-swap="innerHTML"{{end}}>
     {{template "ptr_body" .}}
   </div>
+  {{if ne .PTR.Status.State "disabled"}}
+  <div id="ptr-account" hx-get="/internal/ptr-account" hx-trigger="load" hx-swap="innerHTML"></div>
+  <div id="ptr-contrib" hx-get="/internal/ptr-contrib" hx-trigger="load" hx-swap="innerHTML"></div>
+  {{end}}
 </main>
 </div>
 {{template "footer" .}}
@@ -32,8 +37,8 @@
 <section class="settings-section">
   <h2>status: <span class="ptr-state ptr-state-{{.Status.State}}">{{.Status.State}}</span></h2>
   {{if eq .Status.State "syncing"}}
-  <p class="field-hint">The initial sync downloads the full tag history and can take several hours; it runs in the background.</p>
-  <p>update {{.Status.Progress.UpdateIndex}} / {{.Status.Progress.UpdateCount}} &middot; {{humanBytes .Status.Progress.DownloadedBytes}} downloaded{{if .Status.Progress.DownloadRate}} &middot; {{humanBytes .Status.Progress.DownloadRate}}/s{{end}}</p>
+  <p class="field-hint">The initial sync downloads the full tag history and takes days (weeks on an HDD).</p>
+  <p>update {{.Status.Progress.UpdateIndex}} / {{.Status.Progress.UpdateCount}} &middot; {{humanBytes .Status.Progress.DownloadedBytes}} downloaded{{if .Status.Progress.DownloadRate}} &middot; {{humanBytes .Status.Progress.DownloadRate}}/s network{{end}}{{if .Status.Progress.ProcessRate}} &middot; {{.Status.Progress.ProcessRate}} rows/s{{end}}</p>
   <div class="ptr-progress">
     <div class="ptr-bar"><div class="ptr-bar-fill" style="width:{{.Percent}}%"></div></div>
     <form method="POST" action="/ptr/pause"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><button type="submit">pause</button></form>
@@ -69,5 +74,4 @@
   </table>
 </section>
 {{end}}
-<p class="field-hint">the data path and the index delete are in <a href="/settings#ptr">settings</a>.</p>
 {{end}}{{end}}

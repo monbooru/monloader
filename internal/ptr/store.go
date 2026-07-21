@@ -13,7 +13,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/leqwin/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/logx"
 )
 
 // schemaVersion gates the on-disk index. A database written by an older schema
@@ -190,8 +190,19 @@ func (s *Store) EnsureCounts(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO sync(key,value) VALUES(?,?)
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, countsKey, string(buf))
+	return upsertSync(s.db, countsKey, string(buf))
+}
+
+// execer is the single statement shape upsertSync needs; *sql.DB and
+// *sql.Tx both satisfy it.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// upsertSync writes one sync KV pair, inserting or replacing.
+func upsertSync(e execer, key, value string) error {
+	_, err := e.Exec(`INSERT INTO sync(key,value) VALUES(?,?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	return err
 }
 
@@ -280,24 +291,53 @@ func (s *Store) CoveredThrough() (int64, error) {
 // backfill for an index synced before the timestamp was recorded, whose
 // caught-up passes never replay an update.
 func (s *Store) SetCoveredThrough(ts int64) error {
-	_, err := s.db.Exec(`INSERT INTO sync(key,value) VALUES(?,?)
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-		coveredKey, strconv.FormatInt(ts, 10))
-	return err
+	return upsertSync(s.db, coveredKey, strconv.FormatInt(ts, 10))
+}
+
+// blobsKey persists how many update blobs have been replayed. Blob count
+// tracks the repository's real volume (the server splits a window's rows into
+// row-capped blobs) where the update count does not - most of the row volume
+// sits in the manifest's later, many-blob entries - so it is what the
+// progress fraction weights by.
+const blobsKey = "blobs"
+
+// BlobsApplied returns the persisted applied-blob census, and whether it has
+// been recorded; an index synced before it existed reports false until the
+// engine backfills it.
+func (s *Store) BlobsApplied() (uint64, bool, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM sync WHERE key=?`, blobsKey).Scan(&v)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	return n, true, err
+}
+
+// SeedBlobsApplied persists the applied-blob census outside a replay - the
+// backfill for an index synced before the census was recorded.
+func (s *Store) SeedBlobsApplied(n uint64) error {
+	return upsertSync(s.db, blobsKey, strconv.FormatUint(n, 10))
 }
 
 // Replay applies one update index's blobs in a single transaction and advances
 // the cursor, the persisted census, and the coverage timestamp to that index
 // atomically, so a crash or restart resumes at cursor+1 having re-fetched
-// nothing. Definitions in the slice are applied before content, per the
-// repository's ordering rule. The hashes and mappings counts advance by
-// insert/delete deltas (re-counting those tables is what used to stall large
-// syncs); the small tables are re-counted in-transaction when touched, which
-// keeps the sibling upsert exact. It returns the new census.
-func (s *Store) Replay(index uint64, coveredThrough int64, updates []*Update) (c Counts, err error) {
+// nothing. Blobs arrive compressed and each is inflated and parsed only when
+// its pass wants it - definitions first, then content, per the repository's
+// ordering rule - so an entry's memory is its compressed blobs plus one
+// parsed update, and a hundred-blob entry stays affordable. The hashes and
+// mappings counts advance by insert/delete deltas (re-counting those tables
+// is what used to stall large syncs); the small tables are re-counted
+// in-transaction when touched, which keeps the sibling upsert exact. It
+// returns the new census and how many rows the entry carried.
+func (s *Store) Replay(index uint64, coveredThrough int64, blobs [][]byte) (c Counts, rows int64, err error) {
 	tx, err := s.replay.Begin()
 	if err != nil {
-		return c, err
+		return c, rows, err
 	}
 	defer func() {
 		if err != nil {
@@ -306,29 +346,53 @@ func (s *Store) Replay(index uint64, coveredThrough int64, updates []*Update) (c
 	}()
 
 	if c, err = scanCounts(tx); err != nil {
-		return c, err
+		return c, rows, err
 	}
 	var touchedTags, touchedSiblings, touchedParents bool
-	for _, up := range updates {
-		if up.Definitions != nil {
-			var hashDelta int64
-			if hashDelta, err = applyDefinitions(tx, up.Definitions); err != nil {
-				return c, err
-			}
-			c.Hashes += hashDelta
-			touchedTags = touchedTags || len(up.Definitions.Tags) > 0
+	for _, raw := range blobs {
+		var kind int
+		if kind, err = updateKind(raw); err != nil {
+			return c, rows, err
 		}
+		if kind != typeDefinitionsUpdate {
+			if kind != typeContentUpdate {
+				err = fmt.Errorf("update type %d is neither definitions (36) nor content (34)", kind)
+				return c, rows, err
+			}
+			continue
+		}
+		var up *Update
+		if up, err = ParseUpdate(raw); err != nil {
+			return c, rows, err
+		}
+		var hashDelta int64
+		if hashDelta, err = applyDefinitions(tx, up.Definitions); err != nil {
+			return c, rows, err
+		}
+		c.Hashes += hashDelta
+		rows += up.Rows()
+		touchedTags = touchedTags || len(up.Definitions.Tags) > 0
 	}
-	for _, up := range updates {
-		if up.Content != nil {
-			var mapDelta int64
-			if mapDelta, err = applyContent(tx, up.Content); err != nil {
-				return c, err
-			}
-			c.Mappings += mapDelta
-			touchedSiblings = touchedSiblings || len(up.Content.SiblingsAdd)+len(up.Content.SiblingsDel) > 0
-			touchedParents = touchedParents || len(up.Content.ParentsAdd)+len(up.Content.ParentsDel) > 0
+	for _, raw := range blobs {
+		var kind int
+		if kind, err = updateKind(raw); err != nil {
+			return c, rows, err
 		}
+		if kind != typeContentUpdate {
+			continue
+		}
+		var up *Update
+		if up, err = ParseUpdate(raw); err != nil {
+			return c, rows, err
+		}
+		var mapDelta int64
+		if mapDelta, err = applyContent(tx, up.Content); err != nil {
+			return c, rows, err
+		}
+		c.Mappings += mapDelta
+		rows += up.Rows()
+		touchedSiblings = touchedSiblings || len(up.Content.SiblingsAdd)+len(up.Content.SiblingsDel) > 0
+		touchedParents = touchedParents || len(up.Content.ParentsAdd)+len(up.Content.ParentsDel) > 0
 	}
 	for _, rc := range []struct {
 		touched bool
@@ -343,37 +407,40 @@ func (s *Store) Replay(index uint64, coveredThrough int64, updates []*Update) (c
 			continue
 		}
 		if err = tx.QueryRow(`SELECT COUNT(*) FROM ` + rc.table).Scan(rc.dst); err != nil {
-			return c, err
+			return c, rows, err
 		}
 	}
 	var buf []byte
 	if buf, err = json.Marshal(c); err != nil {
-		return c, err
+		return c, rows, err
 	}
-	if _, err = tx.Exec(
-		`INSERT INTO sync(key,value) VALUES(?,?)
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-		countsKey, string(buf),
-	); err != nil {
-		return c, err
+	if err = upsertSync(tx, countsKey, string(buf)); err != nil {
+		return c, rows, err
 	}
-	if _, err = tx.Exec(
-		`INSERT INTO sync(key,value) VALUES('cursor',?)
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-		strconv.FormatUint(index, 10),
-	); err != nil {
-		return c, err
+	if err = upsertSync(tx, "cursor", strconv.FormatUint(index, 10)); err != nil {
+		return c, rows, err
+	}
+	var applied uint64
+	var v string
+	switch err = tx.QueryRow(`SELECT value FROM sync WHERE key=?`, blobsKey).Scan(&v); err {
+	case sql.ErrNoRows:
+		err = nil
+	case nil:
+		if applied, err = strconv.ParseUint(v, 10, 64); err != nil {
+			return c, rows, err
+		}
+	default:
+		return c, rows, err
+	}
+	if err = upsertSync(tx, blobsKey, strconv.FormatUint(applied+uint64(len(blobs)), 10)); err != nil {
+		return c, rows, err
 	}
 	if coveredThrough > 0 {
-		if _, err = tx.Exec(
-			`INSERT INTO sync(key,value) VALUES(?,?)
-			 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-			coveredKey, strconv.FormatInt(coveredThrough, 10),
-		); err != nil {
-			return c, err
+		if err = upsertSync(tx, coveredKey, strconv.FormatInt(coveredThrough, 10)); err != nil {
+			return c, rows, err
 		}
 	}
-	return c, tx.Commit()
+	return c, rows, tx.Commit()
 }
 
 // rowQuerier is the single query shape scanCounts needs; *sql.Tx and *sql.DB
@@ -511,9 +578,10 @@ func applyPairs(tx *sql.Tx, query string, pairs []Pair) error {
 	return nil
 }
 
-// Counts re-counts every table - full scans, minutes on a synced index. Only
-// EnsureCounts uses it, once, to seed the persisted census; everything else
-// reads StoredCounts.
+// Counts re-counts every table - full scans, minutes on a synced index.
+// Production reads the persisted census through StoredCounts (EnsureCounts
+// seeds it via the unexported counts); this export exists for tests to
+// verify a replayed index against a real count.
 func (s *Store) Counts() (Counts, error) {
 	return s.counts(context.Background())
 }

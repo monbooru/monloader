@@ -141,15 +141,20 @@ function confirmOpen() {
   var dlg = document.getElementById("confirm-dialog");
   return !!(dlg && dlg.open);
 }
-function showConfirm(message, onOk, okLabel, danger) {
+function showConfirm(message, onOk, okLabel, danger, detail) {
   var dlg = document.getElementById("confirm-dialog");
   if (!dlg) {
-    if (window.confirm(message)) {
+    if (window.confirm(detail ? message + "\n\n" + detail : message)) {
       onOk();
     }
     return;
   }
   document.getElementById("confirm-dialog-msg").textContent = message || "";
+  var detailEl = document.getElementById("confirm-dialog-detail");
+  if (detailEl) {
+    detailEl.textContent = detail || "";
+    detailEl.style.display = detail ? "" : "none";
+  }
   var okBtn = document.getElementById("confirm-dialog-ok");
   var cancelBtn = document.getElementById("confirm-dialog-cancel");
   okBtn.textContent = okLabel || "ok";
@@ -175,7 +180,9 @@ document.body.addEventListener("htmx:confirm", function (e) {
   var elt = e.detail.elt;
   var okLabel = elt && elt.dataset ? elt.dataset.confirmOk : "";
   var danger = !!(elt && elt.hasAttribute && elt.hasAttribute("data-confirm-danger"));
-  showConfirm(e.detail.question, function () { e.detail.issueRequest(true); }, okLabel, danger);
+  // The attribute doubles as the warning subtext when it carries a value.
+  var detail = elt && elt.getAttribute ? elt.getAttribute("data-confirm-danger") : "";
+  showConfirm(e.detail.question, function () { e.detail.issueRequest(true); }, okLabel, danger, detail);
 });
 
 // htmx raises htmx:confirm only for requests it issues itself, so an hx-confirm
@@ -193,7 +200,8 @@ document.body.addEventListener("submit", function (e) {
   }
   e.preventDefault();
   showConfirm(form.getAttribute("hx-confirm"), function () { form.submit(); },
-    form.dataset.confirmOk, form.hasAttribute("data-confirm-danger"));
+    form.dataset.confirmOk, form.hasAttribute("data-confirm-danger"),
+    form.getAttribute("data-confirm-danger"));
 });
 
 // The per-token privileges dialog closes itself on a successful save; the

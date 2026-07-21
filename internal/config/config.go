@@ -132,9 +132,17 @@ func HashToken(secret string) string {
 
 // GenerateSecret returns a fresh 32-character hex bearer secret.
 func GenerateSecret() string {
-	buf := make([]byte, 16)
-	_, _ = rand.Read(buf)
-	return hex.EncodeToString(buf)
+	return hex.EncodeToString(mustRandom(16))
+}
+
+// mustRandom reads n random bytes or dies: a failed CSPRNG must never
+// degrade into a predictable all-zero secret.
+func mustRandom(n int) []byte {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	return buf
 }
 
 // IsHexHash reports whether s is exactly n hex characters (either case). The
@@ -162,9 +170,7 @@ func IsHTTPURL(s string) bool {
 }
 
 func newTokenID() string {
-	buf := make([]byte, 8)
-	_, _ = rand.Read(buf)
-	return hex.EncodeToString(buf)
+	return hex.EncodeToString(mustRandom(8))
 }
 
 // reservedTokenName matches names the pairing flow owns, so an operator cannot
@@ -229,13 +235,12 @@ func (cfg *Config) FindTokenByHash(hash string) *Token {
 
 // RemoveToken drops the token with the given id, reporting whether it existed.
 func (cfg *Config) RemoveToken(id string) bool {
-	for i := range cfg.Auth.Tokens {
-		if cfg.Auth.Tokens[i].ID == id {
-			cfg.Auth.Tokens = append(cfg.Auth.Tokens[:i], cfg.Auth.Tokens[i+1:]...)
-			return true
-		}
+	i := slices.IndexFunc(cfg.Auth.Tokens, func(t Token) bool { return t.ID == id })
+	if i < 0 {
+		return false
 	}
-	return false
+	cfg.Auth.Tokens = slices.Delete(cfg.Auth.Tokens, i, i+1)
+	return true
 }
 
 // SetTokenScopes replaces a token's scopes, reporting whether it existed.
@@ -271,6 +276,9 @@ type PTRConfig struct {
 	// MinFreeGB refuses to start the initial sync when the data volume has less
 	// free space, so a multi-tens-of-GB stream cannot fill the disk.
 	MinFreeGB int `toml:"min_free_gb"`
+	// CommitSleep paces contribution uploads: seconds between POSTs,
+	// matching the hydrus client's politeness.
+	CommitSleep float64 `toml:"commit_sleep"`
 }
 
 // PublicAccessKey is the PTR's published read-only access key (hydrus docs,
@@ -368,10 +376,11 @@ func Default() *Config {
 			Level: "warn",
 		},
 		PTR: PTRConfig{
-			DataPath:   "/ptr",
-			Address:    "https://ptr.hydrus.network:45871",
-			FetchSleep: 1.0,
-			MinFreeGB:  80,
+			DataPath:    "/ptr",
+			Address:     "https://ptr.hydrus.network:45871",
+			FetchSleep:  1.0,
+			MinFreeGB:   80,
+			CommitSleep: 1.0,
 		},
 		Lookup: LookupConfig{
 			MinSimilarity: defaultMinSimilarity,
@@ -466,14 +475,14 @@ func seedLookupDefaults(cfg *Config, hasLookup bool) {
 		cfg.Lookup.Saucenao.Order = 3
 		return
 	}
-	max := 0
+	highest := 0
 	for _, s := range cfg.Sites {
-		if s.LookupOrder > max {
-			max = s.LookupOrder
+		if s.LookupOrder > highest {
+			highest = s.LookupOrder
 		}
 	}
-	cfg.Lookup.Iqdb.Order = max + 1
-	cfg.Lookup.Saucenao.Order = max + 2
+	cfg.Lookup.Iqdb.Order = highest + 1
+	cfg.Lookup.Saucenao.Order = highest + 2
 }
 
 // LoadFromFile decodes the config file (or defaults when absent) and validates
@@ -628,14 +637,18 @@ func applyEnvOverrides(cfg *Config) {
 			}
 		}
 	}
-	if v := os.Getenv("MONLOADER_GALLERYDL_SLEEP_REQUEST"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			cfg.GalleryDL.SleepRequest = f
-		}
-	}
-	if v := os.Getenv("MONLOADER_PTR_FETCH_SLEEP"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			cfg.PTR.FetchSleep = f
+	for _, o := range []struct {
+		env string
+		dst *float64
+	}{
+		{"MONLOADER_GALLERYDL_SLEEP_REQUEST", &cfg.GalleryDL.SleepRequest},
+		{"MONLOADER_PTR_FETCH_SLEEP", &cfg.PTR.FetchSleep},
+		{"MONLOADER_PTR_COMMIT_SLEEP", &cfg.PTR.CommitSleep},
+	} {
+		if v := os.Getenv(o.env); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				*o.dst = f
+			}
 		}
 	}
 	for _, o := range []struct {
@@ -695,6 +708,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "warn"
+	}
+	if cfg.PTR.CommitSleep < 0 {
+		cfg.PTR.CommitSleep = 0
 	}
 	if cfg.PTR.FetchSleep < 0 {
 		cfg.PTR.FetchSleep = 0

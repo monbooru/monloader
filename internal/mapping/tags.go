@@ -102,7 +102,7 @@ func baseCategory(suffix string) (category string, keep bool) {
 	case "meta", "metadata":
 		return "meta", true
 	case "species":
-		return "general", true // no monbooru equivalent
+		return "species", true
 	case "lore":
 		return "meta", true
 	case "contributor":
@@ -150,25 +150,53 @@ func splitNamespace(tag string) (category, name string, ok bool) {
 	return "", "", false
 }
 
-// disallowedTagChars matches a run of characters outside monbooru's tag-name
-// charset (internal/tags ValidateTagName). The category-separating ':' is in
-// the set, so a "category:name" tag keeps its prefix.
-var disallowedTagChars = regexp.MustCompile(`[^a-z0-9_()!@#$.~+:?<>=^-]+`)
-
-// normalizeTag rewrites a tag into the form monbooru stores: lowercased, every
-// run of characters monbooru's tag-name rule rejects collapsed to one underscore,
-// then trimmed of leading/trailing underscores. Booru tags arrive with spaces,
-// commas, slashes, and apostrophes monbooru would otherwise reject; a name with
-// no usable characters (a CJK-only artist, since monbooru is ASCII-only) collapses
-// to empty and is left out.
+// normalizeTag rewrites a tag into the form monbooru stores: lowercased, control
+// runes dropped, surrounding whitespace trimmed and internal whitespace runs
+// folded to `_`, and the grammar-reserved `"` and `*` folded to `_`. Every other
+// rune - accents, CJK, the full ASCII punctuation - is kept, so a PTR or booru
+// spelling round-trips instead of being dropped or mangled. Mirrors monbooru's
+// tags.NormalizeName byte for byte.
 func normalizeTag(tag string) string {
 	tag = strings.ToLower(tag)
-	tag = disallowedTagChars.ReplaceAllString(tag, "_")
-	tag = strings.Trim(tag, "_")
+	var b strings.Builder
+	b.Grow(len(tag))
+	pendingFold := false
+	for _, r := range tag {
+		switch {
+		case unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Co):
+		case unicode.IsSpace(r) || r == '"' || r == '*':
+			pendingFold = true
+		default:
+			if pendingFold && b.Len() > 0 {
+				b.WriteByte('_')
+			}
+			pendingFold = false
+			b.WriteRune(r)
+		}
+	}
+	tag = strings.Trim(b.String(), "_")
 	if strings.HasSuffix(tag, ":") {
 		return "" // a category prefix whose name folded away entirely
 	}
 	return tag
+}
+
+// legacyDisallowedTagChars is the pre-widening charset rule, kept so tags
+// monbooru stored before the punctuation widening (and never bulk-rewrote)
+// can still be recognized against their raw PTR spelling.
+var (
+	legacyDisallowedTagChars = regexp.MustCompile(`[^a-z0-9_()!@#$.~+:?<>=^-]+`)
+	underscoreRuns           = regexp.MustCompile(`_+`)
+)
+
+// LegacyFoldTag returns the pre-widening projection of a monbooru-form tag:
+// the spelling an old pull would have stored for the same raw tag. Underscore
+// runs collapse because the old fold merged an admitted character and its
+// neighbouring spaces into one run ("girls' frontline" -> "girls_frontline").
+func LegacyFoldTag(tag string) string {
+	tag = legacyDisallowedTagChars.ReplaceAllString(tag, "_")
+	tag = underscoreRuns.ReplaceAllString(tag, "_")
+	return strings.Trim(tag, "_")
 }
 
 // formatTag renders a (category, name) pair as monbooru expects: bare for

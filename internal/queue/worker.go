@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"slices"
 
-	"github.com/leqwin/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/logx"
 )
 
 // Start launches the worker goroutines. Call once after New.
@@ -29,8 +30,14 @@ func (q *Queue) Close() {
 	for _, cancel := range q.cancels {
 		cancel()
 	}
+	pending := slices.Clone(q.pending)
 	q.cond.Broadcast()
 	q.mu.Unlock()
+	// A pending job never runs after this point; settle it so a caller parked in
+	// Wait returns at once rather than holding the HTTP drain open.
+	for _, j := range pending {
+		q.settleDropped(j)
+	}
 	q.wg.Wait()
 }
 
@@ -88,6 +95,7 @@ func (q *Queue) runJob(j *Job, ctx context.Context) {
 		j.cancel(q.now())
 		return
 	}
+	q.persist(j)
 
 	err := q.proc.Process(ctx, j)
 	switch {
@@ -116,8 +124,11 @@ func (q *Queue) finish(j *Job) {
 		cancel() // release the context on the normal path too, not only on Cancel
 		delete(q.cancels, j.ID)
 	}
-	q.pushFinishedLocked(j)
+	evicted := q.pushFinishedLocked(j)
 	q.mu.Unlock()
+	q.persist(j)
+	q.persistDelete(evicted)
 	j.signalDone()
 	q.autoContinue(j)
+	q.reconcileSeries(j)
 }

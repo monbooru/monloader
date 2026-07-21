@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/logx"
 )
 
 // outboundPair is an in-flight "connect to monbooru" attempt. The token is the

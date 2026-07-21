@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leqwin/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/config"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -150,6 +150,9 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	}
 	password := r.FormValue("password")
 	if bcrypt.CompareHashAndPassword([]byte(s.cfg.Current().Auth.PasswordHash), []byte(password)) != nil {
+		// The content-type must land before the status: headers set after
+		// WriteHeader are dropped.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
 		s.render(w, "login", s.loginData("incorrect password"))
 		return
@@ -270,13 +273,20 @@ func (s *Server) settingsTokenCreate(w http.ResponseWriter, r *http.Request) {
 	s.renderAuthTokensOOB(w, r)
 }
 
+// hasPairingTeardown reports whether a token's peer has its own remove-pairing
+// control. Only these two do, so a token minted under any other app name would
+// have no way out at all if the list refused it as well.
+func hasPairingTeardown(peer string) bool {
+	return peer == "monbooru" || peer == "monsender"
+}
+
 // settingsTokenRevoke drops a named API token by id.
 func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	exists := false
 	for _, t := range s.cfg.Current().Auth.Tokens {
 		if t.ID == id {
-			if t.Paired != "" {
+			if hasPairingTeardown(t.Paired) {
 				flashFragment(w, "err", "this token is managed by a pairing; remove the pairing instead")
 				return
 			}

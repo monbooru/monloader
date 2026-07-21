@@ -2,22 +2,24 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
 	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/gdl"
-	"github.com/leqwin/monloader/internal/mapping"
-	"github.com/leqwin/monloader/internal/monbooru"
-	"github.com/leqwin/monloader/internal/ptr"
-	"github.com/leqwin/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/gdl"
+	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/monbooru"
+	"github.com/monbooru/monloader/internal/ptr"
+	"github.com/monbooru/monloader/internal/queue"
 )
 
 func (s *Server) addScreen(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +37,7 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":"not found","code":"not_found"}`))
 		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
 	s.render(w, "notfound", s.base(r, "", "not found"))
 }
@@ -177,10 +180,11 @@ func (s *Server) queueRowItems(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	jobs, _ := s.queue.List(queue.ListOptions{})
+	jobs, _ := s.queue.List(queue.ListOptions{OmitItems: true})
 	for _, g := range groupJobs(jobs) {
 		if g.Root == root {
-			s.render(w, "queue_items_capped", map[string]any{"Items": g.Items, "MonbooruURL": s.monbooruWebBase(), "Site": g.Lead.Site})
+			s.fillItems(&g)
+			s.render(w, "queue_items_capped", map[string]any{"Items": g.Items, "MonbooruURL": s.monbooruWebBase(), "Site": g.Lead.Site, "ImageID": g.Lead.ImageID, "Kind": g.Lead.Kind})
 			return
 		}
 	}
@@ -194,7 +198,30 @@ type jobGroup struct {
 	Root    int64
 	Lead    *queue.Job
 	Summary queue.Summary
-	Items   []queue.Item
+	// IDs are the jobs behind the row, oldest window first; Items is filled
+	// from them for the rows that actually render.
+	IDs   []int64
+	Items []queue.Item
+	// NextWindow is how many posts the continue action would fetch, filled by
+	// fillQueue since it depends on the current config.
+	NextWindow int
+}
+
+// Windows is how many jobs the row collapses, so the remove confirm can say
+// how many one click drops.
+func (g jobGroup) Windows() int { return len(g.IDs) }
+
+// ArchiveSkips counts the items gallery-dl passed over because its archive
+// already held them - the only ones a force download can fetch again. A file
+// monbooru cannot ingest is skipped too, but re-downloading it changes nothing.
+func (g jobGroup) ArchiveSkips() int {
+	n := 0
+	for _, it := range g.Items {
+		if it.Outcome == queue.OutcomeSkippedArchive {
+			n++
+		}
+	}
+	return n
 }
 
 // Phase labels a group's progress next to the row's item count: "downloading"
@@ -221,7 +248,10 @@ func (g jobGroup) Phase() string {
 }
 
 // groupJobs buckets a newest-first job list by series, keeping newest-first
-// order between groups and oldest-first items within each.
+// order between groups and oldest-first windows within each. The jobs are
+// snapshots the caller owns, so a single-window group adopts its item slice
+// rather than copying it again; a list taken with OmitItems carries none and
+// the rendered rows fill theirs through fillItems.
 func groupJobs(jobs []*queue.Job) []jobGroup {
 	groups := make([]jobGroup, 0, len(jobs))
 	at := map[int64]int{}
@@ -232,7 +262,8 @@ func groupJobs(jobs []*queue.Job) []jobGroup {
 		}
 		if i, ok := at[root]; ok {
 			g := &groups[i]
-			g.Items = append(append([]queue.Item{}, j.Items...), g.Items...)
+			g.IDs = append([]int64{j.ID}, g.IDs...)
+			g.Items = slices.Concat(j.Items, g.Items)
 			g.Summary = g.Summary.Add(j.Summary)
 			continue
 		}
@@ -241,19 +272,74 @@ func groupJobs(jobs []*queue.Job) []jobGroup {
 			Root:    root,
 			Lead:    j,
 			Summary: j.Summary,
-			Items:   append([]queue.Item{}, j.Items...),
+			IDs:     []int64{j.ID},
+			Items:   j.Items,
 		})
 	}
 	return groups
 }
 
+// fillItems materializes a row's items from the jobs behind it, oldest window
+// first. Only the rows about to render call it, so the 2 s poll no longer
+// copies the items of every tracked job to show twenty of them.
+func (s *Server) fillItems(g *jobGroup) {
+	for _, id := range g.IDs {
+		if j, err := s.queue.Get(id); err == nil {
+			g.Items = append(g.Items, j.Items...)
+		}
+	}
+}
+
 // fillQueue adds the grouped job list and the monbooru web base (for image
 // links) to the template data.
 func (s *Server) fillQueue(r *http.Request, data map[string]any) {
-	jobs, _ := s.queue.List(queue.ListOptions{})
-	data["Groups"] = groupJobs(jobs)
+	jobs, _ := s.queue.List(queue.ListOptions{OmitItems: true})
+	groups := groupJobs(jobs)
+	page, totalPages := pageWindow(r, len(groups))
+	lo := (page - 1) * pageSize
+	hi := lo + pageSize
+	if hi > len(groups) {
+		hi = len(groups)
+	}
+	shown := groups[lo:hi]
+	configured := s.cfg.Current().Downloader.MaxItemsPerJob
+	for i := range shown {
+		shown[i].NextWindow = nextWindow(shown[i].Lead.Cap, configured)
+		s.fillItems(&shown[i])
+	}
+	data["Groups"] = shown
+	data["Page"] = page
+	data["TotalPages"] = totalPages
 	data["MonbooruURL"] = s.monbooruWebBase()
 	data["Lookup"] = s.lookupStatus()
+}
+
+// nextWindow is how many posts a continue on a capped row would actually
+// fetch. The follow-up job carries the series' cap but the download takes the
+// smaller of that and the configured one, so a cap lowered since would leave
+// the button promising more than it delivers.
+func nextWindow(seriesCap, configured int) int {
+	if configured > 0 && configured < seriesCap {
+		return configured
+	}
+	return seriesCap
+}
+
+// pageWindow reads the ?page= param and clamps it to [1, totalPages] for a
+// list of n rows split into pageSize-row pages.
+func pageWindow(r *http.Request, n int) (page, totalPages int) {
+	totalPages = (n + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	page, _ = strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	return page, totalPages
 }
 
 // monbooruWebBase is the browser-facing monbooru base for image links: the
@@ -292,17 +378,42 @@ func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
 // continueJob enqueues a follow-up job for the next window of a capped job, so
 // the user can keep pulling a truncated search past the per-job cap.
 func (s *Server) continueJob(w http.ResponseWriter, r *http.Request) {
-	s.jobAction(w, r, func(id int64) { _, _ = s.queue.Continue(id) })
+	s.continueAction(w, r, s.queue.Continue)
 }
 
 // continueAllJob starts a fetch-all chain: the queue keeps pulling the next
 // window until the capped search runs short, instead of one click per window.
 func (s *Server) continueAllJob(w http.ResponseWriter, r *http.Request) {
-	s.jobAction(w, r, func(id int64) { _, _ = s.queue.ContinueAll(id) })
+	s.continueAction(w, r, s.queue.ContinueAll)
 }
 
-// deleteJob cancels or removes a queue row. The row collapses a continue-series,
-// so it clears every window in the series, not just the one clicked.
+// continueAction runs one continue variant and re-renders the rows. A series
+// that ran out between the render and the click is reported in the add bar's
+// flash, like the API's 409, instead of swapping the unchanged row back in as
+// if the click had queued something.
+func (s *Server) continueAction(w http.ResponseWriter, r *http.Request, run func(id int64) (int64, error)) {
+	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
+		if _, err := run(id); errors.Is(err, queue.ErrNotCapped) {
+			w.Header().Set("HX-Retarget", "#add-flash")
+			w.Header().Set("HX-Reswap", "innerHTML")
+			flashFragment(w, "err", "this search has no more items to fetch")
+			return
+		}
+	}
+	s.queueRows(w, r)
+}
+
+// cancelJob stops a queued or running row and its series. It refuses a job that
+// has already finished, unlike deleteJob: the row's cancel and remove labels
+// differ only by the state the last poll saw, so a cancel clicked on a row that
+// finished in the 2 s gap must not delete its history instead.
+func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
+	s.jobAction(w, r, func(id int64) { _ = s.queue.CancelLive(id) })
+}
+
+// deleteJob removes a queue row, cancelling it first when it is still live. The
+// row collapses a continue-series, so it clears every window in the series, not
+// just the one clicked.
 func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 	s.jobAction(w, r, func(id int64) { _ = s.queue.CancelSeries(id) })
 }
@@ -310,6 +421,13 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 // clearQueue drops the finished-job history; running and pending jobs stay.
 func (s *Server) clearQueue(w http.ResponseWriter, r *http.Request) {
 	s.queue.Clear()
+	s.queueRows(w, r)
+}
+
+// cancelPendingJobs empties the FIFO of jobs that have not started;
+// running jobs and history stay.
+func (s *Server) cancelPendingJobs(w http.ResponseWriter, r *http.Request) {
+	s.queue.CancelPending()
 	s.queueRows(w, r)
 }
 
@@ -689,12 +807,7 @@ func parseLookupOrder(raw string) (int, error) {
 func (s *Server) resetSite(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	err := s.updateConfig(func(c *config.Config) error {
-		for i := range c.Sites {
-			if c.Sites[i].Name == name {
-				c.Sites = append(c.Sites[:i], c.Sites[i+1:]...)
-				break
-			}
-		}
+		c.Sites = slices.DeleteFunc(c.Sites, func(s config.Site) bool { return s.Name == name })
 		return nil
 	})
 	if err != nil {

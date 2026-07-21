@@ -17,6 +17,7 @@
   --cat-artist:    #cc0000;
   --cat-copyright: #aa00aa;
   --cat-meta:      #ffaa00;
+  --cat-species:   #ed5d1f;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -47,6 +48,10 @@ button, input, select, textarea {
 }
 button { cursor: pointer; background: var(--bg-surface); }
 button:hover { border-color: var(--accent); }
+/* A button that acts on the page it sits in but reads as part of the sentence
+   around it (the ptr account card's "reveal key"). */
+button.linklike { background: none; border: none; padding: 0; color: var(--accent); }
+button.linklike:hover { text-decoration: underline; }
 button:disabled { cursor: not-allowed; color: var(--fg-dim); }
 input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 
@@ -136,7 +141,22 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .queue-table, .token-table { width: 100%; border-collapse: collapse; }
 .queue-table th, .queue-table td, .token-table th, .token-table td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; }
 .queue-table th, .token-table th { color: var(--fg-dim); font-weight: normal; }
+/* Fixed layout so a long url wraps inside its column instead of stretching the
+   table until the actions column is pushed off-screen. url takes the slack. */
+.queue-table { table-layout: fixed; }
+/* Wide enough for "interrupted", the longest status, plus the cell padding. */
+.queue-table th:nth-child(1) { width: 116px; }
+.queue-table th:nth-child(3) { width: 104px; }
+.queue-table th:nth-child(4) { width: 116px; }
+.queue-table th:nth-child(5) { width: 96px; }
+.queue-table th:nth-child(6) { width: 156px; }
+.queue-table th:nth-child(7) { width: 168px; }
+/* Contain each fixed-width cell so a long value truncates or wraps inside its
+   own column instead of spilling over the next one. */
+.queue-table .job-row td { overflow: hidden; }
+.queue-site, .queue-gallery { white-space: nowrap; text-overflow: ellipsis; }
 .queue-url { word-break: break-all; }
+.queue-view { font-size: 12px; margin-left: 6px; white-space: nowrap; }
 .job-kind { color: var(--accent); border: 1px solid var(--border); padding: 0 4px; font-size: 11px; white-space: nowrap; }
 
 .lookup-status { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--fg-dim); margin-top: 6px; }
@@ -147,23 +167,27 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .token-scope-list { list-style: none; padding-left: 0; margin: 8px 0; }
 .queue-summary span { display: block; white-space: nowrap; }
 .job-time { display: block; color: var(--fg-dim); font-size: 12px; }
+.ptr-sent { color: var(--fg-dim); font-size: 12px; white-space: nowrap; }
 .queue-table .job-row:has(+ .items-row) td { border-bottom: none; }
 .items-row td { border-top: none; padding-top: 0; }
+.pager { display: flex; align-items: center; gap: 12px; margin-top: 10px; font-size: 12px; color: var(--fg-dim); }
+.pager-row td { text-align: center; }
+.pager-row .pager { justify-content: center; }
 .items-row details { margin-left: 16px; border-left: 2px solid var(--accent); padding-left: 12px; }
 .items-row summary { color: var(--fg-dim); padding: 2px 0; }
 .job-phase { margin-left: 6px; }
 .job-phase-downloading, .job-phase-pushing { color: var(--accent); }
 .job-phase-finished { color: var(--fg-dim); }
-.job-items { padding: 4px 8px 8px 16px; font-size: 13px; display: grid; grid-template-columns: repeat(4, minmax(56px, 1fr) auto auto); column-gap: 10px; row-gap: 0; align-items: baseline; }
+/* One item per line: subject | outcome (+note) | view, so the three columns
+   align down the whole list regardless of the job kind. */
+.job-items { padding: 4px 8px 8px 16px; font-size: 13px; display: grid; grid-template-columns: minmax(90px, 1fr) minmax(120px, 1.7fr) auto; column-gap: 16px; row-gap: 1px; align-items: baseline; }
 .item-row { display: contents; }
-.item-num { color: var(--fg-dim); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 1px solid var(--border); padding: 2px 0 2px 12px; }
-.item-num a { color: inherit; }
-.item-result { display: flex; gap: 0 6px; white-space: nowrap; }
+.item-subj { color: var(--fg-dim); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 1px solid var(--border); padding: 2px 0 2px 12px; }
+.item-subj a { color: inherit; }
+.item-out { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item-view { white-space: nowrap; }
 .job-items > .more-items { grid-column: 1 / -1; margin-left: 0; border-left: none; padding-left: 0; }
 .more-items > .job-items { padding: 4px 0 0; }
-@media (max-width: 1100px) { .job-items { grid-template-columns: repeat(3, minmax(56px, 1fr) auto auto); } }
-@media (max-width: 900px) { .job-items { grid-template-columns: repeat(2, minmax(56px, 1fr) auto auto); } }
-@media (max-width: 680px) { .job-items { grid-template-columns: minmax(56px, 1fr) auto auto; } }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .queue-table .actions { flex-direction: column; }
 .queue-table .actions button { white-space: nowrap; }
@@ -171,12 +195,13 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 
 .st-queued, .st-running { color: var(--accent); }
 .st-succeeded, .o-created { color: var(--success); }
-.st-partial { color: var(--warning); }
+.st-partial, .st-interrupted { color: var(--warning); }
 .st-failed, .o-failed { color: var(--error); }
 .st-canceled { color: var(--fg-dim); }
 .o-duplicate, .o-enriched, .o-skipped_archive, .o-skipped_unsupported, .o-canceled, .o-merge { color: var(--fg-dim); }
+/* Item states before an outcome, in the accent the running job status uses. */
+.o-pending, .o-downloaded, .o-uploaded { color: var(--accent); }
 .o-capped, .o-warn { color: var(--warning); }
-.o-zero { color: var(--fg-dim); }
 
 /* Settings */
 .settings-shell { display: flex; align-items: stretch; flex: 1; min-height: 0; }
@@ -209,11 +234,15 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .stats-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: normal; color: var(--fg-dim); }
 .stats-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: right; min-width: 7em; font-variant-numeric: tabular-nums; }
 .stats-table th.stats-d1 { padding-left: 24px; }
+/* Contribution rows hold text, not figures: align with the headers. */
+.contrib-table td { text-align: left; min-width: 0; }
 @media (max-width: 900px) { .stats-cols { grid-template-columns: 1fr; } }
 .field { margin-bottom: 8px; }
 .field label { display: block; color: var(--fg-dim); margin-bottom: 2px; }
 .field input[type=text], .field input[type=password], .field input[type=number], .field select { width: 100%; max-width: 460px; }
 .settings-section .field > label { color: var(--fg); }
+/* A label wrapping its own checkbox, so the two sit on one line. */
+.field label.checkbox-inline { display: flex; align-items: center; gap: 6px; }
 .downloads-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 28px; margin-bottom: 4px; }
 .downloads-grid .field { margin-bottom: 0; }
 .field-hint { display: block; color: var(--fg-dim); font-size: 11px; margin: 3px 0 0; }

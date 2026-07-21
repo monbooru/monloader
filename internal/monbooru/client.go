@@ -17,8 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/queue"
 )
 
 // PushMeta is the mapped metadata sent alongside a file.
@@ -96,6 +96,11 @@ func (c *Client) authHeader(req *http.Request) {
 	}
 }
 
+// maxResponseBytes bounds how much of a monbooru response is read into
+// memory. Roomy enough for any real list body; a body past it errors
+// loudly instead of being silently truncated into a decode failure.
+const maxResponseBytes = 16 << 20
+
 // do sends one API request and returns the response with its body read
 // (bounded) and closed. bearer is the token to authenticate with, empty for
 // the unauthenticated pairing endpoints. A build or transport failure returns
@@ -116,8 +121,22 @@ func (c *Client) do(ctx context.Context, method, endpoint, contentType string, b
 		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	respBody, err := readCappedBody(resp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
 	return resp, respBody, nil
+}
+
+// readCappedBody reads a response body up to maxResponseBytes, failing past the
+// cap instead of handing back a truncated body that only fails later, at the
+// decode.
+func readCappedBody(r io.Reader) ([]byte, error) {
+	body, _ := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
+	if len(body) > maxResponseBytes {
+		return nil, fmt.Errorf("monbooru response body exceeds %d bytes", maxResponseBytes)
+	}
+	return body, nil
 }
 
 // transportError classifies a failed request: a canceled job aborts the
@@ -134,23 +153,35 @@ func transportError(ctx context.Context, err error) *queue.CodedError {
 // PushImageFile streams a file plus mapped metadata to
 // POST /api/v1/images?gallery=<name>, hashing it in a streaming pass and writing
 // the multipart body through an io.Pipe so the file is never buffered whole in
-// memory.
+// memory. The digest is taken from the same read as the upload, so the
+// permalink hash always describes the pushed bytes.
 func (c *Client) PushImageFile(ctx context.Context, path string, meta PushMeta, gallery string) (*Result, error) {
-	sha, err := fileSHA256(path)
+	// Opened here rather than inside the body goroutine: a scratch file that is
+	// gone or unreadable is a local fault, and a failure in the goroutine would
+	// reach the transport as a request error and be coded as a monbooru outage.
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: err.Error()}
+		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	pr, pw := io.Pipe()
 	w := multipart.NewWriter(pw)
 	contentType := w.FormDataContentType()
-	go func() { pw.CloseWithError(streamFileMultipart(w, path, meta)) }()
-	res, err := c.sendPush(ctx, c.imagesEndpoint(gallery), contentType, pr, sha)
+	h := sha256.New()
+	go func() {
+		defer f.Close()
+		pw.CloseWithError(streamFileMultipart(w, f, meta, h))
+	}()
+	res, err := c.sendPush(ctx, c.imagesEndpoint(gallery), contentType, pr)
 	if err != nil {
 		// sendPush can return before consuming the body (a request-build error
 		// never reads the pipe); unblock the writer goroutine so it closes the file.
 		pr.CloseWithError(err)
+		return res, err
 	}
-	return res, err
+	// A success response means monbooru consumed the whole body, so the hash
+	// has seen every pushed byte.
+	res.SHA256 = hex.EncodeToString(h.Sum(nil))
+	return res, nil
 }
 
 // EnrichPayload is the metadata-only body POSTed to the enrich endpoint - a
@@ -269,7 +300,7 @@ func (c *Client) imagesEndpoint(gallery string) string {
 // -> monbooru_unreachable (canceled if the job was aborted), any other 4xx/5xx
 // -> monbooru_rejected. The success body is polymorphic (a bare image or an
 // envelope); the id and any tag warnings are read from whichever arrives.
-func (c *Client) sendPush(ctx context.Context, endpoint, contentType string, body io.Reader, sha string) (*Result, error) {
+func (c *Client) sendPush(ctx context.Context, endpoint, contentType string, body io.Reader) (*Result, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body)
 	if err != nil {
 		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: err.Error()}
@@ -282,15 +313,18 @@ func (c *Client) sendPush(ctx context.Context, endpoint, contentType string, bod
 		return nil, transportError(ctx, err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	respBody, err := readCappedBody(resp.Body)
+	if err != nil {
+		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: err.Error()}
+	}
 
 	switch resp.StatusCode {
 	case http.StatusCreated:
 		id, warnings, _ := parseImageResult(respBody)
-		return &Result{Outcome: queue.OutcomeCreated, MonbooruID: id, SHA256: sha, TagWarnings: warnings}, nil
+		return &Result{Outcome: queue.OutcomeCreated, MonbooruID: id, TagWarnings: warnings}, nil
 	case http.StatusOK:
 		id, warnings, merge := parseImageResult(respBody)
-		return &Result{Outcome: queue.OutcomeDuplicate, MonbooruID: id, SHA256: sha, TagWarnings: warnings, MergeNote: merge}, nil
+		return &Result{Outcome: queue.OutcomeDuplicate, MonbooruID: id, TagWarnings: warnings, MergeNote: merge}, nil
 	case http.StatusRequestEntityTooLarge:
 		return nil, &queue.CodedError{Code: queue.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}
 	default:
@@ -298,29 +332,11 @@ func (c *Client) sendPush(ctx context.Context, endpoint, contentType string, bod
 	}
 }
 
-// fileSHA256 streams a file through sha256 and returns the hex digest.
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
 // streamFileMultipart writes the multipart body for a file push into w (backed
-// by an io.Pipe): the file part streamed from disk, then the metadata fields.
-func streamFileMultipart(w *multipart.Writer, path string, meta PushMeta) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := writeFilePart(w, meta.Filename, f); err != nil {
+// by an io.Pipe): the file part streamed from src, then the metadata fields.
+// The file bytes are teed into hash on the way through.
+func streamFileMultipart(w *multipart.Writer, src io.Reader, meta PushMeta, hash io.Writer) error {
+	if err := writeFilePart(w, meta.Filename, io.TeeReader(src, hash)); err != nil {
 		return err
 	}
 	if err := writeMetaFields(w, meta); err != nil {
@@ -363,52 +379,41 @@ func trimToLen(s string, max int) string {
 	return s[:max]
 }
 
-// writeMetaFields writes the non-file form fields, omitting empty optionals so a
-// bare push touches nothing on monbooru's side.
+// writeMetaFields writes the non-file form fields, omitting empty optionals so
+// a bare push touches nothing on monbooru's side. The first field-write error
+// wins: a failing pipe must fail the push, not send a body missing fields.
 func writeMetaFields(w *multipart.Writer, meta PushMeta) error {
+	var err error
+	field := func(name, value string) {
+		if err == nil && value != "" {
+			err = w.WriteField(name, value)
+		}
+	}
 	if len(meta.Tags) > 0 {
-		tagsJSON, err := json.Marshal(meta.Tags)
-		if err != nil {
-			return err
+		tagsJSON, jerr := json.Marshal(meta.Tags)
+		if jerr != nil {
+			return jerr
 		}
-		_ = w.WriteField("tags", string(tagsJSON))
+		field("tags", string(tagsJSON))
 	}
-	if meta.Via != "" {
-		_ = w.WriteField("via", meta.Via)
-	}
-	if meta.Folder != "" {
-		_ = w.WriteField("folder", meta.Folder)
-	}
-	if meta.Source != "" {
-		_ = w.WriteField("source", trimToLen(meta.Source, maxSourceLen))
-	}
-	if meta.PostID != "" {
-		_ = w.WriteField("post_id", trimToLen(meta.PostID, maxPostIDLen))
-	}
-	if meta.URL != "" {
-		_ = w.WriteField("url", trimToLen(meta.URL, maxURLLen))
-	}
-	if meta.Commentary != "" {
-		_ = w.WriteField("commentary", trimToLen(meta.Commentary, maxCommentaryLen))
-	}
-	if meta.Original != "" {
-		_ = w.WriteField("original", trimToLen(meta.Original, maxOriginalLen))
-	}
-	if meta.ParentURL != "" {
-		_ = w.WriteField("parent_url", trimToLen(meta.ParentURL, maxURLLen))
-	}
+	field("via", meta.Via)
+	field("folder", meta.Folder)
+	field("source", trimToLen(meta.Source, maxSourceLen))
+	field("post_id", trimToLen(meta.PostID, maxPostIDLen))
+	field("url", trimToLen(meta.URL, maxURLLen))
+	field("commentary", trimToLen(meta.Commentary, maxCommentaryLen))
+	field("original", trimToLen(meta.Original, maxOriginalLen))
+	field("parent_url", trimToLen(meta.ParentURL, maxURLLen))
 	if len(meta.Notes) > 0 {
-		if notesJSON, err := json.Marshal(meta.Notes); err == nil {
-			_ = w.WriteField("notes", string(notesJSON))
+		if notesJSON, jerr := json.Marshal(meta.Notes); jerr == nil {
+			field("notes", string(notesJSON))
 		}
 	}
-	if meta.Collection != "" {
-		_ = w.WriteField("collection", meta.Collection)
-	}
+	field("collection", meta.Collection)
 	if meta.CollectionOrder > 0 {
-		_ = w.WriteField("collection_order", strconv.Itoa(meta.CollectionOrder))
+		field("collection_order", strconv.Itoa(meta.CollectionOrder))
 	}
-	return nil
+	return err
 }
 
 // parseImageResult reads the monbooru id, tag warnings, and duplicate-merge
@@ -438,11 +443,14 @@ func parseImageResult(data []byte) (id int64, warnings []string, merge string) {
 }
 
 // mergeNote renders monbooru's duplicate-merge summary as a short human
-// string ("+7 tags", "+7 tags, -2 tags, rating"); empty when nothing changed.
+// string ("+7 tags", "+7 tags, 2 no longer listed, rating"); empty when
+// nothing changed. tags_removed is the pre-retire spelling an older
+// monbooru still sends for tags it deleted outright.
 func mergeNote(raw json.RawMessage) string {
 	var m struct {
 		TagsAdded    int  `json:"tags_added"`
 		TagsRemoved  int  `json:"tags_removed"`
+		TagsRetired  int  `json:"tags_retired"`
 		RatingFilled bool `json:"rating_filled"`
 	}
 	if json.Unmarshal(raw, &m) != nil {
@@ -454,6 +462,9 @@ func mergeNote(raw json.RawMessage) string {
 	}
 	if m.TagsRemoved > 0 {
 		parts = append(parts, fmt.Sprintf("-%d tags", m.TagsRemoved))
+	}
+	if m.TagsRetired > 0 {
+		parts = append(parts, fmt.Sprintf("%d no longer listed", m.TagsRetired))
 	}
 	if m.RatingFilled {
 		parts = append(parts, "rating")

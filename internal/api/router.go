@@ -1,17 +1,18 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/gdl"
-	"github.com/leqwin/monloader/internal/mapping"
-	"github.com/leqwin/monloader/internal/ptr"
-	"github.com/leqwin/monloader/internal/queue"
-	"github.com/leqwin/monloader/internal/sitestate"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/gdl"
+	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/ptr"
+	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/sitestate"
 )
 
 // PTRService is the PTR surface the API exposes: capability + progress for the
@@ -21,6 +22,21 @@ type PTRService interface {
 	Status() ptr.Status
 	TagGraph(names []string) (map[string]ptr.TagInfo, error)
 	Enabled() bool
+	HasPersonalKey() bool
+	CreateContribAccount(ctx context.Context) (string, error)
+	Syncing() bool
+	Provisional() bool
+	CaughtUp() bool
+	Contrib() *ptr.ContribStore
+	TagFilterCached() *ptr.TagFilter
+	HashHasIdeal(hashHex, tag string) (bool, error)
+	HashHasRaw(hashHex, tag string) (bool, error)
+	RawTagsForHash(hashHex string) ([]string, error)
+	IdealTag(tag string) (string, bool, error)
+	SiblingCurrent(bad, good string) (bool, error)
+	ParentCurrent(child, parent string) (bool, error)
+	ParentEdgeCovered(child, parent string) (bool, error)
+	RefreshAccount(ctx context.Context) (*ptr.Account, error)
 }
 
 // Handler serves monloader's own /api/v1/ surface.
@@ -34,13 +50,17 @@ type Handler struct {
 	gdlVersion string
 	siteState  *sitestate.Tracker
 	ptr        PTRService
+	// saveConfig persists a config mutation through the owner's save
+	// path (the web layer's updateConfig); nil in tests that never
+	// persist.
+	saveConfig func(func(*config.Config) error) error
 }
 
 // New builds the API handler. extractors is the cached --list-extractors
 // result; version and gdlVersion feed /health; siteState is the shared "last
 // reached" tracker the test probe records into; ptr backs the PTR endpoints
 // (nil when the PTR is not built into the run).
-func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, extractors []gdl.Extractor, version, gdlVersion string, siteState *sitestate.Tracker, ptrSvc PTRService) *Handler {
+func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, extractors []gdl.Extractor, version, gdlVersion string, siteState *sitestate.Tracker, ptrSvc PTRService, saveConfig func(func(*config.Config) error) error) *Handler {
 	return &Handler{
 		queue:      q,
 		runner:     runner,
@@ -51,6 +71,7 @@ func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.
 		gdlVersion: gdlVersion,
 		siteState:  siteState,
 		ptr:        ptrSvc,
+		saveConfig: saveConfig,
 	}
 }
 
@@ -62,7 +83,11 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	for _, e := range h.endpoints() {
 		fn := e.Handler
 		if !e.NoAuth {
-			fn = h.auth(fn)
+			scope := scopeForMethod(e.Method)
+			if e.ReadScope {
+				scope = config.ScopeRead
+			}
+			fn = h.auth(scope, fn)
 		}
 		mux.HandleFunc(e.Method+" "+e.Path, fn)
 	}
@@ -77,7 +102,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 // auth gates a handler behind a bearer token and per-token scope. With no
 // tokens configured the API is disabled (503). CORS headers are set on every
 // API response so the extension's origin can call from a browser.
-func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
+func (h *Handler) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w, r)
 		cfg := h.cfg.Current()
@@ -96,7 +121,7 @@ func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 			apiError(w, http.StatusUnauthorized, "unauthorized", "invalid bearer token")
 			return
 		}
-		if scope := scopeForMethod(r.Method); !tok.HasScope(scope) {
+		if !tok.HasScope(scope) {
 			apiError(w, http.StatusForbidden, "insufficient_scope", "token lacks the "+scope+" scope")
 			return
 		}
@@ -137,6 +162,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// maxRequestBody caps a JSON request body, like the pairing endpoint's
+// 64 KiB but roomy enough for the largest legitimate payload (a bulk
+// contribution confirm's tag lists).
+const maxRequestBody = 1 << 20
+
+// decodeBody decodes a size-capped JSON request body so an authenticated
+// client cannot stream an unbounded body into memory.
+func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
+	return json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(v)
 }
 
 // apiPathInt64 parses a numeric path segment.

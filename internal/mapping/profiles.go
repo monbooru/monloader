@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/gdl"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/gdl"
 )
 
 // Booru families, which decide rating semantics (the `s` overload) and the

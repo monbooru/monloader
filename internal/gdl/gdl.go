@@ -12,10 +12,10 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/kwdict"
-	"github.com/leqwin/monloader/internal/logx"
-	"github.com/leqwin/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/kwdict"
+	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/queue"
 )
 
 // Item is one resolved post from a -j pass. Meta is the raw gallery-dl metadata
@@ -195,7 +195,7 @@ func resolveOffArgs(flatTagSites, metadataSites, notesSites []string) []string {
 // downloadArgs assembles the gallery-dl download argv after the managed-config
 // flags: the destination, optional range, and the URL. force adds `-o archive=`,
 // an empty (falsy) value that makes gallery-dl open no archive at all, so it
-// neither skips already-recorded posts nor writes the archive file.archive.
+// neither skips already-recorded posts nor writes the archive file.
 func downloadArgs(workDir, rng, url string, force, deep bool) []string {
 	args := []string{"-D", workDir}
 	args = append(args, rangeArgs(rng, deep)...)
@@ -222,6 +222,9 @@ func (t *Tool) Resolve(ctx context.Context, url, rng string, deep bool) (Resolve
 	args = append(args, rangeArgs(rng, deep)...)
 	args = append(args, url)
 	res, err := t.run(ctx, args...)
+	if ctx.Err() != nil {
+		return ResolveResult{}, &queue.CodedError{Code: queue.ErrCodeCanceled, Msg: ctx.Err().Error()}
+	}
 	if err != nil {
 		return ResolveResult{}, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
@@ -248,6 +251,9 @@ func (t *Tool) FetchMeta(ctx context.Context, url string) (map[string]any, error
 	args := t.configArgs()
 	args = append(args, "-j", url)
 	res, err := t.run(ctx, args...)
+	if ctx.Err() != nil {
+		return nil, &queue.CodedError{Code: queue.ErrCodeCanceled, Msg: ctx.Err().Error()}
+	}
 	if err != nil {
 		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
@@ -302,8 +308,15 @@ func (t *Tool) Download(ctx context.Context, url, rng, workDir string, force boo
 	// StdoutPipe contract.
 	results := reportDownloads(stdout, onFile)
 	exit, runErr := exitStatus(cmd.Wait())
+	// A canceled job kills the subprocess; that must not read like a real
+	// download failure (transportError draws the same line for pushes).
+	if ctx.Err() != nil {
+		return results, &queue.CodedError{Code: queue.ErrCodeCanceled, Msg: ctx.Err().Error()}
+	}
 	if runErr != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: runErr.Error()}
+		// Like the non-zero-exit branch below: hand back what landed so the
+		// pipeline can push it and mark only the rest failed.
+		return results, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: runErr.Error()}
 	}
 	if exit != 0 {
 		cerr := classifyError(exit, strings.TrimSpace(errBuf.String()))
@@ -401,7 +414,11 @@ func parseResolve(data []byte) (ResolveResult, error) {
 		if mtype == 6 { // [6, child_url, kwdict]: a dispatcher handoff
 			var url string
 			var meta map[string]any
-			_ = json.Unmarshal(parts[1], &url)
+			// A handoff whose URL is not a string has nothing a deep pass
+			// could follow; keeping it would queue an empty-URL fetch.
+			if json.Unmarshal(parts[1], &url) != nil || url == "" {
+				continue
+			}
 			if len(parts) >= 3 {
 				_ = json.Unmarshal(parts[2], &meta)
 			}

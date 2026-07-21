@@ -15,17 +15,17 @@ import (
 	// on a base image that ships no tzdata files.
 	_ "time/tzdata"
 
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/gdl"
-	"github.com/leqwin/monloader/internal/logx"
-	"github.com/leqwin/monloader/internal/mapping"
-	"github.com/leqwin/monloader/internal/monbooru"
-	"github.com/leqwin/monloader/internal/pipeline"
-	"github.com/leqwin/monloader/internal/ptr"
-	"github.com/leqwin/monloader/internal/queue"
-	"github.com/leqwin/monloader/internal/similarity"
-	"github.com/leqwin/monloader/internal/sitestate"
-	internalweb "github.com/leqwin/monloader/internal/web"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/gdl"
+	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/monbooru"
+	"github.com/monbooru/monloader/internal/pipeline"
+	"github.com/monbooru/monloader/internal/ptr"
+	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/similarity"
+	"github.com/monbooru/monloader/internal/sitestate"
+	internalweb "github.com/monbooru/monloader/internal/web"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -108,6 +108,12 @@ func main() {
 
 	q := queue.New(proc, cfg.Downloader.Concurrency, 100)
 	q.SetRetention(cfg.Downloader.HistoryRetention())
+	if qs, err := queue.OpenStore(filepath.Dir(*configPath)); err != nil {
+		logx.Warnf("queue history store unavailable, falling back to in-memory only: %v", err)
+	} else {
+		q.UseStore(qs)
+		defer func() { _ = qs.Close() }()
+	}
 	q.Start()
 
 	srv, err := internalweb.NewServer(provider, *configPath, q, client, runner, mapper, extractors, gdlVersion, siteState, ptrEngine, sim)

@@ -8,19 +8,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monloader/internal/kwdict"
-	"github.com/leqwin/monloader/internal/logx"
-	"github.com/leqwin/monloader/internal/mapping"
-	"github.com/leqwin/monloader/internal/monbooru"
-	"github.com/leqwin/monloader/internal/queue"
-	"github.com/leqwin/monloader/internal/similarity"
+	"github.com/monbooru/monloader/internal/kwdict"
+	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/monbooru"
+	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/similarity"
 )
 
 // processLookup handles a hash lookup: find the tags for the hash and fold them
 // into the monbooru image the job targets. The job carries one item so the
 // queue shows a row, like a metadata refetch.
 func (p *Processor) processLookup(ctx context.Context, job, snap *queue.Job) error {
-	job.SetItems([]queue.Item{{Status: queue.ItemPending}})
+	// Carry the image's sha256 onto the item so its queue "view" link resolves
+	// through monbooru's /i/<sha256> permalink, which finds the image in any
+	// gallery. A bare /images/<id> would open whichever image holds that id in
+	// the active gallery - the wrong one when the lookup targeted another.
+	job.SetItems([]queue.Item{{Status: queue.ItemPending, SHA256: snap.SHA256}})
 	switch snap.Backend {
 	case queue.BackendBooru:
 		return p.lookupBooru(ctx, job, snap)
@@ -149,15 +153,22 @@ func (p *Processor) enrichAllOnline(ctx context.Context, job, snap *queue.Job, m
 		res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, p.mapEnrichPayload(meta, url, snap.MD5, sim))
 		return res, url, site, err
 	}
+	res, err := p.sourceOnlyEnrich(ctx, job, snap, hit)
+	return res, hit.url, hit.site, err
+}
+
+// sourceOnlyEnrich labels the item as a source-only candidate and records the
+// hit as the image's source (unverified, no tags to merge); the caller owns
+// the item's terminal state.
+func (p *Processor) sourceOnlyEnrich(ctx context.Context, job, snap *queue.Job, hit *simHit) (*monbooru.Result, error) {
 	job.SetSite(hit.site)
 	job.UpdateItem(0, func(it *queue.Item) { it.PostID = hit.note + ", source only" })
-	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
+	return p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
 		Source:     hit.site,
 		URL:        hit.url,
 		Verify:     false,
 		Similarity: hit.score,
 	})
-	return res, hit.url, hit.site, err
 }
 
 // composeLookupNote summarises a backend=all outcome for the queue row: the
@@ -220,14 +231,7 @@ func (p *Processor) lookupBooru(ctx context.Context, job, snap *queue.Job) error
 // no candidate's metadata could be fetched: the post the service found is
 // provenance worth keeping even with no tags to merge.
 func (p *Processor) enrichSourceOnly(ctx context.Context, job, snap *queue.Job, hit *simHit) {
-	job.SetSite(hit.site)
-	job.UpdateItem(0, func(it *queue.Item) { it.PostID = hit.note + ", source only" })
-	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
-		Source:     hit.site,
-		URL:        hit.url,
-		Verify:     false,
-		Similarity: hit.score,
-	})
+	res, err := p.sourceOnlyEnrich(ctx, job, snap, hit)
 	if err != nil {
 		failItem(job, 0, errorCode(err), err.Error())
 		return
@@ -450,7 +454,7 @@ func (p *Processor) similaritySource(ctx context.Context, service string, thumb 
 		logx.Warnf("queue: %s similarity lookup failed: %v", service, err)
 		return nil, nil
 	}
-	min := float64(p.cfg.Current().Lookup.MinSimilarity)
+	minSim := float64(p.cfg.Current().Lookup.MinSimilarity)
 	seen := map[string]bool{}
 	var cands, missed []similarity.Candidate
 	for _, c := range res.Candidates {
@@ -458,7 +462,7 @@ func (p *Processor) similaritySource(ctx context.Context, service string, thumb 
 			continue
 		}
 		seen[c.URL] = true
-		if c.Similarity >= min {
+		if c.Similarity >= minSim {
 			cands = append(cands, c)
 		} else {
 			missed = append(missed, c)
@@ -479,7 +483,7 @@ func (p *Processor) similaritySource(ctx context.Context, service string, thumb 
 		// walk cannot fetch tags from - still the image's likely source, so
 		// hand the best one back for the source-only record.
 		sort.SliceStable(extras, func(i, j int) bool { return extras[i].Similarity > extras[j].Similarity })
-		if len(extras) > 0 && extras[0].Similarity >= min {
+		if len(extras) > 0 && extras[0].Similarity >= minSim {
 			return nil, candHit(extras[0])
 		}
 		return nil, nil

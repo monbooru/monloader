@@ -17,13 +17,18 @@ const (
 	JobPartial   JobStatus = "partial"
 	JobFailed    JobStatus = "failed"
 	JobCanceled  JobStatus = "canceled"
+	// JobInterrupted marks a job that was running when the process died;
+	// assigned only by the boot reload. Distinct from failed - there is
+	// no error, and a requeue (Retry) re-runs it past the download-archive,
+	// since a post fetched into /work may never have reached monbooru.
+	JobInterrupted JobStatus = "interrupted"
 )
 
 // ValidJobStatus reports whether s is a known job status, for validating a
 // status filter at the API boundary.
 func ValidJobStatus(s JobStatus) bool {
 	switch s {
-	case JobQueued, JobRunning, JobSucceeded, JobPartial, JobFailed, JobCanceled:
+	case JobQueued, JobRunning, JobSucceeded, JobPartial, JobFailed, JobCanceled, JobInterrupted:
 		return true
 	}
 	return false
@@ -71,11 +76,14 @@ const (
 	ErrCodeCanceled            = "canceled"
 	ErrCodeHashNotFound        = "hash_not_found"
 	ErrCodePTRUnavailable      = "ptr_unavailable"
+	ErrCodePTRAccountRequired  = "ptr_account_required"
+	ErrCodePTRBanned           = "ptr_banned"
+	ErrCodePTRSyncing          = "ptr_syncing"
 )
 
 // Summary aggregates per-item outcomes for the queue view and the API.
-// Skipped counts skipped_archive items; duplicate is
-// tracked separately so the extension can say "already in your library".
+// Skipped counts both skip outcomes (archive and unsupported type); duplicate
+// is tracked separately so the extension can say "already in your library".
 type Summary struct {
 	Created   int `json:"created"`
 	Duplicate int `json:"duplicate"`
@@ -124,6 +132,10 @@ const (
 	// KindHashImport resolves an md5 to a post via the booru walk, then
 	// downloads and pushes it like a submitted single post.
 	KindHashImport JobKind = "hash_import"
+	// KindContrib uploads staged PTR contributions; its items are the
+	// POST chunks. One send job per monbooru confirm, plus the manual
+	// backlog retry.
+	KindContrib JobKind = "contrib"
 )
 
 // Lookup backends a KindLookup job can query. BackendAll runs every backend
@@ -177,6 +189,13 @@ type jobState struct {
 	// `?wait=N` request behind a long job still resolves quickly.
 	Priority bool    `json:"-"`
 	Summary  Summary `json:"summary"`
+	// Note carries a job's human-readable result line (the contrib
+	// send's commit summary); empty for other kinds.
+	Note string `json:"note,omitempty"`
+	// ContribIDs are the staged contribution rows a send job claims;
+	// ContribBacklog claims the whole unsent set instead (the retry).
+	ContribIDs     []int64 `json:"-"`
+	ContribBacklog bool    `json:"-"`
 	// Capped is set when the resolve returned the full per-job item cap, so
 	// more posts may remain; Cap is the applied limit. Surfaced in the UI and
 	// the API so a truncated import is not mistaken for a complete one.
@@ -205,6 +224,10 @@ type Job struct {
 
 	finalized bool
 	done      chan struct{}
+	// seq orders persisted snapshots: it advances under j.mu on every
+	// Snapshot, so a snapshot taken later carries a higher value and the
+	// store can refuse to let an earlier one overwrite it.
+	seq uint64
 	// priorItems remembers a finished run's imported items by post key, so a
 	// plain retry that archive-skips a post can restore its monbooru back-link.
 	priorItems map[string]Item
@@ -220,7 +243,7 @@ func validJobTransition(from, to JobStatus) bool {
 		return to == JobRunning || to == JobCanceled
 	case JobRunning:
 		return to == JobSucceeded || to == JobPartial || to == JobFailed || to == JobCanceled
-	case JobSucceeded, JobPartial, JobFailed, JobCanceled:
+	case JobSucceeded, JobPartial, JobFailed, JobCanceled, JobInterrupted:
 		return to == JobQueued // Retry
 	}
 	return false
@@ -256,6 +279,8 @@ func newJob(id int64, url string, opts Options, now time.Time) *Job {
 			Backend:         opts.Backend,
 			MD5:             opts.MD5,
 			SHA256:          opts.SHA256,
+			ContribIDs:      opts.ContribIDs,
+			ContribBacklog:  opts.ContribBacklog,
 			Site:            opts.Site,
 			Gallery:         opts.Gallery,
 			Folder:          opts.Folder,
@@ -306,6 +331,10 @@ func (j *Job) Subject() string {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	switch {
+	case j.Kind == KindContrib && j.ContribBacklog:
+		return "ptr contributions (retry)"
+	case j.Kind == KindContrib:
+		return "ptr contributions"
 	case j.URL != "":
 		return j.URL
 	case j.MD5 != "":
@@ -324,6 +353,13 @@ func (j *Job) SetGallery(name string) {
 	j.mu.Unlock()
 }
 
+// SetNote records the job's human-readable result line.
+func (j *Job) SetNote(note string) {
+	j.mu.Lock()
+	j.Note = note
+	j.mu.Unlock()
+}
+
 // SetCapped records that the resolve hit the per-job item cap (so more posts
 // may remain) and the limit that was applied.
 func (j *Job) SetCapped(cap int) {
@@ -331,6 +367,18 @@ func (j *Job) SetCapped(cap int) {
 	j.Capped = true
 	j.Cap = cap
 	j.mu.Unlock()
+}
+
+// clearCapped drops the capped flag once the series is known exhausted,
+// reporting whether the job carried it. Cap stays for the row's history.
+func (j *Job) clearCapped() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if !j.Capped {
+		return false
+	}
+	j.Capped = false
+	return true
 }
 
 // SetItems installs the resolved item list (all pending). Called once after
@@ -461,7 +509,7 @@ func (j *Job) cancel(now time.Time) {
 // rebuilt from the identity fields the re-run keeps, so the prior run's items,
 // summary, error, site, and timestamps zero out, and done is re-armed. The
 // re-run bypasses the download-archive when force is set or the prior run did
-// not fully import (failed or partial).
+// not fully import - every terminal status but succeeded.
 func (j *Job) reset(force bool, now time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -476,20 +524,24 @@ func (j *Job) reset(force bool, now time.Time) error {
 		url = ""
 	}
 	j.jobState = jobState{
-		ID:      j.ID,
-		URL:     url,
-		Status:  JobQueued,
-		Kind:    j.Kind,
-		ImageID: j.ImageID,
-		Backend: j.Backend,
-		MD5:     j.MD5,
-		SHA256:  j.SHA256,
-		Gallery: j.Gallery,
-		Folder:  j.Folder,
+		ID:             j.ID,
+		URL:            url,
+		Status:         JobQueued,
+		Kind:           j.Kind,
+		ImageID:        j.ImageID,
+		Backend:        j.Backend,
+		MD5:            j.MD5,
+		SHA256:         j.SHA256,
+		Gallery:        j.Gallery,
+		Folder:         j.Folder,
+		ContribIDs:     j.ContribIDs,
+		ContribBacklog: j.ContribBacklog,
 		// A job that did not fully import has items whose download landed in the
 		// archive but whose push never reached monbooru; retrying past the archive
-		// re-downloads and re-pushes them instead of archive-skipping them.
-		Force:           force || j.Status == JobFailed || j.Status == JobPartial,
+		// re-downloads and re-pushes them instead of archive-skipping them. A
+		// cancel and a process death both stop between those two steps, so only a
+		// succeeded run may lean on the archive.
+		Force:           force || j.Status != JobSucceeded,
 		MaxItems:        j.MaxItems,
 		Offset:          j.Offset,
 		Root:            j.Root,
@@ -550,18 +602,28 @@ func (j *Job) doneChan() chan struct{} {
 
 // Snapshot returns an independent copy of the job safe to read without
 // further locking. The returned *Job carries a fresh (unused) mutex.
-func (j *Job) Snapshot() *Job {
+func (j *Job) Snapshot() *Job { return j.snapshot(true) }
+
+// snapshot copies the job's state; without withItems it leaves the item list
+// out (the summary is still computed from it), for a caller that pages the
+// rows before materializing the items of the page it renders.
+func (j *Job) snapshot(withItems bool) *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	state := j.jobState
-	state.Items = make([]Item, len(j.Items))
-	copy(state.Items, j.Items)
+	if withItems {
+		state.Items = make([]Item, len(j.Items))
+		copy(state.Items, j.Items)
+	} else {
+		state.Items = nil
+	}
 	// A running job's summary is only stamped at finalize; compute it live so the
 	// queue and API track item progress instead of reading all-zeros until then.
 	if !j.finalized {
 		state.Summary = summarize(j.Items)
 	}
-	return &Job{jobState: state, finalized: j.finalized}
+	j.seq++
+	return &Job{jobState: state, finalized: j.finalized, seq: j.seq}
 }
 
 // Add returns the field-wise sum of two summaries, for merging a

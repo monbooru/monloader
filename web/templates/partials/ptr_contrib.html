@@ -1,0 +1,57 @@
+{{define "ptr_contrib"}}
+<section class="settings-section">
+  <h2>contributions</h2>
+  {{if .NoAccount}}
+  <p class="field-hint">contributing needs a personal account - see the account card above.</p>
+  {{else}}
+  {{if .RetryErr}}<p class="flash-warn">{{.RetryErr}}</p>{{end}}
+  {{if .NotReady}}<p class="field-hint">the index is still catching up; contributions can be sent once it is fully synced.</p>{{end}}
+  {{if .SendRunning}}<p class="field-hint">a send job is running - progress is on the <a href="/queue">queue</a>.</p>{{end}}
+  {{if .Unsent}}
+  <p>{{len .Unsent}} unsent{{if .HasFailed}} (last send failed){{end}}
+    {{if not .NotReady}}<button hx-post="/ptr/contrib/retry" hx-target="#ptr-contrib" hx-swap="innerHTML">retry</button>{{end}}</p>
+  <table class="stats-table contrib-table">
+    <tbody>
+      {{range .Unsent}}
+      <tr>
+        <td>{{.Kind}}</td>
+        <td class="queue-url">{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Label}}</a>{{else}}{{.Label}}{{end}}</td>
+        <td>{{.Origin}}</td>
+        <td>{{if .Error}}<span class="o-failed" title="{{.Error}}">failed</span>{{end}}</td>
+        <td><button hx-post="/ptr/contrib/{{.ID}}/rescind" hx-target="#ptr-contrib" hx-swap="innerHTML"
+                    title="rescind: delete before anything is sent">x</button></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+  {{if .History}}
+  <table class="stats-table contrib-table">
+    <thead><tr><th>sent</th><th>kind</th><th>item</th><th>outcome</th><th></th></tr></thead>
+    <tbody>
+      {{range .History}}
+      <tr>
+        <td class="ptr-sent">{{.Sent}}</td>
+        <td>{{.Kind}}</td>
+        <td class="queue-url">{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Label}}</a>{{else}}{{.Label}}{{end}}</td>
+        <td>{{.Outcome}}</td>
+        <td>{{if .Rescindable}}<button hx-post="/ptr/contrib/log/{{.ID}}/rescind" hx-target="#ptr-contrib" hx-swap="innerHTML"
+                hx-confirm="petition this tag add back off the PTR?"
+                title="asks the janitors to remove it; it does not undo">rescind (petition)</button>{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{if gt .TotalPages 1}}
+  <div class="pager">
+    {{if gt .Page 1}}<button hx-get="/internal/ptr-contrib?page={{sub .Page 1}}" hx-target="#ptr-contrib" hx-swap="innerHTML">&larr; prev</button>{{end}}
+    <span>page {{.Page}} / {{.TotalPages}}</span>
+    {{if lt .Page .TotalPages}}<button hx-get="/internal/ptr-contrib?page={{add .Page 1}}" hx-target="#ptr-contrib" hx-swap="innerHTML">next &rarr;</button>{{end}}
+  </div>
+  {{end}}
+  {{else}}{{if not .Unsent}}
+  <p class="field-hint">contributions are sent from monbooru's image page and tags page; only their record lives here.</p>
+  {{end}}{{end}}
+  {{end}}
+</section>
+{{end}}

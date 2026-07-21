@@ -29,6 +29,10 @@ func (t *Tracker) Reached(site string, at time.Time) {
 		return
 	}
 	t.mu.Lock()
+	if t.last == nil {
+		// A zero-value Tracker still works; New is just the usual path.
+		t.last = map[string]time.Time{}
+	}
 	if at.After(t.last[site]) {
 		t.last[site] = at
 	}

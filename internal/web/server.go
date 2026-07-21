@@ -12,24 +12,24 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leqwin/monloader/internal/api"
-	"github.com/leqwin/monloader/internal/config"
-	"github.com/leqwin/monloader/internal/gdl"
-	"github.com/leqwin/monloader/internal/logx"
-	"github.com/leqwin/monloader/internal/mapping"
-	"github.com/leqwin/monloader/internal/monbooru"
-	"github.com/leqwin/monloader/internal/ptr"
-	"github.com/leqwin/monloader/internal/queue"
-	"github.com/leqwin/monloader/internal/similarity"
-	"github.com/leqwin/monloader/internal/sitestate"
-	webFS "github.com/leqwin/monloader/web"
+	"github.com/monbooru/monloader/internal/api"
+	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/gdl"
+	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/monbooru"
+	"github.com/monbooru/monloader/internal/ptr"
+	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/similarity"
+	"github.com/monbooru/monloader/internal/sitestate"
+	webFS "github.com/monbooru/monloader/web"
 )
 
 // Version, RepoURL and DocURL are set at build time via -ldflags (see the
 // Makefile); DocURL comes from DOC.md.
 var (
 	Version = "dev"
-	RepoURL = "https://github.com/leqwin/monloader"
+	RepoURL = "https://github.com/monbooru/monloader"
 	DocURL  = "https://leqwin.github.io/mondocs/addons/monloader/index.html"
 )
 
@@ -121,9 +121,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /internal/queue-rows", s.queueRows)
 	mux.HandleFunc("GET /internal/queue-rows/{root}/items", s.queueRowItems)
 	mux.HandleFunc("POST /queue/{id}/retry", s.retryJob)
+	mux.HandleFunc("POST /queue/{id}/cancel", s.cancelJob)
 	mux.HandleFunc("POST /queue/{id}/continue", s.continueJob)
 	mux.HandleFunc("POST /queue/{id}/continue-all", s.continueAllJob)
 	mux.HandleFunc("POST /queue/clear", s.clearQueue)
+	mux.HandleFunc("POST /queue/cancel-pending", s.cancelPendingJobs)
 	mux.HandleFunc("POST /queue/pause", s.pauseDownloads)
 	mux.HandleFunc("POST /queue/resume", s.resumeDownloads)
 	mux.HandleFunc("DELETE /queue/{id}", s.deleteJob)
@@ -136,6 +138,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ptr/pause", s.ptrPause)
 	mux.HandleFunc("POST /ptr/resume", s.ptrResume)
 	mux.HandleFunc("POST /ptr/retry", s.ptrRetry)
+	mux.HandleFunc("POST /ptr/account", s.ptrAccountCreate)
+	mux.HandleFunc("GET /internal/ptr-account", s.ptrAccountFragment)
+	mux.HandleFunc("POST /internal/ptr-reveal-key", s.ptrRevealKey)
+	mux.HandleFunc("GET /internal/ptr-contrib", s.ptrContribFragment)
+	mux.HandleFunc("POST /ptr/contrib/retry", s.ptrContribRetry)
+	mux.HandleFunc("POST /ptr/contrib/{id}/rescind", s.ptrContribRescindUnsent)
+	mux.HandleFunc("POST /ptr/contrib/log/{id}/rescind", s.ptrContribLogRescind)
 
 	mux.HandleFunc("GET /settings", s.settingsScreen)
 	mux.HandleFunc("POST /settings/monbooru", s.saveMonbooru)
@@ -176,11 +185,7 @@ func (s *Server) Handler() http.Handler {
 	// precedence for the add screen.
 	mux.HandleFunc("GET /", s.notFound)
 
-	var ptrSvc api.PTRService
-	if s.ptr != nil {
-		ptrSvc = s.ptr
-	}
-	api.New(s.queue, s.runner, s.mapper, s.cfg, s.extractors, Version, s.gdlVersion, s.siteState, ptrSvc).Mount(mux)
+	api.New(s.queue, s.runner, s.mapper, s.cfg, s.extractors, Version, s.gdlVersion, s.siteState, s.ptr, s.updateConfig).Mount(mux)
 
 	var h http.Handler = mux
 	h = s.CSRFMiddleware(h)
@@ -210,6 +215,9 @@ func templateFuncs() template.FuncMap {
 		"join":        strings.Join,
 		"itemCap":     func() int { return maxQueueItems },
 		"moreSummary": moreSummary,
+		"itemView":    itemView,
+		"add":         func(a, b int) int { return a + b },
+		"sub":         func(a, b int) int { return a - b },
 	}
 }
 
@@ -252,6 +260,9 @@ func moreSummary(items []queue.Item) string {
 // maxQueueItems caps how many of a job's items render before a "+N more"
 // toggle, so a large pool or search does not fill the screen at once.
 const maxQueueItems = 20
+
+// pageSize is the row count per page for the queue and the contribution log.
+const pageSize = 20
 
 // humanSince formats how long ago t was, compactly, for the narrow sites
 // state column: "just now", "5m ago", "2h ago", "3d ago". A zero time renders

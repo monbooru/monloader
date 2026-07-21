@@ -1,6 +1,6 @@
 [Container]
 ContainerName=monloader
-Image=ghcr.io/leqwin/monloader:latest
+Image=ghcr.io/monbooru/monloader:latest
 
 PublishPort=127.0.0.1:8081:8081
 

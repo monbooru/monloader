@@ -1,0 +1,31 @@
+{{define "ptr_account"}}
+<section class="settings-section">
+  <h2>account</h2>
+  {{if .CreateErr}}<p class="flash-err">{{.CreateErr}}</p>{{end}}
+  {{if not .HasKey}}
+  <p class="field-hint">syncing with the shared read-only key. contributing needs a personal
+  account: click below to create one; janitors review suggestions and can ban an account
+  that sends junk.</p>
+  <button hx-post="/ptr/account" hx-target="#ptr-account" hx-swap="innerHTML">create contribution account</button>
+  {{else}}
+  {{if .FetchErr}}
+  <p class="flash-warn">account state unavailable: {{.FetchErr}}</p>
+  {{else}}{{with .Acc}}
+  {{if .Banned}}<p class="flash-err">this account is banned: {{.BanReason}}</p>{{end}}
+  <table class="stats-table">
+    <tbody>
+      <tr><th>type</th><td>{{.Type.Title}}</td></tr>
+      <tr><th>can</th><td>{{$.Permissions}}</td></tr>
+      <tr><th>created</th><td>{{humanDate .Created}}</td></tr>
+      <tr><th>janitor message</th><td>{{if .Message}}{{.Message}}{{else}}-{{end}}</td></tr>
+    </tbody>
+  </table>
+  {{end}}{{end}}
+  <p class="field-hint">losing this key means losing the account; back it up.
+    <button class="linklike" hx-post="/internal/ptr-reveal-key" hx-target="#ptr-account-key" hx-swap="innerHTML">reveal key</button>
+    <span id="ptr-account-key"></span></p>
+  {{end}}
+</section>
+{{end}}
+
+{{define "ptr_account_key"}}<code>{{.}}</code>{{end}}

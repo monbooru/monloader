@@ -1,5 +1,34 @@
 # Changelog
 
+## [v1.5.0] - 2026-07-21
+### Added
+- Contribute tags, aliases, and implications back to the hydrus PTR from monbooru. ([#11](https://github.com/monbooru/monloader/issues/11))
+- The PTR page creates a personal contribution account and logs every contribution sent. ([#11](https://github.com/monbooru/monloader/issues/11))
+- Queue rows link out to the source post and to the monbooru image. ([#14](https://github.com/monbooru/monloader/issues/14))
+- The queue and its history survive a restart; an interrupted job comes back with a requeue.
+- Cancel every pending job at once from the queue toolbar.
+
+### Changed
+- PTR sync progress tracks the work actually left, with separate download and index speeds.  ([#7](https://github.com/monbooru/monloader/issues/7))
+- Queue rows gain a type column, one aligned line per item, and only non-zero counts.
+- e621 and PTR species tags land in monbooru's species category instead of general.
+- monbooru and monsender pairing share one Settings section.
+
+### Fixed
+- PTR sync no longer stalls for good on the large manifest entries the repository serves. ([#7](https://github.com/monbooru/monloader/issues/7))
+- Long URLs no longer push the queue's actions column off-screen. ([#12](https://github.com/monbooru/monloader/issues/12))
+- Accented and CJK tags now reach monbooru instead of being dropped.
+- PTR lookups no longer import bookkeeping namespaces as opaque general tags.
+- PTR tag suggestions no longer offer implications the repository never declared.
+- Retrying a canceled or interrupted job no longer skips posts that never reached monbooru.
+- Cancel on a queue row no longer deletes the history of a job that just finished.
+- A lookup's view link opens the image it enriched, whichever gallery holds it.
+- A pool that resolves exactly at the item cap no longer finishes as "no posts matched".
+- A download that fails partway pushes the files that landed instead of failing them all.
+
+### Internal
+- Contributing to the PTR requires monbooru v1.15.0 or newer.
+
 ## [v1.4.1] - 2026-07-14
 ### Added
 - Queue rows show how long a job has been in its current status.
@@ -14,8 +43,8 @@
 
 ## [v1.4.0] - 2026-07-13
 ### Added
-- A new PTR page syncs the hydrus Public Tag Repository to a local hash-and-tag index. ([#7](https://github.com/leqwin/monloader/issues/7))
-- Imported posts now record their original artist source and link derivatives to their parent post. ([#8](https://github.com/leqwin/monloader/issues/8))
+- A new PTR page syncs the hydrus Public Tag Repository to a local hash-and-tag index. ([#7](https://github.com/monbooru/monloader/issues/7))
+- Imported posts now record their original artist source and link derivatives to their parent post. ([#8](https://github.com/monbooru/monloader/issues/8))
 - Look up a post by its md5 hash to import it or enrich an existing image. 
 - Reverse-image lookup finds candidate posts on iqdb and SauceNAO when no hash matches.
 - Order the lookup sources into a chain and test each one from Settings.
@@ -24,16 +53,16 @@
 - Bundled gallery-dl updated to 1.32.6.
 
 ### Fixed
-- Bottom bar is always visible ([#10](https://github.com/leqwin/monloader/issues/10))
+- Bottom bar is always visible ([#10](https://github.com/monbooru/monloader/issues/10))
 - Manga imports no longer split multi-word artist or group names into separate tags.
 - Imported commentary and notes no longer drop text or leave stray HTML markup.
 - Confirming a queue action no longer silently fails when the queue list refreshes.
 
 ## [v1.3.0] - 2026-07-04
 ### Added
-- Queue rows show batch progress next to the item count. ([#3](https://github.com/leqwin/monloader/issues/3))
-- Pause and resume downloads from the topbar. ([#4](https://github.com/leqwin/monloader/issues/4))
-- Re-submit a post to refresh its metadata, merging new tags into the existing image. ([#6](https://github.com/leqwin/monloader/issues/6))
+- Queue rows show batch progress next to the item count. ([#3](https://github.com/monbooru/monloader/issues/3))
+- Pause and resume downloads from the topbar. ([#4](https://github.com/monbooru/monloader/issues/4))
+- Re-submit a post to refresh its metadata, merging new tags into the existing image. ([#6](https://github.com/monbooru/monloader/issues/6))
 - Imported posts now carry artist commentary and notes from boorus that provide them.
 
 ### Fixed

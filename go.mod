@@ -1,4 +1,4 @@
-module github.com/leqwin/monloader
+module github.com/monbooru/monloader
 
 go 1.25.0
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/leqwin/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/queue"
 )
 
 // Probe runs a live per-site connectivity check: `gallery-dl -j --range 1-1`

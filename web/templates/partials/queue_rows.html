@@ -1,22 +1,25 @@
 {{define "queue_rows"}}
-{{if not .Groups}}<tr><td colspan="6" class="hint">queue is empty</td></tr>{{end}}
+{{if not .Groups}}<tr><td colspan="7" class="hint">queue is empty</td></tr>{{end}}
 {{range .Groups}}
 <tr class="job-row">
   <td class="st-{{.Lead.Status}}">{{.Lead.Status}}<span class="job-time" title="{{stampLocal .Lead.StatusChangedAt}}">{{humanSince .Lead.StatusChangedAt}}</span></td>
-  <td class="queue-url">{{.Lead.Subject}}</td>
-  <td>{{if .Lead.Kind}}<span class="job-kind" title="{{.Lead.Kind}} job">{{if eq .Lead.Kind "lookup"}}{{if eq .Lead.Backend "all"}}lookup{{else}}lookup:{{.Lead.Backend}}{{end}}{{else if eq .Lead.Kind "hash_import"}}import{{else}}{{.Lead.Kind}}{{end}}</span> {{end}}{{.Lead.Site}}</td>
-  <td>{{.Lead.Gallery}}</td>
+  <td class="queue-url">{{.Lead.Subject}}{{if .Lead.URL}} <a class="queue-view" href="{{.Lead.URL}}" target="_blank" rel="noopener" title="open the source in a new tab">view</a>{{end}}</td>
+  <td><span class="job-kind" title="{{if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}} job">{{if eq .Lead.Kind "lookup"}}{{if eq .Lead.Backend "all"}}lookup{{else}}lookup:{{.Lead.Backend}}{{end}}{{else if eq .Lead.Kind "hash_import"}}import{{else if eq .Lead.Kind "contrib"}}contrib:ptr{{else if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}}</span></td>
+  <td class="queue-site" title="{{.Lead.Site}}">{{.Lead.Site}}</td>
+  <td class="queue-gallery" title="{{.Lead.Gallery}}">{{.Lead.Gallery}}</td>
   <td class="queue-summary">
     {{if and (eq .Summary.Total 0) .Lead.ErrorCode}}
     <span class="o-failed" title="{{.Lead.Error}}">failed - {{.Lead.ErrorCode}}</span>
     {{else if and (eq .Summary.Total 0) (eq .Lead.Status "succeeded")}}
     <span class="hint">no posts matched</span>
+    {{else if and (eq .Summary.Total 0) (eq .Lead.Status "interrupted")}}
+    <span class="hint" title="the process stopped before this job recorded what it had resolved">contents unknown</span>
     {{else}}
-    <span class="o-created{{if not .Summary.Created}} o-zero{{end}}">{{.Summary.Created}} created</span>
-    <span class="o-duplicate{{if not .Summary.Duplicate}} o-zero{{end}}">{{.Summary.Duplicate}} duplicate</span>
+    {{if .Summary.Created}}<span class="o-created">{{.Summary.Created}} created</span>{{end}}
+    {{if .Summary.Duplicate}}<span class="o-duplicate">{{.Summary.Duplicate}} duplicate</span>{{end}}
     {{if .Summary.Enriched}}<span class="o-enriched">{{.Summary.Enriched}} enriched</span>{{end}}
-    <span class="o-skipped_archive{{if not .Summary.Skipped}} o-zero{{end}}">{{.Summary.Skipped}} skipped</span>
-    <span class="o-failed{{if not .Summary.Failed}} o-zero{{end}}">{{.Summary.Failed}} failed</span>
+    {{if .Summary.Skipped}}<span class="o-skipped_archive">{{.Summary.Skipped}} skipped</span>{{end}}
+    {{if .Summary.Failed}}<span class="o-failed">{{.Summary.Failed}} failed</span>{{end}}
     {{if .Summary.Canceled}}<span class="o-canceled">{{.Summary.Canceled}} canceled</span>{{end}}
     <span>{{.Summary.Total}} total</span>
     {{if and .Lead.Capped (ne .Lead.Status "canceled") (ne .Lead.Status "failed")}}<span class="o-capped" title="the first {{.Summary.Total}} were fetched; get more for the next">more available</span>{{end}}
@@ -26,23 +29,25 @@
   <td>
     <span class="actions">
       {{if or (eq .Lead.Status "queued") (eq .Lead.Status "running")}}
-        <button hx-delete="/queue/{{.Lead.ID}}">cancel</button>
+        <button hx-post="/queue/{{.Lead.ID}}/cancel">cancel</button>
       {{else}}
         {{if and .Lead.Capped (ne .Lead.Status "canceled") (ne .Lead.Status "failed")}}
         <button hx-post="/queue/{{.Lead.ID}}/continue"
-                title="download the next {{.Lead.Cap}} items">get next {{.Lead.Cap}}</button>
+                title="download the next {{.NextWindow}} items">get next {{.NextWindow}}</button>
         <button hx-post="/queue/{{.Lead.ID}}/continue-all"
                 hx-confirm="fetch all remaining items? this can take a while"
                 title="keep fetching until the search runs out">get all</button>
         {{end}}
         {{if ne .Lead.Status "succeeded"}}
-        <button hx-post="/queue/{{.Lead.ID}}/retry">retry</button>
+        <button hx-post="/queue/{{.Lead.ID}}/retry">{{if eq .Lead.Status "interrupted"}}requeue{{else}}retry{{end}}</button>
         {{end}}
-        {{if gt .Summary.Skipped 0}}
+        {{if gt .ArchiveSkips 0}}
         <button hx-post="/queue/{{.Lead.ID}}/retry?force=1"
                 title="re-download, ignoring the gallery-dl archive">force download</button>
         {{end}}
-        <button hx-delete="/queue/{{.Lead.ID}}">remove</button>
+        <button hx-delete="/queue/{{.Lead.ID}}"
+                hx-confirm="{{if gt .Windows 1}}remove this search and all {{.Windows}} of its windows from the history?{{else}}remove this job from the history?{{end}}"
+                data-confirm-ok="remove" data-confirm-danger>remove</button>
       {{end}}
     </span>
   </td>
@@ -50,13 +55,22 @@
 {{if .Items}}
 {{$active := or (eq .Lead.Status "queued") (eq .Lead.Status "running")}}
 <tr class="items-row">
-  <td colspan="6">
+  <td colspan="7">
     <details data-job="{{.Root}}" open{{if not $active}} id="job-{{.Root}}" hx-preserve="true" hx-get="/internal/queue-rows/{{.Root}}/items" hx-trigger="load once" hx-target="find .job-items" hx-swap="innerHTML"{{end}}>
       <summary>{{len .Items}} item{{if ne (len .Items) 1}}s{{end}}{{$ph := .Phase}}{{if $ph}} <span class="job-phase job-phase-{{$ph}}">{{if eq $ph "downloading"}}downloading...{{else if eq $ph "pushing"}}pushing...{{else}}finished{{end}}</span>{{end}}</summary>
-      <div class="job-items">{{if $active}}{{template "queue_items_capped" (dict "Items" .Items "MonbooruURL" $.MonbooruURL "Site" .Lead.Site)}}{{end}}</div>
+      <div class="job-items">{{if $active}}{{template "queue_items_capped" (dict "Items" .Items "MonbooruURL" $.MonbooruURL "Site" .Lead.Site "ImageID" .Lead.ImageID "Kind" .Lead.Kind)}}{{end}}</div>
     </details>
   </td>
 </tr>
 {{end}}
+{{end}}
+{{if gt .TotalPages 1}}
+<tr class="pager-row"><td colspan="7">
+  <div class="pager">
+    {{if gt .Page 1}}<button type="button" onclick="queuePage({{sub .Page 1}})">&larr; prev</button>{{end}}
+    <span>page {{.Page}} / {{.TotalPages}}</span>
+    {{if lt .Page .TotalPages}}<button type="button" onclick="queuePage({{add .Page 1}})">next &rarr;</button>{{end}}
+  </div>
+</td></tr>
 {{end}}
 {{end}}

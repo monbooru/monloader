@@ -2,6 +2,7 @@ package gdl
 
 import (
 	"context"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -11,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monloader/internal/kwdict"
-	"github.com/leqwin/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/kwdict"
+	"github.com/monbooru/monloader/internal/queue"
 )
 
 // gallery-dl's directlink extractor only matches a URL whose path ends in a
@@ -44,6 +45,15 @@ func directRequest(ctx context.Context, method, rawURL string) (*http.Request, e
 // ceiling bounds a stuck connection; the request context cancels the fetch on a
 // job cancel or shutdown.
 var directFetchClient = &http.Client{Timeout: 10 * time.Minute}
+
+// directFetchMaxBytes caps the one download monloader performs itself:
+// gallery-dl bounds its own fetches and monbooru rejects oversize on the push,
+// but nothing else would stop a hostile host from filling the RAM-backed
+// /work. Sized to monbooru's default per-file ceiling. A var for tests.
+var directFetchMaxBytes int64 = 2 << 30
+
+// errDirectFetchTooLarge marks a directlink body that ran past the cap.
+var errDirectFetchTooLarge = errors.New("file exceeds the directlink size cap")
 
 // directProbeTimeout bounds the content-type probe (the HEAD and ranged GET
 // before any download) so a black-hole host on an extension-less URL cannot
@@ -143,7 +153,11 @@ func directlinkDownload(ctx context.Context, rawURL, workDir string, onFile func
 	}
 	path := filepath.Join(workDir, name+"."+ext)
 	if err := writeFile(path, resp.Body); err != nil {
-		return nil, true, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+		code := queue.ErrCodeDownloadFailed
+		if errors.Is(err, errDirectFetchTooLarge) {
+			code = queue.ErrCodeFileTooLarge
+		}
+		return nil, true, &queue.CodedError{Code: code, Msg: err.Error()}
 	}
 
 	d := Downloaded{Path: path, Meta: meta}
@@ -153,14 +167,19 @@ func directlinkDownload(ctx context.Context, rawURL, workDir string, onFile func
 	return []Downloaded{d}, true, nil
 }
 
-// writeFile streams r into a new file at path, cleaning up a partial file on a
-// copy or close error so a truncated download is never left for the push.
+// writeFile streams r into a new file at path, bounded by the fetch cap and
+// cleaning up a partial file on any error so a truncated download is never
+// left for the push.
 func writeFile(path string, r io.Reader) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, r); err != nil {
+	n, err := io.Copy(f, io.LimitReader(r, directFetchMaxBytes+1))
+	if err == nil && n > directFetchMaxBytes {
+		err = errDirectFetchTooLarge
+	}
+	if err != nil {
 		f.Close()
 		os.Remove(path)
 		return err

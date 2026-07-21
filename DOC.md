@@ -1,1 +1,1 @@
-https://leqwin.github.io/mondocs/addons/monloader/index.html
+https://monbooru.github.io/mondocs/addons/monloader/index.html

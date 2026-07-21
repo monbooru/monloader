@@ -1,6 +1,6 @@
 services:
   monloader:
-    image: ghcr.io/leqwin/monloader:latest
+    image: ghcr.io/monbooru/monloader:latest
     container_name: monloader
     # Image runs as uid/gid 1000; set this to your host uid:gid.
     user: "1000:1000"

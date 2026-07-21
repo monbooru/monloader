@@ -4,7 +4,7 @@
   <aside class="settings-rail">
     <nav class="settings-nav">
       <a href="#monbooru">monbooru</a>
-      <a href="#monsender">monsender</a>
+      <a href="#pairing">pairing</a>
       <a href="#auth">authentication</a>
       <a href="#downloads">downloads</a>
       <a href="#ptr">ptr</a>
@@ -41,15 +41,22 @@
         <button type="submit">save</button>
       </div>
     </form>
-    <div class="settings-sub">
-      <h4>pairing</h4>
-      {{template "monbooru_pair" (dict "Paired" .MonbooruPaired "Waiting" .MonbooruPairWaiting "Message" "" "CSRFToken" .CSRFToken)}}
-    </div>
   </section>
 
-  <section class="settings-section" id="monsender">
-    <h2>monsender</h2>
-    {{template "monsender_pairing" (dict "Pending" .MonsenderPending "Paired" .MonsenderPaired "CSRFToken" .CSRFToken)}}
+  <section class="settings-section" id="pairing">
+    <h2>pairing</h2>
+    <div class="settings-cols">
+      <div class="settings-sub">
+        <h4>monbooru</h4>
+        <p class="field-hint">let monloader push to your monbooru.</p>
+        {{template "monbooru_pair" (dict "Paired" .MonbooruPaired "Waiting" .MonbooruPairWaiting "Message" "" "CSRFToken" .CSRFToken)}}
+      </div>
+      <div class="settings-sub">
+        <h4>monsender extension</h4>
+        <p class="field-hint">let the browser extension send urls to monloader.</p>
+        {{template "monsender_pairing" (dict "Pending" .MonsenderPending "Paired" .MonsenderPaired "CSRFToken" .CSRFToken)}}
+      </div>
+    </div>
   </section>
 
   <section class="settings-section" id="auth">
@@ -129,8 +136,15 @@
         <div class="field">
           <label>access key</label>
           <input type="password" name="access_key" placeholder="{{if .Cfg.PTR.AccessKey}}(set - leave blank to keep){{else}}(unset - uses the public read-only key){{end}}">
-          <span class="field-hint">only needed for a private repository or a personal account</span>
+          <span class="field-hint">a private repository key or the personal contribution account created from the <a href="/ptr">PTR page</a></span>
         </div>
+        {{if .Cfg.PTR.AccessKey}}
+        <div class="field">
+          <label>clear key</label>
+          <label class="checkbox-inline"><input type="checkbox" name="clear_access_key" value="1"> revert to the public read-only key on save</label>
+          <span class="field-hint">clearing forgets the personal account; there is no recovery without a backup of the key</span>
+        </div>
+        {{end}}
         <div class="field">
           <label>fetch sleep (s)</label>
           <input type="text" name="fetch_sleep" value="{{.Cfg.PTR.FetchSleep}}">
@@ -145,7 +159,7 @@
     </form>
     <div class="settings-sub">
       <h4>danger</h4>
-      <form method="POST" action="/settings/ptr/delete" hx-confirm="delete the ptr index and turn off the lookup? re-enabling re-syncs from scratch." data-confirm-ok="delete" data-confirm-danger>
+      <form method="POST" action="/settings/ptr/delete" hx-confirm="delete the ptr index and turn off the lookup? pending and historical contributions go with it; re-enabling re-syncs from scratch." data-confirm-ok="delete" data-confirm-danger>
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <button type="submit" class="danger">delete ptr data</button>
         <span class="field-hint">removes the {{if .PTRDiskBytes}}{{humanBytes .PTRDiskBytes}} {{end}}index and disables the ptr lookup.</span>

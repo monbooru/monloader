@@ -1,1 +1,1 @@
-https://github.com/leqwin/monloader
+https://github.com/monbooru/monloader

@@ -16,6 +16,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 )
 
 // Serialisable type codes carried in an object's leading position.
@@ -51,8 +53,10 @@ const (
 // maxUpdateBytes caps an inflated update. The server's generator bounds an
 // update to 50k definition or 250k content rows, so a real update is a few MB
 // at most; the cap guards against a hostile or corrupt blob inflating without
-// bound.
-const maxUpdateBytes = 256 << 20
+// bound. The replay inflates one blob at a time (an entry's blobs are
+// buffered compressed), so the cap bounds transient memory, not a whole
+// entry.
+const maxUpdateBytes = 64 << 20
 
 // MetadataSlice is the manifest returned by GET /metadata: the update files
 // available from a given index onward, and when the next update is due.
@@ -104,6 +108,55 @@ type Content struct {
 type Update struct {
 	Definitions *Definitions
 	Content     *Content
+}
+
+// Rows counts the rows an update carries - definitions, mapping cells, and
+// relation pairs - the unit the sync's processing rate is reported in.
+func (u *Update) Rows() int64 {
+	var n int64
+	if u.Definitions != nil {
+		n += int64(len(u.Definitions.Hashes) + len(u.Definitions.Tags))
+	}
+	if u.Content != nil {
+		for _, m := range u.Content.MappingsAdd {
+			n += int64(len(m.HashIDs))
+		}
+		for _, m := range u.Content.MappingsDel {
+			n += int64(len(m.HashIDs))
+		}
+		n += int64(len(u.Content.SiblingsAdd) + len(u.Content.SiblingsDel) +
+			len(u.Content.ParentsAdd) + len(u.Content.ParentsDel))
+	}
+	return n
+}
+
+// updateKind reads the leading type code of a compressed update without
+// inflating the whole blob, so the replay's two passes (definitions before
+// content) can skip the other kind's full parse.
+func updateKind(raw []byte) (int, error) {
+	zr, err := zlib.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return 0, fmt.Errorf("opening zlib stream: %w", err)
+	}
+	defer zr.Close()
+	buf := make([]byte, 16)
+	n, err := io.ReadFull(zr, buf)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return 0, fmt.Errorf("reading update head: %w", err)
+	}
+	head := strings.TrimLeft(string(buf[:n]), " \t\r\n")
+	if len(head) == 0 || head[0] != '[' {
+		return 0, fmt.Errorf("update does not open a wrapper array")
+	}
+	head = strings.TrimLeft(head[1:], " \t\r\n")
+	i := 0
+	for i < len(head) && head[i] >= '0' && head[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0, fmt.Errorf("update wrapper has no leading type code")
+	}
+	return strconv.Atoi(head[:i])
 }
 
 // inflate zlib-decompresses raw with the size cap applied.
