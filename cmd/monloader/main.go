@@ -54,6 +54,9 @@ func main() {
 		return
 	}
 
+	_, statErr := os.Stat(*configPath)
+	freshConfig := os.IsNotExist(statErr)
+
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("FATAL loading config: %v", err)
@@ -136,6 +139,10 @@ func main() {
 	go func() {
 		logx.Infof("monloader listening on %s (work dir %s)", cfg.Server.BindAddress, workRoot)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if freshConfig {
+				log.Printf("monloader wrote %s with default settings meant for the docker image.", *configPath)
+				log.Printf("edit server.bind_address (and monbooru.api_url once monbooru runs), then run it again. docs: %s", internalweb.DocURL)
+			}
 			log.Fatalf("FATAL HTTP server: %v", err)
 		}
 	}()

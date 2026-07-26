@@ -46,6 +46,12 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr index is not available")
 		return
 	}
+	if !h.ptr.CaughtUp() {
+		// A half-built index would hand over a graph missing edges the caller
+		// then mirrors as the repository's whole answer.
+		apiError(w, http.StatusConflict, "ptr_syncing", "the ptr index is not fully synced yet")
+		return
+	}
 	var body ptrTagsRequest
 	if err := decodeBody(w, r, &body); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")

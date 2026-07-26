@@ -37,6 +37,21 @@ func Stricter(a, b string) string {
 	return a
 }
 
+// ratingWords maps the unambiguous booru rating values - the full words and
+// the stable letters - to monbooru levels. Only `s` is family dependent and
+// stays out of the table.
+var ratingWords = map[string]string{
+	"general":      RatingGeneral,
+	"sensitive":    RatingSensitive,
+	"questionable": RatingQuestionable,
+	"explicit":     RatingExplicit,
+	"safe":         RatingGeneral,
+	"suggestive":   RatingSensitive, // philomena and mangadex term for the sensitive tier
+	"g":            RatingGeneral,
+	"q":            RatingQuestionable,
+	"e":            RatingExplicit,
+}
+
 // mapRating normalizes a booru rating value to a monbooru level, tolerant of
 // letter and full-word forms (case-insensitive). The single letter `s` is the
 // overload the per-family branch resolves: sensitive on Danbooru, safe elsewhere.
@@ -44,39 +59,13 @@ func Stricter(a, b string) string {
 // visible under every ceiling).
 func mapRating(family, raw string) string {
 	v := strings.ToLower(strings.TrimSpace(raw))
-	if v == "" {
-		return ""
-	}
-	// Full-word forms are unambiguous across every family.
-	switch v {
-	case "general":
-		return RatingGeneral
-	case "sensitive":
-		return RatingSensitive
-	case "questionable":
-		return RatingQuestionable
-	case "explicit":
-		return RatingExplicit
-	case "safe":
-		return RatingGeneral
-	case "suggestive":
-		return RatingSensitive // philomena and mangadex term for the sensitive tier
-	}
-	// Single letters: q and e are stable; g is general; s is the overload.
-	switch v {
-	case "q":
-		return RatingQuestionable
-	case "e":
-		return RatingExplicit
-	case "g":
-		return RatingGeneral
-	case "s":
+	if v == "s" {
 		if family == FamilyDanbooru {
 			return RatingSensitive
 		}
 		return RatingGeneral // e621, moebooru, gelbooru_v02, generic: s = safe
 	}
-	return ""
+	return ratingWords[v]
 }
 
 // philomenaRatingTag reports whether tag is one of philomena's mutually

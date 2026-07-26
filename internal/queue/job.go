@@ -53,6 +53,7 @@ const (
 	OutcomeCreated            Outcome = "created"
 	OutcomeDuplicate          Outcome = "duplicate"
 	OutcomeEnriched           Outcome = "enriched"
+	OutcomeReplaced           Outcome = "replaced"
 	OutcomeSkippedArchive     Outcome = "skipped_archive"
 	OutcomeSkippedUnsupported Outcome = "skipped_unsupported"
 	OutcomeFailed             Outcome = "failed"
@@ -72,13 +73,17 @@ const (
 	ErrCodeMonbooruUnreachable = "monbooru_unreachable"
 	ErrCodeMonbooruRejected    = "monbooru_rejected"
 	ErrCodeHashMismatch        = "hash_mismatch"
-	ErrCodeMappingFailed       = "mapping_failed"
-	ErrCodeCanceled            = "canceled"
-	ErrCodeHashNotFound        = "hash_not_found"
-	ErrCodePTRUnavailable      = "ptr_unavailable"
-	ErrCodePTRAccountRequired  = "ptr_account_required"
-	ErrCodePTRBanned           = "ptr_banned"
-	ErrCodePTRSyncing          = "ptr_syncing"
+	// Replace refusals monbooru answers with a 409: the downloaded original
+	// already exists as another image, or the target row is an archive/video.
+	ErrCodeAlreadyExists      = "already_exists"
+	ErrCodeWrongType          = "wrong_type"
+	ErrCodeMappingFailed      = "mapping_failed"
+	ErrCodeCanceled           = "canceled"
+	ErrCodeHashNotFound       = "hash_not_found"
+	ErrCodePTRUnavailable     = "ptr_unavailable"
+	ErrCodePTRAccountRequired = "ptr_account_required"
+	ErrCodePTRBanned          = "ptr_banned"
+	ErrCodePTRSyncing         = "ptr_syncing"
 )
 
 // Summary aggregates per-item outcomes for the queue view and the API.
@@ -90,6 +95,9 @@ type Summary struct {
 	// Enriched counts metadata-only source refetches that merged tags into an
 	// image monbooru already holds; like Duplicate, but no file was pushed.
 	Enriched int `json:"enriched,omitempty"`
+	// Replaced counts in-place file replacements of an image monbooru
+	// already holds.
+	Replaced int `json:"replaced,omitempty"`
 	Skipped  int `json:"skipped"`
 	Failed   int `json:"failed"`
 	// Canceled counts items aborted by a job cancel (failed with the canceled
@@ -132,6 +140,10 @@ const (
 	// KindHashImport resolves an md5 to a post via the booru walk, then
 	// downloads and pushes it like a submitted single post.
 	KindHashImport JobKind = "hash_import"
+	// KindReplace downloads the post the job's URL names and pushes its file
+	// into the existing monbooru image the job targets, replacing its bytes
+	// in place.
+	KindReplace JobKind = "replace"
 	// KindContrib uploads staged PTR contributions; its items are the
 	// POST chunks. One send job per monbooru confirm, plus the manual
 	// backlog retry.
@@ -171,6 +183,9 @@ type jobState struct {
 	Gallery  string `json:"gallery"`
 	Folder   string `json:"folder,omitempty"`
 	MaxItems int    `json:"max_items,omitempty"`
+	// PageURL is the page a direct-file send came from; a directlink item
+	// records it as its source link instead of the bare file URL.
+	PageURL string `json:"page_url,omitempty"`
 	// Offset skips this many leading posts before the job's window, so a
 	// continue on a capped search fetches the next batch via --range.
 	Offset int `json:"-"`
@@ -285,6 +300,7 @@ func newJob(id int64, url string, opts Options, now time.Time) *Job {
 			Gallery:         opts.Gallery,
 			Folder:          opts.Folder,
 			MaxItems:        opts.MaxItems,
+			PageURL:         opts.PageURL,
 			Offset:          opts.Offset,
 			Root:            opts.Root,
 			Auto:            opts.Auto,
@@ -543,6 +559,7 @@ func (j *Job) reset(force bool, now time.Time) error {
 		// succeeded run may lean on the archive.
 		Force:           force || j.Status != JobSucceeded,
 		MaxItems:        j.MaxItems,
+		PageURL:         j.PageURL,
 		Offset:          j.Offset,
 		Root:            j.Root,
 		Auto:            j.Auto,
@@ -634,6 +651,7 @@ func (s Summary) Add(b Summary) Summary {
 		Created:   s.Created + b.Created,
 		Duplicate: s.Duplicate + b.Duplicate,
 		Enriched:  s.Enriched + b.Enriched,
+		Replaced:  s.Replaced + b.Replaced,
 		Skipped:   s.Skipped + b.Skipped,
 		Failed:    s.Failed + b.Failed,
 		Canceled:  s.Canceled + b.Canceled,
@@ -652,6 +670,8 @@ func summarize(items []Item) Summary {
 			s.Duplicate++
 		case OutcomeEnriched:
 			s.Enriched++
+		case OutcomeReplaced:
+			s.Replaced++
 		case OutcomeSkippedArchive, OutcomeSkippedUnsupported:
 			s.Skipped++
 		case OutcomeFailed:

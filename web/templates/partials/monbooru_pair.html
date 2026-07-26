@@ -11,7 +11,12 @@
     </form>
   </p>
   {{else if .Waiting}}
-  <p class="field-hint">waiting for approval in monbooru... approve the request there to complete the pairing.</p>
+  <p class="field-hint">waiting for approval in monbooru... approve the request there to complete the pairing.
+    <form hx-post="/settings/monbooru/pair/cancel" hx-target="#monbooru-pair" hx-swap="outerHTML" style="display:inline">
+      <input type="hidden" name="_csrf" value="{{$csrf}}">
+      <button type="submit">cancel</button>
+    </form>
+  </p>
   {{else}}
   <p class="field-hint">To pair with monbooru : click connect, then approve the request in monbooru's monloader settings.</p>
   <form hx-post="/settings/monbooru/pair/connect" hx-target="#monbooru-pair" hx-swap="outerHTML" style="display:inline">

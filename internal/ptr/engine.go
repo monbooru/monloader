@@ -50,6 +50,10 @@ type Progress struct {
 	// Against DownloadRate it says which side - the network or the index
 	// build - bounds a slow sync.
 	ProcessRate int64 `json:"process_rate"`
+	// LastAppliedAt dates the last entry this process committed: on a slow
+	// disk an entry replays for an hour, and a page frozen that long reads as
+	// a hang unless it can say the sync is still alive. Zero until one lands.
+	LastAppliedAt int64 `json:"last_applied_at,omitempty"`
 }
 
 // Status is the engine snapshot the API and page render.
@@ -173,7 +177,7 @@ func (e *Engine) Enable() error {
 	}
 	// The floor only guards the initial build; an existing index (a resume) is
 	// past the big download and may legitimately sit on a fuller disk.
-	if !indexExists(e.cfg.DataPath) {
+	if !IndexExists(e.cfg.DataPath) {
 		if err := e.checkFreeSpace(); err != nil {
 			return err
 		}
@@ -255,6 +259,11 @@ func (e *Engine) Disable() {
 // with the data, as the settings confirm warns.
 func (e *Engine) Delete() error {
 	e.Disable()
+	// The caught-up mark described the index being removed; a re-enable builds
+	// a new one from nothing, and its partial answers are provisional again.
+	e.mu.Lock()
+	e.everReady = false
+	e.mu.Unlock()
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		if err := os.Remove(indexPath(e.cfg.DataPath) + suffix); err != nil && !os.IsNotExist(err) {
 			return err
@@ -374,6 +383,10 @@ func (e *Engine) TagGraph(names []string) (map[string]TagInfo, error) {
 // update; back off and retry on error; hold while paused. It exits on ctx.
 func (e *Engine) loop(ctx context.Context) {
 	defer close(e.done)
+	// Seed the position before the census scan below: on a first boot that
+	// scan can run for minutes, and the page would otherwise claim update 0
+	// against a populated index for its whole duration.
+	e.seedPosition()
 	// The census seed can scan a 40 GB index for minutes; it belongs here on
 	// the sync goroutine, after the boot path has already returned.
 	if err := e.store.EnsureCounts(ctx); err != nil && ctx.Err() == nil {
@@ -585,40 +598,55 @@ func (e *Engine) applyEntry(ctx context.Context, entry UpdateEntry) error {
 		return fmt.Errorf("update %d lists %d blobs, over the %d cap", entry.Index, len(entry.Hashes), maxEntryBlobs)
 	}
 	blobs := make([][]byte, 0, len(entry.Hashes))
-	var bytes int64
 	var fetchDur time.Duration
 	for _, h := range entry.Hashes {
 		fetchStart := time.Now()
 		raw, err := e.client.updateRaw(ctx, h)
-		fetchDur += time.Since(fetchStart)
+		d := time.Since(fetchStart)
 		if err != nil {
 			return err
 		}
 		blobs = append(blobs, raw)
-		bytes += int64(len(raw))
+		fetchDur += d
+		// Credited per blob, not per entry: a many-blob entry fetches for
+		// minutes, and a byte counter frozen that long reads as a hang.
+		e.mu.Lock()
+		e.progress.DownloadedBytes += int64(len(raw))
+		e.passBytes += int64(len(raw))
+		e.passFetchDur += d
+		e.mu.Unlock()
 	}
 	replayStart := time.Now()
-	counts, rows, err := e.store.Replay(entry.Index, entry.End, blobs)
+	counts, rows, err := e.store.Replay(entry.Index, entry.End, blobs, e.blobApplied)
 	if err != nil {
 		return err
 	}
 	replayDur := time.Since(replayStart)
 	e.mu.Lock()
 	e.progress.UpdateIndex = entry.Index
-	if e.progress.BlobsTotal > 0 {
-		e.progress.BlobsDone += uint64(len(entry.Hashes))
-	}
-	e.progress.DownloadedBytes += bytes
-	e.passBytes += bytes
+	e.progress.LastAppliedAt = time.Now().Unix()
 	e.passRows += rows
-	e.passFetchDur += fetchDur
 	e.passReplayDur += replayDur
 	e.counts = counts
 	if entry.End > 0 {
 		e.covered = entry.End
 	}
 	e.mu.Unlock()
+	logx.Debugf("ptr: applied update %d: %d blobs, %d rows, fetch %s, replay %s",
+		entry.Index, len(blobs), rows, fetchDur.Round(time.Millisecond), replayDur.Round(time.Millisecond))
 	return nil
+}
+
+// blobApplied advances the bar as Replay lands each blob: a single large
+// entry can replay for an hour on an HDD, and the bar must move within it.
+// A tick rolled back with a failed entry is corrected by the census resync
+// at the next pass top.
+func (e *Engine) blobApplied() {
+	e.mu.Lock()
+	if e.progress.BlobsTotal > 0 {
+		e.progress.BlobsDone++
+	}
+	e.mu.Unlock()
 }
 
 func (e *Engine) isPaused() bool {
@@ -662,6 +690,25 @@ func (e *Engine) markPassStart() {
 	e.mu.Lock()
 	e.passBytes, e.passRows = 0, 0
 	e.passFetchDur, e.passReplayDur = 0, 0
+	e.mu.Unlock()
+}
+
+// seedPosition publishes the persisted cursor as the progress position so a
+// resumed sync shows where it stopped from the first render, instead of
+// claiming update 0 until its first entry commits - hours, on a large entry.
+func (e *Engine) seedPosition() {
+	e.mu.Lock()
+	store := e.store
+	e.mu.Unlock()
+	if store == nil {
+		return
+	}
+	cur, ok, err := store.Cursor()
+	if err != nil || !ok {
+		return
+	}
+	e.mu.Lock()
+	e.progress.UpdateIndex = cur
 	e.mu.Unlock()
 }
 
@@ -742,8 +789,10 @@ func freeBytes(path string) (uint64, error) {
 // indexPath is the sqlite file path for a data dir.
 func indexPath(dataPath string) string { return dataPath + "/" + dbFile }
 
-// indexExists reports whether an index file is already present (a resume).
-func indexExists(dataPath string) bool {
+// IndexExists reports whether an index file is already present, so a caller can
+// tell a resume from a first sync: the ptr page words its disabled state on it,
+// and Enable applies the free-space floor only to a first sync.
+func IndexExists(dataPath string) bool {
 	_, err := os.Stat(indexPath(dataPath))
 	return err == nil
 }

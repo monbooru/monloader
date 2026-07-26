@@ -30,6 +30,7 @@ type PTRService interface {
 	Contrib() *ptr.ContribStore
 	TagFilterCached() *ptr.TagFilter
 	HashHasIdeal(hashHex, tag string) (bool, error)
+	HashHasIdeals(hashHex string, tags []string) (map[string]bool, error)
 	HashHasRaw(hashHex, tag string) (bool, error)
 	RawTagsForHash(hashHex string) ([]string, error)
 	IdealTag(tag string) (string, bool, error)

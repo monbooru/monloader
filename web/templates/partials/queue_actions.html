@@ -1,0 +1,12 @@
+{{define "queue_actions"}}<span id="queue-actions" class="queue-actions" hx-get="/internal/queue-actions" hx-trigger="every 2s [!confirmOpen()]" hx-target="#queue-actions" hx-swap="outerHTML">
+  {{if .HasFinished}}
+  <button type="button" hx-post="/queue/clear" hx-target="#queue-rows" hx-swap="innerHTML"
+          hx-confirm="clear recent history?"
+          data-confirm-ok="clear" data-confirm-danger>clear</button>
+  {{end}}
+  {{if .HasPending}}
+  <button type="button" hx-post="/queue/cancel-pending" hx-target="#queue-rows" hx-swap="innerHTML"
+          hx-confirm="cancel every job that has not started?"
+          data-confirm-ok="cancel pending" data-confirm-danger>cancel pending</button>
+  {{end}}
+</span>{{end}}

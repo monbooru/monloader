@@ -160,9 +160,25 @@ func (s *Server) monbooruPairPoll(w http.ResponseWriter, r *http.Request) {
 	case "expired":
 		s.clearPairAttempt()
 		s.render(w, "monbooru_pair", s.monbooruPairData(r, "request expired; try again"))
+	case "not_found":
+		s.clearPairAttempt()
+		s.render(w, "monbooru_pair", s.monbooruPairData(r, "monbooru no longer has this request - connect again"))
 	default:
 		s.render(w, "monbooru_pair", s.monbooruPairData(r, "waiting"))
 	}
+}
+
+// monbooruPairCancel abandons the pending attempt. Nothing was committed on
+// either side yet, so dropping it locally is enough; a stale approval in
+// monbooru ages out of its pending store on its own.
+func (s *Server) monbooruPairCancel(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.render(w, "monbooru_pair", s.monbooruPairData(r, "bad form data"))
+		return
+	}
+	s.clearPairAttempt()
+	logx.Infof("pairing: canceled the pending monbooru attempt")
+	s.render(w, "monbooru_pair", s.monbooruPairData(r, ""))
 }
 
 // monbooruPairRemove tears down this side: it drops the token monbooru carries

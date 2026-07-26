@@ -16,6 +16,7 @@ import (
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/gdl"
+	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/ptr"
@@ -57,6 +58,10 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", "monbooru is not configured - set its connection in settings")
 		return
 	}
+	if s.monbooruPaused() {
+		flashFragment(w, "err", "the monbooru link is paused - resume it from the light in the footer")
+		return
+	}
 	target := strings.TrimSpace(r.FormValue("url"))
 	if target == "" {
 		flashFragment(w, "err", "enter a URL or an md5 hash")
@@ -72,7 +77,7 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 		}
 		s.queue.EnqueueHashImport(md5, queue.Options{})
 	} else if looksLikeSHA256(target) {
-		flashFragment(w, "err", sha256AddHint(s.ptr.Enabled()))
+		flashFragment(w, "err", sha256AddHint(s.ptr.Enabled(), s.ptr.CaughtUp()))
 		return
 	} else if !config.IsHTTPURL(target) {
 		flashFragment(w, "err", "enter a valid http(s) URL or an md5 hash")
@@ -111,12 +116,16 @@ func looksLikeSHA256(s string) bool {
 
 // sha256AddHint explains what a sha256 does at the add bar: it is not an import
 // key but a PTR tag-lookup key, used from monbooru. The wording depends on
-// whether the PTR is available to do that lookup at all.
-func sha256AddHint(ptrEnabled bool) string {
-	if ptrEnabled {
+// whether the PTR can answer that lookup - off, still building, or ready.
+func sha256AddHint(ptrEnabled, ptrCaughtUp bool) string {
+	switch {
+	case !ptrEnabled:
+		return "a sha256 looks tags up from the PTR, which is off - enable it on the ptr page"
+	case !ptrCaughtUp:
+		return "a sha256 looks tags up from the PTR, which answers once it has finished syncing - follow it on the ptr page"
+	default:
 		return "a sha256 is for looking tags up from the PTR (via monbooru), not for importing here - paste an md5 or a URL"
 	}
-	return "a sha256 looks tags up from the PTR, which is not synced yet - enable it on the ptr page"
 }
 
 // lookupStatusView backs the add-bar status line: which chain sources a booru
@@ -163,7 +172,46 @@ func flashFragment(w http.ResponseWriter, kind, msg string) {
 func (s *Server) queueScreen(w http.ResponseWriter, r *http.Request) {
 	data := s.base(r, "queue", "queue - "+s.titleName())
 	s.fillQueue(r, data)
+	data["Actions"] = s.queueActions()
 	s.render(w, "queue", data)
+}
+
+// queueActionsView gates the add bar's bulk buttons: each shows only while the
+// queue holds what it acts on, so the url field takes the rest of the row.
+type queueActionsView struct {
+	HasPending  bool
+	HasFinished bool
+}
+
+func (s *Server) queueActions() queueActionsView {
+	counts := s.queueCounts()
+	return queueActionsView{HasPending: counts.Queued > 0, HasFinished: counts.Finished > 0}
+}
+
+// queueCounts tallies the tracked jobs by state. The items are left behind:
+// every caller wants counters, and a snapshot with items deep-copies each
+// job's whole slice.
+func (s *Server) queueCounts() queueStats {
+	jobs, _ := s.queue.List(queue.ListOptions{OmitItems: true})
+	var st queueStats
+	for _, j := range jobs {
+		switch j.Status {
+		case queue.JobQueued:
+			st.Queued++
+		case queue.JobRunning:
+			st.Running++
+		default:
+			// neither in the FIFO nor still working: it is history
+			st.Finished++
+		}
+	}
+	return st
+}
+
+// queueActionsFragment re-renders the bulk buttons for their poll, so a job
+// finishing or a FIFO draining shows up without a reload.
+func (s *Server) queueActionsFragment(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "queue_actions", s.queueActions())
 }
 
 func (s *Server) queueRows(w http.ResponseWriter, r *http.Request) {
@@ -342,14 +390,9 @@ func pageWindow(r *http.Request, n int) (page, totalPages int) {
 	return page, totalPages
 }
 
-// monbooruWebBase is the browser-facing monbooru base for image links: the
-// configured web_url when set, else the API URL.
+// monbooruWebBase is the browser-facing monbooru base for image links.
 func (s *Server) monbooruWebBase() string {
-	base := s.cfg.Current().Monbooru.WebURL
-	if base == "" {
-		base = s.cfg.Current().Monbooru.APIURL
-	}
-	return strings.TrimRight(base, "/")
+	return s.cfg.Current().Monbooru.WebBase()
 }
 
 // monbooruWebLink is the base for the footer "connected to monbooru" link, or
@@ -360,19 +403,38 @@ func (s *Server) monbooruWebLink() string {
 }
 
 // jobAction parses the row's {id}, runs one queue action on it, and re-renders
-// the rows; a refused action just re-renders (the poll reports the state).
-func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, action func(id int64)) {
+// the rows. A row that is no longer tracked says so in the add bar, like the
+// API's 404; any other refusal just re-renders (the poll reports the state).
+func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, action func(id int64) error) {
 	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-		action(id)
+		if errors.Is(action(id), queue.ErrNotFound) {
+			addBarFlash(w, "that job is no longer in the queue")
+			return
+		}
 	}
 	s.queueRows(w, r)
 }
 
+// addBarFlash answers a refused row action in the add bar's flash slot instead
+// of swapping the unchanged rows back in as if the click had worked.
+func addBarFlash(w http.ResponseWriter, msg string) {
+	w.Header().Set("HX-Retarget", "#add-flash")
+	w.Header().Set("HX-Reswap", "innerHTML")
+	flashFragment(w, "err", msg)
+}
+
 // retryJob re-queues a finished job. With ?force=1 the re-run bypasses the
 // download-archive so a post already fetched (e.g. since deleted in monbooru)
-// is downloaded again.
+// is downloaded again; that button is offered on the collapsed row's archive
+// skips, which are the whole series', so it re-runs every window. A plain retry
+// stays on the window whose run did not finish cleanly.
 func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
-	s.jobAction(w, r, func(id int64) { _ = s.queue.Retry(id, r.URL.Query().Get("force") == "1") })
+	s.jobAction(w, r, func(id int64) error {
+		if r.URL.Query().Get("force") == "1" {
+			return s.queue.RetrySeries(id, true)
+		}
+		return s.queue.Retry(id, false)
+	})
 }
 
 // continueJob enqueues a follow-up job for the next window of a capped job, so
@@ -393,10 +455,12 @@ func (s *Server) continueAllJob(w http.ResponseWriter, r *http.Request) {
 // if the click had queued something.
 func (s *Server) continueAction(w http.ResponseWriter, r *http.Request, run func(id int64) (int64, error)) {
 	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-		if _, err := run(id); errors.Is(err, queue.ErrNotCapped) {
-			w.Header().Set("HX-Retarget", "#add-flash")
-			w.Header().Set("HX-Reswap", "innerHTML")
-			flashFragment(w, "err", "this search has no more items to fetch")
+		switch _, err := run(id); {
+		case errors.Is(err, queue.ErrNotCapped):
+			addBarFlash(w, "this search has no more items to fetch")
+			return
+		case errors.Is(err, queue.ErrNotFound):
+			addBarFlash(w, "that job is no longer in the queue")
 			return
 		}
 	}
@@ -408,14 +472,14 @@ func (s *Server) continueAction(w http.ResponseWriter, r *http.Request, run func
 // differ only by the state the last poll saw, so a cancel clicked on a row that
 // finished in the 2 s gap must not delete its history instead.
 func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
-	s.jobAction(w, r, func(id int64) { _ = s.queue.CancelLive(id) })
+	s.jobAction(w, r, s.queue.CancelLive)
 }
 
 // deleteJob removes a queue row, cancelling it first when it is still live. The
 // row collapses a continue-series, so it clears every window in the series, not
 // just the one clicked.
 func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
-	s.jobAction(w, r, func(id int64) { _ = s.queue.CancelSeries(id) })
+	s.jobAction(w, r, s.queue.CancelSeries)
 }
 
 // clearQueue drops the finished-job history; running and pending jobs stay.
@@ -459,6 +523,34 @@ func (s *Server) renderPauseToggle(w http.ResponseWriter, r *http.Request) {
 // monbooruStatus renders the footer connectivity light from a cached probe.
 func (s *Server) monbooruStatus(w http.ResponseWriter, r *http.Request) {
 	status, version := s.monbooruStatusCached(r.Context())
+	s.renderConnLight(w, status, version)
+}
+
+// monbooruPause holds the link from the footer light's kill switch: the probe
+// stops and the add bar refuses new work, while the pairing stays on disk so
+// resuming needs no re-pair.
+func (s *Server) monbooruPause(w http.ResponseWriter, r *http.Request) {
+	s.setMonbooruPaused(w, true)
+}
+
+// monbooruResume lifts the hold. The light renders "checking" and its own poll
+// probes monbooru within the second.
+func (s *Server) monbooruResume(w http.ResponseWriter, r *http.Request) {
+	s.setMonbooruPaused(w, false)
+}
+
+func (s *Server) setMonbooruPaused(w http.ResponseWriter, paused bool) {
+	if err := s.updateConfig(func(c *config.Config) error { c.Monbooru.Paused = paused; return nil }); err != nil {
+		logx.Errorf("monbooru: could not persist the link hold: %v", err)
+	}
+	status := ""
+	if paused {
+		status = "paused"
+	}
+	s.renderConnLight(w, status, "")
+}
+
+func (s *Server) renderConnLight(w http.ResponseWriter, status, version string) {
 	s.render(w, "conn_light", map[string]any{
 		"Conn":            status,
 		"MonbooruWebURL":  s.monbooruWebLink(),
@@ -497,6 +589,29 @@ func (s *Server) siteRows(cats []string, csrf string) []siteRow {
 }
 
 func (s *Server) settingsScreen(w http.ResponseWriter, r *http.Request) {
+	data := s.settingsData(r)
+	if msg := r.URL.Query().Get("msg"); msg != "" {
+		kind := r.URL.Query().Get("kind")
+		if kind == "" {
+			kind = "ok"
+		}
+		setFlash(data, kind, r.URL.Query().Get("section"), msg)
+	}
+	s.render(w, "settings", data)
+}
+
+// setFlash puts one flash on a settings render, scoped to the section whose box
+// shows it.
+func setFlash(data map[string]any, kind, section, msg string) {
+	data["Flash"] = msg
+	data["FlashKind"] = kind
+	data["FlashSection"] = section
+}
+
+// settingsData assembles the settings page's view. Split from the screen so a
+// save that has to refuse can re-render the page with the operator's submitted
+// value instead of redirecting back to the stored one.
+func (s *Server) settingsData(r *http.Request) map[string]any {
 	data := s.base(r, "settings", "settings - "+s.titleName())
 	data["Cfg"] = s.cfg.Current()
 
@@ -513,23 +628,15 @@ func (s *Server) settingsScreen(w http.ResponseWriter, r *http.Request) {
 	data["BooruSites"] = s.siteRows(s.mapper.CuratedByKind(mapping.KindBooru), csrf)
 	data["MangaSites"] = s.siteRows(s.mapper.CuratedByKind(mapping.KindManga), csrf)
 	data["LookupPanel"] = s.lookupPanel(csrf)
-	data["PTRDiskBytes"] = s.ptr.Status().DiskBytes
+	ptrStatus := s.ptr.Status()
+	data["PTRDiskBytes"] = ptrStatus.DiskBytes
+	data["PTREnabled"] = ptrStatus.Enabled
 	data["Stats"] = s.gatherStats()
 	data["MonbooruPaired"] = s.hasPairedToken("monbooru")
 	data["MonbooruPairWaiting"] = s.getPairAttempt() != nil
 	data["MonsenderPending"] = s.pairs.listPending()
 	data["MonsenderPaired"] = s.hasPairedToken("monsender")
-
-	if msg := r.URL.Query().Get("msg"); msg != "" {
-		data["Flash"] = msg
-		data["FlashSection"] = r.URL.Query().Get("section")
-		kind := r.URL.Query().Get("kind")
-		if kind == "" {
-			kind = "ok"
-		}
-		data["FlashKind"] = kind
-	}
-	s.render(w, "settings", data)
+	return data
 }
 
 // defaultGalleryWarning flags a default gallery pushes will not reach: unset
@@ -619,21 +726,11 @@ func (s *Server) gatherStats() statsData {
 		Mem:        memStats{RSS: readRSS(), Sys: int64(ms.Sys), HeapAlloc: int64(ms.HeapAlloc), Goroutines: runtime.NumGoroutine()},
 		GDLVersion: s.gdlVersion,
 		Extractors: len(s.extractors),
-		// The running worker count, not the saved setting: concurrency takes
-		// effect only on restart, so report what is actually running.
-		Queue: queueStats{Workers: s.queue.Workers()},
+		Queue:      s.queueCounts(),
 	}
-	jobs, _ := s.queue.List(queue.ListOptions{})
-	for _, j := range jobs {
-		switch j.Status {
-		case queue.JobQueued:
-			st.Queue.Queued++
-		case queue.JobRunning:
-			st.Queue.Running++
-		default:
-			st.Queue.Finished++
-		}
-	}
+	// The running worker count, not the saved setting: concurrency takes
+	// effect only on restart, so report what is actually running.
+	st.Queue.Workers = s.queue.Workers()
 	return st
 }
 
@@ -722,20 +819,51 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 		s.redirectFlash(w, r, "err", "bad form")
 		return
 	}
+	// A field the form did not post keeps its stored value; one that was posted
+	// and does not parse - cleared included, since these knobs have no "unset" -
+	// is refused by name, so the flash cannot report success while the old value
+	// quietly stands.
+	var bad []string
+	num := func(name, label string, floor int) (int, bool) {
+		if !r.Form.Has(name) {
+			return 0, false
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(r.FormValue(name)))
+		if err != nil || n < floor {
+			bad = append(bad, fmt.Sprintf("%s must be a whole number of %d or more", label, floor))
+			return 0, false
+		}
+		return n, true
+	}
+	concurrency, setConcurrency := num("concurrency", "concurrency", 1)
+	maxItems, setMaxItems := num("max_items_per_job", "max items / job", 1)
+	// Zero is meaningful here (keep history until the ring evicts it), so
+	// unlike the caps above it is accepted rather than treated as unset.
+	retention, setRetention := num("history_retention_days", "clear history after (days)", 0)
+	sleep, setSleep := 0.0, false
+	if r.Form.Has("sleep_request") {
+		if f, ferr := strconv.ParseFloat(strings.TrimSpace(r.FormValue("sleep_request")), 64); ferr == nil && f >= 0 {
+			sleep, setSleep = f, true
+		} else {
+			bad = append(bad, "sleep / request must be a number of 0 or more")
+		}
+	}
+	if len(bad) > 0 {
+		s.redirectFlash(w, r, "err", strings.Join(bad, "; ")+" - nothing was saved")
+		return
+	}
 	err := s.updateConfig(func(c *config.Config) error {
-		if n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("concurrency"))); err == nil && n > 0 {
-			c.Downloader.Concurrency = n
+		if setConcurrency {
+			c.Downloader.Concurrency = concurrency
 		}
-		if f, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("sleep_request")), 64); err == nil && f >= 0 {
-			c.GalleryDL.SleepRequest = f
+		if setSleep {
+			c.GalleryDL.SleepRequest = sleep
 		}
-		if n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("max_items_per_job"))); err == nil && n > 0 {
-			c.Downloader.MaxItemsPerJob = n
+		if setMaxItems {
+			c.Downloader.MaxItemsPerJob = maxItems
 		}
-		// Zero is meaningful here (keep history until the ring evicts it), so
-		// unlike the caps above it is accepted rather than treated as unset.
-		if n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("history_retention_days"))); err == nil && n >= 0 {
-			c.Downloader.HistoryRetentionDays = n
+		if setRetention {
+			c.Downloader.HistoryRetentionDays = retention
 		}
 		c.Downloader.DefaultFolder = strings.TrimSpace(r.FormValue("default_folder"))
 		return nil
@@ -885,7 +1013,14 @@ func (s *Server) saveRaw(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := r.FormValue("raw_config")
 	if err := config.ValidateRawConfig(raw); err != nil {
-		s.redirectFlash(w, r, "err", err.Error())
+		// The textarea is the only copy of a hand-written block, so the refusal
+		// re-renders it as typed instead of redirecting to the stored config.
+		data := s.settingsData(r)
+		draft := *s.cfg.Current()
+		draft.GalleryDL.RawConfig = raw
+		data["Cfg"] = &draft
+		setFlash(data, "err", "advanced", err.Error())
+		s.render(w, "settings", data)
 		return
 	}
 	if err := s.updateConfig(func(c *config.Config) error { c.GalleryDL.RawConfig = raw; return nil }); err != nil {

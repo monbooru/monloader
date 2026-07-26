@@ -22,6 +22,7 @@ type enqueueRequest struct {
 		Gallery  string `json:"gallery"`
 		Folder   string `json:"folder"`
 		MaxItems int    `json:"max_items"`
+		PageURL  string `json:"page_url"`
 	} `json:"options"`
 }
 
@@ -29,6 +30,13 @@ type enqueueRequest struct {
 // returns 202 with a job id; with ?wait=N it blocks up to N seconds and
 // returns the resolved job inline if it finished in time.
 func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
+	// The footer light holds the link, and the add bar refuses new work while it
+	// is held; the extension sends through here, so this refuses too.
+	if h.cfg.Current().Monbooru.Paused {
+		apiError(w, http.StatusConflict, "monbooru_paused",
+			"the monbooru link is paused - resume it from the light in monloader's footer")
+		return
+	}
 	var body enqueueRequest
 	if err := decodeBody(w, r, &body); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
@@ -62,6 +70,11 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		opts.MaxItems = body.Options.MaxItems
+		if body.Options.PageURL != "" && !config.IsHTTPURL(body.Options.PageURL) {
+			apiError(w, http.StatusBadRequest, "invalid_request", "page_url must be an http(s) URL")
+			return
+		}
+		opts.PageURL = body.Options.PageURL
 	}
 
 	wait := waitSeconds(r)
@@ -92,17 +105,18 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id})
 }
 
-type metadataRequest struct {
+// imageJobRequest is the body both source-refetch endpoints take: an image
+// monbooru already holds and the post URL to read it from.
+type imageJobRequest struct {
 	ImageID int64  `json:"image_id"`
 	Gallery string `json:"gallery"`
 	URL     string `json:"url"`
 }
 
-// metadata handles POST /api/v1/metadata: monbooru asks monloader to re-read a
-// post URL for its tags / commentary / notes (metadata only, no download) and
-// enrich the monbooru image it names. Returns 202 with the queued job id.
-func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
-	var body metadataRequest
+// enqueueImageJob validates one image-and-url body and queues it through
+// enqueue, answering 202 with the job id.
+func (h *Handler) enqueueImageJob(w http.ResponseWriter, r *http.Request, enqueue func(imageID int64, gallery, url string) int64) {
+	var body imageJobRequest
 	if err := decodeBody(w, r, &body); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
@@ -115,8 +129,21 @@ func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "url must be an http(s) URL")
 		return
 	}
-	id := h.queue.EnqueueMetadata(body.ImageID, body.Gallery, body.URL)
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id})
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": enqueue(body.ImageID, body.Gallery, body.URL)})
+}
+
+// metadata handles POST /api/v1/metadata: monbooru asks monloader to re-read a
+// post URL for its tags / commentary / notes (metadata only, no download) and
+// enrich the monbooru image it names. Returns 202 with the queued job id.
+func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
+	h.enqueueImageJob(w, r, h.queue.EnqueueMetadata)
+}
+
+// replace handles POST /api/v1/replace: monbooru asks monloader to download
+// the file a post URL serves and push it back into the monbooru image it
+// names, replacing its bytes in place. Returns 202 with the queued job id.
+func (h *Handler) replace(w http.ResponseWriter, r *http.Request) {
+	h.enqueueImageJob(w, r, h.queue.EnqueueReplace)
 }
 
 type lookupRequest struct {
@@ -156,6 +183,12 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 			// Refuse rather than queue a job doomed to fail, so monbooru's button
 			// can degrade in place if its capability check was stale.
 			apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr lookup backend is disabled")
+			return
+		}
+		if !h.ptr.CaughtUp() {
+			// A half-built index answers with a partial tag set that reads like
+			// the whole truth, so it answers nothing until it is current.
+			apiError(w, http.StatusConflict, "ptr_syncing", "the ptr index is not fully synced yet")
 			return
 		}
 	case queue.BackendAll:

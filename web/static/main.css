@@ -10,8 +10,7 @@
   --warning:    #ffaa00;
   --error:      #cc3333;
 
-  /* Tag category colors, identical to monbooru. The app renders no tags
-     itself; these exist for custom-CSS authors theming both apps at once. */
+  
   --cat-general:   #3d90e3;
   --cat-character: #00aa00;
   --cat-artist:    #cc0000;
@@ -48,8 +47,7 @@ button, input, select, textarea {
 }
 button { cursor: pointer; background: var(--bg-surface); }
 button:hover { border-color: var(--accent); }
-/* A button that acts on the page it sits in but reads as part of the sentence
-   around it (the ptr account card's "reveal key"). */
+
 button.linklike { background: none; border: none; padding: 0; color: var(--accent); }
 button.linklike:hover { text-decoration: underline; }
 button:disabled { cursor: not-allowed; color: var(--fg-dim); }
@@ -118,6 +116,7 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .add-row { display: flex; gap: 8px; align-items: stretch; }
 .add-row .search-input-wrap { flex: 1; }
 .add-row button { padding-left: 16px; padding-right: 16px; }
+.queue-actions { display: contents; }
 
 .search-input-wrap { position: relative; width: 100%; }
 .search-input-wrap::before {
@@ -141,18 +140,15 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .queue-table, .token-table { width: 100%; border-collapse: collapse; }
 .queue-table th, .queue-table td, .token-table th, .token-table td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; }
 .queue-table th, .token-table th { color: var(--fg-dim); font-weight: normal; }
-/* Fixed layout so a long url wraps inside its column instead of stretching the
-   table until the actions column is pushed off-screen. url takes the slack. */
+
 .queue-table { table-layout: fixed; }
-/* Wide enough for "interrupted", the longest status, plus the cell padding. */
 .queue-table th:nth-child(1) { width: 116px; }
 .queue-table th:nth-child(3) { width: 104px; }
 .queue-table th:nth-child(4) { width: 116px; }
 .queue-table th:nth-child(5) { width: 96px; }
 .queue-table th:nth-child(6) { width: 156px; }
 .queue-table th:nth-child(7) { width: 168px; }
-/* Contain each fixed-width cell so a long value truncates or wraps inside its
-   own column instead of spilling over the next one. */
+
 .queue-table .job-row td { overflow: hidden; }
 .queue-site, .queue-gallery { white-space: nowrap; text-overflow: ellipsis; }
 .queue-url { word-break: break-all; }
@@ -178,8 +174,6 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .job-phase { margin-left: 6px; }
 .job-phase-downloading, .job-phase-pushing { color: var(--accent); }
 .job-phase-finished { color: var(--fg-dim); }
-/* One item per line: subject | outcome (+note) | view, so the three columns
-   align down the whole list regardless of the job kind. */
 .job-items { padding: 4px 8px 8px 16px; font-size: 13px; display: grid; grid-template-columns: minmax(90px, 1fr) minmax(120px, 1.7fr) auto; column-gap: 16px; row-gap: 1px; align-items: baseline; }
 .item-row { display: contents; }
 .item-subj { color: var(--fg-dim); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 1px solid var(--border); padding: 2px 0 2px 12px; }
@@ -198,8 +192,7 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .st-partial, .st-interrupted { color: var(--warning); }
 .st-failed, .o-failed { color: var(--error); }
 .st-canceled { color: var(--fg-dim); }
-.o-duplicate, .o-enriched, .o-skipped_archive, .o-skipped_unsupported, .o-canceled, .o-merge { color: var(--fg-dim); }
-/* Item states before an outcome, in the accent the running job status uses. */
+.o-duplicate, .o-enriched, .o-replaced, .o-skipped_archive, .o-skipped_unsupported, .o-canceled, .o-merge { color: var(--fg-dim); }
 .o-pending, .o-downloaded, .o-uploaded { color: var(--accent); }
 .o-capped, .o-warn { color: var(--warning); }
 
@@ -234,14 +227,12 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .stats-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: normal; color: var(--fg-dim); }
 .stats-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: right; min-width: 7em; font-variant-numeric: tabular-nums; }
 .stats-table th.stats-d1 { padding-left: 24px; }
-/* Contribution rows hold text, not figures: align with the headers. */
 .contrib-table td { text-align: left; min-width: 0; }
 @media (max-width: 900px) { .stats-cols { grid-template-columns: 1fr; } }
 .field { margin-bottom: 8px; }
 .field label { display: block; color: var(--fg-dim); margin-bottom: 2px; }
 .field input[type=text], .field input[type=password], .field input[type=number], .field select { width: 100%; max-width: 460px; }
 .settings-section .field > label { color: var(--fg); }
-/* A label wrapping its own checkbox, so the two sit on one line. */
 .field label.checkbox-inline { display: flex; align-items: center; gap: 6px; }
 .downloads-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 28px; margin-bottom: 4px; }
 .downloads-grid .field { margin-bottom: 0; }
@@ -320,6 +311,10 @@ dialog p { margin-bottom: 10px; }
 .dot-checking { background: var(--warning); }
 .dot-rejected { background: var(--warning); }
 .dot-down { background: var(--error); }
+.dot-paused { background: transparent; border: 1px solid var(--fg-dim); }
+.conn-kill { cursor: pointer; border: 0; padding: 0; appearance: none; -webkit-appearance: none; }
+.conn-kill.dot-paused { border: 1px solid var(--fg-dim); }
+.conn-kill:hover, .conn-kill:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
 /* Login */
 .login-wrap { display: flex; justify-content: center; align-items: center; height: 100vh; background: var(--bg); }

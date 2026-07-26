@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/gdl"
 )
 
@@ -83,6 +84,12 @@ func (h *Handler) testSite(w http.ResponseWriter, r *http.Request) {
 		if decodeBody(w, r, &body) == nil {
 			probeURL = strings.TrimSpace(body.URL)
 		}
+	}
+	if probeURL != "" && !config.IsHTTPURL(probeURL) {
+		// The probe URL becomes a gallery-dl argument, where a leading dash
+		// would read as an option rather than a URL.
+		apiError(w, http.StatusBadRequest, "invalid_request", "url must be an http(s) URL")
+		return
 	}
 	if probeURL == "" {
 		probeURL = h.mapper.ExampleURL(h.extractors, name)

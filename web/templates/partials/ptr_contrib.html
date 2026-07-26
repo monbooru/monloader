@@ -1,5 +1,5 @@
 {{define "ptr_contrib"}}
-<section class="settings-section">
+<section id="ptr-contrib-card" class="settings-section"{{if .OOB}} hx-swap-oob="true"{{end}}{{if .SendRunning}} hx-get="/internal/ptr-contrib" hx-trigger="every 2s" hx-target="#ptr-contrib" hx-swap="innerHTML"{{end}}>
   <h2>contributions</h2>
   {{if .NoAccount}}
   <p class="field-hint">contributing needs a personal account - see the account card above.</p>

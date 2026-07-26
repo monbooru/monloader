@@ -111,15 +111,11 @@ func (s *Store) DeleteJobs(ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	placeholders := ""
 	args := make([]any, len(ids))
 	for i, id := range ids {
-		if i > 0 {
-			placeholders += ","
-		}
-		placeholders += "?"
 		args[i] = id
 	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	_, err := s.db.Exec(`DELETE FROM jobs WHERE id IN (`+placeholders+`)`, args...)
 	return err
 }

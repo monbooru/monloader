@@ -31,6 +31,9 @@ type Options struct {
 	Gallery  string
 	Folder   string
 	MaxItems int
+	// PageURL is the page a direct-file send came from; a directlink item
+	// records it as its source link instead of the bare file URL.
+	PageURL string
 	// Offset skips this many leading posts, so a continued capped search fetches
 	// the next window rather than re-resolving from the start.
 	Offset int
@@ -293,6 +296,14 @@ func (q *Queue) EnqueueLookup(imageID int64, gallery, backend, md5, sha256 strin
 	})
 }
 
+// EnqueueReplace queues an in-place file replacement: download the post url
+// names and push its file into monbooru image imageID, replacing its bytes.
+// Prioritized like a metadata refetch - it answers a person waiting on an
+// image page.
+func (q *Queue) EnqueueReplace(imageID int64, gallery, url string) int64 {
+	return q.Enqueue(url, Options{Kind: KindReplace, ImageID: imageID, Gallery: gallery, Priority: true})
+}
+
 // EnqueueHashImport queues a hash import: resolve the md5 to a post via the
 // lookup walk, then download and push it like a submitted single post.
 func (q *Queue) EnqueueHashImport(md5 string, opts Options) int64 {
@@ -415,6 +426,32 @@ func (q *Queue) Retry(id int64, force bool) error {
 	return nil
 }
 
+// RetrySeries re-queues every finished window of id's continue-series, in
+// window order so the re-run comes down the way the original did. The collapsed
+// queue row sums its windows, so an action offered on those counts has to reach
+// all of them; a window still queued or running is left to finish.
+func (q *Queue) RetrySeries(id int64, force bool) error {
+	q.mu.Lock()
+	src := q.index[id]
+	if src == nil {
+		q.mu.Unlock()
+		return ErrNotFound
+	}
+	root := src.seriesKey()
+	var ids []int64
+	for jid, j := range q.index {
+		if j.seriesKey() == root {
+			ids = append(ids, jid)
+		}
+	}
+	q.mu.Unlock()
+	slices.Sort(ids)
+	for _, jid := range ids {
+		_ = q.Retry(jid, force)
+	}
+	return nil
+}
+
 // Continue enqueues a follow-up job for the window after a capped job's, so the
 // next batch of a truncated search comes down without re-resolving the part
 // already fetched. It returns the new job id; the source must have been capped.
@@ -521,6 +558,12 @@ func (q *Queue) reconcileSeries(j *Job) {
 // imported items stay in the history; once every window has finished, a remove
 // drops the whole series.
 func (q *Queue) CancelSeries(id int64) error {
+	return q.cancelSeries(id, q.Cancel)
+}
+
+// cancelSeries walks id's series and stops each window through cancelOne, which
+// decides whether a window that never ran leaves a row behind.
+func (q *Queue) cancelSeries(id int64, cancelOne func(int64) error) error {
 	q.mu.Lock()
 	src := q.index[id]
 	if src == nil {
@@ -541,7 +584,7 @@ func (q *Queue) CancelSeries(id int64) error {
 	}
 	q.mu.Unlock()
 	for _, jid := range ids {
-		_ = q.Cancel(jid)
+		_ = cancelOne(jid)
 	}
 	return nil
 }
@@ -561,7 +604,33 @@ func (q *Queue) CancelLive(id int64) error {
 	case !live:
 		return ErrNotRunning
 	}
-	return q.CancelSeries(id)
+	return q.cancelSeries(id, q.cancelKeepingRow)
+}
+
+// cancelKeepingRow stops one live job and keeps its row: a running job is
+// signalled and finalizes itself, and one that never started settles as
+// canceled in the history instead of vanishing, so the URL that was submitted
+// stays visible and retriable. Cancel, which the API's DELETE answers with,
+// still drops it from tracking.
+func (q *Queue) cancelKeepingRow(id int64) error {
+	q.mu.Lock()
+	j := q.index[id]
+	if j == nil {
+		q.mu.Unlock()
+		return ErrNotFound
+	}
+	if cancel, ok := q.cancels[id]; ok {
+		cancel()
+		q.mu.Unlock()
+		return nil
+	}
+	q.removeFromPendingLocked(id)
+	evicted := q.pushFinishedLocked(j)
+	q.mu.Unlock()
+	q.settleDropped(j)
+	q.persist(j)
+	q.persistDelete(evicted)
+	return nil
 }
 
 // isLiveLocked reports whether the job is still queued or running, i.e. not yet

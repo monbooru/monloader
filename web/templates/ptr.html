@@ -23,22 +23,28 @@
 {{if eq .Status.State "disabled"}}
 <section class="settings-section">
   <h2>disabled</h2>
+  {{$label := "enable ptr sync"}}
+  {{if .HasIndex}}
+  {{$label = "resume ptr sync"}}
+  <p>The index is still on disk. Enabling picks the sync up where it stopped; deleting it is in <a href="/settings#ptr">settings</a>.</p>
+  {{else}}
   <p>Enabling downloads the repository's full tag history and keeps a local index (tens of GB).</p>
+  {{end}}
   <table class="stats-table">
     <tbody>
       <tr><th>repository</th><td>{{.Address}}</td></tr>
       <tr><th>data path</th><td>{{.DataPath}}</td></tr>
-      <tr><th>free space</th><td>{{if .FreeBytes}}{{humanBytes .FreeBytes}}{{else}}unknown{{end}}{{if .MinFreeGB}} (needs {{.MinFreeGB}} GB to start){{end}}</td></tr>
+      <tr><th>free space</th><td>{{if .FreeBytes}}{{humanBytes .FreeBytes}}{{else}}unknown{{end}}{{if and .MinFreeGB (not .HasIndex)}} (needs {{.MinFreeGB}} GB to start){{end}}</td></tr>
     </tbody>
   </table>
-  {{template "postbtn" dict "Action" "/ptr/enable" "CSRF" .CSRFToken "Label" "enable ptr sync"}}
+  {{template "postbtn" dict "Action" "/ptr/enable" "CSRF" .CSRFToken "Label" $label}}
 </section>
 {{else}}
 <section class="settings-section">
   <h2>status: <span class="ptr-state ptr-state-{{.Status.State}}">{{.Status.State}}</span></h2>
   {{if eq .Status.State "syncing"}}
   <p class="field-hint">The initial sync downloads the full tag history and takes days (weeks on an HDD).</p>
-  <p>update {{.Status.Progress.UpdateIndex}} / {{.Status.Progress.UpdateCount}} &middot; {{humanBytes .Status.Progress.DownloadedBytes}} downloaded{{if .Status.Progress.DownloadRate}} &middot; {{humanBytes .Status.Progress.DownloadRate}}/s network{{end}}{{if .Status.Progress.ProcessRate}} &middot; {{.Status.Progress.ProcessRate}} rows/s{{end}}</p>
+  <p>update {{.Status.Progress.UpdateIndex}}{{if .Status.Progress.UpdateCount}} / {{.Status.Progress.UpdateCount}}{{end}} &middot; {{humanBytes .Status.Progress.DownloadedBytes}} downloaded this session{{if .Status.Progress.DownloadRate}} &middot; {{humanBytes .Status.Progress.DownloadRate}}/s network{{end}}{{if .Status.Progress.ProcessRate}} &middot; {{.Status.Progress.ProcessRate}} rows/s{{end}}{{if .Status.Progress.LastAppliedAt}} &middot; last update applied {{humanAgo .Status.Progress.LastAppliedAt}}{{end}}</p>
   <div class="ptr-progress">
     <div class="ptr-bar"><div class="ptr-bar-fill" style="width:{{.Percent}}%"></div></div>
     <form method="POST" action="/ptr/pause"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><button type="submit">pause</button></form>

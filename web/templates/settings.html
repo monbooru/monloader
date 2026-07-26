@@ -119,10 +119,15 @@
   <section class="settings-section" id="ptr">
     <h2>ptr</h2>
     {{if eq .FlashSection "ptr"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
-    <p class="field-hint">Storage and repository settings for the Public Tag Repository index; the sync itself is driven from the <a href="/ptr">PTR page</a>. Changes apply on restart.</p>
+    <p class="field-hint">Storage and repository settings for the Public Tag Repository index; progress and the pause / resume controls are on the <a href="/ptr">PTR page</a>. The enabled box acts at once, the rest applies on restart.</p>
     <form method="POST" action="/settings/ptr" id="ptr-form">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="downloads-grid">
+        <div class="field">
+          <label>enabled</label>
+          <label class="checkbox-inline"><input type="checkbox" name="enabled" value="1"{{if .PTREnabled}} checked{{end}}> sync and answer sha256 lookups</label>
+          <span class="field-hint">unchecking stops the sync and keeps the index; the lookup answers again when you re-enable it</span>
+        </div>
         <div class="field">
           <label>data path</label>
           <input type="text" name="data_path" value="{{.Cfg.PTR.DataPath}}">
@@ -136,15 +141,8 @@
         <div class="field">
           <label>access key</label>
           <input type="password" name="access_key" placeholder="{{if .Cfg.PTR.AccessKey}}(set - leave blank to keep){{else}}(unset - uses the public read-only key){{end}}">
-          <span class="field-hint">a private repository key or the personal contribution account created from the <a href="/ptr">PTR page</a></span>
+          <span class="field-hint">a private repository key or the personal contribution account</span>
         </div>
-        {{if .Cfg.PTR.AccessKey}}
-        <div class="field">
-          <label>clear key</label>
-          <label class="checkbox-inline"><input type="checkbox" name="clear_access_key" value="1"> revert to the public read-only key on save</label>
-          <span class="field-hint">clearing forgets the personal account; there is no recovery without a backup of the key</span>
-        </div>
-        {{end}}
         <div class="field">
           <label>fetch sleep (s)</label>
           <input type="text" name="fetch_sleep" value="{{.Cfg.PTR.FetchSleep}}">
@@ -164,6 +162,13 @@
         <button type="submit" class="danger">delete ptr data</button>
         <span class="field-hint">removes the {{if .PTRDiskBytes}}{{humanBytes .PTRDiskBytes}} {{end}}index and disables the ptr lookup.</span>
       </form>
+      {{if .Cfg.PTR.AccessKey}}
+      <form method="POST" action="/settings/ptr/clear-key" hx-confirm="clear the ptr access key?" data-confirm-ok="clear key" data-confirm-danger="there is no recovery without a backup of the key.">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <button type="submit" class="danger">clear key</button>
+        <span class="field-hint">forgets the personal account and reverts to the public read-only key.</span>
+      </form>
+      {{end}}
     </div>
     <div class="section-actions">
       <button type="submit" form="ptr-form">save</button>

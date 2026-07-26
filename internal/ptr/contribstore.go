@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -193,15 +194,11 @@ func (s *ContribStore) ClaimIDs(ids []int64) ([]ContribItem, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	placeholders := ""
 	args := make([]any, len(ids))
 	for i, id := range ids {
-		if i > 0 {
-			placeholders += ","
-		}
-		placeholders += "?"
 		args[i] = id
 	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	return s.claimWhere(`id IN (`+placeholders+`) AND status IN ('staged', 'failed')`, args...)
 }
 
@@ -367,11 +364,15 @@ func (s *ContribStore) SetOutcome(id int64, outcome string) error {
 // janitor queue is invisible in the index, so without this the same
 // pair would re-stage forever.
 func (s *ContribStore) PendingLog(kind, tag, tag2 string) (bool, error) {
-	var n int
-	err := s.db.QueryRow(
+	return s.countPositive(
 		`SELECT COUNT(*) FROM contrib_log WHERE kind = ? AND tag = ? AND tag2 = ? AND outcome = ''`,
-		kind, tag, tag2,
-	).Scan(&n)
+		kind, tag, tag2)
+}
+
+// countPositive answers an existence question the store asks as a count.
+func (s *ContribStore) countPositive(query string, args ...any) (bool, error) {
+	var n int
+	err := s.db.QueryRow(query, args...).Scan(&n)
 	return n > 0, err
 }
 
@@ -379,13 +380,10 @@ func (s *ContribStore) PendingLog(kind, tag, tag2 string) (bool, error) {
 // (tag, hash) is staged or awaiting janitor review, so the preview can
 // disable the affordance rather than offer a duplicate.
 func (s *ContribStore) PendingMappingPetition(tag string, hash []byte) (bool, error) {
-	var n int
-	err := s.db.QueryRow(
+	return s.countPositive(
 		`SELECT (SELECT COUNT(*) FROM contrib_items WHERE kind = ? AND tag = ? AND hash = ?)
 		      + (SELECT COUNT(*) FROM contrib_log   WHERE kind = ? AND tag = ? AND hash = ? AND outcome = '')`,
-		ContribMappingPetition, tag, hash, ContribMappingPetition, tag, hash,
-	).Scan(&n)
-	return n > 0, err
+		ContribMappingPetition, tag, hash, ContribMappingPetition, tag, hash)
 }
 
 // MappingAddCommittedSince reports whether an add for (tag, hash) was
@@ -396,23 +394,17 @@ func (s *ContribStore) PendingMappingPetition(tag string, hash []byte) (bool, er
 // witness. Once coverage catches up the index takes over, so an add a
 // janitor later removed becomes re-addable.
 func (s *ContribStore) MappingAddCommittedSince(tag string, hash []byte, since int64) (bool, error) {
-	var n int
-	err := s.db.QueryRow(
+	return s.countPositive(
 		`SELECT COUNT(*) FROM contrib_log WHERE kind = ? AND tag = ? AND hash = ? AND committed_at > ?`,
-		ContribMappingAdd, tag, hash, since,
-	).Scan(&n)
-	return n > 0, err
+		ContribMappingAdd, tag, hash, since)
 }
 
 // UnsentByKindTag reports whether an identical item already waits in
 // the unsent set (for the preview's "unsent" verdict on mapping adds).
 func (s *ContribStore) UnsentByKindTag(kind, tag string, hash []byte) (bool, error) {
-	var n int
-	err := s.db.QueryRow(
+	return s.countPositive(
 		`SELECT COUNT(*) FROM contrib_items WHERE kind = ? AND tag = ? AND hash = ?`,
-		kind, tag, hash,
-	).Scan(&n)
-	return n > 0, err
+		kind, tag, hash)
 }
 
 func scanContribItems(rows *sql.Rows) ([]ContribItem, error) {
@@ -462,35 +454,52 @@ func (idx *Store) hashIDByHex(hashHex string) (uint64, bool, error) {
 // only add a redundant raw mapping. Comparing on the display view is
 // what the hydrus pipeline does.
 func (idx *Store) HashHasIdeal(hashHex, tag string) (bool, error) {
-	tagID, ok, err := idx.tagIDByName(tag)
-	if err != nil || !ok {
-		return false, err
-	}
-	wantIdeal, err := idx.resolveSibling(tagID)
-	if err != nil {
-		return false, err
-	}
+	has, err := idx.HashHasIdeals(hashHex, []string{tag})
+	return has[tag], err
+}
+
+// HashHasIdeals answers HashHasIdeal for a whole list against one hash.
+// The hash side - every raw mapping sibling-resolved, then the parent
+// closure over the result - depends only on the hash, so a caller
+// comparing a file's whole tag list derives it once here rather than
+// once per tag. A tag the index does not know is absent from the answer.
+func (idx *Store) HashHasIdeals(hashHex string, tags []string) (map[string]bool, error) {
+	has := make(map[string]bool, len(tags))
 	hashID, ok, err := idx.hashIDByHex(hashHex)
 	if err != nil || !ok {
-		return false, err
+		return has, err
 	}
 	tagIDs, err := idx.tagIDsForHash(hashID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	ideals := map[uint64]bool{}
 	for _, id := range tagIDs {
 		ideal, err := idx.resolveSibling(id)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		ideals[ideal] = true
 	}
 	displayed, err := idx.parentClosure(ideals)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	return displayed[wantIdeal], nil
+	for _, tag := range tags {
+		tagID, ok, err := idx.tagIDByName(tag)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		wantIdeal, err := idx.resolveSibling(tagID)
+		if err != nil {
+			return nil, err
+		}
+		has[tag] = displayed[wantIdeal]
+	}
+	return has, nil
 }
 
 // IdealTag resolves a raw tag spelling to its ideal form; ok=false when

@@ -91,6 +91,13 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
 		return
 	}
+	// The display-view side of the known check depends on the hash alone, so
+	// the whole submitted list is compared against one derivation of it.
+	displayed, err := h.ptr.HashHasIdeals(body.SHA256, contribPTRForms(body.Tags))
+	if err != nil {
+		apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
+		return
+	}
 	// carried holds the monbooru projection of every raw PTR tag the file
 	// already has, plus its pre-widening fold: rows monbooru stored before
 	// the charset widening keep the folded spelling (girls' -> girls_), and
@@ -129,11 +136,7 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		known, _, err := h.mappingAddKnown(body.SHA256, mapped.PTR, hashRaw, covered)
-		if err != nil {
-			apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
-			return
-		}
+		known, _ := h.mappingAddKnown(displayed[mapped.PTR], mapped.PTR, hashRaw, covered)
 		if known || carried[tag] {
 			entry.Status = "known"
 		} else {
@@ -230,6 +233,18 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 		resp.PTROnly = append(resp.PTROnly, contribPTROnly{Tag: mb, PTR: raw, Petitionable: petitionable})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// contribPTRForms lists the PTR spellings a submitted monbooru-form list
+// would send, skipping the ineligible ones.
+func contribPTRForms(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if mapped := mapping.ContribTagFor(tag); mapped.Eligible() {
+			out = append(out, mapped.PTR)
+		}
+	}
+	return out
 }
 
 // mustHex decodes a hash the regexp already validated.
@@ -335,8 +350,11 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 	results := make([]contribStageResult, 0, len(body.Items))
 	var accepted []int64
 	seen := map[int64]bool{}
+	// Coverage is a property of the index, not of an item, and reading it
+	// stats the index files behind the engine lock.
+	covered := h.ptr.Status().CoveredThrough
 	for _, item := range body.Items {
-		result, id := h.stageOne(store, item, body.Origin)
+		result, id := h.stageOne(store, item, body.Origin, covered)
 		if result.Result == "staged" && id != 0 {
 			// A row resolved twice in one request (the same item listed
 			// twice) is a duplicate; a row that already existed from an
@@ -361,7 +379,7 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 
 // stageOne validates and stages one item, returning its verdict and the
 // staged row id.
-func (h *Handler) stageOne(store *ptr.ContribStore, item contribStageItem, origin string) (contribStageResult, int64) {
+func (h *Handler) stageOne(store *ptr.ContribStore, item contribStageItem, origin string, covered int64) (contribStageResult, int64) {
 	res := contribStageResult{Kind: item.Kind}
 	fail := func(result, note string) (contribStageResult, int64) {
 		res.Result, res.Note = result, note
@@ -409,6 +427,37 @@ func (h *Handler) stageOne(store *ptr.ContribStore, item contribStageItem, origi
 		return stage(ptr.ContribItem{Kind: item.Kind, Tag: ra, Tag2: rb})
 	}
 
+	// A pair suggestion names a relation the server does not store yet; the two
+	// suggestion kinds differ only in which relation is checked, its noun, and
+	// how each end is labelled in a refusal.
+	stageRelation := func(current func(a, b string) (bool, error), noun, aLabel, bLabel, a, b string) (contribStageResult, int64) {
+		aMapped, bMapped := mapping.ContribTagFor(a), mapping.ContribTagFor(b)
+		if !aMapped.Eligible() {
+			return fail("ineligible", aLabel+": "+aMapped.Note)
+		}
+		if !bMapped.Eligible() {
+			return fail("ineligible", bLabel+": "+bMapped.Note)
+		}
+		_, _, cur, err := h.currentPetitionPair(current, a, b)
+		if err != nil {
+			return fail("ineligible", err.Error())
+		}
+		if cur {
+			return fail("already_known", "the PTR already has this "+noun)
+		}
+		reverse, err := current(bMapped.PTR, aMapped.PTR)
+		if err != nil {
+			return fail("ineligible", err.Error())
+		}
+		if reverse {
+			return fail("conflict", "the PTR holds this "+noun+" in the opposite direction")
+		}
+		if pending, err := store.PendingLog(item.Kind, aMapped.PTR, bMapped.PTR); err == nil && pending {
+			return fail("already_suggested", "already sent and awaiting janitor review")
+		}
+		return stage(ptr.ContribItem{Kind: item.Kind, Tag: aMapped.PTR, Tag2: bMapped.PTR})
+	}
+
 	switch item.Kind {
 	case ptr.ContribMappingAdd, ptr.ContribMappingPetition:
 		if !sha256HexRe.MatchString(item.SHA256) {
@@ -420,11 +469,11 @@ func (h *Handler) stageOne(store *ptr.ContribStore, item contribStageItem, origi
 			if !mapped.Eligible() {
 				return fail("ineligible", mapped.Note)
 			}
-			known, note, err := h.mappingAddKnown(item.SHA256, mapped.PTR, hash, h.ptr.Status().CoveredThrough)
+			displayed, err := h.ptr.HashHasIdeal(item.SHA256, mapped.PTR)
 			if err != nil {
 				return fail("ineligible", err.Error())
 			}
-			if known {
+			if known, note := h.mappingAddKnown(displayed, mapped.PTR, hash, covered); known {
 				return fail("already_known", note)
 			}
 			return stage(ptr.ContribItem{Kind: item.Kind, Tag: mapped.PTR, Hash: hash})
@@ -458,61 +507,13 @@ func (h *Handler) stageOne(store *ptr.ContribStore, item contribStageItem, origi
 		return stage(ptr.ContribItem{Kind: item.Kind, Tag: tag, Hash: hash})
 
 	case ptr.ContribSibling:
-		badMapped, goodMapped := mapping.ContribTagFor(item.Bad), mapping.ContribTagFor(item.Good)
-		if !badMapped.Eligible() {
-			return fail("ineligible", "bad: "+badMapped.Note)
-		}
-		if !goodMapped.Eligible() {
-			return fail("ineligible", "good: "+goodMapped.Note)
-		}
-		_, _, current, err := h.currentPetitionPair(h.ptr.SiblingCurrent, item.Bad, item.Good)
-		if err != nil {
-			return fail("ineligible", err.Error())
-		}
-		if current {
-			return fail("already_known", "the PTR already has this alias")
-		}
-		reverse, err := h.ptr.SiblingCurrent(goodMapped.PTR, badMapped.PTR)
-		if err != nil {
-			return fail("ineligible", err.Error())
-		}
-		if reverse {
-			return fail("conflict", "the PTR holds this alias in the opposite direction")
-		}
-		if pending, err := store.PendingLog(item.Kind, badMapped.PTR, goodMapped.PTR); err == nil && pending {
-			return fail("already_suggested", "already sent and awaiting janitor review")
-		}
-		return stage(ptr.ContribItem{Kind: item.Kind, Tag: badMapped.PTR, Tag2: goodMapped.PTR})
+		return stageRelation(h.ptr.SiblingCurrent, "alias", "bad", "good", item.Bad, item.Good)
 
 	case ptr.ContribSiblingPetition:
 		return stagePetition(h.ptr.SiblingCurrent, "alias", item.Bad, item.Good)
 
 	case ptr.ContribParent:
-		childMapped, parentMapped := mapping.ContribTagFor(item.Child), mapping.ContribTagFor(item.Parent)
-		if !childMapped.Eligible() {
-			return fail("ineligible", "child: "+childMapped.Note)
-		}
-		if !parentMapped.Eligible() {
-			return fail("ineligible", "parent: "+parentMapped.Note)
-		}
-		_, _, current, err := h.currentPetitionPair(h.ptr.ParentCurrent, item.Child, item.Parent)
-		if err != nil {
-			return fail("ineligible", err.Error())
-		}
-		if current {
-			return fail("already_known", "the PTR already has this implication")
-		}
-		reverse, err := h.ptr.ParentCurrent(parentMapped.PTR, childMapped.PTR)
-		if err != nil {
-			return fail("ineligible", err.Error())
-		}
-		if reverse {
-			return fail("conflict", "the PTR holds this implication in the opposite direction")
-		}
-		if pending, err := store.PendingLog(item.Kind, childMapped.PTR, parentMapped.PTR); err == nil && pending {
-			return fail("already_suggested", "already sent and awaiting janitor review")
-		}
-		return stage(ptr.ContribItem{Kind: item.Kind, Tag: childMapped.PTR, Tag2: parentMapped.PTR})
+		return stageRelation(h.ptr.ParentCurrent, "implication", "child", "parent", item.Child, item.Parent)
 
 	case ptr.ContribParentPetition:
 		return stagePetition(h.ptr.ParentCurrent, "implication", item.Child, item.Parent)
@@ -521,23 +522,19 @@ func (h *Handler) stageOne(store *ptr.ContribStore, item contribStageItem, origi
 }
 
 // mappingAddKnown reports whether the PTR already effectively carries the
-// tag for the hash: present in the synced display view, or committed as an
-// add that has not yet replayed into the index. The note names which, for
-// the stage verdict; the preview ignores it.
-func (h *Handler) mappingAddKnown(sha, ptrTag string, hash []byte, covered int64) (bool, string, error) {
-	known, err := h.ptr.HashHasIdeal(sha, ptrTag)
-	if err != nil {
-		return false, "", err
-	}
-	if known {
-		return true, "the PTR already has this tag for the file", nil
+// tag for the hash: displayed says whether the synced display view has it,
+// and this adds the sends committed too recently to have replayed into the
+// index. The note names which, for the stage verdict; the preview ignores it.
+func (h *Handler) mappingAddKnown(displayed bool, ptrTag string, hash []byte, covered int64) (bool, string) {
+	if displayed {
+		return true, "the PTR already has this tag for the file"
 	}
 	if store := h.ptr.Contrib(); store != nil {
 		if committed, err := store.MappingAddCommittedSince(ptrTag, hash, covered); err == nil && committed {
-			return true, "sent earlier and not yet in the synced index", nil
+			return true, "sent earlier and not yet in the synced index"
 		}
 	}
-	return false, "", nil
+	return false, ""
 }
 
 // currentPetitionPair finds the raw spellings of a pair petition that the
@@ -777,8 +774,6 @@ type ContribRefusal struct {
 	Code   string
 	Msg    string
 }
-
-func (e *ContribRefusal) Error() string { return e.Msg }
 
 // RescindCommittedAdd stages the fixed-reason removal petition for one
 // committed mapping add and stamps the ledger row, returning the staged

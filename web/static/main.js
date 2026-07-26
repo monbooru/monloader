@@ -69,15 +69,16 @@ document.body.addEventListener("htmx:afterSwap", function (e) {
 
 // Reflect monbooru connectivity into the add forms. The footer light polls
 // /internal/monbooru-status and swaps its live state onto data-conn; when
-// monbooru is unreachable, unpaired, or rejecting the token, reveal the top
-// banner and block URL submission (a queued download could only fail at the
-// push step). The transient "checking" state leaves the server-rendered state
-// in place so the banner does not flash.
+// monbooru is unreachable, unpaired, rejecting the token, or the operator has
+// paused the link from the light, reveal the top banner and block URL
+// submission (a queued download could only fail at the push step). The
+// transient "checking" state leaves the server-rendered state in place so the
+// banner does not flash.
 function applyMonbooruState(conn) {
-  if (conn !== "down" && conn !== "ok" && conn !== "rejected" && conn !== "unpaired") {
+  if (conn !== "down" && conn !== "ok" && conn !== "rejected" && conn !== "unpaired" && conn !== "paused") {
     return;
   }
-  var blocked = conn === "down" || conn === "rejected" || conn === "unpaired";
+  var blocked = conn !== "ok";
   var banner = document.getElementById("monbooru-banner");
   if (banner) {
     banner.hidden = !blocked;
@@ -85,7 +86,14 @@ function applyMonbooruState(conn) {
     if (msg && blocked) {
       msg.textContent = conn === "rejected" ? "monbooru rejected the api token"
         : conn === "unpaired" ? "monbooru is not paired"
+        : conn === "paused" ? "the monbooru link is paused - downloads are disabled until you resume it from the footer light"
         : "monbooru is unreachable";
+    }
+    // A paused link is the operator's own doing, so it points back at the
+    // light rather than at the connection settings.
+    var fix = document.getElementById("monbooru-banner-fix");
+    if (fix) {
+      fix.hidden = conn === "paused";
     }
   }
   document.querySelectorAll(".needs-monbooru").forEach(function (el) {

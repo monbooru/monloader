@@ -1,5 +1,36 @@
 # Changelog
 
+## [v1.6.0] - 2026-07-26
+### Added
+- Replace jobs download a post's file and push it over an existing monbooru image.
+- API enqueues can pass a `page_url` recorded as a direct file link's source.
+- Click the footer light to pause the monbooru link; new URLs are refused until resumed.
+- PTR sync can be turned off from Settings and resumed later without deleting the index.
+- The PTR page shows when the last update was applied.
+- Docs include a link to download a pre-synced PTR database. ([#17](https://github.com/monbooru/monloader/issues/17))
+
+### Changed
+- PTR lookups wait for a caught-up index instead of answering a partial tag set.
+- The queue's clear and cancel-pending buttons show only when they have work to act on.
+- The PTR free-space floor now defaults to 70 GB.
+- Bundled gallery-dl updated to 1.32.8.
+
+### Fixed
+- Force download on a collapsed search re-fetches the whole series, not just the newest window.
+- Cancelling a job that never started keeps a canceled row instead of deleting it.
+- A rejected raw gallery-dl config returns for editing instead of being wiped.
+- Cleared or malformed download settings are refused instead of reporting saved over the old values.
+- The contributions card refreshes after account creation and while a send is in flight.
+- A rebuilt PTR index reads as provisional again until its first sync catches up.
+- Booru lookups and metadata refetches link their queue row at the exact image they enriched.
+- The site probe rejects non-http(s) URLs instead of passing them to gallery-dl.
+- Contribution previews no longer repeat hundreds of index queries per submitted tag.
+- A stranded pairing attempt can be canceled or reset from Settings.
+- A cancel landing mid-resolve or mid-enrich labels the item canceled instead of failed.
+- PTR sync progress resumes from the cursor after a restart instead of restarting at zero. ([#7](https://github.com/monbooru/monloader/issues/7))
+- Sites without a profile record the extractor's permalink as the pushed source.
+- A similarity match records the post's md5, so later hash lookups find the image.
+
 ## [v1.5.0] - 2026-07-21
 ### Added
 - Contribute tags, aliases, and implications back to the hydrus PTR from monbooru. ([#11](https://github.com/monbooru/monloader/issues/11))

@@ -20,11 +20,7 @@ import (
 // into the monbooru image the job targets. The job carries one item so the
 // queue shows a row, like a metadata refetch.
 func (p *Processor) processLookup(ctx context.Context, job, snap *queue.Job) error {
-	// Carry the image's sha256 onto the item so its queue "view" link resolves
-	// through monbooru's /i/<sha256> permalink, which finds the image in any
-	// gallery. A bare /images/<id> would open whichever image holds that id in
-	// the active gallery - the wrong one when the lookup targeted another.
-	job.SetItems([]queue.Item{{Status: queue.ItemPending, SHA256: snap.SHA256}})
+	job.SetItems([]queue.Item{p.enrichItem(ctx, snap, "")})
 	switch snap.Backend {
 	case queue.BackendBooru:
 		return p.lookupBooru(ctx, job, snap)
@@ -52,19 +48,9 @@ const ptrTrailName = "Public Tag Repository"
 // without a source URL.
 func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	var trail []string
-	var ptrTags []string
-	ptrHit := false
-	if p.ptr != nil && p.ptr.Enabled() && snap.SHA256 != "" {
-		rawTags, ok, err := p.ptr.TagsForHash(snap.SHA256)
-		switch {
-		case err != nil:
-			trail = append(trail, ptrTrailName+": "+err.Error())
-		case !ok:
-			trail = append(trail, ptrTrailName+": no match")
-		default:
-			ptrTags = mapping.MapPTRTags(rawTags)
-			ptrHit = true
-		}
+	ptrTags, ptrHit, ptrMiss := p.ptrTagsFor(snap.SHA256)
+	if ptrMiss != "" {
+		trail = append(trail, ptrMiss)
 	}
 	meta, hit, chainTrail, err := p.lookupChain(ctx, snap)
 	if err != nil {
@@ -136,6 +122,28 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	return nil
 }
 
+// ptrTagsFor asks the local index for a sha256's tags on a backend=all job,
+// returning the mapped tags and the trail entry naming why nothing came back.
+// A backend that is off answers neither, since the job never promised one; one
+// still syncing says so, because a partial index answers a partial tag set
+// that reads like the whole truth.
+func (p *Processor) ptrTagsFor(sha256 string) (tags []string, hit bool, miss string) {
+	if p.ptr == nil || !p.ptr.Enabled() || sha256 == "" {
+		return nil, false, ""
+	}
+	if !p.ptr.CaughtUp() {
+		return nil, false, ptrTrailName + ": skipped, still syncing"
+	}
+	rawTags, ok, err := p.ptr.TagsForHash(sha256)
+	switch {
+	case err != nil:
+		return nil, false, ptrTrailName + ": " + err.Error()
+	case !ok:
+		return nil, false, ptrTrailName + ": no match"
+	}
+	return mapping.MapPTRTags(rawTags), true, ""
+}
+
 // enrichAllOnline runs the online half of a backend=all lookup - the exact or
 // similarity post's enrich, or a source-only record when only a candidate URL
 // resolved - labelling the row but leaving the item's terminal state to the
@@ -150,7 +158,8 @@ func (p *Processor) enrichAllOnline(ctx context.Context, job, snap *queue.Job, m
 		site := kwdict.String(meta, "category")
 		job.SetSite(site)
 		url := p.mapper.PostURL(meta)
-		res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, p.mapEnrichPayload(meta, url, snap.MD5, sim))
+		res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery,
+			p.mapEnrichPayload(meta, url, claimedMD5(meta, snap.MD5, sim), sim))
 		return res, url, site, err
 	}
 	res, err := p.sourceOnlyEnrich(ctx, job, snap, hit)
@@ -223,8 +232,24 @@ func (p *Processor) lookupBooru(ctx context.Context, job, snap *queue.Job) error
 		job.UpdateItem(0, func(it *queue.Item) { it.PostID = hit.note })
 		sim = hit.score
 	}
-	p.enrichFromMeta(ctx, job, snap, meta, p.mapper.PostURL(meta), snap.MD5, sim)
+	p.enrichFromMeta(ctx, job, snap, meta, p.mapper.PostURL(meta), claimedMD5(meta, snap.MD5, sim), sim)
 	return nil
+}
+
+// claimedMD5 picks the md5 an enrich records on the origin: the matched
+// post's own kwdict claim. A similarity hit's file differs from the local
+// one by design, so passing the query hash would record the wrong side of
+// that comparison. An exact hit whose kwdict lacks the field falls back to
+// the query hash - equal by construction, since the post was found by
+// searching it.
+func claimedMD5(meta map[string]any, queryMD5 string, sim float64) string {
+	if md5 := kwdict.String(meta, "md5"); md5 != "" {
+		return md5
+	}
+	if sim == 0 {
+		return queryMD5
+	}
+	return ""
 }
 
 // enrichSourceOnly records a similarity candidate as the image's source when
@@ -233,6 +258,9 @@ func (p *Processor) lookupBooru(ctx context.Context, job, snap *queue.Job) error
 func (p *Processor) enrichSourceOnly(ctx context.Context, job, snap *queue.Job, hit *simHit) {
 	res, err := p.sourceOnlyEnrich(ctx, job, snap, hit)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		failItem(job, 0, errorCode(err), err.Error())
 		return
 	}
@@ -253,6 +281,11 @@ func missError(trail []string) error {
 func (p *Processor) lookupPTR(ctx context.Context, job, snap *queue.Job) error {
 	if p.ptr == nil || !p.ptr.Enabled() {
 		err := &queue.CodedError{Code: queue.ErrCodePTRUnavailable, Msg: "the ptr lookup backend is not available"}
+		p.failEnrichFetch(ctx, job, snap, err)
+		return nil
+	}
+	if !p.ptr.CaughtUp() {
+		err := &queue.CodedError{Code: queue.ErrCodePTRSyncing, Msg: "the ptr index is not fully synced yet"}
 		p.failEnrichFetch(ctx, job, snap, err)
 		return nil
 	}
@@ -288,11 +321,7 @@ func (p *Processor) processHashImport(ctx context.Context, job, snap *queue.Job)
 		err = missError(trail)
 	}
 	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		job.Fail(errorCode(err), err.Error(), time.Now())
-		return err
+		return abortJob(ctx, job, err)
 	}
 	postURL := p.mapper.PostURL(meta)
 	if postURL == "" {

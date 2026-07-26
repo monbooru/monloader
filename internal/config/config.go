@@ -61,6 +61,20 @@ type MonbooruConfig struct {
 	// public one.
 	WebURL         string `toml:"web_url"`
 	DefaultGallery string `toml:"default_gallery"`
+	// Paused holds the link from the footer light's kill switch: the
+	// connectivity probe stops and no new download is accepted, while the
+	// pairing stays on disk so resuming needs no re-pair.
+	Paused bool `toml:"paused,omitempty"`
+}
+
+// WebBase is the browser-facing monbooru base for a link: WebURL when set,
+// else the API URL, right-trimmed of "/".
+func (m MonbooruConfig) WebBase() string {
+	base := m.WebURL
+	if base == "" {
+		base = m.APIURL
+	}
+	return strings.TrimRight(base, "/")
 }
 
 type DownloaderConfig struct {
@@ -379,7 +393,7 @@ func Default() *Config {
 			DataPath:    "/ptr",
 			Address:     "https://ptr.hydrus.network:45871",
 			FetchSleep:  1.0,
-			MinFreeGB:   80,
+			MinFreeGB:   70,
 			CommitSleep: 1.0,
 		},
 		Lookup: LookupConfig{

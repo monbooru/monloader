@@ -65,7 +65,6 @@ CREATE INDEX IF NOT EXISTS siblings_by_good ON siblings(good_tag_id);
 type Store struct {
 	db     *sql.DB
 	replay *sql.DB
-	path   string
 }
 
 // Counts is the row census the status endpoint and the ptr page show.
@@ -151,7 +150,7 @@ func OpenStore(dataPath string) (*Store, error) {
 	}
 	replay.SetMaxOpenConns(1)
 	replay.SetConnMaxIdleTime(idleConnWindow)
-	s := &Store{db: db, replay: replay, path: path}
+	s := &Store{db: db, replay: replay}
 	if _, err := db.Exec(schema); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("creating ptr schema: %w", err)
@@ -246,9 +245,6 @@ func (s *Store) Close() error {
 	return err
 }
 
-// Path is the index file path.
-func (s *Store) Path() string { return s.path }
-
 // Cursor returns the highest fully processed update index, and whether any has
 // been processed yet.
 func (s *Store) Cursor() (uint64, bool, error) {
@@ -333,8 +329,10 @@ func (s *Store) SeedBlobsApplied(n uint64) error {
 // mappings counts advance by insert/delete deltas (re-counting those tables
 // is what used to stall large syncs); the small tables are re-counted
 // in-transaction when touched, which keeps the sibling upsert exact. It
-// returns the new census and how many rows the entry carried.
-func (s *Store) Replay(index uint64, coveredThrough int64, blobs [][]byte) (c Counts, rows int64, err error) {
+// returns the new census and how many rows the entry carried. applied, when
+// non-nil, is called after each blob's rows land, so the caller can show
+// progress inside a long transaction.
+func (s *Store) Replay(index uint64, coveredThrough int64, blobs [][]byte, applied func()) (c Counts, rows int64, err error) {
 	tx, err := s.replay.Begin()
 	if err != nil {
 		return c, rows, err
@@ -372,6 +370,9 @@ func (s *Store) Replay(index uint64, coveredThrough int64, blobs [][]byte) (c Co
 		c.Hashes += hashDelta
 		rows += up.Rows()
 		touchedTags = touchedTags || len(up.Definitions.Tags) > 0
+		if applied != nil {
+			applied()
+		}
 	}
 	for _, raw := range blobs {
 		var kind int
@@ -393,6 +394,9 @@ func (s *Store) Replay(index uint64, coveredThrough int64, blobs [][]byte) (c Co
 		rows += up.Rows()
 		touchedSiblings = touchedSiblings || len(up.Content.SiblingsAdd)+len(up.Content.SiblingsDel) > 0
 		touchedParents = touchedParents || len(up.Content.ParentsAdd)+len(up.Content.ParentsDel) > 0
+		if applied != nil {
+			applied()
+		}
 	}
 	for _, rc := range []struct {
 		touched bool
@@ -420,19 +424,19 @@ func (s *Store) Replay(index uint64, coveredThrough int64, blobs [][]byte) (c Co
 	if err = upsertSync(tx, "cursor", strconv.FormatUint(index, 10)); err != nil {
 		return c, rows, err
 	}
-	var applied uint64
+	var blobsApplied uint64
 	var v string
 	switch err = tx.QueryRow(`SELECT value FROM sync WHERE key=?`, blobsKey).Scan(&v); err {
 	case sql.ErrNoRows:
 		err = nil
 	case nil:
-		if applied, err = strconv.ParseUint(v, 10, 64); err != nil {
+		if blobsApplied, err = strconv.ParseUint(v, 10, 64); err != nil {
 			return c, rows, err
 		}
 	default:
 		return c, rows, err
 	}
-	if err = upsertSync(tx, blobsKey, strconv.FormatUint(applied+uint64(len(blobs)), 10)); err != nil {
+	if err = upsertSync(tx, blobsKey, strconv.FormatUint(blobsApplied+uint64(len(blobs)), 10)); err != nil {
 		return c, rows, err
 	}
 	if coveredThrough > 0 {

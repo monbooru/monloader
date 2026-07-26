@@ -150,6 +150,32 @@ func transportError(ctx context.Context, err error) *queue.CodedError {
 	return &queue.CodedError{Code: queue.ErrCodeMonbooruUnreachable, Msg: err.Error()}
 }
 
+// postMultipart sends a prepared multipart body and returns the response with
+// its body read. It keeps the two codings the byte-push paths distinguish: a
+// request-build or oversize-body failure is monbooru refusing the push, while
+// no response at all goes through transportError, so a canceled job does not
+// read as a connectivity failure. The generic do() cannot stand in without
+// collapsing the two.
+func (c *Client) postMultipart(ctx context.Context, endpoint, contentType string, body io.Reader) (*http.Response, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body)
+	if err != nil {
+		return nil, nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: err.Error()}
+	}
+	req.Header.Set("Content-Type", contentType)
+	c.authHeader(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, nil, transportError(ctx, err)
+	}
+	defer resp.Body.Close()
+	respBody, err := readCappedBody(resp.Body)
+	if err != nil {
+		return nil, nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: err.Error()}
+	}
+	return resp, respBody, nil
+}
+
 // PushImageFile streams a file plus mapped metadata to
 // POST /api/v1/images?gallery=<name>, hashing it in a streaming pass and writing
 // the multipart body through an io.Pipe so the file is never buffered whole in
@@ -184,6 +210,83 @@ func (c *Client) PushImageFile(ctx context.Context, path string, meta PushMeta, 
 	return res, nil
 }
 
+// ReplaceImageFile streams a downloaded post file plus mapped metadata to
+// POST /api/v1/images/{id}/file - the in-place byte replacement of an image
+// monbooru already holds. Same streaming multipart and hashing pass as
+// PushImageFile; the classification differs: 200 -> replaced (monbooru
+// answers replaced=false when the local file already matched, still a
+// success), 409 -> the already_exists / wrong_type refusals passed through
+// as coded errors.
+func (c *Client) ReplaceImageFile(ctx context.Context, imageID int64, path string, meta PushMeta, gallery string) (*Result, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+	}
+	pr, pw := io.Pipe()
+	w := multipart.NewWriter(pw)
+	contentType := w.FormDataContentType()
+	h := sha256.New()
+	go func() {
+		defer f.Close()
+		pw.CloseWithError(streamFileMultipart(w, f, meta, h))
+	}()
+	res, err := c.sendReplace(ctx, c.imageEndpoint(imageID, "file", gallery), contentType, pr, imageID)
+	if err != nil {
+		pr.CloseWithError(err)
+		return res, err
+	}
+	res.SHA256 = hex.EncodeToString(h.Sum(nil))
+	return res, nil
+}
+
+// sendReplace posts a prepared replace body and classifies the response.
+// A 409 carries monbooru's coded refusal (already_exists, wrong_type)
+// through as-is; monbooru has already recorded the richer story on its
+// fetch status.
+func (c *Client) sendReplace(ctx context.Context, endpoint, contentType string, body io.Reader, imageID int64) (*Result, error) {
+	resp, respBody, err := c.postMultipart(ctx, endpoint, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return &Result{Outcome: queue.OutcomeReplaced, MonbooruID: imageID, MergeNote: replaceNote(respBody)}, nil
+	case http.StatusConflict:
+		code := apiErrCode(respBody)
+		if code != queue.ErrCodeAlreadyExists && code != queue.ErrCodeWrongType {
+			code = queue.ErrCodeMonbooruRejected
+		}
+		return nil, &queue.CodedError{Code: code, Msg: apiErrMessage(respBody, resp.Status)}
+	case http.StatusRequestEntityTooLarge:
+		return nil, &queue.CodedError{Code: queue.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}
+	default:
+		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: apiErrMessage(respBody, resp.Status)}
+	}
+}
+
+// replaceNote renders a replace 200 for the queue row: the merge note, led
+// by "file already matched" when monbooru swapped nothing.
+func replaceNote(data []byte) string {
+	var env struct {
+		Replaced bool            `json:"replaced"`
+		Merge    json.RawMessage `json:"merge"`
+	}
+	if json.Unmarshal(data, &env) != nil {
+		return ""
+	}
+	note := ""
+	if len(env.Merge) > 0 {
+		note = mergeNote(env.Merge)
+	}
+	if !env.Replaced {
+		if note == "" {
+			return "file already matched"
+		}
+		return "file already matched; " + note
+	}
+	return note
+}
+
 // EnrichPayload is the metadata-only body POSTed to the enrich endpoint - a
 // push with no file, used to fold a refetched source's tags, commentary, and
 // notes into an image monbooru already holds.
@@ -206,10 +309,6 @@ type EnrichPayload struct {
 // hash_mismatch (the post no longer serves the same file, so nothing changed);
 // any other non-2xx -> rejected.
 func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string, payload EnrichPayload) (*Result, error) {
-	endpoint := c.base() + "/api/v1/images/" + strconv.FormatInt(imageID, 10) + "/enrich"
-	if gallery != "" {
-		endpoint += "?gallery=" + url.QueryEscape(gallery)
-	}
 	payload.Source = trimToLen(payload.Source, maxSourceLen)
 	payload.PostID = trimToLen(payload.PostID, maxPostIDLen)
 	payload.URL = trimToLen(payload.URL, maxURLLen)
@@ -220,7 +319,8 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 	if err != nil {
 		return nil, &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: err.Error()}
 	}
-	resp, respBody, err := c.do(ctx, http.MethodPost, endpoint, "application/json", bytes.NewReader(buf), c.token())
+	resp, respBody, err := c.do(ctx, http.MethodPost, c.imageEndpoint(imageID, "enrich", gallery),
+		"application/json", bytes.NewReader(buf), c.token())
 	if err != nil {
 		return nil, transportError(ctx, err)
 	}
@@ -250,15 +350,12 @@ func enrichMergeNote(data []byte) string {
 // instead of spinning to its cap. Best-effort and advisory: the queue row holds
 // the authoritative result, so a report monbooru can't accept is not fatal.
 func (c *Client) ReportFetchOutcome(ctx context.Context, imageID int64, gallery, state, message string) error {
-	endpoint := c.base() + "/api/v1/images/" + strconv.FormatInt(imageID, 10) + "/fetch-status"
-	if gallery != "" {
-		endpoint += "?gallery=" + url.QueryEscape(gallery)
-	}
 	buf, err := json.Marshal(map[string]string{"state": state, "message": message})
 	if err != nil {
 		return err
 	}
-	resp, _, err := c.do(ctx, http.MethodPost, endpoint, "application/json", bytes.NewReader(buf), c.token())
+	resp, _, err := c.do(ctx, http.MethodPost, c.imageEndpoint(imageID, "fetch-status", gallery),
+		"application/json", bytes.NewReader(buf), c.token())
 	if err != nil {
 		return err
 	}
@@ -272,11 +369,7 @@ func (c *Client) ReportFetchOutcome(ctx context.Context, imageID int64, gallery,
 // bytes a similarity lookup uploads, so the original never leaves the LAN. A
 // thumbnail is a few KB, comfortably inside do()'s bounded body read.
 func (c *Client) FetchThumbnail(ctx context.Context, imageID int64, gallery string) ([]byte, error) {
-	endpoint := c.base() + "/api/v1/images/" + strconv.FormatInt(imageID, 10) + "/thumbnail"
-	if gallery != "" {
-		endpoint += "?gallery=" + url.QueryEscape(gallery)
-	}
-	resp, body, err := c.do(ctx, http.MethodGet, endpoint, "", nil, c.token())
+	resp, body, err := c.do(ctx, http.MethodGet, c.imageEndpoint(imageID, "thumbnail", gallery), "", nil, c.token())
 	if err != nil {
 		return nil, transportError(ctx, err)
 	}
@@ -286,13 +379,44 @@ func (c *Client) FetchThumbnail(ctx context.Context, imageID int64, gallery stri
 	return body, nil
 }
 
+// ImageSHA256 reads an image's digest. The queue links an enriched item through
+// monbooru's /i/<sha256> permalink, which resolves in whichever gallery holds
+// the image, where /images/<id> would open the active gallery's image of that id.
+func (c *Client) ImageSHA256(ctx context.Context, imageID int64, gallery string) (string, error) {
+	endpoint := withGallery(c.base()+"/api/v1/images/"+strconv.FormatInt(imageID, 10), gallery)
+	resp, body, err := c.do(ctx, http.MethodGet, endpoint, "", nil, c.token())
+	if err != nil {
+		return "", transportError(ctx, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", rejected(body, resp.Status)
+	}
+	var img struct {
+		SHA256 string `json:"sha256"`
+	}
+	if err := json.Unmarshal(body, &img); err != nil {
+		return "", err
+	}
+	return img.SHA256, nil
+}
+
 // imagesEndpoint is the push URL with the optional gallery selector.
 func (c *Client) imagesEndpoint(gallery string) string {
-	endpoint := c.base() + "/api/v1/images"
-	if gallery != "" {
-		endpoint += "?gallery=" + url.QueryEscape(gallery)
+	return withGallery(c.base()+"/api/v1/images", gallery)
+}
+
+// imageEndpoint is one image's sub-resource URL with the optional gallery
+// selector.
+func (c *Client) imageEndpoint(imageID int64, suffix, gallery string) string {
+	return withGallery(c.base()+"/api/v1/images/"+strconv.FormatInt(imageID, 10)+"/"+suffix, gallery)
+}
+
+// withGallery appends the gallery selector when one is named.
+func withGallery(endpoint, gallery string) string {
+	if gallery == "" {
+		return endpoint
 	}
-	return endpoint
+	return endpoint + "?gallery=" + url.QueryEscape(gallery)
 }
 
 // sendPush posts a prepared multipart body and classifies the response: 201 ->
@@ -301,23 +425,10 @@ func (c *Client) imagesEndpoint(gallery string) string {
 // -> monbooru_rejected. The success body is polymorphic (a bare image or an
 // envelope); the id and any tag warnings are read from whichever arrives.
 func (c *Client) sendPush(ctx context.Context, endpoint, contentType string, body io.Reader) (*Result, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body)
+	resp, respBody, err := c.postMultipart(ctx, endpoint, contentType, body)
 	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: err.Error()}
+		return nil, err
 	}
-	req.Header.Set("Content-Type", contentType)
-	c.authHeader(req)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, transportError(ctx, err)
-	}
-	defer resp.Body.Close()
-	respBody, err := readCappedBody(resp.Body)
-	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: err.Error()}
-	}
-
 	switch resp.StatusCode {
 	case http.StatusCreated:
 		id, warnings, _ := parseImageResult(respBody)
@@ -368,15 +479,15 @@ const (
 	maxOriginalLen   = 2048
 )
 
-// trimToLen caps s to max bytes without splitting a multibyte rune.
-func trimToLen(s string, max int) string {
-	if len(s) <= max {
+// trimToLen caps s to limit bytes without splitting a multibyte rune.
+func trimToLen(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
-	for max > 0 && !utf8.RuneStart(s[max]) {
-		max--
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
 	}
-	return s[:max]
+	return s[:limit]
 }
 
 // writeMetaFields writes the non-file form fields, omitting empty optionals so
@@ -490,6 +601,18 @@ func apiErrMessage(body []byte, status string) string {
 	return status
 }
 
+// apiErrCode reads the machine code off a monbooru error envelope; empty
+// when the body isn't one.
+func apiErrCode(body []byte) string {
+	var e struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(body, &e) == nil {
+		return e.Code
+	}
+	return ""
+}
+
 // ListGalleries reads GET /api/v1/galleries for the settings dropdown.
 func (c *Client) ListGalleries(ctx context.Context) ([]Gallery, error) {
 	resp, body, err := c.do(ctx, http.MethodGet, c.base()+"/api/v1/galleries", "", nil, c.token())
@@ -555,11 +678,16 @@ func (c *Client) PairRequest(ctx context.Context, peerToken, selfURL string, sco
 }
 
 // PairStatus polls a pairing request. On approval it returns the issued token
-// once; otherwise the token is empty and status carries the state.
+// once; otherwise the token is empty and status carries the state. A 404 means
+// monbooru no longer holds the request (restart or TTL sweep) and comes back as
+// status "not_found" rather than an error, so the caller can stop waiting.
 func (c *Client) PairStatus(ctx context.Context, requestID string) (status, token string, err error) {
 	resp, body, err := c.do(ctx, http.MethodGet, c.base()+"/api/v1/pair/status?id="+url.QueryEscape(requestID), "", nil, "")
 	if err != nil {
 		return "", "", err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return "not_found", "", nil
 	}
 	var out struct {
 		Status string `json:"status"`

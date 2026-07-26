@@ -106,13 +106,15 @@ func (h *Handler) endpoints() []endpoint {
 						{Name: "gallery", Type: "string", Description: "Target monbooru gallery; overrides the per-source default"},
 						{Name: "folder", Type: "string", Description: "Destination subfolder under the gallery"},
 						{Name: "max_items", Type: "integer", Minimum: 1, Description: "Cap on posts fetched this run (--range 1-N); only lowers the cap, never above the server's max_items_per_job. A pool is exempt and always fetched whole"},
+						{Name: "page_url", Type: "string", Description: "The page a direct-file send came from; a directlink job records it as the item's source link instead of the bare file URL"},
 					}},
 				},
 			},
 			Responses: []response{
 				{Status: "200", Description: "Resolved job (only when wait elapsed in time)", Ref: "Job"},
 				{Status: "202", Description: "Job accepted; poll GET /api/v1/queue/{id}", Ref: "EnqueueResponse"},
-				{Status: "400", Description: "Missing or non-http(s) url, or negative max_items", Ref: "Error"},
+				{Status: "400", Description: "Missing or non-http(s) url, negative max_items, or non-http(s) page_url", Ref: "Error"},
+				{Status: "409", Description: "The monbooru link is paused from the footer light (monbooru_paused)", Ref: "Error"},
 			},
 			Handler: h.enqueue,
 		},
@@ -226,6 +228,28 @@ func (h *Handler) endpoints() []endpoint {
 			Handler: h.metadata,
 		},
 		{
+			Method: "POST", Path: "/api/v1/replace",
+			Summary: "Download a post's file and replace a monbooru image's bytes", OperationID: "replaceFile",
+			Description: "Download the file the post URL serves and push it into the monbooru image " +
+				"it names, replacing its bytes in place while the image's tags, sources, and relations " +
+				"survive. The queued job reports the replaced outcome, or failed with hash_mismatch " +
+				"(the download did not match the md5 the source claims), already_exists (monbooru holds " +
+				"the original as another image), or wrong_type (the target is an archive or video row).",
+			Request: &reqBody{
+				Required: []string{"image_id", "url"},
+				Props: []prop{
+					{Name: "image_id", Type: "integer", Description: "monbooru image whose file is replaced"},
+					{Name: "gallery", Type: "string", Description: "Gallery holding the image; empty uses monbooru's active gallery"},
+					{Name: "url", Type: "string", Description: "Source post URL to download"},
+				},
+			},
+			Responses: []response{
+				{Status: "202", Description: "Replace queued; poll GET /api/v1/queue/{id}", Ref: "EnqueueResponse"},
+				{Status: "400", Description: "Missing image_id, or a non-http(s) url", Ref: "Error"},
+			},
+			Handler: h.replace,
+		},
+		{
 			Method: "POST", Path: "/api/v1/lookup",
 			Summary: "Find tags for a file hash and enrich a monbooru image", OperationID: "lookupHash",
 			Description: "Look a file hash up - the booru backend walks the sites given a lookup order " +
@@ -246,7 +270,7 @@ func (h *Handler) endpoints() []endpoint {
 			Responses: []response{
 				{Status: "202", Description: "Lookup queued; poll GET /api/v1/queue/{id}", Ref: "EnqueueResponse"},
 				{Status: "400", Description: "Missing image_id, unknown backend, or a malformed hash", Ref: "Error"},
-				{Status: "409", Description: "The ptr backend is disabled", Ref: "Error"},
+				{Status: "409", Description: "The ptr backend is disabled or not fully synced", Ref: "Error"},
 			},
 			Handler: h.lookup,
 		},
@@ -276,7 +300,7 @@ func (h *Handler) endpoints() []endpoint {
 			Responses: []response{
 				{Status: "200", Description: "Per-tag graph answers", Ref: "PTRTagResults"},
 				{Status: "400", Description: "Empty or over-long tag list", Ref: "Error"},
-				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
+				{Status: "409", Description: "The PTR index is not available or not fully synced", Ref: "Error"},
 			},
 			Handler: h.ptrTags,
 		},
@@ -453,6 +477,7 @@ func (h *Handler) endpoints() []endpoint {
 			},
 			Responses: []response{
 				{Status: "200", Description: "Probe result", Ref: "ProbeResult"},
+				{Status: "400", Description: "The supplied url is not http(s)", Ref: "Error"},
 				{Status: "404", Description: "Unknown site and no url supplied", Ref: "Error"},
 			},
 			Handler: h.testSite,
@@ -487,6 +512,7 @@ var apiSchemas = []apiSchema{
 		{Name: "created", Type: "integer"},
 		{Name: "duplicate", Type: "integer"},
 		{Name: "enriched", Type: "integer", Description: "Source refetches and hash lookups that merged tags into an image monbooru already holds"},
+		{Name: "replaced", Type: "integer", Description: "In-place file replacements of an image monbooru already holds"},
 		{Name: "skipped", Type: "integer", Description: "Posts the gallery-dl archive already had, or files monbooru cannot ingest"},
 		{Name: "failed", Type: "integer"},
 		{Name: "canceled", Type: "integer", Description: "Items aborted by a job cancel, kept out of failed"},
@@ -497,7 +523,7 @@ var apiSchemas = []apiSchema{
 		{Name: "num", Type: "integer", Description: "1-based pool page order"},
 		{Name: "url", Type: "string", Description: "canonical source post page"},
 		{Name: "status", Type: "string", Description: "pending, downloaded, uploaded, done, skipped, failed"},
-		{Name: "outcome", Type: "string", Description: "created, duplicate, enriched, skipped_archive, skipped_unsupported, failed"},
+		{Name: "outcome", Type: "string", Description: "created, duplicate, enriched, replaced, skipped_archive, skipped_unsupported, failed"},
 		{Name: "monbooru_id", Type: "integer"},
 		{Name: "sha256", Type: "string"},
 		{Name: "tag_warnings", Type: "array", Items: &prop{Type: "string"}, Description: "Tags monbooru rejected on the push; recorded, not fatal"},
@@ -509,11 +535,12 @@ var apiSchemas = []apiSchema{
 		{Name: "id", Type: "integer"},
 		{Name: "url", Type: "string"},
 		{Name: "status", Type: "string", Description: "queued, running, succeeded, partial, failed, canceled, interrupted (was running when the process died; requeue to re-run)"},
-		{Name: "kind", Type: "string", Description: "download (the default, omitted), metadata (a source refetch that enriches an existing image), lookup (a hash lookup that enriches an existing image), hash_import (an md5 resolved to a post and imported), or contrib (a PTR contribution send)"},
-		{Name: "image_id", Type: "integer", Description: "monbooru image a metadata or lookup job enriches"},
+		{Name: "kind", Type: "string", Description: "download (the default, omitted), metadata (a source refetch that enriches an existing image), lookup (a hash lookup that enriches an existing image), hash_import (an md5 resolved to a post and imported), replace (a post's file downloaded and pushed over an existing image's bytes), or contrib (a PTR contribution send)"},
+		{Name: "image_id", Type: "integer", Description: "monbooru image a metadata, lookup, or replace job targets"},
 		{Name: "backend", Type: "string", Description: "Lookup source (booru, ptr, or all) for a lookup job"},
 		{Name: "md5", Type: "string", Description: "File md5 a lookup or hash import is keyed on"},
 		{Name: "sha256", Type: "string", Description: "File sha256 a ptr lookup is keyed on"},
+		{Name: "page_url", Type: "string", Description: "Page a direct-file send came from; a directlink item records it as its source link"},
 		{Name: "site", Type: "string", Description: "gallery-dl category, set after resolve"},
 		{Name: "gallery", Type: "string", Description: "target monbooru gallery"},
 		{Name: "folder", Type: "string", Description: "destination subfolder under the gallery"},
@@ -571,6 +598,7 @@ var apiSchemas = []apiSchema{
 			{Name: "downloaded_bytes", Type: "integer", Description: "compressed bytes fetched this session"},
 			{Name: "download_rate", Type: "integer", Description: "average fetch rate in bytes per second over the pass's network time, while syncing"},
 			{Name: "process_rate", Type: "integer", Description: "rows replayed into the index per second of replay time, while syncing"},
+			{Name: "last_applied_at", Type: "integer", Description: "unix time the last update this process committed was applied (absent until one lands)"},
 		}},
 		{Name: "counts", Type: "object", Props: []prop{
 			{Name: "hashes", Type: "integer"},

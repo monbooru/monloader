@@ -130,7 +130,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /queue/resume", s.resumeDownloads)
 	mux.HandleFunc("DELETE /queue/{id}", s.deleteJob)
 	mux.HandleFunc("GET /internal/monbooru-status", s.monbooruStatus)
+	mux.HandleFunc("POST /internal/monbooru/pause", s.monbooruPause)
+	mux.HandleFunc("POST /internal/monbooru/resume", s.monbooruResume)
 	mux.HandleFunc("GET /internal/queue-pause", s.queuePauseToggle)
+	mux.HandleFunc("GET /internal/queue-actions", s.queueActionsFragment)
 
 	mux.HandleFunc("GET /ptr", s.ptrScreen)
 	mux.HandleFunc("GET /internal/ptr-status", s.ptrStatusFragment)
@@ -159,6 +162,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/raw", s.saveRaw)
 	mux.HandleFunc("POST /settings/ptr", s.savePTR)
 	mux.HandleFunc("POST /settings/ptr/delete", s.ptrDelete)
+	mux.HandleFunc("POST /settings/ptr/clear-key", s.ptrClearKey)
 
 	mux.HandleFunc("POST /settings/auth/password", s.settingsPasswordPost)
 	mux.HandleFunc("POST /settings/auth/remove-password", s.settingsRemovePasswordPost)
@@ -168,6 +172,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/auth/tokens/{id}/privileges", s.settingsTokenPrivilegesPost)
 	mux.HandleFunc("POST /settings/monbooru/pair/connect", s.monbooruPairConnect)
 	mux.HandleFunc("POST /settings/monbooru/pair/poll", s.monbooruPairPoll)
+	mux.HandleFunc("POST /settings/monbooru/pair/cancel", s.monbooruPairCancel)
 	mux.HandleFunc("POST /settings/monbooru/pair/remove", s.monbooruPairRemove)
 	mux.HandleFunc("POST /api/v1/pair/request", s.extPairRequest)
 	mux.HandleFunc("GET /api/v1/pair/status", s.extPairStatus)
@@ -210,6 +215,7 @@ func templateFuncs() template.FuncMap {
 		"humanBytes":  humanBytes,
 		"humanSince":  humanSince,
 		"humanDue":    humanDue,
+		"humanAgo":    humanAgo,
 		"humanDate":   humanDate,
 		"stampLocal":  stampLocal,
 		"join":        strings.Join,
@@ -225,7 +231,7 @@ func templateFuncs() template.FuncMap {
 // "3 downloading, 2 created" by state - only the non-zero parts. An item not yet
 // at a terminal outcome counts as downloading.
 func moreSummary(items []queue.Item) string {
-	var downloading, created, duplicate, skipped, failed, canceled int
+	var downloading, created, duplicate, enriched, replaced, skipped, failed, canceled int
 	for _, it := range items {
 		switch {
 		case it.ErrorCode == queue.ErrCodeCanceled:
@@ -234,6 +240,10 @@ func moreSummary(items []queue.Item) string {
 			created++
 		case it.Outcome == queue.OutcomeDuplicate:
 			duplicate++
+		case it.Outcome == queue.OutcomeEnriched:
+			enriched++
+		case it.Outcome == queue.OutcomeReplaced:
+			replaced++
 		case it.Outcome == queue.OutcomeSkippedArchive, it.Outcome == queue.OutcomeSkippedUnsupported:
 			skipped++
 		case it.Outcome == queue.OutcomeFailed:
@@ -242,12 +252,13 @@ func moreSummary(items []queue.Item) string {
 			downloading++
 		}
 	}
-	parts := make([]string, 0, 6)
+	parts := make([]string, 0, 8)
 	for _, c := range []struct {
 		n     int
 		label string
 	}{
 		{downloading, "downloading"}, {created, "created"}, {duplicate, "duplicate"},
+		{enriched, "enriched"}, {replaced, "replaced"},
 		{skipped, "skipped"}, {failed, "failed"}, {canceled, "canceled"},
 	} {
 		if c.n > 0 {
@@ -308,7 +319,7 @@ func humanBytes(b int64) string {
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/internal/queue-rows" || r.URL.Path == "/internal/monbooru-status" || r.URL.Path == "/internal/queue-pause" || r.URL.Path == "/internal/ptr-status" || r.URL.Path == "/health" {
+		if r.URL.Path == "/internal/queue-rows" || r.URL.Path == "/internal/queue-actions" || r.URL.Path == "/internal/monbooru-status" || r.URL.Path == "/internal/queue-pause" || r.URL.Path == "/internal/ptr-status" || r.URL.Path == "/health" {
 			logx.Debugf("%s %s", r.Method, r.URL.Path)
 		} else {
 			logx.Infof("%s %s", r.Method, r.URL.Path)
@@ -491,10 +502,20 @@ func (s *Server) checkMonbooru(ctx context.Context) (status, version string) {
 // still refreshes on schedule.
 const monbooruStatusTTL = 10 * time.Second
 
+// monbooruPaused reports whether the operator has held the link from the footer
+// light. Read from config so a paused pairing is told apart from an
+// unconfigured or unreachable one.
+func (s *Server) monbooruPaused() bool {
+	return s.cfg.Current().Monbooru.Paused
+}
+
 // monbooruStatusSeed returns the last cached probe result without probing, for
 // seeding a page's initial light so it shows its last known state rather than
 // re-checking. A cold cache reads "checking".
 func (s *Server) monbooruStatusSeed() (status, version string) {
+	if s.monbooruPaused() {
+		return "paused", ""
+	}
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	if s.monbooruConn == "" {
@@ -508,6 +529,11 @@ func (s *Server) monbooruStatusSeed() (status, version string) {
 // not re-probe on every page load. The probe runs without the lock held so a
 // slow monbooru never serializes concurrent page renders.
 func (s *Server) monbooruStatusCached(ctx context.Context) (status, version string) {
+	// A paused link is never probed: the point of the kill switch is that
+	// monloader stops reaching for monbooru until the operator resumes.
+	if s.monbooruPaused() {
+		return "paused", ""
+	}
 	s.statusMu.Lock()
 	if s.monbooruConn != "" && time.Since(s.monbooruCheckedAt) < monbooruStatusTTL {
 		status, version = s.monbooruConn, s.monbooruVersion

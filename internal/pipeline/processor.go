@@ -29,10 +29,11 @@ import (
 )
 
 // PTRService is the PTR lookup surface the pipeline needs: whether the backend
-// is available and the tags for a sha256. A nil service means the PTR is not
-// built into this run.
+// is available, whether its index is current enough to answer, and the tags for
+// a sha256. A nil service means the PTR is not built into this run.
 type PTRService interface {
 	Enabled() bool
+	CaughtUp() bool
 	TagsForHash(hashHex string) (tags []string, ok bool, err error)
 }
 
@@ -83,6 +84,8 @@ func (p *Processor) Process(ctx context.Context, job *queue.Job) error {
 		return p.processLookup(ctx, job, snap)
 	case queue.KindHashImport:
 		return p.processHashImport(ctx, job, snap)
+	case queue.KindReplace:
+		return p.processReplace(ctx, job, snap)
 	}
 	return p.processDownload(ctx, job, snap)
 }
@@ -93,9 +96,7 @@ func (p *Processor) processDownload(ctx context.Context, job, snap *queue.Job) e
 	rng, limit := p.rangeFor(snap)
 	res, err := p.runner.Resolve(ctx, snap.URL, rng, false)
 	if err != nil {
-		code := errorCode(err)
-		job.Fail(code, err.Error(), time.Now())
-		return err
+		return abortJob(ctx, job, err)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -124,8 +125,7 @@ func (p *Processor) processDownload(ctx context.Context, job, snap *queue.Job) e
 		// must not truncate it. Re-resolve and download the whole thing.
 		whole, rerr := p.runner.Resolve(ctx, snap.URL, "", false)
 		if rerr != nil {
-			job.Fail(errorCode(rerr), rerr.Error(), time.Now())
-			return rerr
+			return abortJob(ctx, job, rerr)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -154,7 +154,7 @@ func (p *Processor) processDownload(ctx context.Context, job, snap *queue.Job) e
 // failed item coded hash_mismatch; a rejected or unreachable source fails the
 // same way. The job carries one item so the queue shows a row.
 func (p *Processor) processMetadata(ctx context.Context, job *queue.Job, snap *queue.Job) error {
-	job.SetItems([]queue.Item{{URL: snap.URL, Status: queue.ItemPending}})
+	job.SetItems([]queue.Item{p.enrichItem(ctx, snap, snap.URL)})
 	meta, err := p.runner.FetchMeta(ctx, snap.URL)
 	if err != nil {
 		p.failEnrichFetch(ctx, job, snap, err)
@@ -167,6 +167,22 @@ func (p *Processor) processMetadata(ctx context.Context, job *queue.Job, snap *q
 	return nil
 }
 
+// enrichItem builds an enrich job's single item. The image's sha256 makes the
+// row's link a /i/<sha256> permalink, which finds the image in any gallery; a
+// bare /images/<id> would open whichever image holds that id in the active one.
+// Only a ptr lookup is keyed on the digest, so for the rest it is read from
+// monbooru - best-effort, since a missing one costs the link's precision and
+// nothing else.
+func (p *Processor) enrichItem(ctx context.Context, snap *queue.Job, url string) queue.Item {
+	it := queue.Item{URL: url, Status: queue.ItemPending, SHA256: snap.SHA256}
+	if it.SHA256 == "" && snap.ImageID != 0 {
+		if sha, err := p.client.ImageSHA256(ctx, snap.ImageID, snap.Gallery); err == nil {
+			it.SHA256 = sha
+		}
+	}
+	return it
+}
+
 // enrichFromMeta maps a post's metadata and folds it into the job's monbooru
 // image, driving the job's single item to enriched or failed. sim carries the
 // similarity score when the post was found by a similarity service (0 for an
@@ -176,6 +192,9 @@ func (p *Processor) enrichFromMeta(ctx context.Context, job, snap *queue.Job, me
 	job.SetSite(kwdict.String(meta, "category"))
 	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, p.mapEnrichPayload(meta, url, md5, sim))
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		failItem(job, 0, errorCode(err), err.Error())
 		return
 	}
@@ -231,6 +250,12 @@ func (p *Processor) markEnriched(job, snap *queue.Job, res *monbooru.Result, url
 // the bare message - the code already travels in the state field, and
 // monbooru renders the message verbatim.
 func (p *Processor) failEnrichFetch(ctx context.Context, job, snap *queue.Job, err error) {
+	// A cancel kills the in-flight call; the worker labels the job and its
+	// pending item canceled, so the kill's error must not be recorded or
+	// reported as the fetch outcome.
+	if ctx.Err() != nil {
+		return
+	}
 	code := errorCode(err)
 	msg := err.Error()
 	var ce *queue.CodedError
@@ -257,8 +282,7 @@ func (p *Processor) processDispatch(ctx context.Context, job, snap *queue.Job, r
 	// bounds the child window so an open thread or board is not unbounded.
 	deep, err := p.runner.Resolve(ctx, snap.URL, rng, true)
 	if err != nil {
-		job.Fail(errorCode(err), err.Error(), time.Now())
-		return err
+		return abortJob(ctx, job, err)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -285,7 +309,7 @@ func (p *Processor) fetch(ctx context.Context, job, snap *queue.Job, resolved []
 	// Publish the resolved items before the download so the queue shows the
 	// job's size and per-item rows right away, rather than nothing until the
 	// whole (slow) download completes.
-	job.SetItems(p.initialItems(resolved, cbz, snap.URL))
+	job.SetItems(p.initialItems(resolved, cbz, snap.URL, snap.PageURL))
 
 	workDir := filepath.Join(p.workRoot, fmt.Sprintf("job-%d", snap.ID))
 	if mkErr := os.MkdirAll(workDir, 0o755); mkErr != nil {
@@ -333,7 +357,7 @@ func (p *Processor) fetch(ctx context.Context, job, snap *queue.Job, resolved []
 		p.processCBZ(ctx, job, 0, writtenOnly(downloaded), len(resolved), gallery, workDir, dlErr, snap.URL)
 		return nil
 	}
-	p.processItems(ctx, job, downloaded, len(resolved), gallery, snap.URL, dlErr)
+	p.processItems(ctx, job, downloaded, len(resolved), gallery, snap.URL, snap.PageURL, dlErr)
 	return nil
 }
 
@@ -377,28 +401,42 @@ func writtenOnly(downloaded []gdl.Downloaded) []gdl.Downloaded {
 // initialItems is the pending item list published right after resolve: one
 // item per resolved post, or a single bundle item when the job is pushed as
 // one cbz.
-func (p *Processor) initialItems(resolved []gdl.Item, cbz bool, submittedURL string) []queue.Item {
+func (p *Processor) initialItems(resolved []gdl.Item, cbz bool, submittedURL, pageURL string) []queue.Item {
 	if cbz {
 		return []queue.Item{{PostID: bundleKey(resolved), Status: queue.ItemPending}}
 	}
 	items := make([]queue.Item, len(resolved))
 	for i, it := range resolved {
-		items[i] = queue.Item{PostID: it.ID, Num: it.Num, URL: p.itemURL(it.Meta, submittedURL), Status: queue.ItemPending}
+		items[i] = queue.Item{PostID: it.ID, Num: it.Num, URL: p.itemURL(it.Meta, submittedURL, pageURL), Status: queue.ItemPending}
 	}
 	return items
 }
 
-// itemURL is an item's source link: the per-site post URL, or the submitted
-// page URL when the source has no template. A directlink uses the submitted URL
-// directly, since gallery-dl may rewrite the sidecar's extension after download.
-func (p *Processor) itemURL(meta map[string]any, submittedURL string) string {
+// itemURL is an item's source link: the per-site post URL (profile template,
+// else the extractor's permalink), or the submitted page URL when neither
+// exists. A directlink uses the sender's page URL when one was supplied - the
+// page the file sat on is the meaningful source - else the submitted URL,
+// since gallery-dl may rewrite the sidecar's extension after download.
+func (p *Processor) itemURL(meta map[string]any, submittedURL, pageURL string) string {
 	if kwdict.String(meta, "category") == mapping.CategoryDirectlink {
+		if pageURL != "" {
+			return pageURL
+		}
 		return submittedURL
 	}
 	if u := p.mapper.PostURL(meta); u != "" {
 		return u
 	}
 	return submittedURL
+}
+
+// pageHost is the page URL's hostname, "" when it does not parse.
+func pageHost(pageURL string) string {
+	u, err := url.Parse(pageURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // rangeFor computes the --range value enforcing the per-job item cap and
@@ -421,7 +459,7 @@ func (p *Processor) rangeFor(snap *queue.Job) (string, int) {
 // processItems handles single posts and the pool-as-loose-collection mode:
 // each post is mapped and pushed on its own, carrying its collection label and
 // order when it came from a pool.
-func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded []gdl.Downloaded, total int, gallery, submittedURL string, dlErr error) {
+func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded []gdl.Downloaded, total int, gallery, submittedURL, pageURL string, dlErr error) {
 	folder := p.folder(job)
 	for i := 0; i < total; i++ {
 		if ctx.Err() != nil {
@@ -437,6 +475,13 @@ func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded
 			continue
 		}
 		pf := p.mapper.Map(d.Meta)
+		// A directlink sent with its page names the site by the page's host,
+		// not the cdn the file happened to live on.
+		if pageURL != "" && kwdict.String(d.Meta, "category") == mapping.CategoryDirectlink {
+			if h := pageHost(pageURL); h != "" {
+				pf.Source = h
+			}
+		}
 		// A pool with no num orders by source position.
 		order := pf.CollectionOrder
 		if pf.Collection != "" && order == 0 {
@@ -447,7 +492,7 @@ func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded
 			Tags:            pf.Tags,
 			Source:          pf.Source,
 			PostID:          kwdict.ID(d.Meta),
-			URL:             p.itemURL(d.Meta, submittedURL),
+			URL:             p.itemURL(d.Meta, submittedURL, pageURL),
 			Collection:      pf.Collection,
 			CollectionOrder: order,
 			Via:             pf.Via,
@@ -703,6 +748,17 @@ func recordSuccess(job *queue.Job, i int, res *monbooru.Result) {
 			it.Status = queue.ItemSkipped
 		}
 	})
+}
+
+// abortJob ends a job on a failed resolve. A cancel kills the resolve
+// subprocess, and the worker labels the job canceled itself, so the kill's
+// error must not stamp it failed first.
+func abortJob(ctx context.Context, job *queue.Job, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	job.Fail(errorCode(err), err.Error(), time.Now())
+	return err
 }
 
 func failItem(job *queue.Job, i int, code, msg string) {

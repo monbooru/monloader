@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"strings"
 	"time"
 
-	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/queue"
@@ -46,16 +44,6 @@ type contribChunk struct {
 	items  []ptr.ContribItem
 }
 
-// monbooruBase is the browser-facing monbooru base for contribution links: the
-// configured web_url when set, else the api_url.
-func monbooruBase(c *config.Config) string {
-	base := c.Monbooru.WebURL
-	if base == "" {
-		base = c.Monbooru.APIURL
-	}
-	return strings.TrimRight(base, "/")
-}
-
 // processContrib runs one contribution send: claim, account and filter
 // checks, re-diff, package, and the chunked upload. Chunks the server
 // accepted stay committed whatever happens later, so the ledger
@@ -83,12 +71,15 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 		job.SetNote("nothing to send")
 		return nil
 	}
-	failAll := func(code, msg string) {
+	failStore := func(msg string) {
 		for _, it := range items {
 			if err := store.FailItem(it.ID, msg); err != nil {
 				logx.Warnf("contrib: marking item %d failed: %v", it.ID, err)
 			}
 		}
+	}
+	failAll := func(code, msg string) {
+		failStore(msg)
 		job.Fail(code, msg, time.Now())
 	}
 
@@ -102,6 +93,12 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 	}
 	acc, err := sender.RefreshAccount(ctx)
 	if err != nil {
+		// A cancel mid-call must read as canceled, not as the call's error;
+		// the claimed rows are still released so none strand in 'sending'.
+		if ctx.Err() != nil {
+			failStore("job canceled")
+			return ctx.Err()
+		}
 		failAll(queue.ErrCodePTRAccountRequired, "reading the account: "+err.Error())
 		return nil
 	}
@@ -115,6 +112,10 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 	}
 	filter, err := sender.RefreshTagFilter(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			failStore("job canceled")
+			return ctx.Err()
+		}
 		failAll(queue.ErrCodePTRUnavailable, "fetching the tag filter: "+err.Error())
 		return nil
 	}
@@ -150,7 +151,7 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 	// One queue item per contribution, linked to the monbooru image (mapping)
 	// or tag (pair), with the chunk each item belongs to remembered so a chunk
 	// outcome marks exactly its items. spans[ci] is the [start, end) range.
-	base := monbooruBase(p.cfg.Current())
+	base := p.cfg.Current().Monbooru.WebBase()
 	var jobItems []queue.Item
 	spans := make([][2]int, len(chunks))
 	for ci, c := range chunks {
@@ -201,6 +202,10 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 		}
 		err := p.postContribChunk(ctx, sender, chunk)
 		if err != nil {
+			if ctx.Err() != nil {
+				failRemainder(i, queue.ErrCodeCanceled, "job canceled before sending")
+				return ctx.Err()
+			}
 			failRemainder(i, queue.ErrCodePTRUnavailable, err.Error())
 			break
 		}

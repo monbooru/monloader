@@ -1,6 +1,6 @@
 {{define "lookup_status"}}{{with .Lookup}}
 <div class="lookup-status">
   <span>booru lookup: {{if .BooruSources}}<span class="lk-on" title="queries {{join .BooruSources ", "}}">on</span>{{else}}<span class="lk-off">off</span> - configure the chain in <a href="/settings#lookup">settings</a>{{end}}</span>
-  <span>sha256 lookup: {{if .PTREnabled}}<span class="lk-on">{{if .PTRSyncing}}syncing{{else}}on{{end}}</span>{{else}}<span class="lk-off">off</span> - enable it on the <a href="/ptr">ptr page</a>{{end}}</span>
+  <span>Public Tag Repository lookup: {{if .PTREnabled}}<span class="lk-on">{{if .PTRSyncing}}syncing{{else}}on{{end}}</span>{{else}}<span class="lk-off">off</span> - enable it on the <a href="/ptr">ptr page</a>{{end}}</span>
 </div>
 {{end}}{{end}}

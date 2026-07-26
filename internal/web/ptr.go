@@ -25,6 +25,7 @@ type ptrEngine interface {
 	Status() ptr.Status
 	TagGraph(names []string) (map[string]ptr.TagInfo, error)
 	Enable() error
+	Disable()
 	Pause()
 	Resume()
 	Retry()
@@ -41,6 +42,7 @@ type ptrEngine interface {
 	Contrib() *ptr.ContribStore
 	TagFilterCached() *ptr.TagFilter
 	HashHasIdeal(hashHex, tag string) (bool, error)
+	HashHasIdeals(hashHex string, tags []string) (map[string]bool, error)
 	HashHasRaw(hashHex, tag string) (bool, error)
 	RawTagsForHash(hashHex string) ([]string, error)
 	IdealTag(tag string) (string, bool, error)
@@ -58,10 +60,13 @@ type ptrView struct {
 	// docker run without a volume mounted there, where an index created inside
 	// the container is lost when the container is recreated.
 	PathMissing bool
-	FreeBytes   int64
-	MinFreeGB   int
-	Percent     int
-	CSRFToken   string
+	// HasIndex tells a disabled state that was turned off from settings (the
+	// files are still there, so enabling resumes) from one that never synced.
+	HasIndex  bool
+	FreeBytes int64
+	MinFreeGB int
+	Percent   int
+	CSRFToken string
 }
 
 // ptrData builds the current view of the PTR engine and its config.
@@ -72,6 +77,7 @@ func (s *Server) ptrData(r *http.Request) ptrView {
 		Status:    st,
 		Address:   cfg.Address,
 		DataPath:  cfg.DataPath,
+		HasIndex:  ptr.IndexExists(cfg.DataPath),
 		FreeBytes: ptr.FreeBytes(cfg.DataPath),
 		MinFreeGB: cfg.MinFreeGB,
 		CSRFToken: s.csrfToken(sessionFromContext(r.Context())),
@@ -113,14 +119,33 @@ func (s *Server) ptrStatusFragment(w http.ResponseWriter, r *http.Request) {
 // so a restart resumes. A refused start (below the free-space floor) flashes the
 // reason and leaves the config off.
 func (s *Server) ptrEnable(w http.ResponseWriter, r *http.Request) {
-	if err := s.ptr.Enable(); err != nil {
+	if err := s.applyPTREnabled(true); err != nil {
 		s.ptrRedirect(w, r, "err", err.Error())
 		return
 	}
-	if err := s.updateConfig(func(c *config.Config) error { c.PTR.Enabled = true; return nil }); err != nil {
-		logx.Warnf("ptr: enabled but could not persist the flag: %v", err)
-	}
 	s.ptrRedirect(w, r, "ok", "ptr sync started")
+}
+
+// applyPTREnabled brings the engine to the requested state and persists the
+// flag so a restart matches. Turning it off stops the sync and closes the index
+// but keeps the files: only the danger-zone delete reclaims the disk. An error
+// is a refused start (below the free-space floor); a persist failure is logged
+// rather than reported, since the engine did change.
+func (s *Server) applyPTREnabled(on bool) error {
+	if on == s.ptr.Enabled() {
+		return nil
+	}
+	if on {
+		if err := s.ptr.Enable(); err != nil {
+			return err
+		}
+	} else {
+		s.ptr.Disable()
+	}
+	if err := s.updateConfig(func(c *config.Config) error { c.PTR.Enabled = on; return nil }); err != nil {
+		logx.Warnf("ptr: could not persist the enabled flag: %v", err)
+	}
+	return nil
 }
 
 func (s *Server) ptrPause(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +166,8 @@ func (s *Server) ptrRetry(w http.ResponseWriter, r *http.Request) {
 // savePTR edits the [ptr] storage and repository settings. The engine and its
 // client snapshot the config at boot, so changes apply on restart; the access
 // key is a secret with the site-credential semantics: blank keeps the stored
-// value.
+// value. The enabled box is the exception: it takes effect at once, starting or
+// stopping the sync like the ptr page's own controls.
 func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.redirectFlash(w, r, "err", "bad form")
@@ -157,9 +183,7 @@ func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
 		if v := strings.TrimSpace(r.FormValue("address")); v != "" {
 			c.PTR.Address = v
 		}
-		if r.FormValue("clear_access_key") == "1" {
-			c.PTR.AccessKey = ""
-		} else if v := strings.TrimSpace(r.FormValue("access_key")); v != "" {
+		if v := strings.TrimSpace(r.FormValue("access_key")); v != "" {
 			c.PTR.AccessKey = v
 		}
 		if f, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("fetch_sleep")), 64); err == nil && f >= 0 {
@@ -177,7 +201,23 @@ func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
 	// Re-point the live client so a key change (set or cleared back to
 	// the public one) applies with no restart.
 	s.ptr.SetAccessKey(s.cfg.Current().PTR.AccessKey)
+	if err := s.applyPTREnabled(r.FormValue("enabled") == "1"); err != nil {
+		s.redirectFlash(w, r, "err", "settings saved, but the sync could not start: "+err.Error())
+		return
+	}
 	s.redirectFlash(w, r, "ok", "ptr settings saved")
+}
+
+// ptrClearKey forgets the personal contribution account (or a private
+// repository key) and reverts to the public read-only one. It sits in the
+// danger block because there is no recovery without a backup of the key.
+func (s *Server) ptrClearKey(w http.ResponseWriter, r *http.Request) {
+	if err := s.updateConfig(func(c *config.Config) error { c.PTR.AccessKey = ""; return nil }); err != nil {
+		s.redirectFlash(w, r, "err", "save failed: "+err.Error())
+		return
+	}
+	s.ptr.SetAccessKey("")
+	s.redirectFlash(w, r, "ok", "ptr access key cleared")
 }
 
 // ptrDelete removes the index and turns the sync off, persisting the flag.
@@ -205,6 +245,14 @@ func humanDate(unix int64) string {
 		return ""
 	}
 	return time.Unix(unix, 0).In(time.Local).Format("2006-01-02")
+}
+
+// humanAgo formats a unix time as a short "4m ago" note, or "" when unset.
+func humanAgo(unix int64) string {
+	if unix <= 0 {
+		return ""
+	}
+	return humanSince(time.Unix(unix, 0))
 }
 
 // humanDue formats a unix due time as a short "in 14h" note, or "" when unset.
@@ -311,6 +359,11 @@ func (s *Server) ptrAccountCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, "ptr_account", s.ptrAccountData(r, ""))
+	// The card below gates on the account this just created, so it ships with
+	// the response rather than waiting for a reload to stop asking for one.
+	contrib := s.ptrContribData(r, "")
+	contrib.OOB = true
+	s.render(w, "ptr_contrib", contrib)
 }
 
 // createAccountMessage folds the velocity refusal into the retry-later
@@ -350,8 +403,10 @@ type ptrContribItemView struct {
 	Rescindable bool
 }
 
-// ptrContribView backs the contributions card.
+// ptrContribView backs the contributions card. OOB marks a render that rides
+// another card's response, so htmx swaps it by id instead of into the target.
 type ptrContribView struct {
+	OOB         bool
 	NoAccount   bool
 	Syncing     bool
 	NotReady    bool
@@ -364,21 +419,19 @@ type ptrContribView struct {
 	RetryErr    string
 }
 
-// contribKindLabel renders a kind for the card's row.
+// contribKindLabels renders each kind for the card's row.
+var contribKindLabels = map[string]string{
+	ptr.ContribMappingAdd:      "add",
+	ptr.ContribMappingPetition: "petition",
+	ptr.ContribSibling:         "sibling",
+	ptr.ContribParent:          "parent",
+	ptr.ContribSiblingPetition: "sibling petition",
+	ptr.ContribParentPetition:  "parent petition",
+}
+
 func contribKindLabel(kind string) string {
-	switch kind {
-	case ptr.ContribMappingAdd:
-		return "add"
-	case ptr.ContribMappingPetition:
-		return "petition"
-	case ptr.ContribSibling:
-		return "sibling"
-	case ptr.ContribParent:
-		return "parent"
-	case ptr.ContribSiblingPetition:
-		return "sibling petition"
-	case ptr.ContribParentPetition:
-		return "parent petition"
+	if label, ok := contribKindLabels[kind]; ok {
+		return label
 	}
 	return kind
 }

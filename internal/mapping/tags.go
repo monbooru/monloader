@@ -85,43 +85,38 @@ var mangaTagFields = []struct {
 	{"type", "meta"},
 }
 
-// baseCategory maps a gallery-dl tag suffix to a monbooru category per the
-// universal table. keep=false drops the suffix entirely
-// (invalid / deprecated are not real tags). Unknown suffixes fall back to
-// general.
+// baseCategories maps a gallery-dl tag suffix to a monbooru category per the
+// universal table. An empty category drops the suffix entirely (invalid and
+// deprecated are not real tags).
+var baseCategories = map[string]string{
+	"general":     "general",
+	"artist":      "artist",
+	"character":   "character",
+	"copyright":   "copyright",
+	"meta":        "meta",
+	"metadata":    "meta", // gelbooru's spelling
+	"species":     "species",
+	"lore":        "meta",
+	"contributor": "artist",
+	"circle":      "artist",    // doujin circle
+	"group":       "artist",    // doujin group
+	"parody":      "copyright", // the parodied work
+	"series":      "copyright", // the source work (e-hentai, schalenetwork)
+	"studio":      "copyright", // animation / production studio (sankaku)
+	"model":       "person",    // real-person model (realbooru and other photo boorus)
+	"faults":      "meta",
+	"invalid":     "",
+	"deprecated":  "",
+}
+
+// baseCategory looks a suffix up in the universal table. keep=false drops the
+// tag; an unknown suffix falls back to general.
 func baseCategory(suffix string) (category string, keep bool) {
-	switch suffix {
-	case "general":
-		return "general", true
-	case "artist":
-		return "artist", true
-	case "character":
-		return "character", true
-	case "copyright":
-		return "copyright", true
-	case "meta", "metadata":
-		return "meta", true
-	case "species":
-		return "species", true
-	case "lore":
-		return "meta", true
-	case "contributor":
-		return "artist", true
-	case "circle", "group":
-		return "artist", true // doujin circle / group
-	case "parody", "series":
-		return "copyright", true // the parodied / source work (e-hentai, schalenetwork)
-	case "studio":
-		return "copyright", true // animation / production studio (sankaku)
-	case "model":
-		return "person", true // real-person model (realbooru and other photo boorus)
-	case "faults":
-		return "meta", true
-	case "invalid", "deprecated":
-		return "", false
-	default:
+	cat, ok := baseCategories[suffix]
+	if !ok {
 		return "general", true // best-effort fallback
 	}
+	return cat, cat != ""
 }
 
 // splitNamespace recognizes a `namespace:name` flat tag (zerochan, philomena

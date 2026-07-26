@@ -3,6 +3,7 @@ package mapping
 import (
 	"fmt"
 	"html"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -387,9 +388,11 @@ func PoolName(meta map[string]any) string {
 }
 
 // PostURL builds the canonical source post page from the site profile's
-// template, or "" when the source has no template (the generic fallback). A
-// directlink (a bare media URL) has no template, so its canonical link is the
-// file URL itself, rebuilt from the metadata.
+// template. A directlink (a bare media URL) has no template, so its canonical
+// link is the file URL itself, rebuilt from the metadata. A source with no
+// template (the generic fallback) still gets a page URL when the extractor
+// exposes one as permalink metadata, so a bulk job's items link to their own
+// posts rather than all inheriting the submitted listing URL.
 func (m *Mapper) PostURL(meta map[string]any) string {
 	category := kwdict.String(meta, "category")
 	if category == CategoryDirectlink {
@@ -397,9 +400,21 @@ func (m *Mapper) PostURL(meta map[string]any) string {
 	}
 	profile := m.profileFor(category)
 	if profile.PostURL == "" {
-		return ""
+		return permalinkURL(meta)
 	}
 	return strings.ReplaceAll(profile.PostURL, "{id}", kwdict.ID(meta))
+}
+
+// permalinkURL reads gallery-dl's permalink key, taken only when it is an
+// absolute http(s) URL: some extractors emit site-relative paths or free text
+// there, which would make a broken source link.
+func permalinkURL(meta map[string]any) string {
+	raw := strings.TrimSpace(kwdict.String(meta, "permalink"))
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	return raw
 }
 
 // categoryFor resolves a tag suffix to a monbooru category, with user config

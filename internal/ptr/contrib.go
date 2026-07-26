@@ -198,6 +198,16 @@ func (e *Engine) HashHasIdeal(hashHex, tag string) (bool, error) {
 	return s.HashHasIdeal(hashHex, tag)
 }
 
+// HashHasIdeals answers the display-view mapping check for a whole tag
+// list against one hash.
+func (e *Engine) HashHasIdeals(hashHex string, tags []string) (map[string]bool, error) {
+	s, err := e.indexStore()
+	if err != nil {
+		return nil, err
+	}
+	return s.HashHasIdeals(hashHex, tags)
+}
+
 // IdealTag answers the sibling resolution of one raw spelling.
 func (e *Engine) IdealTag(tag string) (string, bool, error) {
 	s, err := e.indexStore()
