@@ -114,7 +114,7 @@ func (h *Handler) endpoints() []endpoint {
 				{Status: "200", Description: "Resolved job (only when wait elapsed in time)", Ref: "Job"},
 				{Status: "202", Description: "Job accepted; poll GET /api/v1/queue/{id}", Ref: "EnqueueResponse"},
 				{Status: "400", Description: "Missing or non-http(s) url, negative max_items, or non-http(s) page_url", Ref: "Error"},
-				{Status: "409", Description: "The monbooru link is paused from the footer light (monbooru_paused)", Ref: "Error"},
+				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
 			},
 			Handler: h.enqueue,
 		},
@@ -181,7 +181,7 @@ func (h *Handler) endpoints() []endpoint {
 			Responses: []response{
 				{Status: "202", Description: "Re-queued", Ref: "EnqueueResponse"},
 				{Status: "404", Description: "Job not found", Ref: "Error"},
-				{Status: "409", Description: "Job is not in a retryable state", Ref: "Error"},
+				{Status: "409", Description: "Job is not in a retryable state, no monbooru is configured (monbooru_unconfigured), or its link is paused (monbooru_paused)", Ref: "Error"},
 			},
 			Handler: h.retryJob,
 		},
@@ -192,7 +192,7 @@ func (h *Handler) endpoints() []endpoint {
 			Responses: []response{
 				{Status: "202", Description: "Follow-up job queued for the next window", Ref: "EnqueueResponse"},
 				{Status: "404", Description: "Job not found", Ref: "Error"},
-				{Status: "409", Description: "Job was not capped, so there is no next window", Ref: "Error"},
+				{Status: "409", Description: "Job was not capped so there is no next window, no monbooru is configured (monbooru_unconfigured), or its link is paused (monbooru_paused)", Ref: "Error"},
 			},
 			Handler: h.continueJob,
 		},
@@ -203,7 +203,7 @@ func (h *Handler) endpoints() []endpoint {
 			Responses: []response{
 				{Status: "202", Description: "First follow-up queued; the queue continues until the search runs short", Ref: "EnqueueResponse"},
 				{Status: "404", Description: "Job not found", Ref: "Error"},
-				{Status: "409", Description: "Job was not capped, so there is no next window", Ref: "Error"},
+				{Status: "409", Description: "Job was not capped so there is no next window, no monbooru is configured (monbooru_unconfigured), or its link is paused (monbooru_paused)", Ref: "Error"},
 			},
 			Handler: h.continueAllJob,
 		},
@@ -378,7 +378,7 @@ func (h *Handler) endpoints() []endpoint {
 				Required: []string{"items"},
 				Props: []prop{
 					{Name: "commit", Type: "boolean", Description: "send the accepted items now as one queue job (default true)"},
-					{Name: "origin", Type: "string", Description: "display provenance for the ledger, e.g. \"image 42\""},
+					{Name: "origin", Type: "string", Description: "display provenance carried on the staged row while it is unsent, e.g. \"image 42\"; the committed ledger entry identifies the item by hash instead"},
 					{Name: "items", Type: "array", Items: &prop{Type: "object", Props: []prop{
 						{Name: "kind", Type: "string", Description: "mapping_add, mapping_petition, sibling, parent, sibling_petition, or parent_petition"},
 						{Name: "sha256", Type: "string", Description: "the file hash, for the mapping kinds"},
@@ -483,6 +483,61 @@ func (h *Handler) endpoints() []endpoint {
 			Handler: h.testSite,
 		},
 		{
+			Method: "POST", Path: "/api/v1/pair/request",
+			Summary: "Offer a pairing", OperationID: "pairRequest", NoAuth: true,
+			Description: "Step one of the handshake a client runs before it can call anything else. " +
+				"Nothing is issued here: the operator approves the request in monloader's settings, " +
+				"after which the client claims its token from GET /api/v1/pair/status. Unauthenticated " +
+				"by design - it is how a client obtains a token.",
+			Request: &reqBody{
+				Required: []string{"app"},
+				Props: []prop{
+					{Name: "app", Type: "string", Description: "The client's name, shown to the operator; \"monbooru\" is reserved for the dedicated pairing flow"},
+					{Name: "requested_scopes", Type: "array", Items: &prop{Type: "string"}, Description: "Scopes to ask for (read, write); an empty list grants read only"},
+				},
+			},
+			Responses: []response{
+				{Status: "200", Description: "Request registered, awaiting approval", Props: []prop{
+					{Name: "request_id", Type: "string", Description: "Poll GET /api/v1/pair/status with this id"},
+					{Name: "status", Type: "string", Description: "Always \"pending\""},
+				}},
+				{Status: "400", Description: "Missing app name, or the reserved name \"monbooru\"", Ref: "Error"},
+				{Status: "409", Description: "Already paired with that app; remove the existing pairing first", Ref: "Error"},
+				{Status: "429", Description: "Too many pending pairing requests", Ref: "Error"},
+			},
+			Handler: h.pair.Request,
+		},
+		{
+			Method: "GET", Path: "/api/v1/pair/status",
+			Summary: "Poll a pairing request", OperationID: "pairStatus", NoAuth: true,
+			Description: "Reports pending / denied / approved. The first poll after approval mints the " +
+				"client's token and returns the secret once; later polls answer approved with no token.",
+			Params: []param{
+				{Name: "id", In: "query", Required: true, Description: "The request_id from POST /api/v1/pair/request"},
+			},
+			Responses: []response{
+				{Status: "200", Description: "Request state, with the token on the claiming poll", Props: []prop{
+					{Name: "status", Type: "string", Description: "pending, denied, or approved"},
+					{Name: "token", Type: "string", Description: "The bearer secret, present once, on the first poll after approval"},
+				}},
+				{Status: "404", Description: "Unknown pairing request", Ref: "Error"},
+			},
+			Handler: h.pair.Status,
+		},
+		{
+			Method: "POST", Path: "/api/v1/pair/remove",
+			Summary: "Drop a pairing from the client side", OperationID: "pairRemove", NoAuth: true,
+			Description: "Authenticates with the paired token itself rather than the bearer gate, so one " +
+				"\"remove pairing\" tears down both ends. monloader removes only locally and never calls back.",
+			Responses: []response{
+				{Status: "200", Description: "Pairing removed", Props: []prop{
+					{Name: "status", Type: "string", Description: "Always \"removed\""},
+				}},
+				{Status: "401", Description: "The Authorization header is missing or is not a pairing token", Ref: "Error"},
+			},
+			Handler: h.pair.Teardown,
+		},
+		{
 			Method: "GET", Path: "/api/v1/openapi.json",
 			Summary: "This OpenAPI document", OperationID: "openapi", NoAuth: true,
 			Responses: []response{
@@ -571,9 +626,14 @@ var apiSchemas = []apiSchema{
 	{Name: "Site", Props: []prop{
 		{Name: "category", Type: "string"},
 		{Name: "subcategory", Type: "string"},
+		{Name: "name", Type: "string", Description: "Display name from gallery-dl's supported-sites data"},
 		{Name: "example", Type: "string"},
-		{Name: "curated", Type: "boolean", Description: "Has a built-in mapping profile"},
-		{Name: "auth", Type: "string", Description: "none, api_optional, api_required, cookies"},
+		{Name: "hosts", Type: "array", Items: &prop{Type: "string"}, Description: "The curated profile's host aliases (file CDNs, mirror instances); a registrable domain covers its subdomains"},
+		{Name: "kind", Type: "string", Description: "booru, manga, other"},
+		{Name: "curated", Type: "boolean", Description: "Has a mapping profile (shipped or user)"},
+		{Name: "configured", Type: "boolean", Description: "Carries user-set site data or a custom profile (the settings tables' visibility rule)"},
+		{Name: "custom_profile", Type: "boolean", Description: "A user profile file overrides the shipped mapping"},
+		{Name: "auth", Type: "string", Description: "none, api_optional, api_required, username_password, cookies, oauth"},
 	}},
 	{Name: "ProbeResult", Props: []prop{
 		{Name: "status", Type: "string", Description: "ok, auth_required, blocked, failed"},
@@ -829,18 +889,18 @@ var docsTemplate = template.Must(template.New("api-docs").Parse(`<!DOCTYPE html>
  body { background:#0d0d0d; color:#c8c8c8; font-family:"JetBrains Mono","Fira Mono","Courier New",monospace; font-size:14px; line-height:1.5; padding:24px; max-width:1000px; margin:0 auto; }
  h1 { font-size:20px; font-weight:bold; margin-bottom:4px; }
  h2 { font-size:16px; color:#c8c8c8; border-bottom:1px solid #2a2a36; padding-bottom:4px; margin:24px 0 8px; }
- h3 { font-size:13px; color:#6a6a82; margin:12px 0 4px; font-weight:normal; text-transform:uppercase; letter-spacing:0.5px; }
- a { color:#5c6bc0; text-decoration:none; }
+ h3 { font-size:13px; color:#8f8faa; margin:12px 0 4px; font-weight:normal; text-transform:uppercase; letter-spacing:0.5px; }
+ a { color:#8592e4; text-decoration:none; }
  a:hover { text-decoration:underline; }
  code { font-family:inherit; }
  table { border-collapse:collapse; width:100%; margin:6px 0 10px; font-size:13px; }
  th, td { border:1px solid #2a2a36; padding:4px 8px; text-align:left; vertical-align:top; }
- th { color:#6a6a82; font-weight:normal; background:#16161c; }
- .muted { color:#6a6a82; font-size:12px; }
+ th { color:#8f8faa; font-weight:normal; background:#16161c; }
+ .muted { color:#8f8faa; font-size:12px; }
  .method { display:inline-block; padding:1px 6px; border:1px solid; font-weight:bold; margin-right:8px; font-size:12px; min-width:52px; text-align:center; }
  .method-get    { color:#22aa44; border-color:#22aa44; }
- .method-post   { color:#5c6bc0; border-color:#5c6bc0; }
- .method-delete { color:#cc3333; border-color:#cc3333; }
+ .method-post   { color:#8592e4; border-color:#8592e4; }
+ .method-delete { color:#e75c5c; border-color:#e75c5c; }
  .path { color:#c8c8c8; }
  ul.toc { list-style:none; padding:0; margin:8px 0 20px; }
  ul.toc li { padding:2px 0; }
@@ -851,7 +911,7 @@ var docsTemplate = template.Must(template.New("api-docs").Parse(`<!DOCTYPE html>
  <h1>{{.Title}}</h1>
  <p class="muted">Version {{.Version}} &middot; base URL <code>{{.BaseURL}}</code></p>
  {{if .APIProtected}}
- <p style="color:#22aa44;border:1px solid #22aa44;padding:4px 8px;">An API token is configured: send <code>Authorization: Bearer &lt;token&gt;</code> (with a scope covering the method) on every endpoint except <code>/health</code>, <code>/api/v1/openapi.json</code>, and <code>/api/v1/docs</code>. The <code>/api/v1/pair/*</code> family (the monsender pairing bootstrap: <code>POST /api/v1/pair/request</code>, <code>GET /api/v1/pair/status</code>, <code>POST /api/v1/pair/remove</code>) is also unauthenticated by design - it is how a client obtains a token - and is not listed below.</p>
+ <p style="color:#22aa44;border:1px solid #22aa44;padding:4px 8px;">An API token is configured: send <code>Authorization: Bearer &lt;token&gt;</code> (with a scope covering the method) on every endpoint except <code>/health</code>, <code>/api/v1/openapi.json</code>, <code>/api/v1/docs</code>, and the <code>/api/v1/pair/*</code> handshake below, which is unauthenticated by design - it is how a client obtains a token.</p>
  {{else}}
  <p style="color:#ffaa00;border:1px solid #ffaa00;padding:4px 8px;">No API token is configured, so the API is disabled (every authenticated endpoint returns <code>503 api_disabled</code>). Create one in Settings -&gt; Authentication.</p>
  {{end}}

@@ -1,0 +1,7 @@
+{
+  "family": "philomena",
+  "kind": "booru",
+  "post_url_template": "https://ponybooru.org/images/{id}",
+  "auth": "api_optional",
+  "example": "https://ponybooru.org/images/4045276"
+}

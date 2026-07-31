@@ -25,7 +25,10 @@ type simService interface {
 	LimitedUntil(service string) time.Time
 }
 
-// chainRow is one lookup-chain entry as the settings panel shows it.
+// chainRow is one lookup-chain entry as the settings panel shows it. A site
+// row carries its sites-table row too, so the edit-site shortcut opens the
+// shared dialog with the site's data; Position 0 marks a source holding an
+// order the walk skips (no md5 template).
 type chainRow struct {
 	Position   int
 	Name       string
@@ -36,6 +39,7 @@ type chainRow struct {
 	State     string
 	Warn      bool
 	CSRFToken string
+	Site      *siteRow
 }
 
 // lookupPanelView backs the settings lookup section. DialogOn and DialogOff
@@ -62,6 +66,10 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 		if src.Similarity {
 			if src.Name == "iqdb" {
 				row.Note = "uses the danbooru site credentials"
+				// iqdb has no credentials of its own, so its edit shortcut
+				// opens the danbooru site it authenticates through.
+				edit := s.siteRows([]string{"danbooru"}, csrf)[0]
+				row.Site = &edit
 			} else if view.SaucenaoKeySet {
 				row.Note = "api key: set"
 			} else {
@@ -72,10 +80,26 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 			} else if now.Before(s.sim.LimitedUntil(src.Name)) {
 				row.State, row.Warn = "rate limited", true
 			}
-		} else if label, needs := s.siteNeedsCredential(src.Name); needs {
-			row.State, row.Warn = "needs "+label, true
+		} else {
+			if label, needs := s.siteNeedsCredential(src.Name); needs {
+				row.State, row.Warn = "needs "+label, true
+			}
+			edit := s.siteRows([]string{src.Name}, csrf)[0]
+			row.Site = &edit
 		}
 		view.Chain = append(view.Chain, row)
+	}
+	// An order on a site whose effective profile carries no md5 template is
+	// skipped by the walk (a profile edit can take the template away);
+	// surface the skip instead of silently hiding the site.
+	for _, site := range cfg.Sites {
+		if site.LookupOrder > 0 && s.mapper.LookupURL(site.Name, "") == "" {
+			edit := s.siteRows([]string{site.Name}, csrf)[0]
+			view.Chain = append(view.Chain, chainRow{
+				Name: site.Name, Note: "the profile carries no md5 search template",
+				State: "no md5 template", Warn: true, CSRFToken: csrf, Site: &edit,
+			})
+		}
 	}
 	view.DialogOn = s.mapper.LookupChain()
 	inChain := map[string]bool{}
@@ -90,6 +114,12 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 	for _, cat := range s.mapper.CuratedCategories() {
 		if !inChain[cat] && s.mapper.LookupURL(cat, "") != "" {
 			view.DialogOff = append(view.DialogOff, mapping.LookupSource{Name: cat})
+		}
+	}
+	// A skipped site sits in the off column so a chain save clears its order.
+	for _, site := range cfg.Sites {
+		if site.LookupOrder > 0 && s.mapper.LookupURL(site.Name, "") == "" {
+			view.DialogOff = append(view.DialogOff, mapping.LookupSource{Name: site.Name})
 		}
 	}
 	return view

@@ -1,0 +1,8 @@
+{
+  "family": "gelbooru_v02",
+  "kind": "booru",
+  "post_url_template": "https://rule34.xxx/index.php?page=post&s=view&id={id}",
+  "md5_search_template": "https://rule34.xxx/index.php?page=post&s=list&tags=md5:{md5}",
+  "auth": "api_required",
+  "example": "https://rule34.xxx/index.php?page=post&s=view&id=17052960"
+}

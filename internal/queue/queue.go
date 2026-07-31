@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"sort"
 	"sync"
@@ -116,9 +117,7 @@ type Queue struct {
 // A workers value below 1 is snapped to 1; a maxFinished below 1 uses the
 // default. Call Start to launch the workers.
 func New(proc Processor, workers, maxFinished int) *Queue {
-	if workers < 1 {
-		workers = 1
-	}
+	workers = max(workers, 1)
 	if maxFinished < 1 {
 		maxFinished = defaultMaxFinished
 	}
@@ -368,10 +367,7 @@ func (q *Queue) List(opts ListOptions) ([]*Job, int) {
 	// on the way out keeps expired jobs from surfacing without a sweep timer of
 	// its own; the queue view's poll drives it often enough.
 	swept := q.sweepFinishedLocked(q.now())
-	all := make([]*Job, 0, len(q.index))
-	for _, j := range q.index {
-		all = append(all, j)
-	}
+	all := slices.Collect(maps.Values(q.index))
 	q.mu.Unlock()
 	q.persistDelete(swept)
 
@@ -387,19 +383,11 @@ func (q *Queue) List(opts ListOptions) ([]*Job, int) {
 
 	total := len(snaps)
 	if opts.Limit > 0 {
-		page := opts.Page
-		if page < 1 {
-			page = 1
-		}
-		start := (page - 1) * opts.Limit
+		start := (max(opts.Page, 1) - 1) * opts.Limit
 		if start >= len(snaps) {
 			return []*Job{}, total
 		}
-		end := start + opts.Limit
-		if end > len(snaps) {
-			end = len(snaps)
-		}
-		snaps = snaps[start:end]
+		snaps = snaps[start:min(start+opts.Limit, len(snaps))]
 	}
 	return snaps, total
 }
@@ -680,8 +668,10 @@ func (q *Queue) settleDropped(j *Job) {
 	j.signalDone()
 }
 
-// CancelPending drops every queued job that has not started: the FIFO
-// empties in one sweep, mirroring what a per-job cancel does to each.
+// CancelPending drops every queued job that has not started: the FIFO empties
+// in one sweep and its rows go with it, mirroring the API's DELETE /queue/{id}.
+// The row's own cancel goes through cancelKeepingRow instead, which settles a
+// never-started job as canceled in the history rather than dropping it.
 // Running jobs and history are untouched.
 func (q *Queue) CancelPending() {
 	q.mu.Lock()
@@ -743,9 +733,7 @@ func (q *Queue) pushPendingLocked(j *Job) {
 	for i < len(q.pending) && q.pending[i].Priority {
 		i++
 	}
-	q.pending = append(q.pending, nil)
-	copy(q.pending[i+1:], q.pending[i:])
-	q.pending[i] = j
+	q.pending = slices.Insert(q.pending, i, j)
 }
 
 func (q *Queue) removeFromPendingLocked(id int64) {

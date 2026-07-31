@@ -107,35 +107,107 @@ document.body.addEventListener("htmx:afterSwap", function () {
   }
 });
 
-// Per-site settings edit: fill the shared pop-in from the row's data and open
-// it. The api key is never echoed (only whether one is set); leaving it blank
-// keeps the stored value.
-document.body.addEventListener("click", function (e) {
-  var btn = e.target.closest && e.target.closest(".edit-site");
-  if (!btn) {
-    return;
+// Delegated clicks: the queue rows, the site dialog and the mapping editors are
+// all swapped in by htmx, so every handler binds once on the body and matches
+// the closest element instead of re-binding after each swap.
+function onClick(selector, fn) {
+  document.body.addEventListener("click", function (e) {
+    var el = e.target.closest && e.target.closest(selector);
+    if (el) {
+      fn(el, e);
+    }
+  });
+}
+
+// Per-site settings edit: the dialog's whole body is one server-rendered
+// fragment (credentials as set/unset placeholders, the effective profile),
+// loaded fresh each time it opens so a row, a search hit, and a lookup
+// shortcut all share one entry point that needs only the site name.
+onClick(".edit-site", function (btn) {
+  htmx.ajax("GET", "/settings/sites/" + encodeURIComponent(btn.dataset.site) + "/dialog", "#site-dialog-body").then(function () {
+    document.getElementById("site-edit-dialog").showModal();
+  });
+});
+
+// The dialog's tab strip switches its panels; hidden panels' fields still
+// submit, so the one save button writes every tab.
+onClick(".dialog-tab", function (tab) {
+  var dlg = tab.closest("dialog");
+  dlg.querySelectorAll(".dialog-tab").forEach(function (t) { t.classList.toggle("active", t === tab); });
+  dlg.querySelectorAll(".dialog-panel").forEach(function (p) { p.hidden = p.id !== tab.dataset.panel; });
+});
+
+// The export tab's copy button reads the profile file from its hidden
+// textarea; the execCommand fallback covers contexts without the
+// clipboard API (plain-http LAN origins).
+onClick("[data-copy-from]", function (btn, e) {
+  e.preventDefault();
+  var src = document.querySelector(btn.dataset.copyFrom);
+  var text = src ? src.value : "";
+  var flash = btn.parentElement && btn.parentElement.querySelector(".copy-flash");
+  var done = function () {
+    if (!flash) { return; }
+    flash.hidden = false;
+    setTimeout(function () { flash.hidden = true; }, 1500);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text, done); });
+  } else {
+    fallbackCopy(text, done);
   }
-  var d = btn.dataset;
-  document.getElementById("se-name").value = d.site;
-  document.getElementById("se-title").textContent = d.site;
-  document.getElementById("se-username").value = d.username || "";
-  document.getElementById("se-userid").value = d.userid || "";
-  document.getElementById("se-gallery").value = d.gallery || "";
-  var cookies = document.getElementById("se-cookies");
-  cookies.value = d.cookies || "";
-  var dir = document.getElementById("site-edit-dialog").dataset.cookiesDir || "";
-  cookies.placeholder = dir ? dir + "/" + d.site + ".txt" : "";
-  var key = document.getElementById("se-apikey");
-  key.value = "";
-  key.placeholder = d.haskey ? "(set - leave blank to keep)" : "(unset)";
-  // Show only the credentials this site's auth kind uses: the danbooru/e621
-  // family signs in by username, gelbooru by user id; cookies/none sites neither.
-  var auth = d.auth || "";
-  document.getElementById("se-field-username").style.display = auth === "api_optional" ? "" : "none";
-  document.getElementById("se-field-apikey").style.display =
-    auth === "api_optional" || auth === "api_required" ? "" : "none";
-  document.getElementById("se-field-userid").style.display = auth === "api_required" ? "" : "none";
-  document.getElementById("site-edit-dialog").showModal();
+});
+
+function fallbackCopy(text, done) {
+  var ta = document.createElement("textarea");
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); } catch (err) { /* fall through */ }
+  document.body.removeChild(ta);
+  done();
+}
+
+// The auth tab shows only the credentials the selected login type uses;
+// changing the type retargets the fields at once. Without JS every field
+// stays visible, which still saves correctly.
+function applyAuthFields(kind) {
+  var show = {
+    "auth-none": kind === "none",
+    "auth-oauth": kind === "oauth",
+    "auth-username": kind === "api_optional" || kind === "username_password",
+    "auth-password": kind === "username_password",
+    "auth-apikey": kind === "api_optional" || kind === "api_required",
+    "auth-userid": kind === "api_required",
+    "auth-cookies": kind === "cookies",
+  };
+  Object.keys(show).forEach(function (cls) {
+    document.querySelectorAll("#site-dialog-body ." + cls).forEach(function (el) {
+      el.style.display = show[cls] ? "" : "none";
+    });
+  });
+}
+document.body.addEventListener("change", function (e) {
+  if (e.target.id === "sd-auth") {
+    applyAuthFields(e.target.value);
+  }
+});
+document.body.addEventListener("htmx:afterSwap", function (e) {
+  if (e.target.id === "site-dialog-body") {
+    var auth = document.getElementById("sd-auth");
+    if (auth) {
+      applyAuthFields(auth.value);
+    }
+  }
+});
+
+// The mapping tab's editors grow from their row template and shrink with
+// each row's remove button.
+onClick(".add-maprow", function (add) {
+  var rows = document.getElementById(add.dataset.rows);
+  rows.appendChild(rows.querySelector("template").content.cloneNode(true));
+});
+onClick(".maprow-del", function (del) {
+  del.closest(".maprow").remove();
 });
 
 // Route hx-confirm prompts through an in-page pop-in instead of the browser's

@@ -1,11 +1,11 @@
 package mapping
 
 import (
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
@@ -24,10 +24,25 @@ const (
 )
 
 // Site kinds. A booru post is pushed on its own; a manga/comic gallery's pages
-// bundle into one cbz the way a booru pool does.
+// bundle into one cbz the way a booru pool does. KindOther groups the sites
+// that are neither (twitter, artstation) in the settings tables; the pipeline
+// treats it like a booru.
 const (
 	KindBooru = "booru"
 	KindManga = "manga"
+	KindOther = "other"
+)
+
+// Profile auth kinds: which credential a site signs in with. Optional kinds
+// work anonymously; oauth is surfaced but driven by gallery-dl's own flow,
+// its tokens carried via the site's options.
+const (
+	AuthNone             = "none"
+	AuthAPIOptional      = "api_optional"
+	AuthAPIRequired      = "api_required"
+	AuthUsernamePassword = "username_password"
+	AuthCookies          = "cookies"
+	AuthOAuth            = "oauth"
 )
 
 // Profile is one curated site mapping keyed by gallery-dl category.
@@ -41,9 +56,15 @@ type Profile struct {
 	// MD5Search is the site's md5 search URL with {md5} substituted - a
 	// tag-search form gallery-dl's extractors match, so the hash lookup rides
 	// the normal resolve path. Absent for sites that do not index md5.
-	MD5Search         string            `json:"md5_search_template,omitempty"`
-	Auth              string            `json:"auth"`
-	Example           string            `json:"example,omitempty"`
+	MD5Search string `json:"md5_search_template,omitempty"`
+	Auth      string `json:"auth"`
+	Example   string `json:"example,omitempty"`
+	// Hosts are extra hosts that belong to the site beyond its post URL -
+	// file CDNs and mirror instances - so a bare file link on one of them is
+	// labeled as this site rather than by its raw hostname, and API clients
+	// can recognize the site on any of them. A registrable domain covers its
+	// subdomains for clients that suffix-match.
+	Hosts             []string          `json:"hosts,omitempty"`
 	CategoryOverrides map[string]string `json:"category_overrides,omitempty"`
 	RatingOverrides   map[string]string `json:"rating_overrides,omitempty"`
 	// DefaultRating applies when the source provides no rating (manga and
@@ -58,16 +79,40 @@ type Profile struct {
 	// note boxes with gallery-dl's `notes: true`, e.g. sankaku. The booru
 	// families that carry notes get it by family instead.
 	HasNotes bool `json:"has_notes,omitempty"`
+	// Options are gallery-dl extractor options written under
+	// extractor.<category> in the managed config. Profiles are shareable, so
+	// secrets belong in the site's [[sites]] options, never here.
+	Options map[string]any `json:"options,omitempty"`
+	// TagRules corrects individual tags a site sends, keyed by the normalized
+	// tag name (or a full "category:name" form): "" suppresses the tag, a
+	// bare name renames it keeping its category, and a "category:name" value
+	// retargets it.
+	TagRules map[string]string `json:"tag_rules,omitempty"`
 }
 
-//go:embed profiles.json
-var profilesJSON []byte
+// The built-in profiles ship one file per gallery-dl category, named
+// <category>.json, so a contributed profile is a single new file.
+//
+//go:embed profiles/*.json
+var profilesFS embed.FS
 
-// loadProfiles decodes the embedded built-in profiles.
+// loadProfiles decodes the embedded built-in profiles, keyed by file name.
 func loadProfiles() (map[string]Profile, error) {
-	var profiles map[string]Profile
-	if err := json.Unmarshal(profilesJSON, &profiles); err != nil {
-		return nil, fmt.Errorf("decoding embedded profiles.json: %w", err)
+	entries, err := profilesFS.ReadDir("profiles")
+	if err != nil {
+		return nil, fmt.Errorf("reading embedded profiles: %w", err)
+	}
+	profiles := make(map[string]Profile, len(entries))
+	for _, e := range entries {
+		data, err := profilesFS.ReadFile("profiles/" + e.Name())
+		if err != nil {
+			return nil, fmt.Errorf("reading embedded profile %s: %w", e.Name(), err)
+		}
+		var p Profile
+		if err := json.Unmarshal(data, &p); err != nil {
+			return nil, fmt.Errorf("decoding embedded profile %s: %w", e.Name(), err)
+		}
+		profiles[strings.TrimSuffix(e.Name(), ".json")] = p
 	}
 	return profiles, nil
 }
@@ -78,9 +123,9 @@ func loadProfiles() (map[string]Profile, error) {
 // the two views cannot disagree about what a site needs.
 func RequiredCredential(auth string, site *config.Site) (label string, missing bool) {
 	switch auth {
-	case "api_required":
+	case AuthAPIRequired:
 		return "api key", site == nil || site.APIKey == ""
-	case "cookies":
+	case AuthCookies:
 		return "cookies", site == nil || site.Cookies == ""
 	}
 	return "", false
@@ -95,7 +140,7 @@ var genericProfile = Profile{Family: FamilyGeneric}
 // profileFor returns the curated profile for a category, or the generic
 // fallback so an unmapped site still works the day gallery-dl supports it.
 func (m *Mapper) profileFor(category string) Profile {
-	if p, ok := m.profiles[category]; ok {
+	if p, ok := m.view().profiles[category]; ok {
 		return p
 	}
 	return genericProfile
@@ -104,7 +149,15 @@ func (m *Mapper) profileFor(category string) Profile {
 // Lookup returns the curated profile for a gallery-dl category and whether a
 // curated entry exists (false means the generic fallback applies).
 func (m *Mapper) Lookup(category string) (Profile, bool) {
-	p, ok := m.profiles[category]
+	p, ok := m.view().profiles[category]
+	return p, ok
+}
+
+// BuiltinProfile returns the shipped profile for a category, ignoring
+// any user file. The site dialog's export tab diffs the effective
+// profile against this to color what the install changes.
+func (m *Mapper) BuiltinProfile(category string) (Profile, bool) {
+	p, ok := m.builtin[category]
 	return p, ok
 }
 
@@ -127,7 +180,7 @@ func (m *Mapper) ExampleURL(extractors []gdl.Extractor, category string) string 
 // LookupURL builds a site's md5 search URL, or "" when its profile carries no
 // template (the site does not index md5, so it cannot be looked up).
 func (m *Mapper) LookupURL(category, md5 string) string {
-	p, ok := m.profiles[category]
+	p, ok := m.view().profiles[category]
 	if !ok || p.MD5Search == "" {
 		return ""
 	}
@@ -137,7 +190,7 @@ func (m *Mapper) LookupURL(category, md5 string) string {
 // PostURLFor builds a category's canonical post URL from a bare post id, or
 // "" when its profile carries no template.
 func (m *Mapper) PostURLFor(category, id string) string {
-	p, ok := m.profiles[category]
+	p, ok := m.view().profiles[category]
 	if !ok || p.PostURL == "" || id == "" {
 		return ""
 	}
@@ -153,10 +206,29 @@ func hostIndex(profiles map[string]Profile) map[string]string {
 			continue
 		}
 		if u, err := url.Parse(p.PostURL); err == nil && u.Host != "" {
-			idx[strings.TrimPrefix(strings.ToLower(u.Host), "www.")] = category
+			idx[normalizeHost(u.Host)] = category
 		}
 	}
 	return idx
+}
+
+// aliasIndex maps each profile's declared host aliases to its category. Kept
+// apart from hostIndex: an alias is a file host, not a post-URL shape, so it
+// names a site for labeling but is never rebuilt into a canonical post URL.
+func aliasIndex(profiles map[string]Profile) map[string]string {
+	idx := map[string]string{}
+	for category, p := range profiles {
+		for _, h := range p.Hosts {
+			idx[normalizeHost(h)] = category
+		}
+	}
+	return idx
+}
+
+// normalizeHost folds a host to the form the indexes compare: lowercased,
+// leading www stripped.
+func normalizeHost(host string) string {
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(host)), "www.")
 }
 
 // CanonicalPostURL recognizes a curated site's post URL in any of its
@@ -170,13 +242,13 @@ func (m *Mapper) CanonicalPostURL(rawURL string) (site, canonical string, ok boo
 	if err != nil || u.Host == "" {
 		return "", "", false
 	}
-	category, ok := m.hostSite[strings.TrimPrefix(strings.ToLower(u.Host), "www.")]
+	category, ok := m.view().hostSite[normalizeHost(u.Host)]
 	if !ok {
 		return "", "", false
 	}
 	id := u.Query().Get("id")
 	if id == "" {
-		id = postIDFromPath(u.Path, m.profiles[category].PostURL)
+		id = postIDFromPath(u.Path, m.view().profiles[category].PostURL)
 	}
 	if id == "" || !allDigits(id) {
 		return "", "", false
@@ -257,7 +329,7 @@ func allDigits(s string) bool {
 // or unspecified sites are booru-shaped, so they push per post rather than
 // bundling into a cbz.
 func (m *Mapper) KindOf(category string) string {
-	if p, ok := m.profiles[category]; ok && p.Kind == KindManga {
+	if p, ok := m.view().profiles[category]; ok && p.Kind == KindManga {
 		return KindManga
 	}
 	return KindBooru
@@ -280,12 +352,12 @@ func needsNotesFamily(family string) bool {
 // sorted.
 func (m *Mapper) curatedWhere(pred func(Profile) bool) []string {
 	var out []string
-	for category, p := range m.profiles {
+	for category, p := range m.view().profiles {
 		if pred(p) {
 			out = append(out, category)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -333,4 +405,16 @@ func (m *Mapper) MetadataSites() []string {
 // posts flagged as noted.
 func (m *Mapper) NotesSites() []string {
 	return m.curatedWhere(func(p Profile) bool { return needsNotesFamily(p.Family) || p.HasNotes })
+}
+
+// SiteOptions collects each profile's own gallery-dl options for the managed
+// config writer, keyed by category.
+func (m *Mapper) SiteOptions() map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for category, p := range m.view().profiles {
+		if len(p.Options) > 0 {
+			out[category] = p.Options
+		}
+	}
+	return out
 }

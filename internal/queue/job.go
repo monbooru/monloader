@@ -2,6 +2,7 @@ package queue
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -257,7 +258,8 @@ func validJobTransition(from, to JobStatus) bool {
 	case JobQueued:
 		return to == JobRunning || to == JobCanceled
 	case JobRunning:
-		return to == JobSucceeded || to == JobPartial || to == JobFailed || to == JobCanceled
+		return to == JobSucceeded || to == JobPartial || to == JobFailed ||
+			to == JobCanceled || to == JobInterrupted
 	case JobSucceeded, JobPartial, JobFailed, JobCanceled, JobInterrupted:
 		return to == JobQueued // Retry
 	}
@@ -401,8 +403,7 @@ func (j *Job) clearCapped() bool {
 // the resolve pass.
 func (j *Job) SetItems(items []Item) {
 	j.mu.Lock()
-	cp := make([]Item, len(items))
-	copy(cp, items)
+	cp := slices.Clone(items)
 	for i := range cp {
 		if cp[i].Status == "" {
 			cp[i].Status = ItemPending
@@ -521,6 +522,20 @@ func (j *Job) cancel(now time.Time) {
 	j.markFinishedLocked(now)
 }
 
+// interrupt settles a job the process is going away holding, the same way boot
+// recovery settles one a crash left running: the items keep whatever they had
+// reached, since nothing aborted them on purpose and no error code applies.
+func (j *Job) interrupt(now time.Time) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.finalized {
+		return
+	}
+	j.Summary = summarize(j.Items)
+	j.Status = JobInterrupted
+	j.markFinishedLocked(now)
+}
+
 // reset returns a finished job to the queued state for Retry: the state is
 // rebuilt from the identity fields the re-run keeps, so the prior run's items,
 // summary, error, site, and timestamps zero out, and done is re-armed. The
@@ -540,14 +555,18 @@ func (j *Job) reset(force bool, now time.Time) error {
 		url = ""
 	}
 	j.jobState = jobState{
-		ID:             j.ID,
-		URL:            url,
-		Status:         JobQueued,
-		Kind:           j.Kind,
-		ImageID:        j.ImageID,
-		Backend:        j.Backend,
-		MD5:            j.MD5,
-		SHA256:         j.SHA256,
+		ID:      j.ID,
+		URL:     url,
+		Status:  JobQueued,
+		Kind:    j.Kind,
+		ImageID: j.ImageID,
+		Backend: j.Backend,
+		MD5:     j.MD5,
+		SHA256:  j.SHA256,
+		// Site is carried like Gallery: a re-run of a series' empty trailing
+		// window resolves no items and would never learn one, blanking the
+		// collapsed row's site cell that Options.Site exists to fill.
+		Site:           j.Site,
 		Gallery:        j.Gallery,
 		Folder:         j.Folder,
 		ContribIDs:     j.ContribIDs,
@@ -629,6 +648,8 @@ func (j *Job) snapshot(withItems bool) *Job {
 	defer j.mu.Unlock()
 	state := j.jobState
 	if withItems {
+		// Not slices.Clone: an item-less job must still marshal "items": []
+		// rather than null, which the extension would have to special-case.
 		state.Items = make([]Item, len(j.Items))
 		copy(state.Items, j.Items)
 	} else {

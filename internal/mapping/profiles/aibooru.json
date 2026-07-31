@@ -1,0 +1,8 @@
+{
+  "family": "danbooru",
+  "kind": "booru",
+  "post_url_template": "https://aibooru.online/posts/{id}",
+  "md5_search_template": "https://aibooru.online/posts?tags=md5:{md5}",
+  "auth": "api_optional",
+  "example": "https://aibooru.online/posts/12345"
+}

@@ -1,0 +1,7 @@
+{
+  "family": "philomena",
+  "kind": "booru",
+  "post_url_template": "https://furbooru.org/images/{id}",
+  "auth": "api_optional",
+  "example": "https://furbooru.org/images/96784"
+}

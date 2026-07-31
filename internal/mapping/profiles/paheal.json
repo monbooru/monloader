@@ -1,0 +1,7 @@
+{
+  "family": "generic",
+  "kind": "booru",
+  "post_url_template": "https://rule34.paheal.net/post/view/{id}",
+  "auth": "none",
+  "example": "https://rule34.paheal.net/post/view/7335390"
+}

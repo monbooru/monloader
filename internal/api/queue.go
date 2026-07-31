@@ -26,15 +26,30 @@ type enqueueRequest struct {
 	} `json:"options"`
 }
 
+// monbooruReady refuses work whose push step could only fail: with no monbooru
+// configured there is nothing to push to, and a held link is the operator's own
+// hold. The web add bar refuses on both counts; the extension sends through
+// here, so this refuses too.
+func (h *Handler) monbooruReady(w http.ResponseWriter) bool {
+	cfg := h.cfg.Current()
+	if cfg.Monbooru.APIURL == "" {
+		apiError(w, http.StatusConflict, "monbooru_unconfigured",
+			"monbooru is not configured - set its connection in monloader's settings")
+		return false
+	}
+	if cfg.Monbooru.Paused {
+		apiError(w, http.StatusConflict, "monbooru_paused",
+			"the monbooru link is paused - resume it from the light in monloader's footer")
+		return false
+	}
+	return true
+}
+
 // enqueue handles POST /api/v1/queue. Downloads are asynchronous, so it
 // returns 202 with a job id; with ?wait=N it blocks up to N seconds and
 // returns the resolved job inline if it finished in time.
 func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
-	// The footer light holds the link, and the add bar refuses new work while it
-	// is held; the extension sends through here, so this refuses too.
-	if h.cfg.Current().Monbooru.Paused {
-		apiError(w, http.StatusConflict, "monbooru_paused",
-			"the monbooru link is paused - resume it from the light in monloader's footer")
+	if !h.monbooruReady(w) {
 		return
 	}
 	var body enqueueRequest
@@ -226,10 +241,7 @@ func waitSeconds(r *http.Request) int {
 	if err != nil || n < 0 {
 		return 0
 	}
-	if n > maxWaitSeconds {
-		n = maxWaitSeconds
-	}
-	return n
+	return min(n, maxWaitSeconds)
 }
 
 // listJobs handles GET /api/v1/queue with optional status filter and
@@ -304,6 +316,9 @@ func (h *Handler) jobAction(w http.ResponseWriter, r *http.Request, action func(
 // retryJob handles POST /api/v1/queue/{id}/retry. With ?force=1 the re-run
 // bypasses the download-archive so already-fetched posts are downloaded again.
 func (h *Handler) retryJob(w http.ResponseWriter, r *http.Request) {
+	if !h.monbooruReady(w) {
+		return
+	}
 	h.jobAction(w, r, func(id int64) (int64, error) {
 		return id, h.queue.Retry(id, r.URL.Query().Get("force") == "1")
 	})
@@ -312,6 +327,9 @@ func (h *Handler) retryJob(w http.ResponseWriter, r *http.Request) {
 // continueJob handles POST /api/v1/queue/{id}/continue. It enqueues a follow-up
 // job for the window after a capped job's, returning the new job id.
 func (h *Handler) continueJob(w http.ResponseWriter, r *http.Request) {
+	if !h.monbooruReady(w) {
+		return
+	}
 	h.jobAction(w, r, h.queue.Continue)
 }
 
@@ -319,6 +337,9 @@ func (h *Handler) continueJob(w http.ResponseWriter, r *http.Request) {
 // next window and keeps fetching each following one until the capped search
 // runs short, returning the first follow-up job's id.
 func (h *Handler) continueAllJob(w http.ResponseWriter, r *http.Request) {
+	if !h.monbooruReady(w) {
+		return
+	}
 	h.jobAction(w, r, h.queue.ContinueAll)
 }
 

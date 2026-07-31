@@ -1,0 +1,7 @@
+{
+  "family": "philomena",
+  "kind": "booru",
+  "post_url_template": "https://twibooru.org/{id}",
+  "auth": "none",
+  "example": "https://twibooru.org/3784387"
+}

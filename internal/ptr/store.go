@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -248,17 +249,16 @@ func (s *Store) Close() error {
 // Cursor returns the highest fully processed update index, and whether any has
 // been processed yet.
 func (s *Store) Cursor() (uint64, bool, error) {
-	var v string
-	err := s.db.QueryRow(`SELECT value FROM sync WHERE key='cursor'`).Scan(&v)
-	if err == sql.ErrNoRows {
-		return 0, false, nil
-	}
-	if err != nil {
+	v, ok, err := syncValue(s.db, cursorKey)
+	if err != nil || !ok {
 		return 0, false, err
 	}
 	n, err := strconv.ParseUint(v, 10, 64)
 	return n, true, err
 }
+
+// cursorKey persists the highest fully processed update index.
+const cursorKey = "cursor"
 
 // countsKey persists the row census in the sync KV. Replay maintains it
 // incrementally in the same transaction as the data, so the status counts
@@ -272,12 +272,8 @@ const coveredKey = "covered"
 // CoveredThrough returns the persisted coverage timestamp, or 0 when no update
 // carrying one has been applied yet.
 func (s *Store) CoveredThrough() (int64, error) {
-	var v string
-	err := s.db.QueryRow(`SELECT value FROM sync WHERE key=?`, coveredKey).Scan(&v)
-	if err == sql.ErrNoRows {
-		return 0, nil
-	}
-	if err != nil {
+	v, ok, err := syncValue(s.db, coveredKey)
+	if err != nil || !ok {
 		return 0, err
 	}
 	return strconv.ParseInt(v, 10, 64)
@@ -301,12 +297,8 @@ const blobsKey = "blobs"
 // been recorded; an index synced before it existed reports false until the
 // engine backfills it.
 func (s *Store) BlobsApplied() (uint64, bool, error) {
-	var v string
-	err := s.db.QueryRow(`SELECT value FROM sync WHERE key=?`, blobsKey).Scan(&v)
-	if err == sql.ErrNoRows {
-		return 0, false, nil
-	}
-	if err != nil {
+	v, ok, err := syncValue(s.db, blobsKey)
+	if err != nil || !ok {
 		return 0, false, err
 	}
 	n, err := strconv.ParseUint(v, 10, 64)
@@ -346,73 +338,18 @@ func (s *Store) Replay(index uint64, coveredThrough int64, blobs [][]byte, appli
 	if c, err = scanCounts(tx); err != nil {
 		return c, rows, err
 	}
-	var touchedTags, touchedSiblings, touchedParents bool
-	for _, raw := range blobs {
-		var kind int
-		if kind, err = updateKind(raw); err != nil {
-			return c, rows, err
-		}
-		if kind != typeDefinitionsUpdate {
-			if kind != typeContentUpdate {
-				err = fmt.Errorf("update type %d is neither definitions (36) nor content (34)", kind)
-				return c, rows, err
-			}
-			continue
-		}
-		var up *Update
-		if up, err = ParseUpdate(raw); err != nil {
-			return c, rows, err
-		}
-		var hashDelta int64
-		if hashDelta, err = applyDefinitions(tx, up.Definitions); err != nil {
-			return c, rows, err
-		}
-		c.Hashes += hashDelta
-		rows += up.Rows()
-		touchedTags = touchedTags || len(up.Definitions.Tags) > 0
-		if applied != nil {
-			applied()
-		}
+	var defs, content replayPass
+	if defs, err = replayDefinitions(tx, blobs, applied); err != nil {
+		return c, rows, err
 	}
-	for _, raw := range blobs {
-		var kind int
-		if kind, err = updateKind(raw); err != nil {
-			return c, rows, err
-		}
-		if kind != typeContentUpdate {
-			continue
-		}
-		var up *Update
-		if up, err = ParseUpdate(raw); err != nil {
-			return c, rows, err
-		}
-		var mapDelta int64
-		if mapDelta, err = applyContent(tx, up.Content); err != nil {
-			return c, rows, err
-		}
-		c.Mappings += mapDelta
-		rows += up.Rows()
-		touchedSiblings = touchedSiblings || len(up.Content.SiblingsAdd)+len(up.Content.SiblingsDel) > 0
-		touchedParents = touchedParents || len(up.Content.ParentsAdd)+len(up.Content.ParentsDel) > 0
-		if applied != nil {
-			applied()
-		}
+	if content, err = replayContent(tx, blobs, applied); err != nil {
+		return c, rows, err
 	}
-	for _, rc := range []struct {
-		touched bool
-		table   string
-		dst     *int64
-	}{
-		{touchedTags, "tags", &c.Tags},
-		{touchedSiblings, "siblings", &c.Siblings},
-		{touchedParents, "parents", &c.Parents},
-	} {
-		if !rc.touched {
-			continue
-		}
-		if err = tx.QueryRow(`SELECT COUNT(*) FROM ` + rc.table).Scan(rc.dst); err != nil {
-			return c, rows, err
-		}
+	c.Hashes += defs.hashDelta
+	c.Mappings += content.mapDelta
+	rows = defs.rows + content.rows
+	if err = recountTouched(tx, &c, defs, content); err != nil {
+		return c, rows, err
 	}
 	var buf []byte
 	if buf, err = json.Marshal(c); err != nil {
@@ -421,20 +358,18 @@ func (s *Store) Replay(index uint64, coveredThrough int64, blobs [][]byte, appli
 	if err = upsertSync(tx, countsKey, string(buf)); err != nil {
 		return c, rows, err
 	}
-	if err = upsertSync(tx, "cursor", strconv.FormatUint(index, 10)); err != nil {
+	if err = upsertSync(tx, cursorKey, strconv.FormatUint(index, 10)); err != nil {
 		return c, rows, err
 	}
 	var blobsApplied uint64
-	var v string
-	switch err = tx.QueryRow(`SELECT value FROM sync WHERE key=?`, blobsKey).Scan(&v); err {
-	case sql.ErrNoRows:
-		err = nil
-	case nil:
+	v, ok, err := syncValue(tx, blobsKey)
+	if err != nil {
+		return c, rows, err
+	}
+	if ok {
 		if blobsApplied, err = strconv.ParseUint(v, 10, 64); err != nil {
 			return c, rows, err
 		}
-	default:
-		return c, rows, err
 	}
 	if err = upsertSync(tx, blobsKey, strconv.FormatUint(blobsApplied+uint64(len(blobs)), 10)); err != nil {
 		return c, rows, err
@@ -447,22 +382,128 @@ func (s *Store) Replay(index uint64, coveredThrough int64, blobs [][]byte, appli
 	return c, rows, tx.Commit()
 }
 
-// rowQuerier is the single query shape scanCounts needs; *sql.Tx and *sql.DB
-// both satisfy it.
+// replayPass is what one pass over an entry's blobs changed: the row deltas it
+// applied and which small tables it touched, so only those are re-counted.
+type replayPass struct {
+	hashDelta, mapDelta, rows int64
+	touchedTags               bool
+	touchedSiblings           bool
+	touchedParents            bool
+}
+
+// replayDefinitions applies the entry's definition blobs, which must land
+// before any content references their ids. It is also where an unknown blob
+// kind fails the entry, so the content pass can simply skip what is not its
+// own.
+func replayDefinitions(tx *sql.Tx, blobs [][]byte, applied func()) (p replayPass, err error) {
+	for _, raw := range blobs {
+		kind, err := updateKind(raw)
+		if err != nil {
+			return p, err
+		}
+		if kind != typeDefinitionsUpdate {
+			if kind != typeContentUpdate {
+				return p, fmt.Errorf("update type %d is neither definitions (36) nor content (34)", kind)
+			}
+			continue
+		}
+		up, err := ParseUpdate(raw)
+		if err != nil {
+			return p, err
+		}
+		delta, err := applyDefinitions(tx, up.Definitions)
+		if err != nil {
+			return p, err
+		}
+		p.hashDelta += delta
+		p.rows += up.Rows()
+		p.touchedTags = p.touchedTags || len(up.Definitions.Tags) > 0
+		if applied != nil {
+			applied()
+		}
+	}
+	return p, nil
+}
+
+// replayContent applies the entry's content blobs, whose ids the definitions
+// pass has already defined.
+func replayContent(tx *sql.Tx, blobs [][]byte, applied func()) (p replayPass, err error) {
+	for _, raw := range blobs {
+		kind, err := updateKind(raw)
+		if err != nil {
+			return p, err
+		}
+		if kind != typeContentUpdate {
+			continue
+		}
+		up, err := ParseUpdate(raw)
+		if err != nil {
+			return p, err
+		}
+		delta, err := applyContent(tx, up.Content)
+		if err != nil {
+			return p, err
+		}
+		p.mapDelta += delta
+		p.rows += up.Rows()
+		p.touchedSiblings = p.touchedSiblings || len(up.Content.SiblingsAdd)+len(up.Content.SiblingsDel) > 0
+		p.touchedParents = p.touchedParents || len(up.Content.ParentsAdd)+len(up.Content.ParentsDel) > 0
+		if applied != nil {
+			applied()
+		}
+	}
+	return p, nil
+}
+
+// recountTouched re-counts only the small tables this entry changed; the
+// multi-billion-row ones advance by the passes' deltas instead.
+func recountTouched(tx *sql.Tx, c *Counts, defs, content replayPass) error {
+	for _, rc := range []struct {
+		touched bool
+		table   string
+		dst     *int64
+	}{
+		{defs.touchedTags, "tags", &c.Tags},
+		{content.touchedSiblings, "siblings", &c.Siblings},
+		{content.touchedParents, "parents", &c.Parents},
+	} {
+		if !rc.touched {
+			continue
+		}
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM ` + rc.table).Scan(rc.dst); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rowQuerier is the single query shape the sync-KV reads need; *sql.Tx and
+// *sql.DB both satisfy it, so a read inside a replay transaction and one
+// outside share the same helper.
 type rowQuerier interface {
 	QueryRow(query string, args ...any) *sql.Row
+}
+
+// syncValue reads one sync-KV scalar; ok=false means the key is absent, which
+// on this table only ever means a brand-new index. The write side goes through
+// upsertSync.
+func syncValue(q rowQuerier, key string) (value string, ok bool, err error) {
+	err = q.QueryRow(`SELECT value FROM sync WHERE key=?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
 }
 
 // scanCounts reads the persisted census. A missing key only means a brand-new
 // index.
 func scanCounts(q rowQuerier) (Counts, error) {
 	var c Counts
-	var v string
-	err := q.QueryRow(`SELECT value FROM sync WHERE key=?`, countsKey).Scan(&v)
-	if err == sql.ErrNoRows {
-		return c, nil
-	}
-	if err != nil {
+	v, ok, err := syncValue(q, countsKey)
+	if err != nil || !ok {
 		return c, err
 	}
 	return c, json.Unmarshal([]byte(v), &c)

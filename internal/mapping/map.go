@@ -1,15 +1,20 @@
 package mapping
 
 import (
-	"fmt"
+	"cmp"
 	"html"
+	"maps"
 	"net/url"
+	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/kwdict"
+	"github.com/monbooru/monloader/internal/logx"
 )
 
 // Via is the origin label stamped on every pushed image and its initial tags.
@@ -46,34 +51,69 @@ type NoteBox struct {
 }
 
 // Mapper turns gallery-dl metadata into monbooru push fields using the
-// curated profiles plus the user override tables in config. The override
-// tables and per-site galleries are read from the config provider on each map,
-// so a settings save takes effect without racing the worker goroutine.
+// built-in profiles, the user profile files layered over them, and the user
+// override tables in config. The override tables and per-site galleries are
+// read from the config provider on each map, so a settings save takes effect
+// without racing the worker goroutine.
 type Mapper struct {
-	profiles map[string]Profile
-	cfg      *config.Provider
-	// hostSite indexes each curated profile's post-URL host so a similarity
-	// service's result URL can be recognized and rebuilt canonically.
-	hostSite map[string]string
+	builtin map[string]Profile
+	userDir string
+	cfg     *config.Provider
+	// ps is the merged profile view, swapped whole on a profile save so a
+	// reader never observes a half-rebuilt map.
+	ps atomic.Pointer[profileSet]
 }
 
-// New builds a Mapper from the embedded profiles and the config provider.
-// A configured lookup order on a site whose profile has no md5 template is
-// rejected here rather than in the config package, which cannot see the
-// profiles without an import cycle; boot fails with the same operator
-// experience as a config validation error.
-func New(cfg *config.Provider) (*Mapper, error) {
-	profiles, err := loadProfiles()
+// profileSet is one immutable snapshot of the merged profiles. hostSite
+// indexes each templated profile's post-URL host so a similarity service's
+// result URL can be recognized and rebuilt canonically; aliasSite indexes the
+// declared host aliases, which only name a site for source labeling; custom
+// marks the categories whose user profile differs from the shipped one.
+type profileSet struct {
+	profiles  map[string]Profile
+	hostSite  map[string]string
+	aliasSite map[string]string
+	custom    map[string]bool
+}
+
+// New builds a Mapper from the embedded profiles, the user profile files in
+// profilesDir (missing or empty is fine), and the config provider. A lookup
+// order on a site whose profile has no md5 template only warns: profiles are
+// runtime-editable files, so a stale order must degrade the chain, not fail
+// the boot.
+func New(cfg *config.Provider, profilesDir string) (*Mapper, error) {
+	builtin, err := loadProfiles()
 	if err != nil {
 		return nil, err
 	}
-	m := &Mapper{profiles: profiles, cfg: cfg, hostSite: hostIndex(profiles)}
+	m := &Mapper{builtin: builtin, userDir: profilesDir, cfg: cfg}
+	m.reload()
 	for _, site := range cfg.Current().Sites {
 		if site.LookupOrder > 0 && m.LookupURL(site.Name, "") == "" {
-			return nil, fmt.Errorf("site %q has lookup_order set but no md5 lookup support", site.Name)
+			logx.Warnf("site %q has lookup_order set but no md5 lookup support; the lookup chain skips it", site.Name)
 		}
 	}
 	return m, nil
+}
+
+// view returns the current profile snapshot.
+func (m *Mapper) view() *profileSet { return m.ps.Load() }
+
+// reload rebuilds the merged view from the built-ins and the user profile
+// files. A user profile identical to the shipped one is not a customization,
+// so it is ignored (and the settings save deletes such a file instead of
+// writing it).
+func (m *Mapper) reload() {
+	profiles := maps.Clone(m.builtin)
+	custom := map[string]bool{}
+	for category, p := range loadUserProfiles(m.userDir) {
+		if b, ok := m.builtin[category]; ok && reflect.DeepEqual(p, b) {
+			continue
+		}
+		profiles[category] = p
+		custom[category] = true
+	}
+	m.ps.Store(&profileSet{profiles: profiles, hostSite: hostIndex(profiles), aliasSite: aliasIndex(profiles), custom: custom})
 }
 
 // LookupSource is one entry of the unified lookup chain: a site's exact-md5
@@ -107,11 +147,8 @@ func (m *Mapper) LookupChain() []LookupSource {
 			entries = append(entries, entry{LookupSource{Name: name, Similarity: true}, svc.Order})
 		}
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].order != entries[j].order {
-			return entries[i].order < entries[j].order
-		}
-		return entries[i].src.Name < entries[j].src.Name
+	slices.SortStableFunc(entries, func(a, b entry) int {
+		return cmp.Or(cmp.Compare(a.order, b.order), cmp.Compare(a.src.Name, b.src.Name))
 	})
 	out := make([]LookupSource, len(entries))
 	for i, e := range entries {
@@ -142,25 +179,71 @@ func (m *Mapper) Gallery(category string) string {
 	return m.cfg.Current().Monbooru.DefaultGallery
 }
 
+// SourceLabel resolves what a push stamps as its source for a site name or a
+// bare host: the [[sites]] label when set, a known category unchanged, and a
+// host through the config host_labels rows (exact host first, parent domains
+// after, winning over profiles as the override tables do) then the profiles'
+// post-URL hosts and host aliases. Nothing matching keeps the name as-is, so
+// no label lands that the operator did not choose.
+func (m *Mapper) SourceLabel(name string) string {
+	cfg := m.cfg.Current()
+	if site := cfg.FindSite(name); site != nil && site.Label != "" {
+		return site.Label
+	}
+	v := m.view()
+	if _, ok := v.profiles[name]; ok {
+		return name
+	}
+	host := normalizeHost(name)
+	for cand := host; cand != ""; cand = parentDomain(cand) {
+		for _, hl := range cfg.HostLabels {
+			if normalizeHost(hl.Host) == cand {
+				return hl.Label
+			}
+		}
+	}
+	category, ok := v.hostSite[host]
+	if !ok {
+		category, ok = v.aliasSite[host]
+	}
+	if ok {
+		if site := cfg.FindSite(category); site != nil && site.Label != "" {
+			return site.Label
+		}
+		return category
+	}
+	return name
+}
+
+// parentDomain strips a host's leftmost segment ("" past the registrable
+// part), so img.website.com walks to website.com and stops.
+func parentDomain(host string) string {
+	i := strings.Index(host, ".")
+	if i < 0 || !strings.Contains(host[i+1:], ".") {
+		return ""
+	}
+	return host[i+1:]
+}
+
 // Map turns one gallery-dl item's metadata into monbooru push fields.
 func (m *Mapper) Map(meta map[string]any) PushFields {
 	category := kwdict.String(meta, "category")
 	profile := m.profileFor(category)
 
 	pf := PushFields{
-		Source: category,
+		Source: m.SourceLabel(category),
 		Via:    Via,
 	}
 	if category == CategoryDirectlink {
 		// A bare media URL has no booru behind it, so its host is the closest
 		// thing to a site label.
-		pf.Source = kwdict.String(meta, "domain")
+		pf.Source = m.SourceLabel(kwdict.String(meta, "domain"))
 	}
 
 	seen := map[string]bool{}
 	var tags []string
 	add := func(s string) {
-		s = normalizeTag(s)
+		s = applyTagRule(profile.TagRules, normalizeTag(s))
 		if s != "" && !seen[s] {
 			seen[s] = true
 			tags = append(tags, s)

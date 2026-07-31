@@ -1,0 +1,10 @@
+{
+  "family": "generic",
+  "kind": "booru",
+  "post_url_template": "https://www.idolcomplex.com/posts/{id}",
+  "md5_search_template": "https://idol.sankakucomplex.com/?tags=md5:{md5}",
+  "auth": "cookies",
+  "example": "https://www.idolcomplex.com/posts/6ea43jg5M3v",
+  "needs_tags": true,
+  "has_notes": true
+}

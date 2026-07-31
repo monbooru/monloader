@@ -1,0 +1,8 @@
+{
+  "family": "generic",
+  "kind": "manga",
+  "post_url_template": "https://nhentai.net/g/{id}/",
+  "auth": "none",
+  "example": "https://nhentai.net/g/12345/",
+  "default_rating": "explicit"
+}

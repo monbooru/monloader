@@ -96,7 +96,7 @@ func (s *Server) ptrData(r *http.Request) ptrView {
 }
 
 func (s *Server) ptrScreen(w http.ResponseWriter, r *http.Request) {
-	data := s.base(r, "ptr", "ptr - "+s.titleName())
+	data := s.base(r, "ptr", "Public Tag Repository - "+s.titleName())
 	data["PTR"] = s.ptrData(r)
 	if msg := r.URL.Query().Get("msg"); msg != "" {
 		data["Flash"] = msg
@@ -411,12 +411,72 @@ type ptrContribView struct {
 	Syncing     bool
 	NotReady    bool
 	SendRunning bool
+	Activity    ptrActivityView
 	Unsent      []ptrContribItemView
 	HasFailed   bool
 	History     []ptrContribItemView
 	Page        int
 	TotalPages  int
 	RetryErr    string
+}
+
+// ptrActivityCell is one day square of the card's activity panel.
+type ptrActivityCell struct {
+	Level int
+	Title string
+}
+
+// ptrActivityWeek is one column of the panel: seven day cells and the
+// month label the column opens, when it opens one.
+type ptrActivityWeek struct {
+	Month string
+	Days  []ptrActivityCell
+}
+
+// ptrActivityView backs the card's per-day activity panel.
+type ptrActivityView struct {
+	Total int
+	Weeks []ptrActivityWeek
+}
+
+// ptrActivity buckets a year of ledger days into week columns starting
+// Sunday. Cell depth is the day's share of the year's busiest day, so a
+// light contributor still gets a readable ramp.
+func ptrActivity(daily map[string]int, now time.Time) ptrActivityView {
+	start := now.AddDate(0, 0, -364)
+	start = start.AddDate(0, 0, -int(start.Weekday()))
+	var v ptrActivityView
+	peak := 0
+	for d := start; !d.After(now); d = d.AddDate(0, 0, 1) {
+		n := daily[d.Format("2006-01-02")]
+		v.Total += n
+		if n > peak {
+			peak = n
+		}
+	}
+	prev := time.Month(0)
+	for d := start; !d.After(now); {
+		var wk ptrActivityWeek
+		if m := d.Month(); m != prev && d.Day() <= 7 {
+			wk.Month = strings.ToLower(m.String()[:3])
+		}
+		prev = d.Month()
+		for i := 0; i < 7 && !d.After(now); i++ {
+			day := d.Format("2006-01-02")
+			n := daily[day]
+			cell := ptrActivityCell{Title: fmt.Sprintf("%s - %d contribution", day, n)}
+			if n != 1 {
+				cell.Title += "s"
+			}
+			if n > 0 {
+				cell.Level = (4*n + peak - 1) / peak
+			}
+			wk.Days = append(wk.Days, cell)
+			d = d.AddDate(0, 0, 1)
+		}
+		v.Weeks = append(v.Weeks, wk)
+	}
+	return v
 }
 
 // contribKindLabels renders each kind for the card's row.
@@ -473,6 +533,11 @@ func (s *Server) ptrContribData(r *http.Request, retryErr string) ptrContribView
 	store := s.ptr.Contrib()
 	if store == nil {
 		return v
+	}
+	now := time.Now()
+	// 371 covers the 364-day window plus the roll back to its Sunday.
+	if daily, err := store.LogDaily(now.AddDate(0, 0, -371).Unix()); err == nil {
+		v.Activity = ptrActivity(daily, now)
 	}
 	mbBase := s.monbooruWebBase()
 	if unsent, err := store.Unsent(); err == nil {

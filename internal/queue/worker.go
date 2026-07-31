@@ -41,6 +41,14 @@ func (q *Queue) Close() {
 	q.wg.Wait()
 }
 
+// closing reports whether Close has begun, so a canceled job can tell a
+// shutdown from an operator cancel.
+func (q *Queue) closing() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.closed
+}
+
 func (q *Queue) worker() {
 	defer q.wg.Done()
 	for {
@@ -72,6 +80,11 @@ func (q *Queue) nextJob() (*Job, context.Context, bool) {
 		return nil, nil, false
 	}
 	j := q.pending[0]
+	// Null the slot before reslicing, for the reason pushFinishedLocked gives:
+	// the popped job (which can pin up to max_items_per_job items) stays
+	// reachable in the backing array otherwise, and the head slots are never
+	// reused, so a burst of submissions would hold every job it ever ran.
+	q.pending[0] = nil
 	q.pending = q.pending[1:]
 	ctx, cancel := context.WithCancel(context.Background())
 	q.running[j.ID] = j
@@ -99,6 +112,11 @@ func (q *Queue) runJob(j *Job, ctx context.Context) {
 
 	err := q.proc.Process(ctx, j)
 	switch {
+	case ctx.Err() != nil && q.closing():
+		// A shutdown cancels the in-flight job to drain, which is not the
+		// operator aborting it: settle it the way boot recovery settles a job a
+		// crash left running, so a container restart keeps the requeue.
+		j.interrupt(q.now())
 	case ctx.Err() != nil:
 		j.cancel(q.now())
 	case err != nil:

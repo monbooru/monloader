@@ -11,9 +11,12 @@ RUN VERSION=$(cat VERSION.md 2>/dev/null | tr -d '[:space:]') && \
       -ldflags="-s -w -X 'github.com/monbooru/monloader/internal/web.Version=${VERSION}' -X 'github.com/monbooru/monloader/internal/web.RepoURL=${REPO}' -X 'github.com/monbooru/monloader/internal/web.DocURL=${DOC}'" \
       -o /monloader ./cmd/monloader
 
-# Stage 2: runtime. Needs Python for the gallery-dl subprocess.
+# Stage 2: runtime. Needs Python for the gallery-dl subprocess. The generated
+# supportedsites.md is bundled at the same pinned version (the app seeds site names and auth kinds from it)
 FROM python:3.13-slim-trixie
-RUN pip install --no-cache-dir gallery-dl==1.32.8
+RUN pip install --no-cache-dir gallery-dl==1.32.8 && \
+    mkdir -p /usr/local/share/monloader && \
+    python -c "import gallery_dl.version, urllib.request; urllib.request.urlretrieve('https://raw.githubusercontent.com/mikf/gallery-dl/v' + gallery_dl.version.__version__ + '/docs/supportedsites.md', '/usr/local/share/monloader/supportedsites.md')"
 
 COPY --from=build /monloader /usr/local/bin/monloader
 

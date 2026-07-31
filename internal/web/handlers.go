@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -51,15 +52,8 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", "bad form data")
 		return
 	}
-	// With no monbooru to push to, a queued download could only fail at the
-	// push step; refuse it here so the operator fixes the connection first. The
-	// add bar is also disabled client-side, so this guards a stale page.
-	if !s.monbooruConfigured() {
-		flashFragment(w, "err", "monbooru is not configured - set its connection in settings")
-		return
-	}
-	if s.monbooruPaused() {
-		flashFragment(w, "err", "the monbooru link is paused - resume it from the light in the footer")
+	if msg := s.monbooruBlocked(); msg != "" {
+		flashFragment(w, "err", msg)
 		return
 	}
 	target := strings.TrimSpace(r.FormValue("url"))
@@ -94,6 +88,22 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("HX-Redirect", "/queue")
+}
+
+// monbooruBlocked says why new work cannot be accepted, or "" when it can:
+// with no monbooru to push to, or the link held from the footer light, a
+// fetched post could only fail at the push step, so every surface that starts
+// work - the add bar and the queue rows' retry / continue - refuses it here so
+// the operator fixes the connection first. The controls are disabled
+// client-side too, so this guards a stale page.
+func (s *Server) monbooruBlocked() string {
+	if !s.monbooruConfigured() {
+		return "monbooru is not configured - set its connection in settings"
+	}
+	if s.monbooruPaused() {
+		return "the monbooru link is paused - resume it from the light in the footer"
+	}
+	return ""
 }
 
 // hashImportTarget recognizes an md5 pasted into the add bar - bare or with an
@@ -170,7 +180,7 @@ func flashFragment(w http.ResponseWriter, kind, msg string) {
 }
 
 func (s *Server) queueScreen(w http.ResponseWriter, r *http.Request) {
-	data := s.base(r, "queue", "queue - "+s.titleName())
+	data := s.base(r, "queue", "Queue - "+s.titleName())
 	s.fillQueue(r, data)
 	data["Actions"] = s.queueActions()
 	s.render(w, "queue", data)
@@ -345,11 +355,7 @@ func (s *Server) fillQueue(r *http.Request, data map[string]any) {
 	groups := groupJobs(jobs)
 	page, totalPages := pageWindow(r, len(groups))
 	lo := (page - 1) * pageSize
-	hi := lo + pageSize
-	if hi > len(groups) {
-		hi = len(groups)
-	}
-	shown := groups[lo:hi]
+	shown := groups[lo:min(lo+pageSize, len(groups))]
 	configured := s.cfg.Current().Downloader.MaxItemsPerJob
 	for i := range shown {
 		shown[i].NextWindow = nextWindow(shown[i].Lead.Cap, configured)
@@ -376,18 +382,9 @@ func nextWindow(seriesCap, configured int) int {
 // pageWindow reads the ?page= param and clamps it to [1, totalPages] for a
 // list of n rows split into pageSize-row pages.
 func pageWindow(r *http.Request, n int) (page, totalPages int) {
-	totalPages = (n + pageSize - 1) / pageSize
-	if totalPages < 1 {
-		totalPages = 1
-	}
+	totalPages = max((n+pageSize-1)/pageSize, 1)
 	page, _ = strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	if page > totalPages {
-		page = totalPages
-	}
-	return page, totalPages
+	return min(max(page, 1), totalPages), totalPages
 }
 
 // monbooruWebBase is the browser-facing monbooru base for image links.
@@ -429,6 +426,10 @@ func addBarFlash(w http.ResponseWriter, msg string) {
 // skips, which are the whole series', so it re-runs every window. A plain retry
 // stays on the window whose run did not finish cleanly.
 func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
+	if msg := s.monbooruBlocked(); msg != "" {
+		addBarFlash(w, msg)
+		return
+	}
 	s.jobAction(w, r, func(id int64) error {
 		if r.URL.Query().Get("force") == "1" {
 			return s.queue.RetrySeries(id, true)
@@ -454,6 +455,10 @@ func (s *Server) continueAllJob(w http.ResponseWriter, r *http.Request) {
 // flash, like the API's 409, instead of swapping the unchanged row back in as
 // if the click had queued something.
 func (s *Server) continueAction(w http.ResponseWriter, r *http.Request, run func(id int64) (int64, error)) {
+	if msg := s.monbooruBlocked(); msg != "" {
+		addBarFlash(w, msg)
+		return
+	}
 	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
 		switch _, err := run(id); {
 		case errors.Is(err, queue.ErrNotCapped):
@@ -559,33 +564,100 @@ func (s *Server) renderConnLight(w http.ResponseWriter, status, version string) 
 	})
 }
 
-// siteRow is one curated site as the settings table shows it. CSRFToken rides
-// along so the shared row partial can post the test probe and the edit dialog.
-// LastReached is the most recent successful test or fetch, shown in the state
-// cell (zero = never reached this run).
+// siteRow is one configured site as the settings table shows it. CSRFToken
+// rides along so the shared row partial can post the test probe and the edit
+// dialog. LastReached is the most recent successful test or fetch, shown in
+// the state cell (zero = never reached this run). CustomProfile marks a row
+// whose user profile file shadows (or adds to) the shipped set.
 type siteRow struct {
-	Category    string
-	Login       string
-	Auth        string
-	NeedsCred   bool
+	Category      string
+	Login         string
+	Auth          string
+	NeedsCred     bool
+	CustomProfile bool
+	// CookieCount is the configured cookies file's cookie-line count - the
+	// only thing the UI reveals about the file's contents.
+	CookieCount int
+	// AuthSet names the credentials the block holds ("username, api key
+	// set"), never their values.
+	AuthSet     string
 	Site        *config.Site
 	CSRFToken   string
 	LastReached time.Time
 }
 
-// siteRows builds the settings table rows for a list of curated categories.
+// siteRows builds the settings table rows for a list of categories.
 func (s *Server) siteRows(cats []string, csrf string) []siteRow {
 	rows := make([]siteRow, 0, len(cats))
 	for _, cat := range cats {
-		p, _ := s.mapper.Lookup(cat)
+		// The effective auth kind: the profile's, or for a profile-less site
+		// the supportedsites seed, so the row and dialog know what it needs.
+		auth := s.effectiveAuth(cat)
 		site := s.cfg.Current().FindSite(cat)
-		label, needs := loginInfo(p.Auth, site)
-		rows = append(rows, siteRow{
-			Category: cat, Login: label, Auth: p.Auth, NeedsCred: needs, Site: site, CSRFToken: csrf,
+		label, needs := loginInfo(auth, site)
+		row := siteRow{
+			Category: cat, Login: label, Auth: auth, NeedsCred: needs,
+			CustomProfile: s.mapper.CustomProfile(cat), AuthSet: authSet(site),
+			Site: site, CSRFToken: csrf,
 			LastReached: s.siteState.LastReached(cat),
-		})
+		}
+		if site != nil && site.Cookies != "" {
+			row.CookieCount = countCookies(site.Cookies)
+		}
+		rows = append(rows, row)
 	}
 	return rows
+}
+
+// authSet names the credentials a site block holds - never their values -
+// for the sites table's auth column.
+func authSet(site *config.Site) string {
+	if site == nil {
+		return "-"
+	}
+	var parts []string
+	for _, c := range []struct{ value, label string }{
+		{site.Username, "username"}, {site.Password, "password"},
+		{site.APIKey, "api key"}, {site.UserID, "user id"}, {site.Cookies, "cookies"},
+	} {
+		if c.value != "" {
+			parts = append(parts, c.label)
+		}
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ", ") + " set"
+}
+
+// visibleSites returns the categories the sites tables show, grouped by
+// effective kind: the sites whose [[sites]] block carries user-set data plus
+// those with a differing user profile. A bare or lookup-order-only block (the
+// seeded chain) is not a customization and surfaces no row; a category
+// without any profile is grouped with the other sites.
+func (s *Server) visibleSites() (boorus, manga, other []string) {
+	names := map[string]bool{}
+	for _, site := range s.cfg.Current().Sites {
+		if site.HasUserData() {
+			names[site.Name] = true
+		}
+	}
+	for _, cat := range s.mapper.CustomCategories() {
+		names[cat] = true
+	}
+	cats := slices.Sorted(maps.Keys(names))
+	for _, cat := range cats {
+		p, ok := s.mapper.Lookup(cat)
+		switch {
+		case ok && p.Kind == mapping.KindManga:
+			manga = append(manga, cat)
+		case !ok || p.Kind == mapping.KindOther:
+			other = append(other, cat)
+		default:
+			boorus = append(boorus, cat)
+		}
+	}
+	return boorus, manga, other
 }
 
 func (s *Server) settingsScreen(w http.ResponseWriter, r *http.Request) {
@@ -612,12 +684,10 @@ func setFlash(data map[string]any, kind, section, msg string) {
 // save that has to refuse can re-render the page with the operator's submitted
 // value instead of redirecting back to the stored one.
 func (s *Server) settingsData(r *http.Request) map[string]any {
-	data := s.base(r, "settings", "settings - "+s.titleName())
+	data := s.base(r, "settings", "Settings - "+s.titleName())
 	data["Cfg"] = s.cfg.Current()
 
-	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
-	defer cancel()
-	if galleries, err := s.client.ListGalleries(ctx); err == nil {
+	if galleries, ok := s.galleries(r); ok {
 		data["Galleries"] = galleries
 		if warn := defaultGalleryWarning(s.cfg.Current().Monbooru.DefaultGallery, galleries); warn != "" {
 			data["GalleryWarn"] = warn
@@ -625,8 +695,10 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 	}
 
 	csrf := s.csrfToken(sessionFromContext(r.Context()))
-	data["BooruSites"] = s.siteRows(s.mapper.CuratedByKind(mapping.KindBooru), csrf)
-	data["MangaSites"] = s.siteRows(s.mapper.CuratedByKind(mapping.KindManga), csrf)
+	boorus, manga, other := s.visibleSites()
+	data["BooruSites"] = s.siteRows(boorus, csrf)
+	data["MangaSites"] = s.siteRows(manga, csrf)
+	data["OtherSites"] = s.siteRows(other, csrf)
 	data["LookupPanel"] = s.lookupPanel(csrf)
 	ptrStatus := s.ptr.Status()
 	data["PTRDiskBytes"] = ptrStatus.DiskBytes
@@ -637,6 +709,17 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 	data["MonsenderPending"] = s.pairs.listPending()
 	data["MonsenderPaired"] = s.hasPairedToken("monsender")
 	return data
+}
+
+// galleries lists monbooru's galleries for the settings dropdown and the site
+// dialog, under one short budget: the page must render even when monbooru is
+// slow or down, and ok=false says only that the list is unavailable - a
+// monbooru with no galleries at all is a successful empty answer.
+func (s *Server) galleries(r *http.Request) ([]monbooru.Gallery, bool) {
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	galleries, err := s.client.ListGalleries(ctx)
+	return galleries, err == nil
 }
 
 // defaultGalleryWarning flags a default gallery pushes will not reach: unset
@@ -661,9 +744,7 @@ func (s *Server) renderDefaultGalleryOOB(w http.ResponseWriter, r *http.Request)
 		"Paired":         s.hasPairedToken("monbooru"),
 		"DefaultGallery": s.cfg.Current().Monbooru.DefaultGallery,
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
-	defer cancel()
-	if galleries, err := s.client.ListGalleries(ctx); err == nil {
+	if galleries, ok := s.galleries(r); ok {
 		data["Galleries"] = galleries
 		if warn := defaultGalleryWarning(s.cfg.Current().Monbooru.DefaultGallery, galleries); warn != "" {
 			data["GalleryWarn"] = warn
@@ -739,10 +820,14 @@ func (s *Server) gatherStats() statsData {
 // gates on).
 func loginInfo(auth string, site *config.Site) (string, bool) {
 	switch auth {
-	case "api_optional":
+	case mapping.AuthAPIOptional:
 		return "api (opt)", false
-	case "api_required", "cookies":
+	case mapping.AuthAPIRequired, mapping.AuthCookies:
 		return mapping.RequiredCredential(auth, site)
+	case mapping.AuthUsernamePassword:
+		return "user/pass", false
+	case mapping.AuthOAuth:
+		return "oauth", false
 	default:
 		return "none", false
 	}
@@ -771,7 +856,7 @@ func sectionForPath(path string) string {
 		return "lookup"
 	case strings.HasPrefix(path, "/settings/ptr"):
 		return "ptr"
-	case strings.HasPrefix(path, "/settings/sites"):
+	case strings.HasPrefix(path, "/settings/sites"), strings.HasPrefix(path, "/settings/host-labels"):
 		return "sites"
 	case strings.HasPrefix(path, "/settings/raw"):
 		return "advanced"
@@ -784,9 +869,25 @@ func (s *Server) saveMonbooru(w http.ResponseWriter, r *http.Request) {
 		s.redirectFlash(w, r, "err", "bad form")
 		return
 	}
+	apiURL := strings.TrimSpace(r.FormValue("api_url"))
+	webURL := strings.TrimSpace(r.FormValue("web_url"))
+	// Either may be blank - an empty api url is "no monbooru configured" - but a
+	// value that is not an http(s) URL breaks every push, and reporting that as
+	// saved sends the operator hunting through queue error codes instead of at
+	// the field they just edited.
+	var bad []string
+	for _, f := range []struct{ label, value string }{{"api url", apiURL}, {"web url", webURL}} {
+		if f.value != "" && !config.IsHTTPURL(f.value) {
+			bad = append(bad, f.label+" must be an http(s) URL")
+		}
+	}
+	if len(bad) > 0 {
+		s.redirectFlash(w, r, "err", strings.Join(bad, "; ")+" - nothing was saved")
+		return
+	}
 	err := s.updateConfig(func(c *config.Config) error {
-		c.Monbooru.APIURL = strings.TrimSpace(r.FormValue("api_url"))
-		c.Monbooru.WebURL = strings.TrimSpace(r.FormValue("web_url"))
+		c.Monbooru.APIURL = apiURL
+		c.Monbooru.WebURL = webURL
 		c.Monbooru.DefaultGallery = strings.TrimSpace(r.FormValue("default_gallery"))
 		return nil
 	})
@@ -840,6 +941,18 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 	// Zero is meaningful here (keep history until the ring evicts it), so
 	// unlike the caps above it is accepted rather than treated as unset.
 	retention, setRetention := num("history_retention_days", "clear history after (days)", 0)
+	// monbooru refuses an absolute folder or one carrying a .. segment, so such
+	// a value reports "saved" and then fails every push with no pointer back to
+	// the field; refuse it here instead.
+	folder, setFolder := "", false
+	if r.Form.Has("default_folder") {
+		folder = strings.TrimSpace(r.FormValue("default_folder"))
+		if strings.HasPrefix(folder, "/") || slices.Contains(strings.Split(folder, "/"), "..") {
+			bad = append(bad, "default folder must be a relative path with no .. segment")
+		} else {
+			setFolder = true
+		}
+	}
 	sleep, setSleep := 0.0, false
 	if r.Form.Has("sleep_request") {
 		if f, ferr := strconv.ParseFloat(strings.TrimSpace(r.FormValue("sleep_request")), 64); ferr == nil && f >= 0 {
@@ -865,7 +978,9 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 		if setRetention {
 			c.Downloader.HistoryRetentionDays = retention
 		}
-		c.Downloader.DefaultFolder = strings.TrimSpace(r.FormValue("default_folder"))
+		if setFolder {
+			c.Downloader.DefaultFolder = folder
+		}
 		return nil
 	})
 	if err != nil {
@@ -875,43 +990,6 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 	s.rewriteGDLConfig()
 	s.queue.SetRetention(s.cfg.Current().Downloader.HistoryRetention())
 	s.redirectFlash(w, r, "ok", "download settings saved")
-}
-
-func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "bad form")
-		return
-	}
-	name := strings.TrimSpace(r.FormValue("name"))
-	if name == "" {
-		s.redirectFlash(w, r, "err", "site name required")
-		return
-	}
-	err := s.updateConfig(func(c *config.Config) error {
-		site := c.FindSite(name)
-		if site == nil {
-			c.Sites = append(c.Sites, config.Site{Name: name})
-			site = &c.Sites[len(c.Sites)-1]
-		}
-		if v := strings.TrimSpace(r.FormValue("username")); v != "" {
-			site.Username = v
-		}
-		if v := strings.TrimSpace(r.FormValue("api_key")); v != "" {
-			site.APIKey = v
-		}
-		if v := strings.TrimSpace(r.FormValue("user_id")); v != "" {
-			site.UserID = v
-		}
-		site.Gallery = strings.TrimSpace(r.FormValue("gallery"))
-		site.Cookies = strings.TrimSpace(r.FormValue("cookies"))
-		return nil
-	})
-	if err != nil {
-		s.redirectFlash(w, r, "err", "save failed: "+err.Error())
-		return
-	}
-	s.rewriteGDLConfig()
-	s.redirectFlash(w, r, "ok", "site "+name+" saved")
 }
 
 // parseLookupOrder reads one chain-dialog position field: blank or 0 opts the
@@ -929,9 +1007,10 @@ func parseLookupOrder(raw string) (int, error) {
 	return n, nil
 }
 
-// resetSite drops a site's per-site credentials block so it reverts to the
-// curated profile defaults (no auth, default gallery). The reset button only
-// shows for sites that have a block to remove.
+// resetSite drops a site's [[sites]] block - credentials, gallery, cookies
+// path, options - reverting it to the profile defaults. The remove button
+// only shows for sites that have a block to drop; a row with neither a block
+// nor a custom profile disappears from the tables.
 func (s *Server) resetSite(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	err := s.updateConfig(func(c *config.Config) error {
@@ -943,7 +1022,7 @@ func (s *Server) resetSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.rewriteGDLConfig()
-	s.redirectFlash(w, r, "ok", "site "+name+" reset to defaults")
+	s.redirectFlash(w, r, "ok", "site "+name+" removed")
 }
 
 // testSite probes a site live and renders the outcome into the site's own

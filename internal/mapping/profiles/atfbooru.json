@@ -1,0 +1,8 @@
+{
+  "family": "danbooru",
+  "kind": "booru",
+  "post_url_template": "https://booru.allthefallen.moe/posts/{id}",
+  "md5_search_template": "https://booru.allthefallen.moe/posts?tags=md5:{md5}",
+  "auth": "api_optional",
+  "example": "https://booru.allthefallen.moe/posts/1536822"
+}

@@ -40,6 +40,16 @@ type PTRService interface {
 	RefreshAccount(ctx context.Context) (*ptr.Account, error)
 }
 
+// PairHandlers are the extension pairing handshake's three handlers. They live
+// in the web layer, which owns the pending-request store and the operator's
+// approval screen, but they are declared and mounted here with everything else
+// so the handshake a client must speak first is in the reference too.
+type PairHandlers struct {
+	Request  http.HandlerFunc
+	Status   http.HandlerFunc
+	Teardown http.HandlerFunc
+}
+
 // Handler serves monloader's own /api/v1/ surface.
 type Handler struct {
 	queue      *queue.Queue
@@ -47,10 +57,12 @@ type Handler struct {
 	mapper     *mapping.Mapper
 	cfg        *config.Provider
 	extractors []gdl.Extractor
+	supported  map[string]gdl.SupportedSite
 	version    string
 	gdlVersion string
 	siteState  *sitestate.Tracker
 	ptr        PTRService
+	pair       PairHandlers
 	// saveConfig persists a config mutation through the owner's save
 	// path (the web layer's updateConfig); nil in tests that never
 	// persist.
@@ -60,18 +72,21 @@ type Handler struct {
 // New builds the API handler. extractors is the cached --list-extractors
 // result; version and gdlVersion feed /health; siteState is the shared "last
 // reached" tracker the test probe records into; ptr backs the PTR endpoints
-// (nil when the PTR is not built into the run).
-func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, extractors []gdl.Extractor, version, gdlVersion string, siteState *sitestate.Tracker, ptrSvc PTRService, saveConfig func(func(*config.Config) error) error) *Handler {
+// (nil when the PTR is not built into the run); pair carries the web layer's
+// pairing handlers.
+func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, extractors []gdl.Extractor, supported map[string]gdl.SupportedSite, version, gdlVersion string, siteState *sitestate.Tracker, ptrSvc PTRService, pair PairHandlers, saveConfig func(func(*config.Config) error) error) *Handler {
 	return &Handler{
 		queue:      q,
 		runner:     runner,
 		mapper:     mapper,
 		cfg:        cfg,
 		extractors: extractors,
+		supported:  supported,
 		version:    version,
 		gdlVersion: gdlVersion,
 		siteState:  siteState,
 		ptr:        ptrSvc,
+		pair:       pair,
 		saveConfig: saveConfig,
 	}
 }

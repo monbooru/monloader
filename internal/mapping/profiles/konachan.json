@@ -1,0 +1,9 @@
+{
+  "family": "moebooru",
+  "kind": "booru",
+  "post_url_template": "https://konachan.com/post/show/{id}",
+  "md5_search_template": "https://konachan.com/post?tags=md5:{md5}",
+  "auth": "none",
+  "example": "https://konachan.com/post/show/404703",
+  "hosts": ["konachan.net"]
+}

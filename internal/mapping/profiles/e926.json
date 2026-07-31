@@ -1,0 +1,8 @@
+{
+  "family": "e621",
+  "kind": "booru",
+  "post_url_template": "https://e926.net/posts/{id}",
+  "md5_search_template": "https://e926.net/posts?tags=md5:{md5}",
+  "auth": "api_optional",
+  "example": "https://e926.net/posts/6451436"
+}

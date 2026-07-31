@@ -5,6 +5,7 @@ package pipeline
 
 import (
 	"archive/zip"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -479,7 +481,7 @@ func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded
 		// not the cdn the file happened to live on.
 		if pageURL != "" && kwdict.String(d.Meta, "category") == mapping.CategoryDirectlink {
 			if h := pageHost(pageURL); h != "" {
-				pf.Source = h
+				pf.Source = p.mapper.SourceLabel(h)
 			}
 		}
 		// A pool with no num orders by source position.
@@ -781,41 +783,39 @@ func failItem(job *queue.Job, i int, code, msg string) {
 // buildCBZFile writes the ordered page files into a zip at dest (the .cbz
 // monbooru ingests as manga), streaming each page so the archive is never held
 // whole in memory. Pages arrive in reading order.
-func buildCBZFile(pages []string, dest string) error {
+func buildCBZFile(pages []string, dest string) (err error) {
 	f, err := os.Create(dest)
 	if err != nil {
 		return err
 	}
+	// The archive is only sound if the file closed cleanly, so a close error on
+	// the happy path still fails the build; on an error path the first failure
+	// wins and the close is just cleanup.
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
 	zw := zip.NewWriter(f)
 	// Readers order pages by an alphabetical entry-name sort, so the zero
 	// padding must cover the last page's digits or page 1000 sorts before 999.
-	width := len(strconv.Itoa(len(pages)))
-	if width < 3 {
-		width = 3
-	}
+	width := max(len(strconv.Itoa(len(pages))), 3)
 	for i, p := range pages {
 		fw, err := zw.Create(fmt.Sprintf("%0*d%s", width, i+1, filepath.Ext(p)))
 		if err != nil {
-			f.Close()
 			return err
 		}
 		src, err := os.Open(p)
 		if err != nil {
-			f.Close()
 			return err
 		}
 		_, err = io.Copy(fw, src)
 		src.Close()
 		if err != nil {
-			f.Close()
 			return err
 		}
 	}
-	if err := zw.Close(); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	return zw.Close()
 }
 
 // poolName reads the bundle's display name from the first page that carries it:
@@ -848,14 +848,9 @@ func bundleKey(resolved []gdl.Item) string {
 // pool or manga gallery thus bundles in page order regardless of the order the
 // files were written.
 func orderedPages(downloaded []gdl.Downloaded) []string {
-	ordered := make([]gdl.Downloaded, len(downloaded))
-	copy(ordered, downloaded)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		ni, nj := kwdict.Num(ordered[i].Meta), kwdict.Num(ordered[j].Meta)
-		if ni != nj {
-			return ni < nj
-		}
-		return ordered[i].Path < ordered[j].Path
+	ordered := slices.Clone(downloaded)
+	slices.SortStableFunc(ordered, func(a, b gdl.Downloaded) int {
+		return cmp.Or(cmp.Compare(kwdict.Num(a.Meta), kwdict.Num(b.Meta)), cmp.Compare(a.Path, b.Path))
 	})
 	paths := make([]string, len(ordered))
 	for i, d := range ordered {

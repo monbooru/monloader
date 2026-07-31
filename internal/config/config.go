@@ -32,6 +32,7 @@ type Config struct {
 	Sites           []Site           `toml:"sites"`
 	TagOverrides    []TagOverride    `toml:"tag_overrides"`
 	RatingOverrides []RatingOverride `toml:"rating_overrides"`
+	HostLabels      []HostLabel      `toml:"host_labels"`
 }
 
 type ServerConfig struct {
@@ -101,6 +102,10 @@ type GalleryDLConfig struct {
 	CookiesDir   string  `toml:"cookies_dir"`
 	SleepRequest float64 `toml:"sleep_request"`
 	RawConfig    string  `toml:"raw_config"`
+	// SupportedSitesPath is gallery-dl's docs/supportedsites.md, bundled in
+	// the image at the pinned version; it seeds display names and auth kinds
+	// for sites without a shipped profile. Missing is fine.
+	SupportedSitesPath string `toml:"supportedsites_path"`
 }
 
 // AuthConfig gates the optional UI password and the downloader's own API
@@ -257,15 +262,24 @@ func (cfg *Config) RemoveToken(id string) bool {
 	return true
 }
 
-// SetTokenScopes replaces a token's scopes, reporting whether it existed.
-func (cfg *Config) SetTokenScopes(id string, scopes []string) bool {
+// FindToken returns the token with the given id, or nil.
+func (cfg *Config) FindToken(id string) *Token {
 	for i := range cfg.Auth.Tokens {
 		if cfg.Auth.Tokens[i].ID == id {
-			cfg.Auth.Tokens[i].Scopes = scopes
-			return true
+			return &cfg.Auth.Tokens[i]
 		}
 	}
-	return false
+	return nil
+}
+
+// SetTokenScopes replaces a token's scopes, reporting whether it existed.
+func (cfg *Config) SetTokenScopes(id string, scopes []string) bool {
+	tok := cfg.FindToken(id)
+	if tok == nil {
+		return false
+	}
+	tok.Scopes = scopes
+	return true
 }
 
 // LogConfig controls log verbosity: "warn" (default), "info", "debug".
@@ -335,13 +349,33 @@ type LookupService struct {
 type Site struct {
 	Name     string `toml:"name"`
 	Username string `toml:"username"`
+	// Password is the account password for sites gallery-dl signs into with
+	// username+password (twitter-style logins). The danbooru/e621 families
+	// keep authenticating with APIKey, which doubles as their password.
+	Password string `toml:"password,omitempty"`
 	APIKey   string `toml:"api_key"`
 	UserID   string `toml:"user_id"`
 	Gallery  string `toml:"gallery"`
-	Cookies  string `toml:"cookies"`
+	// Label is stamped as the source on every push from this site; empty
+	// keeps the gallery-dl category name.
+	Label   string `toml:"label,omitempty"`
+	Cookies string `toml:"cookies"`
+	// Options is a JSON object of extra gallery-dl extractor options merged
+	// under extractor.<name>. The instance-side escape hatch: unlike a
+	// profile's options it may hold secrets and is never shared.
+	Options string `toml:"options,omitempty"`
 	// LookupOrder is the site's position in the booru hash-lookup walk
 	// (1 = first); 0 or absent keeps the site out of the walk entirely.
 	LookupOrder int `toml:"lookup_order,omitempty"`
+}
+
+// HasUserData reports whether the block carries anything the operator set -
+// credentials, a cookies file, a target gallery, or options. The settings
+// sites tables show only such sites; a bare or lookup-order-only block (the
+// seeded chain) is not a customization.
+func (s *Site) HasUserData() bool {
+	return s.Username != "" || s.Password != "" || s.APIKey != "" || s.UserID != "" ||
+		s.Gallery != "" || s.Label != "" || s.Cookies != "" || s.Options != ""
 }
 
 // TagOverride routes a gallery-dl tag-category suffix to a monbooru
@@ -358,6 +392,14 @@ type RatingOverride struct {
 	Site string `toml:"site"`
 	From string `toml:"from"`
 	To   string `toml:"to"`
+}
+
+// HostLabel names the source label for pushes whose only identity is a host
+// (a direct file link, a page send): exact host first, parent domains after,
+// winning over a profile's host aliases.
+type HostLabel struct {
+	Host  string `toml:"host"`
+	Label string `toml:"label"`
 }
 
 // Default returns a fully populated config with the built-in defaults.
@@ -377,11 +419,12 @@ func Default() *Config {
 			HistoryRetentionDays: 7,
 		},
 		GalleryDL: GalleryDLConfig{
-			BinaryPath:   "gallery-dl",
-			ConfigPath:   "/config/gallery-dl.json",
-			ArchivePath:  "/config/gallery-dl-archive.sqlite",
-			CookiesDir:   "/config/cookies",
-			SleepRequest: 1.0,
+			BinaryPath:         "gallery-dl",
+			ConfigPath:         "/config/gallery-dl.json",
+			ArchivePath:        "/config/gallery-dl-archive.sqlite",
+			CookiesDir:         "/config/cookies",
+			SleepRequest:       1.0,
+			SupportedSitesPath: "/usr/local/share/monloader/supportedsites.md",
 		},
 		Auth: AuthConfig{
 			SessionLifetimeDays: 7,
@@ -512,6 +555,7 @@ func LoadFromFile(path string) (*Config, error) {
 		cfg.Sites = nil
 		cfg.TagOverrides = nil
 		cfg.RatingOverrides = nil
+		cfg.HostLabels = nil
 		cfg.Lookup = LookupConfig{}
 		md, err := toml.DecodeFile(path, cfg)
 		if err != nil {
@@ -537,10 +581,13 @@ func Save(cfg *Config, path string) error {
 	})
 }
 
-// WriteFileAtomic writes a file through a temp-then-rename in its directory,
-// so a crash mid-write can never leave a truncated file a later reader would
-// load broken. write streams the content into the temp file; both the config
-// and the managed gallery-dl config go through here.
+// WriteFileAtomic writes a file through a temp-then-rename in its directory, so
+// a crash mid-write can never leave a truncated file a later reader would load
+// broken: the content is on disk before the rename publishes it, so a reader
+// sees either the old file or the whole new one. write streams the content into
+// the temp file; both the config and the managed gallery-dl config go through
+// here, and monloader.toml holds the monbooru token, every site credential and
+// the PTR access key, so a zero-length one costs a full re-pair.
 func WriteFileAtomic(path string, write func(f *os.File) error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -556,6 +603,11 @@ func WriteFileAtomic(path string, write func(f *os.File) error) error {
 		os.Remove(tmpName)
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("syncing temp file: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("closing temp file: %w", err)
@@ -568,14 +620,19 @@ func WriteFileAtomic(path string, write func(f *os.File) error) error {
 }
 
 // Clone returns a deep copy safe to mutate without affecting the original, so a
-// settings save can build the next snapshot from the current one. The slices
-// hold value types, so copying the headers and elements is a full copy.
+// settings save can build the next snapshot from the current one. Every element
+// but a token's Scopes is a value type, so copying the headers and elements is
+// a full copy; Scopes is the one slice inside one and is cloned with it.
 func (cfg *Config) Clone() *Config {
 	cp := *cfg
 	cp.Sites = append([]Site(nil), cfg.Sites...)
 	cp.TagOverrides = append([]TagOverride(nil), cfg.TagOverrides...)
 	cp.RatingOverrides = append([]RatingOverride(nil), cfg.RatingOverrides...)
+	cp.HostLabels = append([]HostLabel(nil), cfg.HostLabels...)
 	cp.Auth.Tokens = append([]Token(nil), cfg.Auth.Tokens...)
+	for i := range cp.Auth.Tokens {
+		cp.Auth.Tokens[i].Scopes = slices.Clone(cp.Auth.Tokens[i].Scopes)
+	}
 	return &cp
 }
 
@@ -605,6 +662,21 @@ func ValidateRawConfig(s string) error {
 	return nil
 }
 
+// ValidateSiteOptions rejects a non-empty per-site options value that is not
+// a JSON object; empty means no options. Same save-time gate as the raw
+// passthrough.
+func ValidateSiteOptions(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(s), &obj); err != nil {
+		return fmt.Errorf("site options must be a JSON object: %w", err)
+	}
+	return nil
+}
+
 // applyEnvOverrides lets a MONLOADER_* variable override its config field, so
 // a container env can set what the file does not. Adding a variable is one
 // table line; a value that fails to parse is ignored, keeping the file's.
@@ -624,6 +696,7 @@ func applyEnvOverrides(cfg *Config) {
 		{"MONLOADER_GALLERYDL_CONFIG_PATH", &cfg.GalleryDL.ConfigPath},
 		{"MONLOADER_GALLERYDL_ARCHIVE_PATH", &cfg.GalleryDL.ArchivePath},
 		{"MONLOADER_GALLERYDL_COOKIES_DIR", &cfg.GalleryDL.CookiesDir},
+		{"MONLOADER_GALLERYDL_SUPPORTEDSITES_PATH", &cfg.GalleryDL.SupportedSitesPath},
 		{"MONLOADER_AUTH_PASSWORD_HASH", &cfg.Auth.PasswordHash},
 		{"MONLOADER_LOG_LEVEL", &cfg.Log.Level},
 		{"MONLOADER_PTR_DATA_PATH", &cfg.PTR.DataPath},
@@ -703,32 +776,22 @@ func validate(cfg *Config) error {
 	}
 	// A non-positive worker count would stall the queue; snap to one worker
 	// rather than fail a user-fixable typo.
-	if cfg.Downloader.Concurrency <= 0 {
-		cfg.Downloader.Concurrency = 1
-	}
+	cfg.Downloader.Concurrency = max(cfg.Downloader.Concurrency, 1)
 	if cfg.Downloader.MaxItemsPerJob <= 0 {
 		cfg.Downloader.MaxItemsPerJob = 200
 	}
 	// A negative window would expire every job the moment it finished; read it
 	// as "no age limit" rather than fail a user-fixable typo.
-	if cfg.Downloader.HistoryRetentionDays < 0 {
-		cfg.Downloader.HistoryRetentionDays = 0
-	}
-	if cfg.GalleryDL.SleepRequest < 0 {
-		cfg.GalleryDL.SleepRequest = 0
-	}
+	cfg.Downloader.HistoryRetentionDays = max(cfg.Downloader.HistoryRetentionDays, 0)
+	cfg.GalleryDL.SleepRequest = max(cfg.GalleryDL.SleepRequest, 0)
 	if cfg.Auth.SessionLifetimeDays <= 0 {
 		cfg.Auth.SessionLifetimeDays = 7
 	}
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "warn"
 	}
-	if cfg.PTR.CommitSleep < 0 {
-		cfg.PTR.CommitSleep = 0
-	}
-	if cfg.PTR.FetchSleep < 0 {
-		cfg.PTR.FetchSleep = 0
-	}
+	cfg.PTR.CommitSleep = max(cfg.PTR.CommitSleep, 0)
+	cfg.PTR.FetchSleep = max(cfg.PTR.FetchSleep, 0)
 	if cfg.PTR.Enabled && strings.TrimSpace(cfg.PTR.DataPath) == "" {
 		return fmt.Errorf("ptr.enabled is true but ptr.data_path is empty")
 	}
@@ -738,11 +801,7 @@ func validate(cfg *Config) error {
 	if cfg.Lookup.MinSimilarity < 1 || cfg.Lookup.MinSimilarity > 100 {
 		cfg.Lookup.MinSimilarity = defaultMinSimilarity
 	}
-	if cfg.Lookup.Iqdb.Order < 0 {
-		cfg.Lookup.Iqdb.Order = 0
-	}
-	if cfg.Lookup.Saucenao.Order < 0 {
-		cfg.Lookup.Saucenao.Order = 0
-	}
+	cfg.Lookup.Iqdb.Order = max(cfg.Lookup.Iqdb.Order, 0)
+	cfg.Lookup.Saucenao.Order = max(cfg.Lookup.Saucenao.Order, 0)
 	return nil
 }

@@ -7,6 +7,19 @@
   {{if .RetryErr}}<p class="flash-warn">{{.RetryErr}}</p>{{end}}
   {{if .NotReady}}<p class="field-hint">the index is still catching up; contributions can be sent once it is fully synced.</p>{{end}}
   {{if .SendRunning}}<p class="field-hint">a send job is running - progress is on the <a href="/queue">queue</a>.</p>{{end}}
+  {{with .Activity}}{{if .Weeks}}
+  <div class="ptr-activity">
+    <p class="ptr-activity-total">{{.Total}} contribution{{if ne .Total 1}}s{{end}} in the last year</p>
+    <div class="ptr-activity-scroll">
+      <div class="ptr-activity-months">{{range .Weeks}}<span>{{.Month}}</span>{{end}}</div>
+      <div class="ptr-activity-body">
+        <div class="ptr-activity-daylabels"><span></span><span>mon</span><span></span><span></span><span></span><span>fri</span><span></span></div>
+        <div class="ptr-activity-grid">{{range .Weeks}}{{range .Days}}<div class="ptr-day{{if .Level}} ptr-day-{{.Level}}{{end}}" title="{{.Title}}"></div>{{end}}{{end}}</div>
+      </div>
+    </div>
+    <div class="ptr-activity-legend">less <span class="ptr-day"></span><span class="ptr-day ptr-day-1"></span><span class="ptr-day ptr-day-2"></span><span class="ptr-day ptr-day-3"></span><span class="ptr-day ptr-day-4"></span> more</div>
+  </div>
+  {{end}}{{end}}
   {{if .Unsent}}
   <p>{{len .Unsent}} unsent{{if .HasFailed}} (last send failed){{end}}
     {{if not .NotReady}}<button hx-post="/ptr/contrib/retry" hx-target="#ptr-contrib" hx-swap="innerHTML">retry</button>{{end}}</p>

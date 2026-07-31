@@ -9,7 +9,7 @@
   <td class="queue-gallery" title="{{.Lead.Gallery}}">{{.Lead.Gallery}}</td>
   <td class="queue-summary">
     {{if and (eq .Summary.Total 0) .Lead.ErrorCode}}
-    <span class="o-failed" title="{{.Lead.Error}}">failed - {{.Lead.ErrorCode}}</span>
+    <span class="o-failed" title="{{.Lead.Error}}">{{.Lead.ErrorCode}}</span>
     {{else if and (eq .Summary.Total 0) (eq .Lead.Status "succeeded")}}
     <span class="hint">no posts matched</span>
     {{else if and (eq .Summary.Total 0) (eq .Lead.Status "interrupted")}}
@@ -33,17 +33,17 @@
         <button hx-post="/queue/{{.Lead.ID}}/cancel">cancel</button>
       {{else}}
         {{if and .Lead.Capped (ne .Lead.Status "canceled") (ne .Lead.Status "failed")}}
-        <button hx-post="/queue/{{.Lead.ID}}/continue"
+        <button class="needs-monbooru" hx-post="/queue/{{.Lead.ID}}/continue"
                 title="download the next {{.NextWindow}} items">get next {{.NextWindow}}</button>
-        <button hx-post="/queue/{{.Lead.ID}}/continue-all"
+        <button class="needs-monbooru" hx-post="/queue/{{.Lead.ID}}/continue-all"
                 hx-confirm="fetch all remaining items? this can take a while"
                 title="keep fetching until the search runs out">get all</button>
         {{end}}
         {{if ne .Lead.Status "succeeded"}}
-        <button hx-post="/queue/{{.Lead.ID}}/retry">{{if eq .Lead.Status "interrupted"}}requeue{{else}}retry{{end}}</button>
+        <button class="needs-monbooru" hx-post="/queue/{{.Lead.ID}}/retry">{{if eq .Lead.Status "interrupted"}}requeue{{else}}retry{{end}}</button>
         {{end}}
         {{if gt .ArchiveSkips 0}}
-        <button hx-post="/queue/{{.Lead.ID}}/retry?force=1"
+        <button class="needs-monbooru" hx-post="/queue/{{.Lead.ID}}/retry?force=1"
                 title="re-download, ignoring the gallery-dl archive">force download</button>
         {{end}}
         <button hx-delete="/queue/{{.Lead.ID}}"

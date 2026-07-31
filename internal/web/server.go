@@ -49,6 +49,7 @@ type Server struct {
 	runner     gdl.Runner
 	mapper     *mapping.Mapper
 	extractors []gdl.Extractor
+	supported  map[string]gdl.SupportedSite
 	gdlVersion string
 	siteState  *sitestate.Tracker
 	ptr        ptrEngine
@@ -73,7 +74,7 @@ type Server struct {
 // result and gdlVersion the bundled gallery-dl version (both feed the API and
 // settings); siteState is the shared "last reached" tracker the settings sites
 // table reads and the test probe writes (the pipeline writes it on a fetch).
-func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, extractors []gdl.Extractor, gdlVersion string, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client) (*Server, error) {
+func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, extractors []gdl.Extractor, supported map[string]gdl.SupportedSite, gdlVersion string, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client) (*Server, error) {
 	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(webFS.FS, "templates/*.html", "templates/partials/*.html")
 	if err != nil {
 		return nil, err
@@ -91,6 +92,7 @@ func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *
 		runner:     runner,
 		mapper:     mapper,
 		extractors: extractors,
+		supported:  supported,
 		gdlVersion: gdlVersion,
 		siteState:  siteState,
 		ptr:        ptrEngine,
@@ -156,9 +158,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/lookup", s.saveLookup)
 	mux.HandleFunc("POST /settings/lookup/chain", s.saveLookupChain)
 	mux.HandleFunc("POST /settings/lookup/test/{source}", s.testLookupSource)
-	mux.HandleFunc("POST /settings/sites", s.saveSite)
+	mux.HandleFunc("GET /settings/sites/search", s.searchSites)
+	mux.HandleFunc("GET /settings/sites/{name}/dialog", s.siteDialog)
+	mux.HandleFunc("POST /settings/sites/{name}/profile/reset", s.resetSiteProfile)
+	mux.HandleFunc("POST /settings/sites/{name}", s.saveSite)
 	mux.HandleFunc("POST /settings/sites/{name}/reset", s.resetSite)
 	mux.HandleFunc("POST /settings/sites/{name}/test", s.testSite)
+	mux.HandleFunc("POST /settings/host-labels", s.saveHostLabels)
 	mux.HandleFunc("POST /settings/raw", s.saveRaw)
 	mux.HandleFunc("POST /settings/ptr", s.savePTR)
 	mux.HandleFunc("POST /settings/ptr/delete", s.ptrDelete)
@@ -174,9 +180,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/monbooru/pair/poll", s.monbooruPairPoll)
 	mux.HandleFunc("POST /settings/monbooru/pair/cancel", s.monbooruPairCancel)
 	mux.HandleFunc("POST /settings/monbooru/pair/remove", s.monbooruPairRemove)
-	mux.HandleFunc("POST /api/v1/pair/request", s.extPairRequest)
-	mux.HandleFunc("GET /api/v1/pair/status", s.extPairStatus)
-	mux.HandleFunc("POST /api/v1/pair/remove", s.extPairTeardown)
 	mux.HandleFunc("GET /internal/monsender-pairing", s.monsenderPairingFragment)
 	mux.HandleFunc("POST /settings/auth/pair/{id}/approve", s.monsenderPairApprove)
 	mux.HandleFunc("POST /settings/auth/pair/{id}/deny", s.monsenderPairDeny)
@@ -190,7 +193,8 @@ func (s *Server) Handler() http.Handler {
 	// precedence for the add screen.
 	mux.HandleFunc("GET /", s.notFound)
 
-	api.New(s.queue, s.runner, s.mapper, s.cfg, s.extractors, Version, s.gdlVersion, s.siteState, s.ptr, s.updateConfig).Mount(mux)
+	pair := api.PairHandlers{Request: s.extPairRequest, Status: s.extPairStatus, Teardown: s.extPairTeardown}
+	api.New(s.queue, s.runner, s.mapper, s.cfg, s.extractors, s.supported, Version, s.gdlVersion, s.siteState, s.ptr, pair, s.updateConfig).Mount(mux)
 
 	var h http.Handler = mux
 	h = s.CSRFMiddleware(h)
@@ -222,9 +226,17 @@ func templateFuncs() template.FuncMap {
 		"itemCap":     func() int { return maxQueueItems },
 		"moreSummary": moreSummary,
 		"itemView":    itemView,
+		"docPage":     docPage,
 		"add":         func(a, b int) int { return a + b },
 		"sub":         func(a, b int) int { return a - b },
 	}
+}
+
+// docPage resolves a page (optionally with a fragment) under the documentation
+// root, so a deep link follows a DocURL overridden at build time instead of
+// pinning the shipped host.
+func docPage(page string) string {
+	return strings.TrimSuffix(DocURL, "index.html") + page
 }
 
 // moreSummary describes the items hidden behind a "+N more" toggle as a compact
@@ -458,7 +470,7 @@ func (s *Server) updateConfig(fn func(*config.Config) error) error {
 // rewriteGDLConfig regenerates the managed gallery-dl config after a settings
 // change that affects it (credentials, sleep, raw passthrough).
 func (s *Server) rewriteGDLConfig() {
-	if err := gdl.WriteManagedConfig(s.cfg.Current(), s.mapper.FlatTagSites(), s.mapper.MetadataSites(), s.mapper.NotesSites()); err != nil {
+	if err := gdl.WriteManagedConfig(s.cfg.Current(), s.mapper.FlatTagSites(), s.mapper.MetadataSites(), s.mapper.NotesSites(), s.mapper.SiteOptions()); err != nil {
 		logx.Warnf("rewriting managed gallery-dl config: %v", err)
 	}
 }

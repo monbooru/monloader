@@ -120,16 +120,29 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 		return nil
 	}
 
-	// Re-run the staging checks against the now-current index; items the
-	// world already resolved drop as local no-ops, and the server's
-	// silent tag filter is applied loudly here instead.
-	var survivors []ptr.ContribItem
-	droppedKnown, droppedFiltered := 0, 0
+	survivors, droppedKnown, droppedFiltered, derr := p.reDiffContrib(sender, store, items, filter)
+	if derr != nil {
+		failAll(queue.ErrCodePTRUnavailable, "re-checking against the index: "+derr.Error())
+		return nil
+	}
+
+	up := p.newContribUpload(job, sender, store, packContribChunks(survivors))
+	sent, failedCount, uerr := up.run(ctx)
+	if uerr != nil {
+		return uerr
+	}
+	job.SetNote(contribSummary(sent, droppedKnown, droppedFiltered, failedCount))
+	return nil
+}
+
+// reDiffContrib re-runs the staging checks against the now-current index:
+// items the world already resolved drop as local no-ops, and the server's
+// silent tag filter is applied loudly here instead of swallowing the send.
+func (p *Processor) reDiffContrib(sender ContribSender, store *ptr.ContribStore, items []ptr.ContribItem, filter *ptr.TagFilter) (survivors []ptr.ContribItem, droppedKnown, droppedFiltered int, err error) {
 	for _, it := range items {
 		resolved, derr := p.contribResolved(sender, it)
 		if derr != nil {
-			failAll(queue.ErrCodePTRUnavailable, "re-checking against the index: "+derr.Error())
-			return nil
+			return nil, 0, 0, derr
 		}
 		if resolved {
 			droppedKnown++
@@ -146,16 +159,31 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 		}
 		survivors = append(survivors, it)
 	}
+	return survivors, droppedKnown, droppedFiltered, nil
+}
 
-	chunks := packContribChunks(survivors)
-	// One queue item per contribution, linked to the monbooru image (mapping)
-	// or tag (pair), with the chunk each item belongs to remembered so a chunk
-	// outcome marks exactly its items. spans[ci] is the [start, end) range.
+// contribUpload is one send's upload pass: the packed chunks, the queue items
+// each chunk owns, and the stores its outcomes are recorded in.
+type contribUpload struct {
+	p      *Processor
+	job    *queue.Job
+	sender ContribSender
+	store  *ptr.ContribStore
+	chunks []contribChunk
+	// spans[ci] is the [start, end) range of queue items chunk ci owns, so a
+	// chunk outcome marks exactly its own.
+	spans [][2]int
+	total int
+}
+
+// newContribUpload installs one queue item per contribution, linked to the
+// monbooru image (mapping) or tag (pair).
+func (p *Processor) newContribUpload(job *queue.Job, sender ContribSender, store *ptr.ContribStore, chunks []contribChunk) *contribUpload {
+	up := &contribUpload{p: p, job: job, sender: sender, store: store, chunks: chunks, spans: make([][2]int, len(chunks))}
 	base := p.cfg.Current().Monbooru.WebBase()
 	var jobItems []queue.Item
-	spans := make([][2]int, len(chunks))
 	for ci, c := range chunks {
-		spans[ci][0] = len(jobItems)
+		up.spans[ci][0] = len(jobItems)
 		for _, cit := range c.items {
 			jobItems = append(jobItems, queue.Item{
 				PostID: ptr.ContribQueueLabel(cit.Kind, cit.Tag, cit.Tag2),
@@ -163,70 +191,82 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 				Status: queue.ItemPending,
 			})
 		}
-		spans[ci][1] = len(jobItems)
+		up.spans[ci][1] = len(jobItems)
 	}
+	up.total = len(jobItems)
 	job.SetItems(jobItems)
+	return up
+}
 
-	sleep := time.Duration(p.cfg.Current().PTR.CommitSleep * float64(time.Second))
-	sent := map[string]int{}
-	failedCount := 0
-	// Everything from chunk i onward stays for the manual retry; the accepted
-	// chunks before it are already in the ledger. Used on a post failure and
-	// on cancellation, so claimed rows never strand in 'sending'.
-	failRemainder := func(i int, code, reason string) {
-		for _, c := range chunks[i:] {
-			for _, it := range c.items {
-				if ferr := store.FailItem(it.ID, reason); ferr != nil {
-					logx.Warnf("contrib: marking item %d failed: %v", it.ID, ferr)
-				}
-				failedCount++
-			}
-		}
-		for k := spans[i][0]; k < len(jobItems); k++ {
-			job.UpdateItem(k, func(it *queue.Item) {
-				it.Status = queue.ItemFailed
-				it.Outcome = queue.OutcomeFailed
-				it.ErrorCode = code
-				it.Error = reason
-			})
-		}
-	}
-	for i, chunk := range chunks {
+// run posts each chunk in turn, pacing between them. Chunks the server
+// accepted stay committed whatever happens later, so the ledger reflects
+// exactly what the server took.
+func (up *contribUpload) run(ctx context.Context) (sent map[string]int, failed int, err error) {
+	sleep := time.Duration(up.p.cfg.Current().PTR.CommitSleep * float64(time.Second))
+	sent = map[string]int{}
+	for i, chunk := range up.chunks {
 		if i > 0 && sleep > 0 {
 			select {
 			case <-time.After(sleep):
 			case <-ctx.Done():
-				failRemainder(i, queue.ErrCodeCanceled, "job canceled before sending")
-				return ctx.Err()
+				failed += up.failRemainder(i, queue.ErrCodeCanceled, "job canceled before sending")
+				return sent, failed, ctx.Err()
 			}
 		}
-		err := p.postContribChunk(ctx, sender, chunk)
-		if err != nil {
+		if perr := up.p.postContribChunk(ctx, up.sender, chunk); perr != nil {
 			if ctx.Err() != nil {
-				failRemainder(i, queue.ErrCodeCanceled, "job canceled before sending")
-				return ctx.Err()
+				failed += up.failRemainder(i, queue.ErrCodeCanceled, "job canceled before sending")
+				return sent, failed, ctx.Err()
 			}
-			failRemainder(i, queue.ErrCodePTRUnavailable, err.Error())
+			failed += up.failRemainder(i, queue.ErrCodePTRUnavailable, perr.Error())
 			break
 		}
-		for _, it := range chunk.items {
-			if _, cerr := store.Complete(it); cerr != nil {
-				logx.Warnf("contrib: recording item %d in the ledger: %v", it.ID, cerr)
-			}
-			sent[it.Kind]++
+		up.commit(i, chunk, sent)
+	}
+	return sent, failed, nil
+}
+
+// commit records an accepted chunk in the ledger and walks its queue items to
+// done.
+func (up *contribUpload) commit(i int, chunk contribChunk, sent map[string]int) {
+	for _, it := range chunk.items {
+		if _, cerr := up.store.Complete(it); cerr != nil {
+			logx.Warnf("contrib: recording item %d in the ledger: %v", it.ID, cerr)
 		}
-		for k := spans[i][0]; k < spans[i][1]; k++ {
-			job.UpdateItem(k, func(it *queue.Item) { it.Status = queue.ItemDownloaded })
-			job.UpdateItem(k, func(it *queue.Item) { it.Status = queue.ItemUploaded })
-			job.UpdateItem(k, func(it *queue.Item) {
-				it.Status = queue.ItemDone
-				it.Outcome = queue.OutcomeCreated
-			})
+		sent[it.Kind]++
+	}
+	for k := up.spans[i][0]; k < up.spans[i][1]; k++ {
+		up.job.UpdateItem(k, func(it *queue.Item) { it.Status = queue.ItemDownloaded })
+		up.job.UpdateItem(k, func(it *queue.Item) { it.Status = queue.ItemUploaded })
+		up.job.UpdateItem(k, func(it *queue.Item) {
+			it.Status = queue.ItemDone
+			it.Outcome = queue.OutcomeCreated
+		})
+	}
+}
+
+// failRemainder leaves everything from chunk i onward for the manual retry;
+// the accepted chunks before it are already in the ledger. Used on a post
+// failure and on cancellation, so claimed rows never strand in 'sending'.
+func (up *contribUpload) failRemainder(i int, code, reason string) int {
+	failed := 0
+	for _, c := range up.chunks[i:] {
+		for _, it := range c.items {
+			if ferr := up.store.FailItem(it.ID, reason); ferr != nil {
+				logx.Warnf("contrib: marking item %d failed: %v", it.ID, ferr)
+			}
+			failed++
 		}
 	}
-
-	job.SetNote(contribSummary(sent, droppedKnown, droppedFiltered, failedCount))
-	return nil
+	for k := up.spans[i][0]; k < up.total; k++ {
+		up.job.UpdateItem(k, func(it *queue.Item) {
+			it.Status = queue.ItemFailed
+			it.Outcome = queue.OutcomeFailed
+			it.ErrorCode = code
+			it.Error = reason
+		})
+	}
+	return failed
 }
 
 // contribResolved re-runs one item's staging predicate: true when the

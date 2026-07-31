@@ -129,10 +129,15 @@ func (c *Client) do(ctx context.Context, method, endpoint, contentType string, b
 }
 
 // readCappedBody reads a response body up to maxResponseBytes, failing past the
-// cap instead of handing back a truncated body that only fails later, at the
-// decode.
+// cap - and on a connection dropped mid-body - instead of handing back a
+// truncated body that only fails later, at the decode: a short 201 would
+// otherwise stamp the item created with no monbooru id and nothing recorded as
+// wrong.
 func readCappedBody(r io.Reader) ([]byte, error) {
-	body, _ := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading the monbooru response body: %w", err)
+	}
 	if len(body) > maxResponseBytes {
 		return nil, fmt.Errorf("monbooru response body exceeds %d bytes", maxResponseBytes)
 	}
@@ -182,6 +187,28 @@ func (c *Client) postMultipart(ctx context.Context, endpoint, contentType string
 // memory. The digest is taken from the same read as the upload, so the
 // permalink hash always describes the pushed bytes.
 func (c *Client) PushImageFile(ctx context.Context, path string, meta PushMeta, gallery string) (*Result, error) {
+	return c.streamUpload(ctx, path, c.imagesEndpoint(gallery), meta, c.sendPush)
+}
+
+// ReplaceImageFile streams a downloaded post file plus mapped metadata to
+// POST /api/v1/images/{id}/file - the in-place byte replacement of an image
+// monbooru already holds. Same streaming multipart and hashing pass as
+// PushImageFile; the classification differs: 200 -> replaced (monbooru
+// answers replaced=false when the local file already matched, still a
+// success), 409 -> the already_exists / wrong_type refusals passed through
+// as coded errors.
+func (c *Client) ReplaceImageFile(ctx context.Context, imageID int64, path string, meta PushMeta, gallery string) (*Result, error) {
+	return c.streamUpload(ctx, path, c.imageEndpoint(imageID, "file", gallery), meta,
+		func(ctx context.Context, endpoint, contentType string, body io.Reader) (*Result, error) {
+			return c.sendReplace(ctx, endpoint, contentType, body, imageID)
+		})
+}
+
+// streamUpload is the byte-push path both file endpoints share: open the file,
+// stream the multipart body through an io.Pipe, and hash the same read that is
+// uploaded. send classifies the response.
+func (c *Client) streamUpload(ctx context.Context, path, endpoint string, meta PushMeta,
+	send func(ctx context.Context, endpoint, contentType string, body io.Reader) (*Result, error)) (*Result, error) {
 	// Opened here rather than inside the body goroutine: a scratch file that is
 	// gone or unreadable is a local fault, and a failure in the goroutine would
 	// reach the transport as a request error and be coded as a monbooru outage.
@@ -197,44 +224,15 @@ func (c *Client) PushImageFile(ctx context.Context, path string, meta PushMeta, 
 		defer f.Close()
 		pw.CloseWithError(streamFileMultipart(w, f, meta, h))
 	}()
-	res, err := c.sendPush(ctx, c.imagesEndpoint(gallery), contentType, pr)
+	res, err := send(ctx, endpoint, contentType, pr)
 	if err != nil {
-		// sendPush can return before consuming the body (a request-build error
-		// never reads the pipe); unblock the writer goroutine so it closes the file.
+		// send can return before consuming the body (a request-build error never
+		// reads the pipe); unblock the writer goroutine so it closes the file.
 		pr.CloseWithError(err)
 		return res, err
 	}
 	// A success response means monbooru consumed the whole body, so the hash
 	// has seen every pushed byte.
-	res.SHA256 = hex.EncodeToString(h.Sum(nil))
-	return res, nil
-}
-
-// ReplaceImageFile streams a downloaded post file plus mapped metadata to
-// POST /api/v1/images/{id}/file - the in-place byte replacement of an image
-// monbooru already holds. Same streaming multipart and hashing pass as
-// PushImageFile; the classification differs: 200 -> replaced (monbooru
-// answers replaced=false when the local file already matched, still a
-// success), 409 -> the already_exists / wrong_type refusals passed through
-// as coded errors.
-func (c *Client) ReplaceImageFile(ctx context.Context, imageID int64, path string, meta PushMeta, gallery string) (*Result, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
-	}
-	pr, pw := io.Pipe()
-	w := multipart.NewWriter(pw)
-	contentType := w.FormDataContentType()
-	h := sha256.New()
-	go func() {
-		defer f.Close()
-		pw.CloseWithError(streamFileMultipart(w, f, meta, h))
-	}()
-	res, err := c.sendReplace(ctx, c.imageEndpoint(imageID, "file", gallery), contentType, pr, imageID)
-	if err != nil {
-		pr.CloseWithError(err)
-		return res, err
-	}
 	res.SHA256 = hex.EncodeToString(h.Sum(nil))
 	return res, nil
 }

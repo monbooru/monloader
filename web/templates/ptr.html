@@ -4,7 +4,6 @@
 <main id="content" class="ptr-shell">
   <h1>Public Tag Repository</h1>
   <p class="field-hint">Download a local copy of the Hydrus PTR. Off by default; when enabled it allows monloader to answer sha256 lookups offline.</p>
-  <p class="field-hint">the data path and the index delete are in <a href="/settings#ptr">settings</a>.</p>
   {{if .Flash}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
   <div id="ptr-body"{{if eq .PTR.Status.State "syncing"}} hx-get="/internal/ptr-status" hx-trigger="every 2s" hx-swap="innerHTML"{{end}}>
     {{template "ptr_body" .}}
@@ -28,7 +27,7 @@
   {{$label = "resume ptr sync"}}
   <p>The index is still on disk. Enabling picks the sync up where it stopped; deleting it is in <a href="/settings#ptr">settings</a>.</p>
   {{else}}
-  <p>Enabling downloads the repository's full tag history and keeps a local index (tens of GB).</p>
+  <p>Enabling downloads the repository's full tag history and keeps a local index (tens of GB).<br>You can download a <a href="{{docPage "guides/ptr.html#starting-from-a-snapshot"}}" target="_blank" rel="noopener">pre-synced snapshot</a> to skip most of that download.</p>
   {{end}}
   <table class="stats-table">
     <tbody>
@@ -43,7 +42,7 @@
 <section class="settings-section">
   <h2>status: <span class="ptr-state ptr-state-{{.Status.State}}">{{.Status.State}}</span></h2>
   {{if eq .Status.State "syncing"}}
-  <p class="field-hint">The initial sync downloads the full tag history and takes days (weeks on an HDD).</p>
+  <p class="field-hint">The initial sync downloads the full tag history and takes days (weeks on an HDD).<br>You can download a <a href="{{docPage "guides/ptr.html#starting-from-a-snapshot"}}" target="_blank" rel="noopener">pre-synced snapshot</a> to skip most of that download.</p>
   <p>update {{.Status.Progress.UpdateIndex}}{{if .Status.Progress.UpdateCount}} / {{.Status.Progress.UpdateCount}}{{end}} &middot; {{humanBytes .Status.Progress.DownloadedBytes}} downloaded this session{{if .Status.Progress.DownloadRate}} &middot; {{humanBytes .Status.Progress.DownloadRate}}/s network{{end}}{{if .Status.Progress.ProcessRate}} &middot; {{.Status.Progress.ProcessRate}} rows/s{{end}}{{if .Status.Progress.LastAppliedAt}} &middot; last update applied {{humanAgo .Status.Progress.LastAppliedAt}}{{end}}</p>
   <div class="ptr-progress">
     <div class="ptr-bar"><div class="ptr-bar-fill" style="width:{{.Percent}}%"></div></div>

@@ -2,7 +2,7 @@
 <h3 class="sites-group">{{.Heading}}</h3>
 <div class="table-scroll">
 <table class="sites-table">
-  <thead><tr><th>site</th><th>login</th><th>gallery</th><th>cookies</th><th>state</th><th>action</th></tr></thead>
+  <thead><tr><th>site</th><th>login</th><th>auth</th><th>gallery</th><th>state</th><th>action</th></tr></thead>
   <tbody>
   {{range .Rows}}{{template "site_row" .}}{{end}}
   </tbody>

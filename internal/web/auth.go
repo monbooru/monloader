@@ -49,7 +49,13 @@ func (s *SessionStore) Get(id string) (Session, bool) {
 	s.mu.RLock()
 	sess, ok := s.sessions[id]
 	s.mu.RUnlock()
-	if !ok || time.Now().After(sess.ExpiresAt) {
+	if !ok {
+		return Session{}, false
+	}
+	if time.Now().After(sess.ExpiresAt) {
+		// Drop it here: nothing else sweeps the map, so a closed tab or an
+		// expired week-old cookie would otherwise leave a permanent entry.
+		s.Delete(id)
 		return Session{}, false
 	}
 	return sess, true
@@ -81,13 +87,7 @@ func isHTMXRequest(r *http.Request) bool { return r.Header.Get("HX-Request") == 
 // static assets bypass it.
 func (s *Server) SessionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		if strings.HasPrefix(p, "/api/v1/") || p == "/health" || strings.HasPrefix(p, "/static/") || p == "/login" || p == "/custom.css" || p == "/custom.logo" {
-			ctx := context.WithValue(r.Context(), sessionContextKey, "anon")
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-		if !s.cfg.Current().Auth.EnablePassword {
+		if bypassAuth(r.URL.Path) || !s.cfg.Current().Auth.EnablePassword {
 			ctx := context.WithValue(r.Context(), sessionContextKey, "anon")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
@@ -105,6 +105,15 @@ func (s *Server) SessionMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), sessionContextKey, sessID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// bypassAuth lists the paths that never see the login redirect: the API (its
+// own bearer gate), the health probe, the static assets, and the login page
+// itself, which would otherwise redirect to itself.
+func bypassAuth(p string) bool {
+	return strings.HasPrefix(p, "/api/v1/") || p == "/health" ||
+		strings.HasPrefix(p, "/static/") || p == "/login" ||
+		p == "/custom.css" || p == "/custom.logo"
 }
 
 func sessionCookie(r *http.Request) string {
@@ -283,19 +292,13 @@ func hasPairingTeardown(peer string) bool {
 // settingsTokenRevoke drops a named API token by id.
 func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	exists := false
-	for _, t := range s.cfg.Current().Auth.Tokens {
-		if t.ID == id {
-			if hasPairingTeardown(t.Paired) {
-				flashFragment(w, "err", "this token is managed by a pairing; remove the pairing instead")
-				return
-			}
-			exists = true
-			break
-		}
-	}
-	if !exists {
+	tok := s.cfg.Current().FindToken(id)
+	if tok == nil {
 		flashFragment(w, "err", "token not found")
+		return
+	}
+	if hasPairingTeardown(tok.Paired) {
+		flashFragment(w, "err", "this token is managed by a pairing; remove the pairing instead")
 		return
 	}
 	if err := s.updateConfig(func(c *config.Config) error {
@@ -327,20 +330,12 @@ type tokenScopeRow struct {
 
 func (s *Server) settingsTokenPrivilegesGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var scopes []string
-	found, paired := false, false
-	for _, t := range s.cfg.Current().Auth.Tokens {
-		if t.ID == id {
-			scopes = slices.Clone(t.Scopes)
-			paired = t.Paired != ""
-			found = true
-			break
-		}
-	}
-	if !found {
+	tok := s.cfg.Current().FindToken(id)
+	if tok == nil {
 		http.Error(w, "token not found", http.StatusNotFound)
 		return
 	}
+	scopes := slices.Clone(tok.Scopes)
 	descs := map[string]string{
 		config.ScopeRead:  "read - queue and sites",
 		config.ScopeWrite: "write - enqueue and manage jobs",
@@ -353,7 +348,7 @@ func (s *Server) settingsTokenPrivilegesGet(w http.ResponseWriter, r *http.Reque
 		"ID":        id,
 		"Scopes":    rows,
 		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
-		"Paired":    paired,
+		"Paired":    tok.Paired != "",
 	})
 }
 
@@ -363,19 +358,13 @@ func (s *Server) settingsTokenPrivilegesPost(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	id := r.PathValue("id")
-	found := false
-	for _, t := range s.cfg.Current().Auth.Tokens {
-		if t.ID == id {
-			if t.Paired != "" {
-				flashFragment(w, "err", "this token is managed by a pairing; its privileges can't be changed")
-				return
-			}
-			found = true
-			break
-		}
-	}
-	if !found {
+	tok := s.cfg.Current().FindToken(id)
+	if tok == nil {
 		flashFragment(w, "err", "token not found")
+		return
+	}
+	if tok.Paired != "" {
+		flashFragment(w, "err", "this token is managed by a pairing; its privileges can't be changed")
 		return
 	}
 	scopes := filterScopes(r.Form["scope"])

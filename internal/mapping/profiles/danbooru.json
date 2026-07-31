@@ -1,0 +1,9 @@
+{
+  "family": "danbooru",
+  "kind": "booru",
+  "post_url_template": "https://danbooru.donmai.us/posts/{id}",
+  "md5_search_template": "https://danbooru.donmai.us/posts?tags=md5:{md5}",
+  "auth": "api_optional",
+  "example": "https://danbooru.donmai.us/posts/11514474",
+  "hosts": ["donmai.us", "donmai.moe"]
+}

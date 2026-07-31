@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -173,7 +175,7 @@ func (p *Processor) sourceOnlyEnrich(ctx context.Context, job, snap *queue.Job, 
 	job.SetSite(hit.site)
 	job.UpdateItem(0, func(it *queue.Item) { it.PostID = hit.note + ", source only" })
 	return p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
-		Source:     hit.site,
+		Source:     p.mapper.SourceLabel(hit.site),
 		URL:        hit.url,
 		Verify:     false,
 		Similarity: hit.score,
@@ -521,18 +523,18 @@ func (p *Processor) similaritySource(ctx context.Context, service string, thumb 
 	for i, site := range p.mapper.LookupSites() {
 		rank[site] = i + 1
 	}
-	sort.SliceStable(cands, func(i, j int) bool {
-		ri, rj := rank[cands[i].Site], rank[cands[j].Site]
-		if ri == 0 {
-			ri = len(rank) + 1
+	// An unranked site sorts behind every ranked one; among equals the higher
+	// score wins.
+	rankOf := func(site string) int {
+		if r := rank[site]; r != 0 {
+			return r
 		}
-		if rj == 0 {
-			rj = len(rank) + 1
-		}
-		if ri != rj {
-			return ri < rj
-		}
-		return cands[i].Similarity > cands[j].Similarity
+		return len(rank) + 1
+	}
+	slices.SortStableFunc(cands, func(a, b similarity.Candidate) int {
+		return cmp.Or(
+			cmp.Compare(rankOf(a.Site), rankOf(b.Site)),
+			cmp.Compare(b.Similarity, a.Similarity))
 	})
 	attempts := 0
 	for _, cand := range cands {

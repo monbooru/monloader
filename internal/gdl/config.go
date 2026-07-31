@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/logx"
 )
 
 // WriteManagedConfig writes the gallery-dl config file the app controls: the
@@ -14,10 +15,12 @@ import (
 // sidecars, and per-site blocks. The download location is set per run with
 // `-D <workDir>`, so none is written here. flatTagSites lists the categories
 // that need `tags: true` to emit per-category tags; notesSites those that need
-// `notes: true` to emit note boxes. The validated raw passthrough
-// is deep-merged last so operator options win; the file is rewritten from config,
-// never hand-edited.
-func WriteManagedConfig(cfg *config.Config, flatTagSites, metadataSites, notesSites []string) error {
+// `notes: true` to emit note boxes; profileOptions carries each profile's own
+// extractor options. Per site, later layers win: profile behavior keys, then
+// profile options, then credentials, then the block's instance options. The
+// validated raw passthrough is deep-merged last so operator options win; the
+// file is rewritten from config, never hand-edited.
+func WriteManagedConfig(cfg *config.Config, flatTagSites, metadataSites, notesSites []string, profileOptions map[string]map[string]any) error {
 	extractor := map[string]any{
 		"directory": []any{},
 		"postprocessors": []any{
@@ -61,19 +64,37 @@ func WriteManagedConfig(cfg *config.Config, flatTagSites, metadataSites, notesSi
 		blockFor(extractor, site)["notes"] = true
 	}
 
+	// A profile's own extractor options land under its category whether or
+	// not a [[sites]] block exists for it.
+	for site, opts := range profileOptions {
+		mergeMaps(blockFor(extractor, site), opts)
+	}
+
 	// Overlay per-site credentials, keeping any tags:true already set.
 	for _, site := range cfg.Sites {
 		block := blockFor(extractor, site.Name)
-		// A lone username (no key) makes the danbooru/e621 family prompt for a
-		// password and abort in the non-TTY subprocess, so only send it with a key.
-		if site.Username != "" && site.APIKey != "" {
-			block["username"] = site.Username
-		}
-		if site.APIKey != "" {
-			block["api-key"] = site.APIKey
-			// The danbooru/e621 family authenticates by HTTP Basic Auth and reads the
-			// key from "password"; gelbooru reads "api-key". Set both so either works.
-			block["password"] = site.APIKey
+		if site.Password != "" {
+			// A real account password (twitter-style logins): username and
+			// password are themselves, and an api key stays an api key.
+			if site.Username != "" {
+				block["username"] = site.Username
+			}
+			block["password"] = site.Password
+			if site.APIKey != "" {
+				block["api-key"] = site.APIKey
+			}
+		} else {
+			// A lone username (no key) makes the danbooru/e621 family prompt for a
+			// password and abort in the non-TTY subprocess, so only send it with a key.
+			if site.Username != "" && site.APIKey != "" {
+				block["username"] = site.Username
+			}
+			if site.APIKey != "" {
+				block["api-key"] = site.APIKey
+				// The danbooru/e621 family authenticates by HTTP Basic Auth and reads the
+				// key from "password"; gelbooru reads "api-key". Set both so either works.
+				block["password"] = site.APIKey
+			}
 		}
 		if site.UserID != "" {
 			block["user-id"] = site.UserID
@@ -83,6 +104,17 @@ func WriteManagedConfig(cfg *config.Config, flatTagSites, metadataSites, notesSi
 		}
 		if slices.Contains(flatTagSites, site.Name) {
 			block["tags"] = true
+		}
+		// Instance options win over everything the block holds so far. They
+		// were validated at save; a value corrupted since is skipped so one
+		// bad block cannot poison the whole managed file.
+		if site.Options != "" {
+			var opts map[string]any
+			if err := json.Unmarshal([]byte(site.Options), &opts); err != nil {
+				logx.Warnf("site %s options are not a JSON object, skipping them: %v", site.Name, err)
+			} else {
+				mergeMaps(block, opts)
+			}
 		}
 		if len(block) == 0 {
 			// A site row carrying only a gallery or lookup order sets nothing

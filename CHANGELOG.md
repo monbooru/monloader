@@ -1,5 +1,35 @@
 # Changelog
 
+## [v1.7.0] - 2026-07-31
+### Added
+- Add any of gallery-dl's ~300 sites from Settings, not just the shipped profiles. ([#21](https://github.com/monbooru/monloader/issues/21))
+- Edit a site's mapping profile in Settings: family, rating map, tag categories, templates. ([#21](https://github.com/monbooru/monloader/issues/21))
+- Per-site tag rules suppress a tag, rename it, or retarget its category. ([#21](https://github.com/monbooru/monloader/issues/21))
+- Paste a browser cookies export into the site dialog instead of placing a file yourself. ([#16](https://github.com/monbooru/monloader/issues/16))
+- Per-site gallery-dl options.
+- Choose the source label a site's pushes carry, per site or per host. ([monsender#3](https://github.com/monbooru/monsender/issues/3))
+- Export a site's profile as a shareable file; `/config/profiles/` overrides a shipped mapping.
+- Add a PTR contributions chart for daily contribution activity.
+- The sites API reports each site's display name, kind, and configured state.
+
+### Changed
+- Settings lists only the sites you customized, grouped into boorus, manga and other.
+- A push from a site's CDN or mirror host records the site, not the bare host.
+
+### Fixed
+- Pausing the monbooru link also holds retry, force download, and get next / get all.
+- The queue table stays readable on a narrow window instead of breaking the url apart. ([#18](https://github.com/monbooru/monloader/issues/18))
+- An API enqueue with no monbooru configured is refused instead of accepted and failed.
+- The monbooru URLs and the default folder are validated instead of saved as typed.
+- A job still running at shutdown settles interrupted, so its requeue survives the restart.
+- PTR enable, disable and delete no longer overlap when clicked in quick succession.
+- PTR sync bounds a manifest entry by size, so a big update stops spiking memory.
+- A crash during a settings save can no longer leave the config file truncated.
+
+Thanks to @gary-host-laptop for the suggestions (https://github.com/monbooru/monbooru/issues/73, https://github.com/monbooru/monloader/issues/21) and the report (https://github.com/monbooru/monsender/issues/3).
+Thanks to @JustRoxy for the suggestion (https://github.com/monbooru/monloader/issues/16).
+Thanks to @CeareDelafont for the report (https://github.com/monbooru/monloader/issues/18).
+
 ## [v1.6.0] - 2026-07-26
 ### Added
 - Replace jobs download a post's file and push it over an existing monbooru image.

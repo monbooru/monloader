@@ -2,7 +2,7 @@ package mapping
 
 import (
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -59,7 +59,7 @@ func tagSuffixes(meta map[string]any) []string {
 			out = append(out, suffix)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -204,4 +204,40 @@ func formatTag(category, name string) string {
 		return name
 	}
 	return category + ":" + name
+}
+
+// NormalizeTag exposes the tag normalization so the settings profile editor
+// can fold a hand-typed rule spelling into the form the mapper compares.
+func NormalizeTag(tag string) string { return normalizeTag(tag) }
+
+// applyTagRule corrects one normalized, category-prefixed tag through a
+// profile's tag rules: "" suppresses it, a bare replacement renames it in its
+// mapped category, a "category:name" replacement retargets it. A rule may key
+// the full prefixed form (more specific, tried first) or the bare name, so a
+// general tag that itself contains a colon is still addressable.
+func applyTagRule(rules map[string]string, tag string) string {
+	if len(rules) == 0 {
+		return tag
+	}
+	prefix, name := "", tag
+	if cat, rest, found := strings.Cut(tag, ":"); found && validTagCategories[cat] && cat != "" {
+		prefix, name = cat, rest
+	}
+	repl, ok := rules[tag]
+	if !ok && prefix != "" {
+		repl, ok = rules[name]
+	}
+	if !ok {
+		return tag
+	}
+	if repl == "" {
+		return ""
+	}
+	if cat, rest, found := strings.Cut(repl, ":"); found && validTagCategories[cat] && cat != "" && rest != "" {
+		return repl
+	}
+	if prefix != "" {
+		return prefix + ":" + repl
+	}
+	return repl
 }

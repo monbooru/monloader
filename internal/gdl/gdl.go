@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/kwdict"
@@ -92,8 +93,11 @@ type Runner interface {
 
 // Tool is the real Runner: it shells out to the gallery-dl binary named in
 // config, passing the managed config file written by WriteManagedConfig.
+// The site lists are guarded because a profile save replaces them while a
+// worker may be resolving.
 type Tool struct {
 	cfg           *config.Config
+	mu            sync.RWMutex
 	flatTagSites  []string
 	notesSites    []string
 	metadataSites []string
@@ -105,6 +109,22 @@ type Tool struct {
 // resolveOffArgs).
 func New(cfg *config.Config, flatTagSites, metadataSites, notesSites []string) *Tool {
 	return &Tool{cfg: cfg, flatTagSites: flatTagSites, notesSites: notesSites, metadataSites: metadataSites}
+}
+
+// SetSiteLists replaces the cached site lists after a profile change, so the
+// resolve pass's option-off overrides track the effective profiles without a
+// restart.
+func (t *Tool) SetSiteLists(flatTagSites, metadataSites, notesSites []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.flatTagSites, t.metadataSites, t.notesSites = flatTagSites, metadataSites, notesSites
+}
+
+// siteLists snapshots the cached lists for one invocation.
+func (t *Tool) siteLists() (flatTagSites, metadataSites, notesSites []string) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.flatTagSites, t.metadataSites, t.notesSites
 }
 
 var _ Runner = (*Tool)(nil)
@@ -213,7 +233,7 @@ func downloadArgs(workDir, rng, url string, force, deep bool) []string {
 // their files; the child window is then bounded by --chapter-range, not --range.
 func (t *Tool) Resolve(ctx context.Context, url, rng string, deep bool) (ResolveResult, error) {
 	args := t.configArgs()
-	args = append(args, resolveOffArgs(t.flatTagSites, t.metadataSites, t.notesSites)...)
+	args = append(args, resolveOffArgs(t.siteLists())...)
 	mode := "-j"
 	if deep {
 		mode = "-J"

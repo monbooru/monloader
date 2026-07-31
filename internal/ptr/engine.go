@@ -82,16 +82,20 @@ type Engine struct {
 	client *Client
 
 	// retryBackoff and readyPoll are the wait after a failed pass and the
-	// fallback poll when caught up; fields so tests can shorten them.
+	// fallback poll when caught up, entryBytes the budget one manifest entry
+	// may buffer; fields so tests can shrink them.
 	retryBackoff time.Duration
 	readyPoll    time.Duration
+	entryBytes   int64
 
 	baseCtx context.Context
 
-	// enableMu serializes Enable end to end: its store-open runs off mu (it is
-	// slow), and without this two concurrent enables would both pass the
-	// store==nil guard and launch two sync loops against one index.
-	enableMu sync.Mutex
+	// lifecycleMu serializes enable / disable / delete end to end: their slow
+	// parts (opening the store, waiting for the goroutine to exit, unlinking
+	// the files) run off mu, and without this two concurrent enables would both
+	// pass the store==nil guard, or an enable landing inside a disable's wait
+	// would leave a sync goroutine the engine no longer tracks.
+	lifecycleMu sync.Mutex
 
 	// createMu serializes account auto-creation so two concurrent calls can't
 	// both pass the no-key check and mint two accounts under one operator.
@@ -138,6 +142,7 @@ func NewEngine(cfg config.PTRConfig) *Engine {
 		client:       NewClient(cfg),
 		retryBackoff: 30 * time.Second,
 		readyPoll:    10 * time.Minute,
+		entryBytes:   maxEntryBytes,
 		state:        StateDisabled,
 	}
 }
@@ -162,8 +167,8 @@ func (e *Engine) Start(ctx context.Context) {
 // an initial sync when the data volume has less than the configured free-space
 // floor, so a multi-tens-of-GB stream cannot fill the disk. Idempotent.
 func (e *Engine) Enable() error {
-	e.enableMu.Lock()
-	defer e.enableMu.Unlock()
+	e.lifecycleMu.Lock()
+	defer e.lifecycleMu.Unlock()
 
 	e.mu.Lock()
 	if e.store != nil {
@@ -193,6 +198,7 @@ func (e *Engine) Enable() error {
 	}
 
 	ctx, cancel := context.WithCancel(e.baseCtx)
+	done := make(chan struct{})
 	e.mu.Lock()
 	e.store = store
 	e.contrib = contrib
@@ -200,10 +206,13 @@ func (e *Engine) Enable() error {
 	e.errMsg = ""
 	e.cancel = cancel
 	e.wake = make(chan struct{}, 1)
-	e.done = make(chan struct{})
+	e.done = done
 	e.mu.Unlock()
 
-	go e.loop(ctx)
+	// The store and the done channel are handed over rather than read back off
+	// the engine: Disable clears both before it waits, so a loop reading them
+	// through the fields would signal the wrong channel and outlive its index.
+	go e.loop(ctx, store, done)
 	return nil
 }
 
@@ -226,6 +235,13 @@ func (e *Engine) checkFreeSpace() error {
 // Disable stops the sync goroutine and closes the index, keeping the files so a
 // later Enable resumes. Idempotent.
 func (e *Engine) Disable() {
+	e.lifecycleMu.Lock()
+	defer e.lifecycleMu.Unlock()
+	e.disableLocked()
+}
+
+// disableLocked is Disable's body; the caller holds lifecycleMu.
+func (e *Engine) disableLocked() {
 	e.mu.Lock()
 	cancel, done, store := e.cancel, e.done, e.store
 	e.cancel, e.done = nil, nil
@@ -258,7 +274,11 @@ func (e *Engine) Disable() {
 // contribution store included: pending and historical contributions go
 // with the data, as the settings confirm warns.
 func (e *Engine) Delete() error {
-	e.Disable()
+	// Held across the unlink too, so an enable cannot open a fresh index in the
+	// window between the sync stopping and its files going away.
+	e.lifecycleMu.Lock()
+	defer e.lifecycleMu.Unlock()
+	e.disableLocked()
 	// The caught-up mark described the index being removed; a re-enable builds
 	// a new one from nothing, and its partial answers are provisional again.
 	e.mu.Lock()
@@ -356,12 +376,18 @@ func (e *Engine) Status() Status {
 	return st
 }
 
+// currentStore is the open index or nil, for the readers that answer "nothing
+// known" while the PTR is off rather than erroring.
+func (e *Engine) currentStore() *Store {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.store
+}
+
 // TagsForHash answers a PTR hash lookup, or ok=false when the backend is not
 // available or the hash is unknown.
 func (e *Engine) TagsForHash(hashHex string) (tags []string, ok bool, err error) {
-	e.mu.Lock()
-	store := e.store
-	e.mu.Unlock()
+	store := e.currentStore()
 	if store == nil {
 		return nil, false, nil
 	}
@@ -370,9 +396,7 @@ func (e *Engine) TagsForHash(hashHex string) (tags []string, ok bool, err error)
 
 // TagGraph answers alias / implication queries, or nil when disabled.
 func (e *Engine) TagGraph(names []string) (map[string]TagInfo, error) {
-	e.mu.Lock()
-	store := e.store
-	e.mu.Unlock()
+	store := e.currentStore()
 	if store == nil {
 		return nil, nil
 	}
@@ -381,19 +405,19 @@ func (e *Engine) TagGraph(names []string) (map[string]TagInfo, error) {
 
 // loop is the sync goroutine: drive to caught-up, then poll for the next
 // update; back off and retry on error; hold while paused. It exits on ctx.
-func (e *Engine) loop(ctx context.Context) {
-	defer close(e.done)
+func (e *Engine) loop(ctx context.Context, store *Store, done chan struct{}) {
+	defer close(done)
 	// Seed the position before the census scan below: on a first boot that
 	// scan can run for minutes, and the page would otherwise claim update 0
 	// against a populated index for its whole duration.
 	e.seedPosition()
 	// The census seed can scan a 40 GB index for minutes; it belongs here on
 	// the sync goroutine, after the boot path has already returned.
-	if err := e.store.EnsureCounts(ctx); err != nil && ctx.Err() == nil {
+	if err := store.EnsureCounts(ctx); err != nil && ctx.Err() == nil {
 		logx.Warnf("ptr: seeding the row census failed: %v", err)
 	}
 	e.loadCounts()
-	if err := e.seedBlobBaseline(ctx); err != nil && ctx.Err() == nil {
+	if err := e.seedBlobBaseline(ctx, store); err != nil && ctx.Err() == nil {
 		// Without the baseline the pass skips the blob fraction and the bar
 		// falls back to the update fraction; nothing else degrades.
 		logx.Warnf("ptr: seeding the blob census failed: %v", err)
@@ -409,7 +433,7 @@ func (e *Engine) loop(ctx context.Context) {
 			}
 			continue
 		}
-		err := e.syncPass(ctx)
+		err := e.syncPass(ctx, store)
 		switch {
 		case ctx.Err() != nil:
 			return
@@ -462,12 +486,12 @@ var errPaused = fmt.Errorf("sync paused")
 // syncPass fetches the manifest from the cursor onward and replays every
 // pending update index in order, stopping early if paused or canceled. It
 // returns nil once caught up (an empty manifest).
-func (e *Engine) syncPass(ctx context.Context) error {
+func (e *Engine) syncPass(ctx context.Context, store *Store) error {
 	e.setState(StateSyncing, "")
 	e.markPassStart()
 	for {
 		since := uint64(0)
-		if cur, ok, err := e.store.Cursor(); err != nil {
+		if cur, ok, err := store.Cursor(); err != nil {
 			return err
 		} else if ok {
 			since = cur + 1
@@ -478,7 +502,7 @@ func (e *Engine) syncPass(ctx context.Context) error {
 		}
 		e.setNextDue(slice.NextUpdateDue)
 		if len(slice.Updates) == 0 {
-			return e.backfillCovered(ctx) // caught up
+			return e.backfillCovered(ctx, store) // caught up
 		}
 		// The manifest runs from the cursor through the newest published index,
 		// so the last entry names the server's total. A manifest whose newest
@@ -490,7 +514,7 @@ func (e *Engine) syncPass(ctx context.Context) error {
 			return fmt.Errorf("repository manifest did not advance past update %d", since)
 		}
 		e.setProgressTotal(last + 1)
-		if applied, ok, err := e.store.BlobsApplied(); err == nil && ok {
+		if applied, ok, err := store.BlobsApplied(); err == nil && ok {
 			var remaining uint64
 			for _, entry := range slice.Updates {
 				remaining += uint64(len(entry.Hashes))
@@ -513,7 +537,7 @@ func (e *Engine) syncPass(ctx context.Context) error {
 				return fmt.Errorf("repository manifest entry %d out of order (cursor %d)", entry.Index, since)
 			}
 			prev, havePrev = entry.Index, true
-			if err := e.applyEntry(ctx, entry); err != nil {
+			if err := e.applyEntry(ctx, store, entry); err != nil {
 				return err
 			}
 		}
@@ -525,16 +549,16 @@ func (e *Engine) syncPass(ctx context.Context) error {
 // cursor's manifest is re-fetched once from zero and the already-applied
 // entries' blobs are counted - nothing is downloaded or re-applied. A no-op
 // once the census exists; a fresh index starts it at zero.
-func (e *Engine) seedBlobBaseline(ctx context.Context) error {
-	if _, ok, err := e.store.BlobsApplied(); err != nil || ok {
+func (e *Engine) seedBlobBaseline(ctx context.Context, store *Store) error {
+	if _, ok, err := store.BlobsApplied(); err != nil || ok {
 		return err
 	}
-	cur, ok, err := e.store.Cursor()
+	cur, ok, err := store.Cursor()
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return e.store.SeedBlobsApplied(0)
+		return store.SeedBlobsApplied(0)
 	}
 	slice, err := e.client.Metadata(ctx, 0)
 	if err != nil {
@@ -546,7 +570,7 @@ func (e *Engine) seedBlobBaseline(ctx context.Context) error {
 			n += uint64(len(entry.Hashes))
 		}
 	}
-	return e.store.SeedBlobsApplied(n)
+	return store.SeedBlobsApplied(n)
 }
 
 // backfillCovered fills the coverage timestamp on an index synced before it
@@ -554,14 +578,14 @@ func (e *Engine) seedBlobBaseline(ctx context.Context) error {
 // set it until the server publishes the next one. The cursor's own manifest
 // entry is re-fetched once for its window end - no blob is downloaded or
 // re-applied. A no-op once the timestamp exists.
-func (e *Engine) backfillCovered(ctx context.Context) error {
+func (e *Engine) backfillCovered(ctx context.Context, store *Store) error {
 	e.mu.Lock()
 	covered := e.covered
 	e.mu.Unlock()
 	if covered > 0 {
 		return nil
 	}
-	cur, ok, err := e.store.Cursor()
+	cur, ok, err := store.Cursor()
 	if err != nil || !ok {
 		return err
 	}
@@ -573,7 +597,7 @@ func (e *Engine) backfillCovered(ctx context.Context) error {
 		if entry.Index != cur || entry.End <= 0 {
 			continue
 		}
-		if err := e.store.SetCoveredThrough(entry.End); err != nil {
+		if err := store.SetCoveredThrough(entry.End); err != nil {
 			return err
 		}
 		e.mu.Lock()
@@ -584,27 +608,35 @@ func (e *Engine) backfillCovered(ctx context.Context) error {
 	return nil
 }
 
-// maxEntryBlobs bounds how many blobs one manifest entry may list. Blobs are
-// buffered compressed (a couple of MB each on the real PTR, which has
-// published entries past 100 blobs), so the cap is a guard against a hostile
-// manifest growing memory without bound, not a size a real entry reaches.
-const maxEntryBlobs = 256
+// maxEntryBlobs and maxEntryBytes bound one manifest entry, which is buffered
+// compressed in full before any of it replays. The count alone is not a memory
+// bound - each blob may be maxUpdateBytes - so the byte budget is what actually
+// guards against a hostile manifest, and it is set far above the real PTR (a
+// couple of MB per blob, entries past 100 blobs).
+const (
+	maxEntryBlobs = 256
+	maxEntryBytes = 1 << 30
+)
 
 // applyEntry fetches one update index's blobs and replays them as one
 // transaction, then advances the progress, the census, and the rate window
 // with what Replay returned.
-func (e *Engine) applyEntry(ctx context.Context, entry UpdateEntry) error {
+func (e *Engine) applyEntry(ctx context.Context, store *Store, entry UpdateEntry) error {
 	if len(entry.Hashes) > maxEntryBlobs {
 		return fmt.Errorf("update %d lists %d blobs, over the %d cap", entry.Index, len(entry.Hashes), maxEntryBlobs)
 	}
 	blobs := make([][]byte, 0, len(entry.Hashes))
 	var fetchDur time.Duration
+	var buffered int64
 	for _, h := range entry.Hashes {
 		fetchStart := time.Now()
 		raw, err := e.client.updateRaw(ctx, h)
 		d := time.Since(fetchStart)
 		if err != nil {
 			return err
+		}
+		if buffered += int64(len(raw)); buffered > e.entryBytes {
+			return fmt.Errorf("update %d buffers over the %d byte cap", entry.Index, e.entryBytes)
 		}
 		blobs = append(blobs, raw)
 		fetchDur += d
@@ -617,7 +649,7 @@ func (e *Engine) applyEntry(ctx context.Context, entry UpdateEntry) error {
 		e.mu.Unlock()
 	}
 	replayStart := time.Now()
-	counts, rows, err := e.store.Replay(entry.Index, entry.End, blobs, e.blobApplied)
+	counts, rows, err := store.Replay(entry.Index, entry.End, blobs, e.blobApplied)
 	if err != nil {
 		return err
 	}
@@ -697,9 +729,7 @@ func (e *Engine) markPassStart() {
 // resumed sync shows where it stopped from the first render, instead of
 // claiming update 0 until its first entry commits - hours, on a large entry.
 func (e *Engine) seedPosition() {
-	e.mu.Lock()
-	store := e.store
-	e.mu.Unlock()
+	store := e.currentStore()
 	if store == nil {
 		return
 	}
@@ -716,9 +746,7 @@ func (e *Engine) seedPosition() {
 // loop reads them once at start; from then on each Replay hands the updated
 // values back, so no table is ever re-counted while the engine runs.
 func (e *Engine) loadCounts() {
-	e.mu.Lock()
-	store := e.store
-	e.mu.Unlock()
+	store := e.currentStore()
 	if store == nil {
 		return
 	}

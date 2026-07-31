@@ -1,0 +1,8 @@
+{
+  "family": "moebooru",
+  "kind": "booru",
+  "post_url_template": "https://www.sakugabooru.com/post/show/{id}",
+  "md5_search_template": "https://www.sakugabooru.com/post?tags=md5:{md5}",
+  "auth": "none",
+  "example": "https://www.sakugabooru.com/post/show/307545"
+}

@@ -1,0 +1,8 @@
+{
+  "family": "moebooru",
+  "kind": "booru",
+  "post_url_template": "http://behoimi.org/post/show/{id}",
+  "md5_search_template": "http://behoimi.org/post?tags=md5:{md5}",
+  "auth": "none",
+  "example": "http://behoimi.org/post/show/140852"
+}

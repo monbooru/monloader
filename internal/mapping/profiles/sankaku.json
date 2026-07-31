@@ -1,0 +1,11 @@
+{
+  "family": "generic",
+  "kind": "booru",
+  "post_url_template": "https://sankaku.app/posts/{id}",
+  "md5_search_template": "https://chan.sankakucomplex.com/?tags=md5:{md5}",
+  "auth": "cookies",
+  "example": "https://sankaku.app/it/posts/vkr3EelGKMZ",
+  "hosts": ["chan.sankakucomplex.com", "beta.sankakucomplex.com"],
+  "needs_tags": true,
+  "has_notes": true
+}

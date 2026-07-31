@@ -7,15 +7,15 @@
       <a href="#pairing">pairing</a>
       <a href="#auth">authentication</a>
       <a href="#downloads">downloads</a>
-      <a href="#ptr">ptr</a>
       <a href="#lookup">lookup</a>
       <a href="#sites">sites</a>
+      <a href="#ptr">ptr</a>
       <a href="#advanced">advanced</a>
       <a href="#stats">stats</a>
     </nav>
   </aside>
   <main id="content" class="settings-content">
-  <h1 style="margin-bottom:12px">settings</h1>
+  <h1 style="margin-bottom:12px">Settings</h1>
 
   <section class="settings-section" id="monbooru">
     <h2>monbooru</h2>
@@ -24,13 +24,13 @@
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="settings-cols">
         <div class="field">
-          <label>api url</label>
-          <input type="text" name="api_url" value="{{.Cfg.Monbooru.APIURL}}" placeholder="http://monbooru:8080">
+          <label for="mb-api-url">api url</label>
+          <input id="mb-api-url" type="text" name="api_url" value="{{.Cfg.Monbooru.APIURL}}" placeholder="http://monbooru:8080">
           <p class="field-hint">internal URL monloader uses to reach monbooru's API.</p>
         </div>
         <div class="field">
-          <label>web url</label>
-          <input type="text" name="web_url" value="{{.Cfg.Monbooru.WebURL}}" placeholder="http://localhost:8080">
+          <label for="mb-web-url">web url</label>
+          <input id="mb-web-url" type="text" name="web_url" value="{{.Cfg.Monbooru.WebURL}}" placeholder="http://localhost:8080">
           <p class="field-hint">browser URL for links back to monbooru; blank = same as api url.</p>
         </div>
       </div>
@@ -85,28 +85,28 @@
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="downloads-grid">
         <div class="field">
-          <label>concurrency</label>
-          <input type="text" name="concurrency" value="{{.Cfg.Downloader.Concurrency}}">
+          <label for="dl-concurrency">concurrency</label>
+          <input id="dl-concurrency" type="text" name="concurrency" value="{{.Cfg.Downloader.Concurrency}}">
           <span class="field-hint">parallel download workers (applies on restart)</span>
         </div>
         <div class="field">
-          <label>sleep / request (s)</label>
-          <input type="text" name="sleep_request" value="{{.Cfg.GalleryDL.SleepRequest}}">
+          <label for="dl-sleep">sleep / request (s)</label>
+          <input id="dl-sleep" type="text" name="sleep_request" value="{{.Cfg.GalleryDL.SleepRequest}}">
           <span class="field-hint">delay between requests</span>
         </div>
         <div class="field">
-          <label>max items / job</label>
-          <input type="text" name="max_items_per_job" value="{{.Cfg.Downloader.MaxItemsPerJob}}">
+          <label for="dl-max-items">max items / job</label>
+          <input id="dl-max-items" type="text" name="max_items_per_job" value="{{.Cfg.Downloader.MaxItemsPerJob}}">
           <span class="field-hint">cap on posts per URL</span>
         </div>
         <div class="field">
-          <label>default folder</label>
-          <input type="text" name="default_folder" value="{{.Cfg.Downloader.DefaultFolder}}">
+          <label for="dl-folder">default folder</label>
+          <input id="dl-folder" type="text" name="default_folder" value="{{.Cfg.Downloader.DefaultFolder}}">
           <span class="field-hint">monbooru subfolder for pushes</span>
         </div>
         <div class="field">
-          <label>clear history after (days)</label>
-          <input type="text" name="history_retention_days" value="{{.Cfg.Downloader.HistoryRetentionDays}}">
+          <label for="dl-retention">clear history after (days)</label>
+          <input id="dl-retention" type="text" name="history_retention_days" value="{{.Cfg.Downloader.HistoryRetentionDays}}">
           <span class="field-hint">drop finished downloads from the queue; 0 keeps them</span>
         </div>
       </div>
@@ -116,67 +116,8 @@
     </form>
   </section>
 
-  <section class="settings-section" id="ptr">
-    <h2>ptr</h2>
-    {{if eq .FlashSection "ptr"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
-    <p class="field-hint">Storage and repository settings for the Public Tag Repository index; progress and the pause / resume controls are on the <a href="/ptr">PTR page</a>. The enabled box acts at once, the rest applies on restart.</p>
-    <form method="POST" action="/settings/ptr" id="ptr-form">
-      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <div class="downloads-grid">
-        <div class="field">
-          <label>enabled</label>
-          <label class="checkbox-inline"><input type="checkbox" name="enabled" value="1"{{if .PTREnabled}} checked{{end}}> sync and answer sha256 lookups</label>
-          <span class="field-hint">unchecking stops the sync and keeps the index; the lookup answers again when you re-enable it</span>
-        </div>
-        <div class="field">
-          <label>data path</label>
-          <input type="text" name="data_path" value="{{.Cfg.PTR.DataPath}}">
-          <span class="field-hint">dedicated index volume</span>
-        </div>
-        <div class="field">
-          <label>address</label>
-          <input type="text" name="address" value="{{.Cfg.PTR.Address}}">
-          <span class="field-hint">repository to sync from</span>
-        </div>
-        <div class="field">
-          <label>access key</label>
-          <input type="password" name="access_key" placeholder="{{if .Cfg.PTR.AccessKey}}(set - leave blank to keep){{else}}(unset - uses the public read-only key){{end}}">
-          <span class="field-hint">a private repository key or the personal contribution account</span>
-        </div>
-        <div class="field">
-          <label>fetch sleep (s)</label>
-          <input type="text" name="fetch_sleep" value="{{.Cfg.PTR.FetchSleep}}">
-          <span class="field-hint">delay between update downloads</span>
-        </div>
-        <div class="field">
-          <label>min free GB</label>
-          <input type="text" name="min_free_gb" value="{{.Cfg.PTR.MinFreeGB}}">
-          <span class="field-hint">refuse the initial sync below this free space</span>
-        </div>
-      </div>
-    </form>
-    <div class="settings-sub">
-      <h4>danger</h4>
-      <form method="POST" action="/settings/ptr/delete" hx-confirm="delete the ptr index and turn off the lookup? pending and historical contributions go with it; re-enabling re-syncs from scratch." data-confirm-ok="delete" data-confirm-danger>
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <button type="submit" class="danger">delete ptr data</button>
-        <span class="field-hint">removes the {{if .PTRDiskBytes}}{{humanBytes .PTRDiskBytes}} {{end}}index and disables the ptr lookup.</span>
-      </form>
-      {{if .Cfg.PTR.AccessKey}}
-      <form method="POST" action="/settings/ptr/clear-key" hx-confirm="clear the ptr access key?" data-confirm-ok="clear key" data-confirm-danger="there is no recovery without a backup of the key.">
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <button type="submit" class="danger">clear key</button>
-        <span class="field-hint">forgets the personal account and reverts to the public read-only key.</span>
-      </form>
-      {{end}}
-    </div>
-    <div class="section-actions">
-      <button type="submit" form="ptr-form">save</button>
-    </div>
-  </section>
-
   <section class="settings-section" id="lookup">
-    <h2>lookup</h2>
+    <h2 class="sites-title"><span>lookup</span><button type="button" class="linklike sites-title-link" onclick="document.getElementById('chain-dialog').showModal()">[edit order]</button></h2>
     {{if eq .FlashSection "lookup"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
     <p class="field-hint">Lookup sites find an image's source booru post by file hash or visual similarity; the chain is queried top to bottom until one matches.</p>
     {{if .LookupPanel.Chain}}
@@ -186,16 +127,17 @@
       <tbody>
       {{range .LookupPanel.Chain}}
       <tr>
-        <td>{{.Position}}</td>
+        <td>{{if .Position}}{{.Position}}{{else}}-{{end}}</td>
         <td>{{.Name}}</td>
         <td><span class="badge">{{if .Similarity}}similarity{{else}}exact md5{{end}}</span></td>
         <td{{if .Note}} title="{{.Note}}"{{end}}>{{if .Note}}<span class="hint">{{.Note}}</span>{{else}}-{{end}}</td>
         <td class="site-state" id="lk-state-{{.Name}}" title="{{.State}}">{{if .Warn}}<span class="flash-warn">{{.State}}</span>{{else}}<span class="flash-ok">{{.State}}</span>{{end}}</td>
         <td class="site-actions"><span class="actions">
-          <button type="button" hx-post="/settings/lookup/test/{{.Name}}" hx-target="#lk-state-{{.Name}}" hx-swap="innerHTML"
+          {{if .Position}}<button type="button" hx-post="/settings/lookup/test/{{.Name}}" hx-target="#lk-state-{{.Name}}" hx-swap="innerHTML"
                   hx-on::before-request="document.getElementById('lk-state-{{.Name}}').innerHTML='<span class=&quot;hint&quot;>testing...</span>'"
-                  title="{{if .Similarity}}run one real query with a built-in probe image{{else}}run one real md5 search with the probe image's md5{{end}}">test</button>
+                  title="{{if .Similarity}}run one real query with a built-in probe image{{else}}run one real md5 search with the probe image's md5{{end}}">test</button>{{end}}
           {{if eq .Name "saucenao"}}<button type="button" onclick="document.getElementById('saucenao-dialog').showModal()">key</button>{{end}}
+          {{if .Site}}{{template "site_edit_btn" (dict "Row" .Site "Label" "edit site")}}{{end}}
         </span></td>
       </tr>
       {{end}}
@@ -208,13 +150,14 @@
     <div class="section-actions">
       <form method="POST" action="/settings/lookup" class="lookup-minsim">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <label>min similarity %</label>
-        <input type="number" name="min_similarity" min="1" max="100" step="1" value="{{.LookupPanel.MinSimilarity}}">
-        <button type="submit">save</button>
+        <div class="lookup-minsim-row">
+          <label for="lk-min-similarity">min similarity %</label>
+          <input id="lk-min-similarity" type="number" name="min_similarity" min="1" max="100" step="1" value="{{.LookupPanel.MinSimilarity}}">
+          <button type="submit">save</button>
+        </div>
+        <span class="field-hint">an iqdb or saucenao match scoring below this percentage is ignored</span>
       </form>
-      <button type="button" onclick="document.getElementById('chain-dialog').showModal()">edit order</button>
     </div>
-    <p class="field-hint">A lookup in the Public Tag Repository (PTR) is also run if you enable it on the <a href="/ptr">PTR page</a>.</p>
 
     <dialog id="chain-dialog">
       <form method="POST" action="/settings/lookup/chain" id="chain-form">
@@ -248,8 +191,8 @@
       <form method="POST" action="/settings/lookup">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <p>edit the <strong>saucenao</strong> api key</p>
-        <div class="field"><label>api key</label>
-          <input type="password" name="api_key" placeholder="{{if .LookupPanel.SaucenaoKeySet}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
+        <div class="field"><label for="saucenao-key">api key</label>
+          <input id="saucenao-key" type="password" name="api_key" placeholder="{{if .LookupPanel.SaucenaoKeySet}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
         <p class="field-hint">From saucenao.com account settings; the service is skipped until one is set. Queries upload the image's thumbnail to saucenao.com.</p>
         <div class="dialog-actions">
           <button type="button" onclick="document.getElementById('saucenao-dialog').close()">cancel</button>
@@ -260,39 +203,112 @@
   </section>
 
   <section class="settings-section" id="sites">
-    <h2 class="sites-title"><span>sites <span class="hint">({{len .BooruSites}} boorus, {{len .MangaSites}} manga / comics)</span></span><a class="sites-title-link" href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">gallery-dl supported sites</a></h2>
+    <h2 class="sites-title"><span>sites <span class="hint">({{len .BooruSites}} boorus, {{len .MangaSites}} manga / comics, {{len .OtherSites}} other)</span></span><a class="sites-title-link" href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">gallery-dl supported sites</a></h2>
     {{if eq .FlashSection "sites"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
-    <p class="field-hint">Download credentials and per-site targets; the lookup chain is configured in the lookup section above. login - <strong>none</strong>: no auth &middot; <strong>api (opt)</strong>: optional key, higher rate limits &middot; <strong>api key</strong>: key required &middot; <strong>cookies</strong>: needs a cookies file</p>
+    <p class="field-hint">Download credentials and per-site targets; the lookup chain is configured in the lookup section above.</p>
+    <p class="field-hint">login - <strong>none</strong>: no auth &middot; <strong>api (opt)</strong>: optional key, higher rate limits &middot; <strong>api key</strong>: key required &middot; <strong>user/pass</strong>: account login &middot; <strong>cookies</strong>: needs a cookies file &middot; <strong>oauth</strong>: via gallery-dl's oauth flow</p>
 
-    {{template "sites_table" (dict "Heading" "boorus" "Rows" .BooruSites)}}
-    {{template "sites_table" (dict "Heading" "manga / comics" "Rows" .MangaSites)}}
+    <div class="site-search">
+      <div class="search-input-wrap">
+        <input type="search" name="q" placeholder="add a site - search gallery-dl's supported sites" autocomplete="off"
+               hx-get="/settings/sites/search" hx-trigger="input changed delay:300ms, search" hx-target="#site-search-results" hx-swap="innerHTML">
+      </div>
+      <div id="site-search-results"></div>
+    </div>
 
-    <dialog id="site-edit-dialog" data-cookies-dir="{{.Cfg.GalleryDL.CookiesDir}}">
-      <form method="POST" action="/settings/sites">
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <input type="hidden" name="name" id="se-name">
-        <p>edit <strong id="se-title"></strong> credentials and target gallery</p>
-        <div class="field" id="se-field-username"><label>username</label><input type="text" name="username" id="se-username"></div>
-        <div class="field" id="se-field-apikey"><label>api key</label><input type="password" name="api_key" id="se-apikey"></div>
-        <div class="field" id="se-field-userid"><label>user id</label><input type="text" name="user_id" id="se-userid"></div>
-        <div class="field"><label>gallery</label>
-          {{if .Galleries}}
-          <select name="gallery" id="se-gallery">
-            <option value="">(default gallery)</option>
-            {{range .Galleries}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
-          </select>
-          {{else}}
-          <input type="text" name="gallery" id="se-gallery">
+    {{if .BooruSites}}{{template "sites_table" (dict "Heading" "boorus" "Rows" .BooruSites)}}{{end}}
+    {{if .MangaSites}}{{template "sites_table" (dict "Heading" "manga / comics" "Rows" .MangaSites)}}{{end}}
+    {{if .OtherSites}}{{template "sites_table" (dict "Heading" "other sites" "Rows" .OtherSites)}}{{end}}
+    {{if and (not .BooruSites) (not .MangaSites) (not .OtherSites)}}
+    <p class="hint">no sites configured - a site appears here once it carries credentials, a target gallery, a cookies file, options, or a custom profile.</p>
+    {{end}}
+
+    <h3 class="sites-group">host labels</h3>
+    <p class="field-hint">A direct-link push from a matching host uses this label as its source instead of the raw hostname; subdomains match their parent.</p>
+    <form method="POST" action="/settings/host-labels">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div class="field">
+        <div class="maprows" id="host-labels">
+          <template>
+            <div class="maprow"><input type="text" name="hostlabel_host" aria-label="host" placeholder="host"><span class="hint">-&gt;</span>
+              <input type="text" name="hostlabel_label" aria-label="label" placeholder="label">
+              <button type="button" class="linklike maprow-del" title="remove this row">[x]</button></div>
+          </template>
+          {{range .Cfg.HostLabels}}
+          <div class="maprow"><input type="text" name="hostlabel_host" aria-label="host" value="{{.Host}}"><span class="hint">-&gt;</span>
+            <input type="text" name="hostlabel_label" aria-label="label" value="{{.Label}}">
+            <button type="button" class="linklike maprow-del" title="remove this row">[x]</button></div>
           {{end}}
         </div>
-        <div class="field"><label>cookies file</label><input type="text" name="cookies" id="se-cookies"></div>
-        <p class="field-hint">Fill only the credentials this site needs; gallery is the target monbooru gallery (blank = default); cookies file is a path to a gallery-dl cookies.txt.</p>
-        <div class="dialog-actions">
-          <button type="button" onclick="document.getElementById('site-edit-dialog').close()">cancel</button>
-          <button type="submit">save site</button>
-        </div>
-      </form>
+        <button type="button" class="linklike add-maprow" data-rows="host-labels">[+ add host]</button>
+      </div>
+      <div class="section-actions">
+        <button type="submit">save host labels</button>
+      </div>
+    </form>
+
+    <dialog id="site-edit-dialog">
+      <div id="site-dialog-body"></div>
     </dialog>
+  </section>
+
+  <section class="settings-section" id="ptr">
+    <h2>ptr</h2>
+    {{if eq .FlashSection "ptr"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
+    <p class="field-hint">Storage and repository settings for the Public Tag Repository index.</p>
+    <form method="POST" action="/settings/ptr" id="ptr-form">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div class="field">
+        <label class="checkbox-inline"><input type="checkbox" name="enabled" value="1"{{if .PTREnabled}} checked{{end}}> enable sync and answer sha256 lookups</label>
+        <span class="field-hint">unchecking stops the sync and keeps the index; the lookup answers again when you re-enable it</span>
+      </div>
+      <div class="downloads-grid">
+        <div class="field">
+          <label for="ptr-data-path">data path</label>
+          <input id="ptr-data-path" type="text" name="data_path" value="{{.Cfg.PTR.DataPath}}">
+          <span class="field-hint">dedicated index volume</span>
+        </div>
+        <div class="field">
+          <label for="ptr-address">address</label>
+          <input id="ptr-address" type="text" name="address" value="{{.Cfg.PTR.Address}}">
+          <span class="field-hint">repository to sync from</span>
+        </div>
+        <div class="field">
+          <label for="ptr-access-key">access key</label>
+          <input id="ptr-access-key" type="password" name="access_key" placeholder="{{if .Cfg.PTR.AccessKey}}(set - leave blank to keep){{else}}(unset - uses the public read-only key){{end}}">
+          <span class="field-hint">a private repository key or the personal contribution account</span>
+        </div>
+        <div class="field">
+          <label for="ptr-fetch-sleep">fetch sleep (s)</label>
+          <input id="ptr-fetch-sleep" type="text" name="fetch_sleep" value="{{.Cfg.PTR.FetchSleep}}">
+          <span class="field-hint">delay between update downloads</span>
+        </div>
+        <div class="field">
+          <label for="ptr-min-free">min free GB</label>
+          <input id="ptr-min-free" type="text" name="min_free_gb" value="{{.Cfg.PTR.MinFreeGB}}">
+          <span class="field-hint">refuse the initial sync below this free space</span>
+        </div>
+        <div class="field">
+          <label>danger</label>
+          <div class="danger-row">
+            <button type="submit" class="danger" form="ptr-delete-form">delete ptr data</button>
+            {{if .Cfg.PTR.AccessKey}}<button type="submit" class="danger" form="ptr-clearkey-form">clear key</button>{{end}}
+          </div>
+          <span class="field-hint">delete removes the {{if .PTRDiskBytes}}{{humanBytes .PTRDiskBytes}} {{end}}index and disables the lookup{{if .Cfg.PTR.AccessKey}}; clear key reverts to the public read-only key{{end}}</span>
+        </div>
+      </div>
+    </form>
+    <form method="POST" id="ptr-delete-form" action="/settings/ptr/delete" hx-confirm="delete the ptr index and turn off the lookup? pending and historical contributions go with it; re-enabling re-syncs from scratch." data-confirm-ok="delete" data-confirm-danger>
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    </form>
+    {{if .Cfg.PTR.AccessKey}}
+    <form method="POST" id="ptr-clearkey-form" action="/settings/ptr/clear-key" hx-confirm="clear the ptr access key?" data-confirm-ok="clear key" data-confirm-danger="there is no recovery without a backup of the key.">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    </form>
+    {{end}}
+    <div class="section-actions">
+      <button type="submit" form="ptr-form">save</button>
+    </div>
   </section>
 
   <section class="settings-section" id="advanced">
@@ -300,8 +316,8 @@
     {{if eq .FlashSection "advanced"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
     <form method="POST" action="/settings/raw">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <p class="hint">raw gallery-dl config (JSON):</p>
-      <textarea name="raw_config">{{.Cfg.GalleryDL.RawConfig}}</textarea>
+      <label class="hint" for="raw-config">raw gallery-dl config (JSON):</label>
+      <textarea id="raw-config" name="raw_config">{{.Cfg.GalleryDL.RawConfig}}</textarea>
       <div class="section-actions">
         <button type="submit">save raw config</button>
       </div>

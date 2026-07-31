@@ -1,20 +1,15 @@
 {{define "site_row"}}
 <tr>
-  <td>{{.Category}}</td>
+  <td>{{.Category}}{{if .CustomProfile}}<span class="hint" title="a user profile file overrides the shipped mapping"> (custom profile)</span>{{end}}</td>
   <td>{{if .NeedsCred}}<span class="badge badge-warn">{{.Login}} !</span>{{else}}<span class="badge">{{.Login}}</span>{{end}}</td>
-  <td>{{if .Site}}{{.Site.Gallery}}{{else}}-{{end}}</td>
-  <td>{{if .Site}}{{if .Site.Cookies}}set{{else}}-{{end}}{{else}}-{{end}}</td>
+  <td class="hint" title="{{.AuthSet}}">{{.AuthSet}}</td>
+  <td>{{if and .Site .Site.Gallery}}{{.Site.Gallery}}{{else}}<span class="hint">(default)</span>{{end}}</td>
   <td class="site-state" id="state-{{.Category}}">{{if not .LastReached.IsZero}}<span class="site-last" title="last reached {{stampLocal .LastReached}}">last ok {{humanSince .LastReached}}</span>{{end}}</td>
   <td class="site-actions"><span class="actions">
     <button type="button" hx-post="/settings/sites/{{.Category}}/test" hx-target="#state-{{.Category}}" hx-swap="innerHTML"
             hx-on::before-request="document.getElementById('state-{{.Category}}').innerHTML='<span class=&quot;hint&quot;>testing...</span>'">test</button>
-    <button type="button" class="edit-site" data-site="{{.Category}}" data-auth="{{.Auth}}"
-        data-username="{{if .Site}}{{.Site.Username}}{{end}}"
-        data-userid="{{if .Site}}{{.Site.UserID}}{{end}}"
-        data-gallery="{{if .Site}}{{.Site.Gallery}}{{end}}"
-        data-cookies="{{if .Site}}{{.Site.Cookies}}{{end}}"
-        data-haskey="{{if .Site}}{{if .Site.APIKey}}1{{end}}{{end}}">edit</button>
-    {{if .Site}}{{template "postbtn" dict "Action" (printf "/settings/sites/%s/reset" .Category) "CSRF" .CSRFToken "Label" "reset" "Title" "drop this site's credentials and revert to defaults"}}{{end}}
+    {{template "site_edit_btn" (dict "Row" . "Label" "edit")}}
+    {{if .Site}}{{template "postbtn" dict "Action" (printf "/settings/sites/%s/reset" .Category) "CSRF" .CSRFToken "Label" "remove" "Title" "drop this site's credentials, gallery, cookies path and options"}}{{end}}
   </span></td>
 </tr>
 {{end}}

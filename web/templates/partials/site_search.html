@@ -1,0 +1,23 @@
+{{define "site_search"}}
+<div class="table-scroll">
+<table class="sites-table search-table">
+  {{if .Rows}}
+  <thead><tr><th>site</th><th>name</th><th>profile</th><th>login</th><th>action</th></tr></thead>
+  <tbody>
+  {{range .Rows}}
+  <tr>
+    <td>{{.Category}}</td>
+    <td class="hint">{{.Name}}</td>
+    <td><span class="badge">{{.Family}}</span></td>
+    <td><span class="badge">{{.Login}}</span></td>
+    <td>{{if .Configured}}<button type="button" disabled title="already configured - use its row's edit button">add</button>{{else}}<button type="button" class="edit-site" data-site="{{.Category}}" title="set up this site - nothing is stored until you save">add</button>{{end}}</td>
+  </tr>
+  {{end}}
+  {{if gt .More 0}}<tr><td colspan="5" class="hint">+{{.More}} more - refine the search</td></tr>{{end}}
+  </tbody>
+  {{else}}
+  <tbody><tr><td class="hint">no supported site matches</td></tr></tbody>
+  {{end}}
+</table>
+</div>
+{{end}}

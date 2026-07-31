@@ -1,0 +1,7 @@
+{
+  "family": "generic",
+  "kind": "manga",
+  "auth": "none",
+  "example": "https://hentainexus.com/view/12345",
+  "default_rating": "explicit"
+}

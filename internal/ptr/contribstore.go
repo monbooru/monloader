@@ -42,8 +42,10 @@ const (
 	OutcomeRescinded = "rescinded"
 )
 
-// contribLogKeep bounds the committed-history ledger.
-const contribLogKeep = 1000
+// contribLogKeepDays bounds the committed-history ledger by age: the
+// activity panel's year plus the week its Sunday-aligned first column
+// can reach past it, so the panel is exact over its whole window.
+const contribLogKeepDays = 371
 
 const contribSchema = `
 CREATE TABLE IF NOT EXISTS contrib_items (
@@ -235,9 +237,8 @@ func (s *ContribStore) Complete(it ContribItem) (logID int64, err error) {
 	// Rows still awaiting a janitor outcome are the dedup guard against
 	// re-sending the same contribution; only settled rows age out.
 	if _, err := tx.Exec(
-		`DELETE FROM contrib_log WHERE outcome != ''
-		 AND id NOT IN (SELECT id FROM contrib_log ORDER BY id DESC LIMIT ?)`,
-		contribLogKeep,
+		`DELETE FROM contrib_log WHERE outcome != '' AND committed_at < ?`,
+		time.Now().AddDate(0, 0, -contribLogKeepDays).Unix(),
 	); err != nil {
 		return 0, err
 	}
@@ -299,6 +300,26 @@ func (s *ContribStore) Counts() (unsent, failed int, err error) {
 // LogRows returns the newest slice of the ledger.
 func (s *ContribStore) LogRows(limit int) ([]ContribLogRow, error) {
 	return s.LogPage(limit, 0)
+}
+
+// LogDaily counts ledger rows per local calendar day since the given
+// unix time. Bucketing happens here rather than in SQL so the day
+// boundary follows the process timezone like every rendered date.
+func (s *ContribStore) LogDaily(since int64) (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT committed_at FROM contrib_log WHERE committed_at >= ?`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	counts := map[string]int{}
+	for rows.Next() {
+		var at int64
+		if err := rows.Scan(&at); err != nil {
+			return nil, err
+		}
+		counts[time.Unix(at, 0).In(time.Local).Format("2006-01-02")]++
+	}
+	return counts, rows.Err()
 }
 
 // LogCount is the total number of ledger rows, for paging the history.

@@ -76,107 +76,161 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hashRaw := mustHex(body.SHA256)
-	filter := h.ptr.TagFilterCached()
-	store := h.ptr.Contrib()
-	covered := h.ptr.Status().CoveredThrough
-	resp := contribPreviewResponse{
-		Provisional: h.ptr.Provisional(),
-		ToAdd:       []contribToAdd{},
-		PTROnly:     []contribPTROnly{},
-	}
-
-	rawTags, err := h.ptr.RawTagsForHash(body.SHA256)
+	p, err := h.newContribPreview(body.SHA256, body.Tags)
 	if err != nil {
 		apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
 		return
+	}
+	resp := contribPreviewResponse{
+		Provisional: h.ptr.Provisional(),
+		ToAdd:       p.adds(body.Tags),
+		PTROnly:     []contribPTROnly{},
+	}
+	if err := p.resolveSubmitted(body.Implied); err != nil {
+		apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
+		return
+	}
+	if resp.PTROnly, err = p.removals(); err != nil {
+		apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// contribPreview is one preview request's working set: the file's hash, the
+// caches both passes read, and the views of the submitted list that decide
+// which of the file's PTR tags are removal candidates.
+type contribPreview struct {
+	h       *Handler
+	hashHex string
+	hashRaw []byte
+	filter  *ptr.TagFilter
+	store   *ptr.ContribStore
+	covered int64
+	// rawTags are the file's current raw PTR mappings; displayed is the
+	// display-view answer for the submitted list, derived once from the hash.
+	rawTags   []string
+	displayed map[string]bool
+	// carried holds the monbooru projection of every raw the file already has,
+	// plus its pre-widening fold: rows monbooru stored before the charset
+	// widening keep the folded spelling (girls' -> girls_), and neither shape's
+	// reverse mapping reproduces the original, so the exact known-check would
+	// keep offering them as new forever.
+	carried map[string]bool
+	// submitted holds the monbooru forms the caller sent (tags plus implied)
+	// and submittedIdeals their PTR ideals; both suppress a removal petition.
+	submitted       map[string]bool
+	submittedPTR    []string
+	submittedIdeals map[string]bool
+}
+
+// newContribPreview derives the per-hash side of the diff, which both passes
+// share: the file's raw mappings, their monbooru projection, and the display
+// view of the submitted list.
+func (h *Handler) newContribPreview(hashHex string, tags []string) (*contribPreview, error) {
+	p := &contribPreview{
+		h:         h,
+		hashHex:   hashHex,
+		hashRaw:   mustHex(hashHex),
+		filter:    h.ptr.TagFilterCached(),
+		store:     h.ptr.Contrib(),
+		covered:   h.ptr.Status().CoveredThrough,
+		carried:   map[string]bool{},
+		submitted: map[string]bool{},
+	}
+	var err error
+	if p.rawTags, err = h.ptr.RawTagsForHash(hashHex); err != nil {
+		return nil, err
 	}
 	// The display-view side of the known check depends on the hash alone, so
 	// the whole submitted list is compared against one derivation of it.
-	displayed, err := h.ptr.HashHasIdeals(body.SHA256, contribPTRForms(body.Tags))
-	if err != nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
-		return
+	if p.displayed, err = h.ptr.HashHasIdeals(hashHex, contribPTRForms(tags)); err != nil {
+		return nil, err
 	}
-	// carried holds the monbooru projection of every raw PTR tag the file
-	// already has, plus its pre-widening fold: rows monbooru stored before
-	// the charset widening keep the folded spelling (girls' -> girls_), and
-	// neither shape's reverse mapping reproduces the original, so the exact
-	// known-check below would keep offering them as new forever.
-	carried := map[string]bool{}
-	for _, raw := range rawTags {
+	for _, raw := range p.rawTags {
 		if mb := mapping.MapPTRTag(raw); mb != "" {
-			carried[mb] = true
-			carried[mapping.LegacyFoldTag(mb)] = true
+			p.carried[mb] = true
+			p.carried[mapping.LegacyFoldTag(mb)] = true
 		}
 	}
+	return p, nil
+}
 
-	submitted := map[string]bool{}
-	var submittedPTR []string
-	for _, tag := range body.Tags {
-		submitted[tag] = true
+// adds is the submitted side of the diff: one verdict per tag the caller sent,
+// in submission order. It records each tag's PTR spelling for the removal pass.
+func (p *contribPreview) adds(tags []string) []contribToAdd {
+	out := make([]contribToAdd, 0, len(tags))
+	for _, tag := range tags {
+		p.submitted[tag] = true
 		entry := contribToAdd{Tag: tag}
 		mapped := mapping.ContribTagFor(tag)
 		if !mapped.Eligible() {
 			entry.Status, entry.Note = "ineligible", mapped.Note
-			resp.ToAdd = append(resp.ToAdd, entry)
+			out = append(out, entry)
 			continue
 		}
 		entry.PTR = mapped.PTR
-		submittedPTR = append(submittedPTR, mapped.PTR)
-		if blocked, rule := filter.Blocks(mapped.PTR); blocked {
+		p.submittedPTR = append(p.submittedPTR, mapped.PTR)
+		if blocked, rule := p.filter.Blocks(mapped.PTR); blocked {
 			entry.Status, entry.Note = "filtered", "blocked by the PTR tag filter ("+rule+")"
-			resp.ToAdd = append(resp.ToAdd, entry)
+			out = append(out, entry)
 			continue
 		}
-		if store != nil {
-			if waiting, err := store.UnsentByKindTag(ptr.ContribMappingAdd, mapped.PTR, hashRaw); err == nil && waiting {
+		if p.store != nil {
+			if waiting, err := p.store.UnsentByKindTag(ptr.ContribMappingAdd, mapped.PTR, p.hashRaw); err == nil && waiting {
 				entry.Status = "unsent"
-				resp.ToAdd = append(resp.ToAdd, entry)
+				out = append(out, entry)
 				continue
 			}
 		}
-		known, _ := h.mappingAddKnown(displayed[mapped.PTR], mapped.PTR, hashRaw, covered)
-		if known || carried[tag] {
+		known, _ := p.h.mappingAddKnown(p.displayed[mapped.PTR], mapped.PTR, p.hashRaw, p.covered)
+		if known || p.carried[tag] {
 			entry.Status = "known"
 		} else {
 			entry.Status = "new"
 		}
-		resp.ToAdd = append(resp.ToAdd, entry)
+		out = append(out, entry)
 	}
+	return out
+}
 
-	for _, tag := range body.Implied {
-		submitted[tag] = true
+// resolveSubmitted folds the implied tags into the submitted set and resolves
+// every submitted PTR spelling to its ideal. The removal diff compares on
+// ideals, so a raw spelling of a tag the caller already shows never reads as
+// "extra" - petitioning it would strip a mapping that is right.
+func (p *contribPreview) resolveSubmitted(implied []string) error {
+	for _, tag := range implied {
+		p.submitted[tag] = true
 		if mapped := mapping.ContribTagFor(tag); mapped.Eligible() {
-			submittedPTR = append(submittedPTR, mapped.PTR)
+			p.submittedPTR = append(p.submittedPTR, mapped.PTR)
 		}
 	}
-	// The submitted side of the removal diff compares on ideals, so a
-	// raw PTR spelling of a tag the caller already shows never reads as
-	// "extra" - petitioning it would strip a mapping that is right.
-	submittedIdeals := map[string]bool{}
-	for _, ptrTag := range submittedPTR {
-		ideal, ok, err := h.ptr.IdealTag(ptrTag)
+	p.submittedIdeals = map[string]bool{}
+	for _, ptrTag := range p.submittedPTR {
+		ideal, ok, err := p.h.ptr.IdealTag(ptrTag)
 		if err != nil {
-			apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
-			return
+			return err
 		}
 		if ok {
-			submittedIdeals[ideal] = true
+			p.submittedIdeals[ideal] = true
 		}
 	}
+	return nil
+}
 
+// removals is the PTR side of the diff: the file's current tags the submitted
+// list lacks, each a removal-petition candidate.
+func (p *contribPreview) removals() ([]contribPTROnly, error) {
 	// A raw whose ideal a sibling of a different raw already carries on the
 	// file displays nothing of its own, so removing it changes nothing the
 	// file shows. Count how many of the hash's raws resolve to each ideal so
 	// those redundant bad-sibling mappings can be left out below.
-	idealOfRaw := make(map[string]string, len(rawTags))
+	idealOfRaw := make(map[string]string, len(p.rawTags))
 	idealCarriers := map[string]int{}
-	for _, raw := range rawTags {
-		ideal, ok, err := h.ptr.IdealTag(raw)
+	for _, raw := range p.rawTags {
+		ideal, ok, err := p.h.ptr.IdealTag(raw)
 		if err != nil {
-			apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
-			return
+			return nil, err
 		}
 		if ok {
 			idealOfRaw[raw] = ideal
@@ -189,9 +243,10 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for _, raw := range rawTags {
+	out := []contribPTROnly{}
+	for _, raw := range p.rawTags {
 		mb := mapping.MapPTRTag(raw)
-		if mb == "" || submitted[mb] || submitted[mapping.LegacyFoldTag(mb)] {
+		if mb == "" || p.submitted[mb] || p.submitted[mapping.LegacyFoldTag(mb)] {
 			continue
 		}
 		// A rating mapping is local opinion the add side refuses, so the
@@ -199,40 +254,43 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 		if mapping.ContribDenied(mb) {
 			continue
 		}
-		ideal, ok := idealOfRaw[raw]
-		// The ideal lives in a namespace monbooru cannot represent (source:,
-		// title:, ...), so a pull never applies this mapping and the operator
-		// has no local judgement to petition it against.
-		if ok && mapping.MapPTRTag(ideal) == "" {
+		if ideal, ok := idealOfRaw[raw]; ok && p.suppressedRemoval(ideal, raw, idealCarriers) {
 			continue
-		}
-		// Petitioning a bad-sibling mapping whose canonical form the file also
-		// carries removes no visible tag - it is noise, not a fix.
-		if ok && ideal != raw && idealCarriers[ideal] > 0 {
-			continue
-		}
-		if ok && submittedIdeals[ideal] {
-			continue
-		}
-		// A pull applies MapPTRTag(ideal); once the file carries that forward
-		// mapping the raw is not a removal candidate. submittedIdeals above
-		// reverses through ContribTagFor, which is lossy for ideals whose
-		// monbooru form does not round-trip (quoted or namespace-lifted
-		// spellings), so check the forward mapping the pull actually stores.
-		if ok {
-			if mi := mapping.MapPTRTag(ideal); mi != "" && (submitted[mi] || submitted[mapping.LegacyFoldTag(mi)]) {
-				continue
-			}
 		}
 		petitionable := true
-		if store != nil {
-			if pending, err := store.PendingMappingPetition(raw, hashRaw); err == nil && pending {
+		if p.store != nil {
+			if pending, err := p.store.PendingMappingPetition(raw, p.hashRaw); err == nil && pending {
 				petitionable = false
 			}
 		}
-		resp.PTROnly = append(resp.PTROnly, contribPTROnly{Tag: mb, PTR: raw, Petitionable: petitionable})
+		out = append(out, contribPTROnly{Tag: mb, PTR: raw, Petitionable: petitionable})
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return out, nil
+}
+
+// suppressedRemoval reports whether a raw mapping whose ideal is known is not
+// worth petitioning.
+func (p *contribPreview) suppressedRemoval(ideal, raw string, idealCarriers map[string]int) bool {
+	switch {
+	// The ideal lives in a namespace monbooru cannot represent (source:,
+	// title:, ...), so a pull never applies this mapping and the operator has
+	// no local judgement to petition it against.
+	case mapping.MapPTRTag(ideal) == "":
+		return true
+	// Petitioning a bad-sibling mapping whose canonical form the file also
+	// carries removes no visible tag - it is noise, not a fix.
+	case ideal != raw && idealCarriers[ideal] > 0:
+		return true
+	case p.submittedIdeals[ideal]:
+		return true
+	}
+	// A pull applies MapPTRTag(ideal); once the file carries that forward
+	// mapping the raw is not a removal candidate. submittedIdeals above
+	// reverses through ContribTagFor, which is lossy for ideals whose monbooru
+	// form does not round-trip (quoted or namespace-lifted spellings), so check
+	// the forward mapping the pull actually stores.
+	mi := mapping.MapPTRTag(ideal)
+	return mi != "" && (p.submitted[mi] || p.submitted[mapping.LegacyFoldTag(mi)])
 }
 
 // contribPTRForms lists the PTR spellings a submitted monbooru-form list
@@ -380,145 +438,163 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 // stageOne validates and stages one item, returning its verdict and the
 // staged row id.
 func (h *Handler) stageOne(store *ptr.ContribStore, item contribStageItem, origin string, covered int64) (contribStageResult, int64) {
-	res := contribStageResult{Kind: item.Kind}
-	fail := func(result, note string) (contribStageResult, int64) {
-		res.Result, res.Note = result, note
-		return res, 0
+	s := &contribStager{
+		h: h, store: store, item: item, origin: origin,
+		reason: strings.TrimSpace(item.Reason),
+		res:    contribStageResult{Kind: item.Kind},
 	}
-	reason := strings.TrimSpace(item.Reason)
-	if item.Kind != ptr.ContribMappingAdd && reason == "" {
-		return fail("invalid_reason", "a reason is required")
+	if item.Kind != ptr.ContribMappingAdd && s.reason == "" {
+		return s.fail("invalid_reason", "a reason is required")
 	}
-
-	stage := func(it ptr.ContribItem) (contribStageResult, int64) {
-		it.Origin = origin
-		it.Reason = reason
-		id, dup, err := store.Stage(it)
-		if err != nil {
-			return fail("ineligible", "staging failed: "+err.Error())
-		}
-		if dup {
-			// The row already exists unsent (staged or failed). Re-confirming
-			// should resend it, not report a no-op, so resolve to its id and
-			// let the commit reclaim it.
-			if existing, ok, _ := store.StagedID(it.Kind, it.Tag, it.Tag2, it.Hash); ok {
-				res.Result = "staged"
-				return res, existing
-			}
-			return fail("duplicate", "an identical item already waits unsent")
-		}
-		res.Result = "staged"
-		return res, id
-	}
-
-	// A pair petition names a relation the server already stores; the two
-	// petition kinds differ only in which relation is checked and its noun.
-	stagePetition := func(current func(a, b string) (bool, error), noun, a, b string) (contribStageResult, int64) {
-		ra, rb, ok, err := h.currentPetitionPair(current, a, b)
-		if err != nil {
-			return fail("ineligible", err.Error())
-		}
-		if !ok {
-			return fail("not_on_ptr", "the PTR does not hold this "+noun)
-		}
-		if pending, err := store.PendingLog(item.Kind, ra, rb); err == nil && pending {
-			return fail("already_suggested", "already sent and awaiting janitor review")
-		}
-		return stage(ptr.ContribItem{Kind: item.Kind, Tag: ra, Tag2: rb})
-	}
-
-	// A pair suggestion names a relation the server does not store yet; the two
-	// suggestion kinds differ only in which relation is checked, its noun, and
-	// how each end is labelled in a refusal.
-	stageRelation := func(current func(a, b string) (bool, error), noun, aLabel, bLabel, a, b string) (contribStageResult, int64) {
-		aMapped, bMapped := mapping.ContribTagFor(a), mapping.ContribTagFor(b)
-		if !aMapped.Eligible() {
-			return fail("ineligible", aLabel+": "+aMapped.Note)
-		}
-		if !bMapped.Eligible() {
-			return fail("ineligible", bLabel+": "+bMapped.Note)
-		}
-		_, _, cur, err := h.currentPetitionPair(current, a, b)
-		if err != nil {
-			return fail("ineligible", err.Error())
-		}
-		if cur {
-			return fail("already_known", "the PTR already has this "+noun)
-		}
-		reverse, err := current(bMapped.PTR, aMapped.PTR)
-		if err != nil {
-			return fail("ineligible", err.Error())
-		}
-		if reverse {
-			return fail("conflict", "the PTR holds this "+noun+" in the opposite direction")
-		}
-		if pending, err := store.PendingLog(item.Kind, aMapped.PTR, bMapped.PTR); err == nil && pending {
-			return fail("already_suggested", "already sent and awaiting janitor review")
-		}
-		return stage(ptr.ContribItem{Kind: item.Kind, Tag: aMapped.PTR, Tag2: bMapped.PTR})
-	}
-
 	switch item.Kind {
 	case ptr.ContribMappingAdd, ptr.ContribMappingPetition:
-		if !sha256HexRe.MatchString(item.SHA256) {
-			return fail("ineligible", "sha256 must be 64 lowercase hex characters")
+		return s.stageMapping(covered)
+	case ptr.ContribSibling:
+		return s.stageRelation(h.ptr.SiblingCurrent, "alias", "bad", "good", item.Bad, item.Good)
+	case ptr.ContribSiblingPetition:
+		return s.stagePetition(h.ptr.SiblingCurrent, "alias", item.Bad, item.Good)
+	case ptr.ContribParent:
+		return s.stageRelation(h.ptr.ParentCurrent, "implication", "child", "parent", item.Child, item.Parent)
+	case ptr.ContribParentPetition:
+		return s.stagePetition(h.ptr.ParentCurrent, "implication", item.Child, item.Parent)
+	}
+	return s.fail("ineligible", "unknown kind "+item.Kind)
+}
+
+// contribStager stages one submitted item: the shared refusal and store
+// plumbing, plus one method per kind the switch above dispatches into.
+type contribStager struct {
+	h      *Handler
+	store  *ptr.ContribStore
+	item   contribStageItem
+	origin string
+	reason string
+	res    contribStageResult
+}
+
+// fail records a refusal verdict; nothing was staged, so the id is zero.
+func (s *contribStager) fail(result, note string) (contribStageResult, int64) {
+	s.res.Result, s.res.Note = result, note
+	return s.res, 0
+}
+
+func (s *contribStager) stage(it ptr.ContribItem) (contribStageResult, int64) {
+	it.Origin = s.origin
+	it.Reason = s.reason
+	id, dup, err := s.store.Stage(it)
+	if err != nil {
+		return s.fail("ineligible", "staging failed: "+err.Error())
+	}
+	if dup {
+		// The row already exists unsent (staged or failed). Re-confirming
+		// should resend it, not report a no-op, so resolve to its id and
+		// let the commit reclaim it.
+		if existing, ok, _ := s.store.StagedID(it.Kind, it.Tag, it.Tag2, it.Hash); ok {
+			s.res.Result = "staged"
+			return s.res, existing
 		}
-		hash := mustHex(item.SHA256)
-		if item.Kind == ptr.ContribMappingAdd {
-			mapped := mapping.ContribTagFor(item.Tag)
-			if !mapped.Eligible() {
-				return fail("ineligible", mapped.Note)
-			}
-			displayed, err := h.ptr.HashHasIdeal(item.SHA256, mapped.PTR)
-			if err != nil {
-				return fail("ineligible", err.Error())
-			}
-			if known, note := h.mappingAddKnown(displayed, mapped.PTR, hash, covered); known {
-				return fail("already_known", note)
-			}
-			return stage(ptr.ContribItem{Kind: item.Kind, Tag: mapped.PTR, Hash: hash})
+		return s.fail("duplicate", "an identical item already waits unsent")
+	}
+	s.res.Result = "staged"
+	return s.res, id
+}
+
+// stageMapping handles the two hash-keyed kinds: adding a tag to a file, and
+// petitioning one off it.
+func (s *contribStager) stageMapping(covered int64) (contribStageResult, int64) {
+	if !sha256HexRe.MatchString(s.item.SHA256) {
+		return s.fail("ineligible", "sha256 must be 64 lowercase hex characters")
+	}
+	hash := mustHex(s.item.SHA256)
+	if s.item.Kind == ptr.ContribMappingAdd {
+		mapped := mapping.ContribTagFor(s.item.Tag)
+		if !mapped.Eligible() {
+			return s.fail("ineligible", mapped.Note)
 		}
-		// A petition names a mapping the server already stores, so the
-		// submitted spelling is tried verbatim first; a raw whose
-		// namespace or underscores the outbound mapper would rewrite
-		// stays petitionable that way. The monbooru-form mapping is the
-		// fallback.
-		tag := item.Tag
-		current, err := h.ptr.HashHasRaw(item.SHA256, tag)
+		displayed, err := s.h.ptr.HashHasIdeal(s.item.SHA256, mapped.PTR)
 		if err != nil {
-			return fail("ineligible", err.Error())
+			return s.fail("ineligible", err.Error())
+		}
+		if known, note := s.h.mappingAddKnown(displayed, mapped.PTR, hash, covered); known {
+			return s.fail("already_known", note)
+		}
+		return s.stage(ptr.ContribItem{Kind: s.item.Kind, Tag: mapped.PTR, Hash: hash})
+	}
+	// A petition names a mapping the server already stores, so the
+	// submitted spelling is tried verbatim first; a raw whose
+	// namespace or underscores the outbound mapper would rewrite
+	// stays petitionable that way. The monbooru-form mapping is the
+	// fallback.
+	tag := s.item.Tag
+	current, err := s.h.ptr.HashHasRaw(s.item.SHA256, tag)
+	if err != nil {
+		return s.fail("ineligible", err.Error())
+	}
+	if !current {
+		mapped := mapping.ContribTagFor(s.item.Tag)
+		if !mapped.Eligible() {
+			return s.fail("ineligible", mapped.Note)
+		}
+		tag = mapped.PTR
+		if current, err = s.h.ptr.HashHasRaw(s.item.SHA256, tag); err != nil {
+			return s.fail("ineligible", err.Error())
 		}
 		if !current {
-			mapped := mapping.ContribTagFor(item.Tag)
-			if !mapped.Eligible() {
-				return fail("ineligible", mapped.Note)
-			}
-			tag = mapped.PTR
-			if current, err = h.ptr.HashHasRaw(item.SHA256, tag); err != nil {
-				return fail("ineligible", err.Error())
-			}
-			if !current {
-				return fail("not_on_ptr", "the PTR does not hold this exact mapping")
-			}
+			return s.fail("not_on_ptr", "the PTR does not hold this exact mapping")
 		}
-		if pending, err := store.PendingMappingPetition(tag, hash); err == nil && pending {
-			return fail("already_suggested", "a removal for this mapping is already staged or awaiting review")
-		}
-		return stage(ptr.ContribItem{Kind: item.Kind, Tag: tag, Hash: hash})
-
-	case ptr.ContribSibling:
-		return stageRelation(h.ptr.SiblingCurrent, "alias", "bad", "good", item.Bad, item.Good)
-
-	case ptr.ContribSiblingPetition:
-		return stagePetition(h.ptr.SiblingCurrent, "alias", item.Bad, item.Good)
-
-	case ptr.ContribParent:
-		return stageRelation(h.ptr.ParentCurrent, "implication", "child", "parent", item.Child, item.Parent)
-
-	case ptr.ContribParentPetition:
-		return stagePetition(h.ptr.ParentCurrent, "implication", item.Child, item.Parent)
 	}
-	return fail("ineligible", "unknown kind "+item.Kind)
+	if pending, err := s.store.PendingMappingPetition(tag, hash); err == nil && pending {
+		return s.fail("already_suggested", "a removal for this mapping is already staged or awaiting review")
+	}
+	return s.stage(ptr.ContribItem{Kind: s.item.Kind, Tag: tag, Hash: hash})
+}
+
+// stagePetition handles a pair petition, which names a relation the server
+// already stores; the two petition kinds differ only in which relation is
+// checked and its noun.
+func (s *contribStager) stagePetition(current func(a, b string) (bool, error), noun, a, b string) (contribStageResult, int64) {
+	ra, rb, ok, err := s.h.currentPetitionPair(current, a, b)
+	if err != nil {
+		return s.fail("ineligible", err.Error())
+	}
+	if !ok {
+		return s.fail("not_on_ptr", "the PTR does not hold this "+noun)
+	}
+	if pending, err := s.store.PendingLog(s.item.Kind, ra, rb); err == nil && pending {
+		return s.fail("already_suggested", "already sent and awaiting janitor review")
+	}
+	return s.stage(ptr.ContribItem{Kind: s.item.Kind, Tag: ra, Tag2: rb})
+}
+
+// stageRelation handles a pair suggestion, which names a relation the server
+// does not store yet; the two suggestion kinds differ only in which relation is
+// checked, its noun, and how each end is labelled in a refusal.
+func (s *contribStager) stageRelation(current func(a, b string) (bool, error), noun, aLabel, bLabel, a, b string) (contribStageResult, int64) {
+	aMapped, bMapped := mapping.ContribTagFor(a), mapping.ContribTagFor(b)
+	if !aMapped.Eligible() {
+		return s.fail("ineligible", aLabel+": "+aMapped.Note)
+	}
+	if !bMapped.Eligible() {
+		return s.fail("ineligible", bLabel+": "+bMapped.Note)
+	}
+	_, _, cur, err := s.h.currentPetitionPair(current, a, b)
+	if err != nil {
+		return s.fail("ineligible", err.Error())
+	}
+	if cur {
+		return s.fail("already_known", "the PTR already has this "+noun)
+	}
+	reverse, err := current(bMapped.PTR, aMapped.PTR)
+	if err != nil {
+		return s.fail("ineligible", err.Error())
+	}
+	if reverse {
+		return s.fail("conflict", "the PTR holds this "+noun+" in the opposite direction")
+	}
+	if pending, err := s.store.PendingLog(s.item.Kind, aMapped.PTR, bMapped.PTR); err == nil && pending {
+		return s.fail("already_suggested", "already sent and awaiting janitor review")
+	}
+	return s.stage(ptr.ContribItem{Kind: s.item.Kind, Tag: aMapped.PTR, Tag2: bMapped.PTR})
 }
 
 // mappingAddKnown reports whether the PTR already effectively carries the

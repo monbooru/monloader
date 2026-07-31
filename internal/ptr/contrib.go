@@ -189,26 +189,32 @@ func (e *Engine) indexStore() (*Store, error) {
 	return e.store, nil
 }
 
-// HashHasIdeal answers the display-view mapping check on the index.
-func (e *Engine) HashHasIdeal(hashHex, tag string) (bool, error) {
+// onIndex runs a query against the open index, answering errIndexUnavailable
+// with the zero value while the PTR is off. Every contribution and lookup
+// query the API layer makes goes through it.
+func onIndex[T any](e *Engine, fn func(*Store) (T, error)) (T, error) {
 	s, err := e.indexStore()
 	if err != nil {
-		return false, err
+		var zero T
+		return zero, err
 	}
-	return s.HashHasIdeal(hashHex, tag)
+	return fn(s)
+}
+
+// HashHasIdeal answers the display-view mapping check on the index.
+func (e *Engine) HashHasIdeal(hashHex, tag string) (bool, error) {
+	return onIndex(e, func(s *Store) (bool, error) { return s.HashHasIdeal(hashHex, tag) })
 }
 
 // HashHasIdeals answers the display-view mapping check for a whole tag
 // list against one hash.
 func (e *Engine) HashHasIdeals(hashHex string, tags []string) (map[string]bool, error) {
-	s, err := e.indexStore()
-	if err != nil {
-		return nil, err
-	}
-	return s.HashHasIdeals(hashHex, tags)
+	return onIndex(e, func(s *Store) (map[string]bool, error) { return s.HashHasIdeals(hashHex, tags) })
 }
 
-// IdealTag answers the sibling resolution of one raw spelling.
+// IdealTag answers the sibling resolution of one raw spelling. It is the one
+// query with a third return, so it calls indexStore directly rather than
+// wrapping its answer in a struct to fit onIndex.
 func (e *Engine) IdealTag(tag string) (string, bool, error) {
 	s, err := e.indexStore()
 	if err != nil {
@@ -219,47 +225,27 @@ func (e *Engine) IdealTag(tag string) (string, bool, error) {
 
 // HashHasRaw answers the raw-mapping check on the index.
 func (e *Engine) HashHasRaw(hashHex, tag string) (bool, error) {
-	s, err := e.indexStore()
-	if err != nil {
-		return false, err
-	}
-	return s.HashHasRaw(hashHex, tag)
+	return onIndex(e, func(s *Store) (bool, error) { return s.HashHasRaw(hashHex, tag) })
 }
 
 // RawTagsForHash lists the hash's current raw mappings.
 func (e *Engine) RawTagsForHash(hashHex string) ([]string, error) {
-	s, err := e.indexStore()
-	if err != nil {
-		return nil, err
-	}
-	return s.RawTagsForHash(hashHex)
+	return onIndex(e, func(s *Store) ([]string, error) { return s.RawTagsForHash(hashHex) })
 }
 
 // SiblingCurrent answers the exact-pair sibling check on the index.
 func (e *Engine) SiblingCurrent(bad, good string) (bool, error) {
-	s, err := e.indexStore()
-	if err != nil {
-		return false, err
-	}
-	return s.SiblingCurrent(bad, good)
+	return onIndex(e, func(s *Store) (bool, error) { return s.SiblingCurrent(bad, good) })
 }
 
 // ParentCurrent answers the exact-pair parent check on the index.
 func (e *Engine) ParentCurrent(child, parent string) (bool, error) {
-	s, err := e.indexStore()
-	if err != nil {
-		return false, err
-	}
-	return s.ParentCurrent(child, parent)
+	return onIndex(e, func(s *Store) (bool, error) { return s.ParentCurrent(child, parent) })
 }
 
 // ParentEdgeCovered answers the sibling-resolved parent check on the index.
 func (e *Engine) ParentEdgeCovered(child, parent string) (bool, error) {
-	s, err := e.indexStore()
-	if err != nil {
-		return false, err
-	}
-	return s.ParentEdgeCovered(child, parent)
+	return onIndex(e, func(s *Store) (bool, error) { return s.ParentEdgeCovered(child, parent) })
 }
 
 // Syncing reports whether the index is mid-build, so diff answers are

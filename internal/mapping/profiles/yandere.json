@@ -1,0 +1,8 @@
+{
+  "family": "moebooru",
+  "kind": "booru",
+  "post_url_template": "https://yande.re/post/show/{id}",
+  "md5_search_template": "https://yande.re/post?tags=md5:{md5}",
+  "auth": "none",
+  "example": "https://yande.re/post/show/1211519"
+}

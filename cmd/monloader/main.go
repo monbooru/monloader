@@ -67,13 +67,13 @@ func main() {
 	// settings save publishes a new snapshot all of them observe without a race.
 	provider := config.NewProvider(cfg)
 
-	mapper, err := mapping.New(provider)
+	mapper, err := mapping.New(provider, filepath.Join(filepath.Dir(*configPath), "profiles"))
 	if err != nil {
 		log.Fatalf("FATAL loading mappings: %v", err)
 	}
 
 	runner := gdl.New(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites())
-	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites()); err != nil {
+	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites(), mapper.SiteOptions()); err != nil {
 		logx.Warnf("could not write the managed gallery-dl config: %v", err)
 	}
 
@@ -90,6 +90,13 @@ func main() {
 	}
 	if exErr != nil {
 		logx.Warnf("listing gallery-dl extractors: %v", exErr)
+	}
+
+	// The bundled supportedsites.md seeds display names and auth kinds for
+	// sites without a shipped profile; without it those just seed empty.
+	supported, supErr := gdl.ParseSupportedSites(cfg.GalleryDL.SupportedSitesPath)
+	if supErr != nil {
+		logx.Infof("supportedsites data unavailable at %q: %v", cfg.GalleryDL.SupportedSitesPath, supErr)
 	}
 
 	client := monbooru.New(provider)
@@ -119,7 +126,7 @@ func main() {
 	}
 	q.Start()
 
-	srv, err := internalweb.NewServer(provider, *configPath, q, client, runner, mapper, extractors, gdlVersion, siteState, ptrEngine, sim)
+	srv, err := internalweb.NewServer(provider, *configPath, q, client, runner, mapper, extractors, supported, gdlVersion, siteState, ptrEngine, sim)
 	if err != nil {
 		log.Fatalf("FATAL creating web server: %v", err)
 	}
@@ -149,11 +156,22 @@ func main() {
 
 	<-quit
 	logx.Infof("shutting down...")
-	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = httpSrv.Shutdown(shutCtx)
+	_ = drainHTTP(httpSrv, shutdownDrain)
 	q.Close()           // cancels the in-flight job and waits for workers to exit
 	ptrEngine.Disable() // stops the sync goroutine and closes the index
+}
+
+// shutdownDrain bounds how long a stop waits on requests already in flight.
+const shutdownDrain = 10 * time.Second
+
+// drainHTTP closes the listener and lets requests already in flight finish, up
+// to timeout: a `?wait=N` enqueue or a large push to monbooru runs for many
+// seconds, and cutting one off mid-response would report a failure for work
+// that landed. Past the timeout the remaining connections are dropped.
+func drainHTTP(srv *http.Server, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return srv.Shutdown(ctx)
 }
 
 // resolveWorkRoot picks the scratch directory for gallery-dl output: the
@@ -173,11 +191,11 @@ func resolveWorkRoot() string {
 	return filepath.Join(os.TempDir(), "monloader-work")
 }
 
-// clearWorkRoot empties the scratch directory at startup. A job dir orphaned by
-// a crash (its deferred cleanup never ran) would otherwise be re-entered by a
-// later job that reuses the same id - ids restart at 1 each run - so its stale
-// files could be bundled or pushed. Contents are removed, not the directory
-// itself, so a /work tmpfs mount stays intact.
+// clearWorkRoot empties the scratch directory at startup. A crashed run's job
+// dir is stale whatever happens to it (its deferred cleanup never ran), and
+// when the queue store is unavailable ids restart at 1, so a later job can walk
+// straight into one and bundle or push its files. Contents are removed, not the
+// directory itself, so a /work tmpfs mount stays intact.
 func clearWorkRoot(root string) {
 	entries, err := os.ReadDir(root)
 	if err != nil {

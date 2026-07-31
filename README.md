@@ -20,7 +20,7 @@ It also runs in reverse: for a file monbooru already holds, monloader looks up i
 - **Download images** A direct link to an image, or anything else a gallery-dl extractor matches : booru post, pool, tag search, artist page. 
 - **Pools and manga.** A booru pool's pages import as an ordered collection; a manga or comic gallery bundles into a single `.cbz` for monbooru's reader.
 - **Metadata mapped to monbooru.** Tags by category (artist / character / copyright / meta / ...), rating, and source, normalized across booru families so tags land the way monbooru expects them.
-- **50+ curated sites, plus a fallback.** Profiles for the danbooru, e621, moebooru, gelbooru, and philomena families and a set of manga/comic sites; anything else gallery-dl supports still works through a generic fallback.
+- **Any gallery-dl site.** 50+ shipped profiles for the booru families and manga/comic sites, and everything else gallery-dl supports works through a generic fallback.
 - **Queue management.** Each download shows whether it was added, was already in your library, got skipped, or failed so you can see at a glance what happened to every item. Re-submitting a search skips posts already fetched, while re-submitting a single post refreshes it, updating the image monbooru already holds to the source's current tags. Pause and resume downloads globally from the topbar (or the monsender popup) to queue up a batch before it starts.
 - **Find tags by file hash or image similarity.** Paste an image's md5 to import the matching booru post, or have monbooru fetch tags for a file it already holds; monloader walks the sources you pick in order: exact md5 searches, plus iqdb and SauceNAO similarity lookups that find re-encoded copies from the image's thumbnail. An optional local copy of the Hydrus Public Tag Repository adds offline sha256 lookups.
 
@@ -87,6 +87,4 @@ See the [monloader documentation](https://monbooru.github.io/mondocs/addons/monl
 
 ## Acknowledgements
 
-monloader is mostly a wrapper for [gallery-dl](https://github.com/mikf/gallery-dl), which does the actual scraping. monloader adds queue management, maps that output onto monbooru's data model, and pushes it over the API.
-
-monloader's optional PTR tag lookup syncs against the [Hydrus Public Tag Repository](https://hydrusnetwork.github.io/hydrus/PTR.html)(PTR) via [Hydrus Network](https://github.com/hydrusnetwork/hydrus)'s repository protocol. The tags, aliases, and implications it serves are the work of the hydrus community.
+See [monbooru's acknowledgements](https://github.com/monbooru/monbooru#acknowledgements).

@@ -1,0 +1,7 @@
+{
+  "family": "philomena",
+  "kind": "booru",
+  "post_url_template": "https://derpibooru.org/images/{id}",
+  "auth": "api_optional",
+  "example": "https://derpibooru.org/images/3830400"
+}

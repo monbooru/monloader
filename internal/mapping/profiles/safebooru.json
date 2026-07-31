@@ -1,0 +1,11 @@
+{
+  "family": "gelbooru_v02",
+  "kind": "booru",
+  "post_url_template": "https://safebooru.org/index.php?page=post&s=view&id={id}",
+  "md5_search_template": "https://safebooru.org/index.php?page=post&s=list&tags=md5:{md5}",
+  "auth": "none",
+  "example": "https://safebooru.org/index.php?page=post&s=view&id=6828308",
+  "rating_overrides": {
+    "q": "general"
+  }
+}

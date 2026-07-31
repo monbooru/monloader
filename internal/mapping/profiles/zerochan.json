@@ -1,0 +1,7 @@
+{
+  "family": "generic",
+  "kind": "booru",
+  "post_url_template": "https://www.zerochan.net/{id}",
+  "auth": "none",
+  "example": "https://www.zerochan.net/4693893"
+}
