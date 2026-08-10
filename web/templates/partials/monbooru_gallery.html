@@ -7,6 +7,7 @@
       {{if .Galleries}}
       <select id="mb-default-gallery" name="default_gallery">
         <option value=""{{if not .DefaultGallery}} selected{{end}}>(none - monbooru's active gallery)</option>
+        {{if .GalleryMissing}}<option value="{{.DefaultGallery}}" selected>{{.DefaultGallery}} (not in monbooru)</option>{{end}}
         {{range .Galleries}}<option value="{{.Name}}" {{if eq .Name $.DefaultGallery}}selected{{end}}>{{.Name}} ({{.Images}} img)</option>{{end}}
       </select>
       {{else}}

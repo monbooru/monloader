@@ -9,7 +9,7 @@
     <button type="button" hx-post="/settings/sites/{{.Category}}/test" hx-target="#state-{{.Category}}" hx-swap="innerHTML"
             hx-on::before-request="document.getElementById('state-{{.Category}}').innerHTML='<span class=&quot;hint&quot;>testing...</span>'">test</button>
     {{template "site_edit_btn" (dict "Row" . "Label" "edit")}}
-    {{if .Site}}{{template "postbtn" dict "Action" (printf "/settings/sites/%s/reset" .Category) "CSRF" .CSRFToken "Label" "remove" "Title" "drop this site's credentials, gallery, cookies path and options"}}{{end}}
+    {{template "postbtn" dict "Action" (printf "/settings/sites/%s/reset" .Category) "CSRF" .CSRFToken "Label" "remove" "Title" "drop this site's credentials, gallery, cookies path, options and mapping overrides"}}
   </span></td>
 </tr>
 {{end}}

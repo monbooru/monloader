@@ -38,6 +38,7 @@ func (q *Queue) Close() {
 	for _, j := range pending {
 		q.settleDropped(j)
 	}
+	q.reportDropped(pending...)
 	q.wg.Wait()
 }
 

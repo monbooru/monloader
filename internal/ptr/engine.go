@@ -197,12 +197,26 @@ func (e *Engine) Enable() error {
 		logx.Warnf("ptr: contribution store unavailable: %v", err)
 	}
 
+	// A complete index opens ready: it answers everything it answered before
+	// the process stopped, and the pass below is only checking for new
+	// updates. Refusing for the length of that check would fail the work a
+	// restart just restored.
+	complete, err := store.EverReady()
+	if err != nil {
+		logx.Warnf("ptr: reading the caught-up mark failed: %v", err)
+	}
+	state := StateSyncing
+	if complete {
+		state = StateReady
+	}
+
 	ctx, cancel := context.WithCancel(e.baseCtx)
 	done := make(chan struct{})
 	e.mu.Lock()
 	e.store = store
 	e.contrib = contrib
-	e.state = StateSyncing
+	e.state = state
+	e.everReady = complete
 	e.errMsg = ""
 	e.cancel = cancel
 	e.wake = make(chan struct{}, 1)
@@ -453,6 +467,9 @@ func (e *Engine) loop(ctx context.Context, store *Store, done chan struct{}) {
 				return
 			}
 		default:
+			if err := store.MarkReady(); err != nil {
+				logx.Warnf("ptr: recording the caught-up mark failed: %v", err)
+			}
 			e.setState(StateReady, "")
 			e.trackContribOutcomes()
 			if !e.waitWake(ctx, e.readyWait()) {
@@ -487,7 +504,13 @@ var errPaused = fmt.Errorf("sync paused")
 // pending update index in order, stopping early if paused or canceled. It
 // returns nil once caught up (an empty manifest).
 func (e *Engine) syncPass(ctx context.Context, store *Store) error {
-	e.setState(StateSyncing, "")
+	// An index still being built is syncing for the whole pass. A complete one
+	// stays ready until the manifest below actually names updates to replay,
+	// so a poll - at boot or on the daily cadence - does not refuse the
+	// lookups the index can already answer.
+	if e.Provisional() {
+		e.setState(StateSyncing, "")
+	}
 	e.markPassStart()
 	for {
 		since := uint64(0)
@@ -513,6 +536,7 @@ func (e *Engine) syncPass(ctx context.Context, store *Store) error {
 		if last < since {
 			return fmt.Errorf("repository manifest did not advance past update %d", since)
 		}
+		e.setState(StateSyncing, "")
 		e.setProgressTotal(last + 1)
 		if applied, ok, err := store.BlobsApplied(); err == nil && ok {
 			var remaining uint64

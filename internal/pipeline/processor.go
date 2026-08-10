@@ -68,7 +68,27 @@ func New(runner gdl.Runner, mapper *mapping.Mapper, client *monbooru.Client, cfg
 	return &Processor{runner: runner, mapper: mapper, client: client, cfg: cfg, workRoot: workRoot, siteState: siteState, ptr: ptr, sim: sim}
 }
 
-var _ queue.Processor = (*Processor)(nil)
+var (
+	_ queue.Processor    = (*Processor)(nil)
+	_ queue.DropReporter = (*Processor)(nil)
+)
+
+// ReportDropped tells monbooru a job targeting one of its images was dropped
+// before it could run - an operator cancel, or the whole pending FIFO at
+// shutdown. Without it monbooru waits on a callback nobody will send: the
+// detail page's pill polls to its cap, and a scheduled lookup stays in
+// flight until a reconcile sweep picks it up a run later.
+func (p *Processor) ReportDropped(ctx context.Context, snap *queue.Job) {
+	switch snap.Kind {
+	case queue.KindLookup, queue.KindMetadata, queue.KindReplace:
+	default:
+		return
+	}
+	if err := p.client.ReportFetchOutcome(ctx, snap.ImageID, snap.Gallery,
+		queue.ErrCodeCanceled, "the job was dropped before it ran"); err != nil {
+		logx.Warnf("queue: job %d dropped-state report failed: %v", snap.ID, err)
+	}
+}
 
 // Process resolves the URL, downloads the files, maps each onto monbooru push
 // fields, pushes them, and records per-item outcomes. It returns

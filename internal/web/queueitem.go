@@ -33,7 +33,7 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 	site, _ := ctx["Site"].(string)
 
 	d := itemDisplay{Warnings: it.TagWarnings}
-	enrich := kind == queue.KindLookup || kind == queue.KindMetadata
+	enrich := kind == queue.KindLookup || kind == queue.KindMetadata || kind == queue.KindPTRLookup
 
 	switch {
 	case it.SHA256 != "":

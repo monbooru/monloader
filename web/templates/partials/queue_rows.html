@@ -4,7 +4,7 @@
 <tr class="job-row">
   <td class="st-{{.Lead.Status}}">{{.Lead.Status}}<span class="job-time" title="{{stampLocal .Lead.StatusChangedAt}}">{{humanSince .Lead.StatusChangedAt}}</span></td>
   <td class="queue-url">{{.Lead.Subject}}{{if .Lead.URL}} <a class="queue-view" href="{{.Lead.URL}}" target="_blank" rel="noopener" title="open the source in a new tab">view</a>{{end}}</td>
-  <td><span class="job-kind" title="{{if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}} job">{{if eq .Lead.Kind "lookup"}}{{if eq .Lead.Backend "all"}}lookup{{else}}lookup:{{.Lead.Backend}}{{end}}{{else if eq .Lead.Kind "hash_import"}}import{{else if eq .Lead.Kind "contrib"}}contrib:ptr{{else if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}}</span></td>
+  <td><span class="job-kind" title="{{if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}} job">{{if eq .Lead.Kind "lookup"}}{{if eq .Lead.Backend "all"}}lookup{{else}}lookup:{{.Lead.Backend}}{{end}}{{else if eq .Lead.Kind "hash_import"}}import{{else if eq .Lead.Kind "contrib"}}contrib:ptr{{else if eq .Lead.Kind "ptr_lookup"}}lookup:ptr{{else if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}}</span>{{with .Lead.LookupClass}}<span class="job-lane">{{.}}</span>{{end}}</td>
   <td class="queue-site" title="{{.Lead.Site}}">{{.Lead.Site}}</td>
   <td class="queue-gallery" title="{{.Lead.Gallery}}">{{.Lead.Gallery}}</td>
   <td class="queue-summary">
@@ -18,6 +18,7 @@
     {{if .Summary.Created}}<span class="o-created">{{.Summary.Created}} created</span>{{end}}
     {{if .Summary.Duplicate}}<span class="o-duplicate">{{.Summary.Duplicate}} duplicate</span>{{end}}
     {{if .Summary.Enriched}}<span class="o-enriched">{{.Summary.Enriched}} enriched</span>{{end}}
+    {{if .Summary.Matched}}<span class="o-created">{{.Summary.Matched}} matched</span>{{end}}
     {{if .Summary.Replaced}}<span class="o-replaced">{{.Summary.Replaced}} replaced</span>{{end}}
     {{if .Summary.Skipped}}<span class="o-skipped_archive">{{.Summary.Skipped}} skipped</span>{{end}}
     {{if .Summary.Failed}}<span class="o-failed">{{.Summary.Failed}} failed</span>{{end}}

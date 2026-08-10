@@ -118,6 +118,7 @@ func main() {
 
 	q := queue.New(proc, cfg.Downloader.Concurrency, 100)
 	q.SetRetention(cfg.Downloader.HistoryRetention())
+	q.SetLookupBudget(cfg.Lookup.ScheduledDailyBudget)
 	if qs, err := queue.OpenStore(filepath.Dir(*configPath)); err != nil {
 		logx.Warnf("queue history store unavailable, falling back to in-memory only: %v", err)
 	} else {

@@ -266,13 +266,15 @@ func (e *Engine) Provisional() bool {
 	return !e.everReady
 }
 
-// CaughtUp reports whether the index has finished syncing and is
-// current. Contribution is refused until then, so nothing is uploaded
-// against a stale copy.
+// CaughtUp reports whether the index may answer: it has completed a full sync
+// and is not replaying a backlog. A half-built index is what the refusals
+// guard against - it answers a partial tag set that reads like the whole
+// truth - so a complete one still answers while a poll is in flight, has
+// failed, or is paused, exactly as it does between two daily polls.
 func (e *Engine) CaughtUp() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.state == StateReady
+	return e.everReady && e.state != StateSyncing
 }
 
 // TagFilterCached returns the last tag filter a commit fetched; nil

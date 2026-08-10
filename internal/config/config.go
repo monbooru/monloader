@@ -333,6 +333,11 @@ type LookupConfig struct {
 	MinSimilarity int           `toml:"min_similarity"`
 	Iqdb          LookupService `toml:"iqdb"`
 	Saucenao      LookupService `toml:"saucenao"`
+	// ScheduledDailyBudget bounds how many images a day the budgeted lookups
+	// monbooru's nightly run sends may cover, 0 refusing them all. It counts
+	// images, not requests: one image walks a chain whose length only
+	// monloader knows.
+	ScheduledDailyBudget int `toml:"scheduled_daily_budget"`
 }
 
 // LookupService is one similarity service's settings. Order is its chain
@@ -440,9 +445,10 @@ func Default() *Config {
 			CommitSleep: 1.0,
 		},
 		Lookup: LookupConfig{
-			MinSimilarity: defaultMinSimilarity,
-			Iqdb:          LookupService{Order: 2},
-			Saucenao:      LookupService{Order: 3},
+			MinSimilarity:        defaultMinSimilarity,
+			Iqdb:                 LookupService{Order: 2},
+			Saucenao:             LookupService{Order: 3},
+			ScheduledDailyBudget: defaultScheduledDailyBudget,
 		},
 		Sites: append([]Site(nil), defaultLookupSites...),
 	}
@@ -452,6 +458,11 @@ func Default() *Config {
 // exact copy scores near 100 and the first wrong candidate far below (the
 // live probe saw 96 vs 20), so 80 separates cleanly.
 const defaultMinSimilarity = 80
+
+// defaultScheduledDailyBudget is how many images a night's unattended lookup
+// may cover. Small on purpose: the sites are free and polite about a trickle,
+// and a library worth sweeping is swept over weeks either way.
+const defaultScheduledDailyBudget = 25
 
 // defaultLookupSites is the exact-md5 half of the lookup chain a fresh
 // install gets. danbooru leads (best tags, free anonymous md5 metatag) with
@@ -465,6 +476,14 @@ var defaultLookupSites = []Site{
 	{Name: "e621", LookupOrder: 6},
 	{Name: "yandere", LookupOrder: 7},
 	{Name: "konachan", LookupOrder: 8},
+}
+
+// DefaultChainSite reports whether a site is one the first-run config seeds
+// into the lookup chain. A load re-seeds such a site when it has no block, so
+// dropping the block is not a way to configure anything: it puts the site back
+// at its seeded position on the next read.
+func DefaultChainSite(name string) bool {
+	return slices.ContainsFunc(defaultLookupSites, func(s Site) bool { return s.Name == name })
 }
 
 // legacyLookupOrders is the walk seeded before the similarity services
@@ -505,8 +524,13 @@ func Load(path string) (*Config, error) {
 // site orders were never customized they are renumbered into the current
 // chain, otherwise the services are appended after the operator's own order;
 // either way a cleared site stays cleared. A present [lookup] section - even
-// one with the services switched off - is never touched.
-func seedLookupDefaults(cfg *Config, hasLookup bool) {
+// one with the services switched off - is never touched, except for a key the
+// file predates entirely: it takes the fresh-install value, so an upgrade does
+// not silently refuse every scheduled lookup.
+func seedLookupDefaults(cfg *Config, md toml.MetaData) {
+	if !md.IsDefined("lookup", "scheduled_daily_budget") {
+		cfg.Lookup.ScheduledDailyBudget = defaultScheduledDailyBudget
+	}
 	legacy := true
 	for _, s := range cfg.Sites {
 		if s.LookupOrder > 0 && legacyLookupOrders[s.Name] != s.LookupOrder {
@@ -519,7 +543,7 @@ func seedLookupDefaults(cfg *Config, hasLookup bool) {
 			cfg.Sites = append(cfg.Sites, d)
 		}
 	}
-	if hasLookup {
+	if md.IsDefined("lookup") {
 		return
 	}
 	if legacy {
@@ -561,7 +585,7 @@ func LoadFromFile(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing config file %q: %w", path, err)
 		}
-		seedLookupDefaults(cfg, md.IsDefined("lookup"))
+		seedLookupDefaults(cfg, md)
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("checking config file: %w", err)
 	}
@@ -803,5 +827,6 @@ func validate(cfg *Config) error {
 	}
 	cfg.Lookup.Iqdb.Order = max(cfg.Lookup.Iqdb.Order, 0)
 	cfg.Lookup.Saucenao.Order = max(cfg.Lookup.Saucenao.Order, 0)
+	cfg.Lookup.ScheduledDailyBudget = max(cfg.Lookup.ScheduledDailyBudget, 0)
 	return nil
 }

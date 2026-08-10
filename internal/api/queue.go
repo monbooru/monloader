@@ -167,6 +167,11 @@ type lookupRequest struct {
 	MD5     string `json:"md5"`
 	SHA256  string `json:"sha256"`
 	Gallery string `json:"gallery"`
+	// Background waits behind anything a person is watching; Budgeted also
+	// spends a slot of the daily budget and can be refused. Both default
+	// false, so a caller that knows neither field keeps today's behaviour.
+	Background bool `json:"background"`
+	Budgeted   bool `json:"budgeted"`
 }
 
 // lookup handles POST /api/v1/lookup: monbooru asks monloader to find tags for
@@ -226,9 +231,35 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "backend must be \"booru\", \"ptr\", or \"all\"")
 		return
 	}
+	if body.Budgeted && !h.queue.TakeLookupBudget() {
+		// Authoritative: monbooru does not keep its own count, it stops its
+		// nightly walk for the day on this answer.
+		apiError(w, http.StatusTooManyRequests, "budget_exhausted",
+			"today's scheduled-lookup budget is spent")
+		return
+	}
 	id := h.queue.EnqueueLookup(body.ImageID, body.Gallery, body.Backend,
-		strings.ToLower(body.MD5), strings.ToLower(body.SHA256))
+		strings.ToLower(body.MD5), strings.ToLower(body.SHA256), body.Background, body.Budgeted)
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id})
+}
+
+// lookupStatus handles GET /api/v1/lookup/status: what an unattended caller
+// needs to know before it starts a nightly walk - how much of today's budget
+// is left, and whether any source is configured to walk. The refusal on the enqueue stays
+// authoritative; this is a readout, so a caller must not keep its own count.
+func (h *Handler) lookupStatus(w http.ResponseWriter, r *http.Request) {
+	limit, left, resets := h.queue.LookupBudget()
+	sources := h.mapper.LookupChain()
+	chain := make([]string, 0, len(sources))
+	for _, src := range sources {
+		chain = append(chain, src.Name)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"daily_budget": limit,
+		"left_today":   left,
+		"resets_at":    resets.Unix(),
+		"chain":        chain,
+	})
 }
 
 // waitSeconds reads and clamps the ?wait= parameter.

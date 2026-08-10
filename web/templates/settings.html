@@ -34,7 +34,7 @@
           <p class="field-hint">browser URL for links back to monbooru; blank = same as api url.</p>
         </div>
       </div>
-      {{template "monbooru_gallery" (dict "Paired" .MonbooruPaired "Galleries" .Galleries "DefaultGallery" .Cfg.Monbooru.DefaultGallery "GalleryWarn" .GalleryWarn)}}
+      {{template "monbooru_gallery" (dict "Paired" .MonbooruPaired "Galleries" .Galleries "DefaultGallery" .Cfg.Monbooru.DefaultGallery "GalleryWarn" .GalleryWarn "GalleryMissing" .GalleryMissing)}}
       <div id="flash-monbooru-test"></div>
       <div class="section-actions">
         <button type="button" hx-post="/settings/monbooru/test" hx-include="closest form" hx-target="#flash-monbooru-test" hx-swap="innerHTML">test connection</button>
@@ -147,17 +147,24 @@
     {{else}}
     <p class="hint">nothing is queried - give a source a position via edit order.</p>
     {{end}}
-    <div class="section-actions">
-      <form method="POST" action="/settings/lookup" class="lookup-minsim">
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <div class="lookup-minsim-row">
+    <form method="POST" action="/settings/lookup">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div class="lookup-fields">
+        <div class="field">
           <label for="lk-min-similarity">min similarity %</label>
           <input id="lk-min-similarity" type="number" name="min_similarity" min="1" max="100" step="1" value="{{.LookupPanel.MinSimilarity}}">
-          <button type="submit">save</button>
+          <span class="field-hint">an iqdb or saucenao match scoring below this percentage is ignored</span>
         </div>
-        <span class="field-hint">an iqdb or saucenao match scoring below this percentage is ignored</span>
-      </form>
-    </div>
+        <div class="field">
+          <label for="lk-scheduled-budget">daily budget for scheduled lookups
+            <span class="lookup-budget-left{{if not .LookupPanel.ScheduledLeft}} spent{{end}}">({{.LookupPanel.ScheduledLeft}} left today)</span></label>
+          <input id="lk-scheduled-budget" type="number" name="scheduled_daily_budget" min="0" step="1" value="{{.LookupPanel.ScheduledBudget}}">
+          <span class="field-hint">images per day monbooru's nightly run may cover, 0 = refuse them all; resets {{humanDue .LookupPanel.ScheduledResets}}.</span>
+        </div>
+      </div>
+      {{if .LookupPanel.SaucenaoLimited}}<span class="field-hint">saucenao is rate limited, resets {{humanDue .LookupPanel.SaucenaoLimited}}</span>{{end}}
+      <div class="section-actions"><button type="submit">save</button></div>
+    </form>
 
     <dialog id="chain-dialog">
       <form method="POST" action="/settings/lookup/chain" id="chain-form">

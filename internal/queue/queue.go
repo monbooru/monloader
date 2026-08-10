@@ -1,11 +1,11 @@
 package queue
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"maps"
 	"slices"
-	"sort"
 	"sync"
 	"time"
 
@@ -51,6 +51,13 @@ type Options struct {
 	// Priority marks a single-post / wait request so it jumps ahead of bulk
 	// jobs in the FIFO.
 	Priority bool
+	// Background and Budgeted classify a lookup monbooru did not send on
+	// behalf of someone watching an image page: Background puts it behind
+	// the priority lane, Budgeted also spends a slot of the daily budget.
+	// They are independent - a bulk lookup the operator started is
+	// background but never refused.
+	Background bool
+	Budgeted   bool
 	// Kind + ImageID mark a metadata-only source refetch (see EnqueueMetadata);
 	// a zero-value Kind is a normal download.
 	Kind    JobKind
@@ -74,6 +81,19 @@ type Options struct {
 type Processor interface {
 	Process(ctx context.Context, job *Job) error
 }
+
+// DropReporter is the optional half of Processor: a job removed before it
+// ran produces no callback of its own, so monbooru would wait on a result
+// that is never coming. A Processor implementing this is asked to tell it
+// the attempt is over.
+type DropReporter interface {
+	ReportDropped(ctx context.Context, job *Job)
+}
+
+// dropReportTimeout bounds the whole reporting effort, whether it is one
+// cancelled job or a shutdown's worth of pending ones. Shutdown must not
+// block on an unreachable monbooru.
+const dropReportTimeout = 3 * time.Second
 
 // Queue is the in-memory download queue: a FIFO of pending jobs, the set of
 // running jobs, and a bounded ring of recently finished jobs, all guarded
@@ -99,6 +119,17 @@ type Queue struct {
 	// but pick up no new one while set, so submissions queue behind a manual
 	// resume. It survives no restart (the queue itself is in memory).
 	paused bool
+
+	// The daily budget for scheduled lookups: the published cap, and the
+	// spend stamped with the local date it belongs to. Mirrored to the
+	// store, unlike the pause, so a restart cannot refill it (budget.go).
+	budgetLimit int
+	budgetDay   string
+	budgetSpent int
+	// budgetWrite pairs a take with its mirror write. The counter row holds an
+	// absolute value, so two takes that left q.mu in one order and reached the
+	// store in the other would leave the stored spend one short.
+	budgetWrite sync.Mutex
 
 	proc    Processor
 	workers int
@@ -170,9 +201,17 @@ func (q *Queue) UseStore(st *Store) {
 			close(j.done)
 		}
 	}
+	// Read the budget counter here too, where the store is still being read
+	// outside the lock: the take path must never reach the disk under q.mu.
+	budgetDay, budgetSpent, err := st.LoadCounter(lookupBudgetCounter)
+	if err != nil {
+		logx.Warnf("queue: budget counter reload failed: %v", err)
+		budgetDay, budgetSpent = "", 0
+	}
 	var evicted []int64
 	q.mu.Lock()
 	q.store = st
+	q.budgetDay, q.budgetSpent = budgetDay, budgetSpent
 	for _, j := range jobs {
 		if j.ID > q.nextID {
 			q.nextID = j.ID
@@ -287,11 +326,14 @@ func (q *Queue) EnqueueMetadata(imageID int64, gallery, url string) int64 {
 
 // EnqueueLookup queues a hash lookup: find tags for the hash on the chosen
 // backend and enrich monbooru image imageID. Prioritized like a metadata
-// refetch - it answers a person waiting on an image page.
-func (q *Queue) EnqueueLookup(imageID int64, gallery, backend, md5, sha256 string) int64 {
+// refetch - it answers a person waiting on an image page - unless background
+// marks it as bulk or unattended work, which then waits behind anything
+// someone is watching.
+func (q *Queue) EnqueueLookup(imageID int64, gallery, backend, md5, sha256 string, background, budgeted bool) int64 {
 	return q.Enqueue("", Options{
 		Kind: KindLookup, ImageID: imageID, Gallery: gallery,
-		Backend: backend, MD5: md5, SHA256: sha256, Priority: true,
+		Backend: backend, MD5: md5, SHA256: sha256, Priority: !background,
+		Background: background, Budgeted: budgeted,
 	})
 }
 
@@ -309,6 +351,51 @@ func (q *Queue) EnqueueHashImport(md5 string, opts Options) int64 {
 	opts.Kind = KindHashImport
 	opts.MD5 = md5
 	return q.Enqueue("", opts)
+}
+
+// RecordPTRLookup files a batch PTR hash lookup in the history. That endpoint
+// answers in process and never enqueues, so without a row a caller can check
+// a whole library against the index and leave no trace of having asked.
+// scheduled marks a sweep the nightly run started, which the row names the
+// way it names a queued lookup's lane. matched lists the images the index
+// answered for, one item each.
+func (q *Queue) RecordPTRLookup(gallery string, scheduled bool, asked int, matched []Item) {
+	now := q.now()
+	q.mu.Lock()
+	if j := q.recentPTRLookupLocked(now, scheduled); j != nil {
+		q.mu.Unlock()
+		j.recordPTRLookup(gallery, asked, matched, now)
+		q.persist(j)
+		return
+	}
+	q.nextID++
+	j := newJob(q.nextID, "", Options{
+		Kind: KindPTRLookup, Gallery: gallery, Background: true, Budgeted: scheduled,
+	}, now)
+	j.Root = j.ID
+	q.index[j.ID] = j
+	evicted := q.pushFinishedLocked(j)
+	q.mu.Unlock()
+	j.recordPTRLookup(gallery, asked, matched, now)
+	q.persist(j)
+	q.persistDelete(evicted)
+}
+
+// recentPTRLookupLocked returns today's batch-lookup row for the same class,
+// or nil. The day, rather than a timer, is the unit a sweep is measured in: a
+// caller that paces its batches over hours still files one row, while a
+// nightly sweep and a bulk one keep the separate labels they were asked
+// under, and the history can never hold more than one row per class per day.
+// Caller holds mu.
+func (q *Queue) recentPTRLookupLocked(now time.Time, scheduled bool) *Job {
+	day := now.Format(time.DateOnly)
+	for i := len(q.finished) - 1; i >= 0; i-- {
+		j := q.finished[i]
+		if j.Kind == KindPTRLookup && j.Budgeted == scheduled && j.CreatedAt.Format(time.DateOnly) == day {
+			return j
+		}
+	}
+	return nil
 }
 
 // EnqueueContrib queues a PTR contribution send over the given staged
@@ -379,7 +466,12 @@ func (q *Queue) List(opts ListOptions) ([]*Job, int) {
 			snaps = append(snaps, s)
 		}
 	}
-	sort.Slice(snaps, func(i, k int) bool { return snaps[i].ID > snaps[k].ID })
+	// Newest activity first, which is what every row's own timestamp shows: a
+	// folded batch-lookup row keeps its id but goes on being written to, so
+	// ordering by id alone would bury an active sweep under older entries.
+	slices.SortFunc(snaps, func(a, b *Job) int {
+		return cmp.Or(b.StatusChangedAt.Compare(a.StatusChangedAt), cmp.Compare(b.ID, a.ID))
+	})
 
 	total := len(snaps)
 	if opts.Limit > 0 {
@@ -616,6 +708,7 @@ func (q *Queue) cancelKeepingRow(id int64) error {
 	evicted := q.pushFinishedLocked(j)
 	q.mu.Unlock()
 	q.settleDropped(j)
+	q.reportDropped(j)
 	q.persist(j)
 	q.persistDelete(evicted)
 	return nil
@@ -650,12 +743,19 @@ func (q *Queue) Cancel(id int64) error {
 		q.mu.Unlock()
 		return nil
 	}
-	// Not running: drop it from the pending FIFO or the finished ring.
+	// Not running: drop it from the pending FIFO or the finished ring. Only a
+	// job still waiting is being dropped before it ran; one already in the ring
+	// is being tidied out of the history, and reporting that would overwrite
+	// monbooru's record of a fetch that did happen with a cancellation.
+	waiting := j.status() == JobQueued
 	q.removeFromPendingLocked(id)
 	q.removeFromFinishedLocked(id)
 	delete(q.index, id)
 	q.mu.Unlock()
 	q.settleDropped(j)
+	if waiting {
+		q.reportDropped(j)
+	}
 	q.persistDelete([]int64{id})
 	return nil
 }
@@ -666,6 +766,33 @@ func (q *Queue) Cancel(id int64) error {
 func (q *Queue) settleDropped(j *Job) {
 	j.cancel(q.now())
 	j.signalDone()
+}
+
+// reportDropped hands every dropped job that targets a monbooru image to the
+// processor, so monbooru learns the attempt is over instead of waiting on a
+// callback that will never come. The whole set shares one deadline and runs
+// concurrently, so dropping a full FIFO does not stretch shutdown. Never
+// called with q.mu held.
+func (q *Queue) reportDropped(jobs ...*Job) {
+	r, ok := q.proc.(DropReporter)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dropReportTimeout)
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, j := range jobs {
+		snap := j.Snapshot()
+		if snap.ImageID == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.ReportDropped(ctx, snap)
+		}()
+	}
+	wg.Wait()
 }
 
 // CancelPending drops every queued job that has not started: the FIFO empties
@@ -686,6 +813,7 @@ func (q *Queue) CancelPending() {
 	for _, j := range dropped {
 		q.settleDropped(j)
 	}
+	q.reportDropped(dropped...)
 	q.persistDelete(ids)
 }
 
@@ -721,17 +849,15 @@ func (q *Queue) Clear() {
 	q.persistDelete(ids)
 }
 
-// pushPendingLocked appends bulk jobs to the FIFO tail and inserts priority
-// jobs after the last existing priority job, so priority jobs jump ahead of
-// bulk work while preserving FIFO order within each class. Caller holds mu.
+// pushPendingLocked inserts a job after the last one of its lane or better, so
+// each lane jumps ahead of the ones below it while order inside a lane stays
+// FIFO. A background lookup therefore waits behind a URL the operator pastes
+// after it, which is the whole point of that lane. Caller holds mu.
 func (q *Queue) pushPendingLocked(j *Job) {
-	if !j.Priority {
-		q.pending = append(q.pending, j)
-		return
-	}
-	i := 0
-	for i < len(q.pending) && q.pending[i].Priority {
-		i++
+	lane := j.lane()
+	i := len(q.pending)
+	for i > 0 && q.pending[i-1].lane() > lane {
+		i--
 	}
 	q.pending = slices.Insert(q.pending, i, j)
 }

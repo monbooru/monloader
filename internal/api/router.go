@@ -16,11 +16,12 @@ import (
 )
 
 // PTRService is the PTR surface the API exposes: capability + progress for the
-// status endpoint, and the tag-graph query. A nil service means the PTR is not
-// built into the run (status reports disabled).
+// status endpoint, the tag-graph query, and the hash lookup. A nil service
+// means the PTR is not built into the run (status reports disabled).
 type PTRService interface {
 	Status() ptr.Status
 	TagGraph(names []string) (map[string]ptr.TagInfo, error)
+	TagsForHash(hashHex string) (tags []string, ok bool, err error)
 	Enabled() bool
 	HasPersonalKey() bool
 	CreateContribAccount(ctx context.Context) (string, error)

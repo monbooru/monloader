@@ -369,19 +369,6 @@ func (m *Mapper) CuratedCategories() []string {
 	return m.curatedWhere(func(Profile) bool { return true })
 }
 
-// CuratedByKind returns the curated categories of a given kind (KindBooru or
-// KindManga), sorted, so the settings page can group them into two tables. A
-// profile with no kind set counts as a booru.
-func (m *Mapper) CuratedByKind(kind string) []string {
-	return m.curatedWhere(func(p Profile) bool {
-		pk := p.Kind
-		if pk == "" {
-			pk = KindBooru
-		}
-		return pk == kind
-	})
-}
-
 // FlatTagSites returns the curated categories whose family needs
 // `tags: true`, sorted. The gallery-dl config writer consumes this so those
 // sites emit categorized tags.

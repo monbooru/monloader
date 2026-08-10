@@ -689,7 +689,9 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 
 	if galleries, ok := s.galleries(r); ok {
 		data["Galleries"] = galleries
-		if warn := defaultGalleryWarning(s.cfg.Current().Monbooru.DefaultGallery, galleries); warn != "" {
+		gallery := s.cfg.Current().Monbooru.DefaultGallery
+		data["GalleryMissing"] = defaultGalleryMissing(gallery, galleries)
+		if warn := defaultGalleryWarning(gallery, galleries); warn != "" {
 			data["GalleryWarn"] = warn
 		}
 	}
@@ -728,12 +730,21 @@ func defaultGalleryWarning(name string, galleries []monbooru.Gallery) string {
 	if name == "" {
 		return "no default gallery set - downloads use monbooru's active gallery; pick one to set a fixed target"
 	}
-	for _, g := range galleries {
-		if g.Name == name {
-			return ""
-		}
+	if defaultGalleryMissing(name, galleries) {
+		return "gallery \"" + name + "\" is not in monbooru - pushes will be rejected until it exists"
 	}
-	return "gallery \"" + name + "\" is not in monbooru - pushes will be rejected until it exists"
+	return ""
+}
+
+// defaultGalleryMissing reports a stored default gallery monbooru does not
+// have, so the dropdown can carry it as an option of its own: without one the
+// control shows "(none)" and any later save of the section submits that,
+// clearing the setting the operator came to fix.
+func defaultGalleryMissing(name string, galleries []monbooru.Gallery) bool {
+	if name == "" {
+		return false
+	}
+	return !slices.ContainsFunc(galleries, func(g monbooru.Gallery) bool { return g.Name == name })
 }
 
 // renderDefaultGalleryOOB re-renders the default-gallery field out of band so it
@@ -746,7 +757,9 @@ func (s *Server) renderDefaultGalleryOOB(w http.ResponseWriter, r *http.Request)
 	}
 	if galleries, ok := s.galleries(r); ok {
 		data["Galleries"] = galleries
-		if warn := defaultGalleryWarning(s.cfg.Current().Monbooru.DefaultGallery, galleries); warn != "" {
+		gallery := s.cfg.Current().Monbooru.DefaultGallery
+		data["GalleryMissing"] = defaultGalleryMissing(gallery, galleries)
+		if warn := defaultGalleryWarning(gallery, galleries); warn != "" {
 			data["GalleryWarn"] = warn
 		}
 	}
@@ -1007,21 +1020,40 @@ func parseLookupOrder(raw string) (int, error) {
 	return n, nil
 }
 
-// resetSite drops a site's [[sites]] block - credentials, gallery, cookies
-// path, options - reverting it to the profile defaults. The remove button
-// only shows for sites that have a block to drop; a row with neither a block
-// nor a custom profile disappears from the tables.
+// resetSite undoes everything the site dialog wrote (POST
+// /settings/sites/{name}/reset): the [[sites]] block's credentials, target
+// gallery, source label, cookies path and options, and the user profile whose
+// tag rules would otherwise keep rewriting every later push. The row then has
+// nothing left to show and disappears from the tables.
 func (s *Server) resetSite(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	// The profile first: it refuses when the site is in the lookup chain on a
+	// template only it supplies, and that refusal has to leave the block alone.
+	if err := s.mapper.DeleteUserProfile(name); err != nil {
+		s.redirectFlash(w, r, "err", err.Error())
+		return
+	}
 	err := s.updateConfig(func(c *config.Config) error {
-		c.Sites = slices.DeleteFunc(c.Sites, func(s config.Site) bool { return s.Name == name })
+		site := c.FindSite(name)
+		if site == nil {
+			return nil
+		}
+		// The chain position is configured in the lookup section, not here, so
+		// an emptied block survives to carry it - and a seeded chain site keeps
+		// its block whatever its position, since a load would otherwise re-seed
+		// the site at the default one.
+		if site.LookupOrder == 0 && !config.DefaultChainSite(name) {
+			c.Sites = slices.DeleteFunc(c.Sites, func(s config.Site) bool { return s.Name == name })
+			return nil
+		}
+		*site = config.Site{Name: name, LookupOrder: site.LookupOrder}
 		return nil
 	})
 	if err != nil {
 		s.redirectFlash(w, r, "err", "save failed: "+err.Error())
 		return
 	}
-	s.rewriteGDLConfig()
+	s.refreshSiteLists()
 	s.redirectFlash(w, r, "ok", "site "+name+" removed")
 }
 

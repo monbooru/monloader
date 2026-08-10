@@ -163,6 +163,7 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .queue-url { word-break: break-all; }
 .queue-view { font-size: 12px; margin-left: 6px; white-space: nowrap; }
 .job-kind { color: var(--accent); border: 1px solid var(--border); padding: 0 4px; font-size: 11px; white-space: nowrap; }
+.job-lane { display: block; color: var(--fg-dim); font-size: 11px; }
 
 .lookup-status { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--fg-dim); margin-top: 6px; }
 .lk-on { color: var(--success); }
@@ -201,7 +202,7 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .st-partial, .st-interrupted { color: var(--warning); }
 .st-failed, .o-failed { color: var(--error); }
 .st-canceled { color: var(--fg-dim); }
-.o-duplicate, .o-enriched, .o-replaced, .o-skipped_archive, .o-skipped_unsupported, .o-canceled, .o-merge { color: var(--fg-dim); }
+.o-duplicate, .o-enriched, .o-matched, .o-replaced, .o-skipped_archive, .o-skipped_unsupported, .o-canceled, .o-merge { color: var(--fg-dim); }
 .o-pending, .o-downloaded, .o-uploaded { color: var(--accent); }
 .o-capped, .o-warn { color: var(--warning); }
 
@@ -274,9 +275,11 @@ textarea { width: 100%; min-height: 80px; }
 .chain-table th:nth-child(5), .chain-table td:nth-child(5) { width: 22%; }
 .chain-table th:nth-child(6), .chain-table td:nth-child(6) { width: 180px; }
 .chain-table .actions button { white-space: nowrap; }
-.lookup-minsim { display: inline-flex; flex-direction: column; gap: 2px; margin-right: auto; }
-.lookup-minsim-row { display: flex; gap: 6px; align-items: center; }
-.lookup-minsim input { width: 70px; }
+
+.lookup-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 32px; }
+.lookup-fields input[type=number] { width: 7ch; }
+.lookup-budget-left { color: var(--success); white-space: nowrap; }
+.lookup-budget-left.spent { color: var(--warning); }
 .chain-cols { display: flex; gap: 12px; }
 .chain-col { flex: 1; min-width: 170px; }
 .chain-col h4 { margin-bottom: 6px; color: var(--fg-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }

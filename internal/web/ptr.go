@@ -18,12 +18,13 @@ import (
 )
 
 // ptrEngine is the PTR surface the web layer drives: status for the page, the
-// tag graph for the mounted API, and the lifecycle controls the page's forms
-// invoke. *ptr.Engine satisfies it; tests inject a stub.
+// tag graph and hash lookup for the mounted API, and the lifecycle controls
+// the page's forms invoke. *ptr.Engine satisfies it; tests inject a stub.
 type ptrEngine interface {
 	Enabled() bool
 	Status() ptr.Status
 	TagGraph(names []string) (map[string]ptr.TagInfo, error)
+	TagsForHash(hashHex string) (tags []string, ok bool, err error)
 	Enable() error
 	Disable()
 	Pause()

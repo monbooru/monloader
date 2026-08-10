@@ -265,14 +265,29 @@ func (h *Handler) endpoints() []endpoint {
 					{Name: "md5", Type: "string", Description: "32-hex file md5, required by the booru and all backends"},
 					{Name: "sha256", Type: "string", Description: "64-hex file sha256, required by the ptr backend, and by the all backend while the ptr sync is enabled"},
 					{Name: "gallery", Type: "string", Description: "Gallery holding the image; empty uses monbooru's active gallery"},
+					{Name: "background", Type: "boolean", Description: "Queue behind anything a person is waiting on, for bulk or unattended work (default false)"},
+					{Name: "budgeted", Type: "boolean", Description: "Count the job against the daily scheduled-lookup budget and refuse it when that is spent (default false)"},
 				},
 			},
 			Responses: []response{
 				{Status: "202", Description: "Lookup queued; poll GET /api/v1/queue/{id}", Ref: "EnqueueResponse"},
 				{Status: "400", Description: "Missing image_id, unknown backend, or a malformed hash", Ref: "Error"},
 				{Status: "409", Description: "The ptr backend is disabled or not fully synced", Ref: "Error"},
+				{Status: "429", Description: "Budgeted and today's scheduled-lookup budget is spent", Ref: "Error"},
 			},
 			Handler: h.lookup,
+		},
+		{
+			Method: "GET", Path: "/api/v1/lookup/status",
+			Summary: "Scheduled-lookup budget and chain readout", OperationID: "lookupStatus",
+			Description: "Report how much of today's scheduled-lookup budget is left, when it rolls " +
+				"over, and which sources the walk would query. " +
+				"A readout only: the 429 on an enqueue stays authoritative, so a caller must " +
+				"not keep its own count.",
+			Responses: []response{
+				{Status: "200", Description: "Budget and chain state", Ref: "LookupStatus"},
+			},
+			Handler: h.lookupStatus,
 		},
 		{
 			Method: "GET", Path: "/api/v1/ptr/status",
@@ -303,6 +318,27 @@ func (h *Handler) endpoints() []endpoint {
 				{Status: "409", Description: "The PTR index is not available or not fully synced", Ref: "Error"},
 			},
 			Handler: h.ptrTags,
+		},
+		{
+			Method: "POST", Path: "/api/v1/ptr/lookup",
+			Summary: "Look a batch of file hashes up in the PTR index", OperationID: "ptrLookup",
+			Description: "Return the tags the local index holds for each file sha256, in monbooru form. " +
+				"Answers in process, so a whole-library sweep costs one call per batch instead of a " +
+				"queued job per image; a hash the index does not hold is absent from the results.",
+			Request: &reqBody{
+				Required: []string{"images"},
+				Props: []prop{
+					{Name: "images", Type: "array", Items: &prop{Type: "object"}, Description: "At most 100 `{ image_id, sha256 }` pairs; the id names the image on the queue row the answer files"},
+					{Name: "gallery", Type: "string", Description: "Gallery the images come from; recorded on that row"},
+					{Name: "scheduled", Type: "boolean", Description: "Set by monbooru's nightly run, so the row reads as scheduled rather than bulk"},
+				},
+			},
+			Responses: []response{
+				{Status: "200", Description: "Tags per matched hash, plus the index cursor", Ref: "PTRLookupResults"},
+				{Status: "400", Description: "Empty or over-long image list, or a malformed hash", Ref: "Error"},
+				{Status: "409", Description: "The PTR index is not available or not fully synced", Ref: "Error"},
+			},
+			Handler: h.ptrLookup,
 		},
 		{
 			Method: "POST", Path: "/api/v1/ptr/account",
@@ -570,6 +606,7 @@ var apiSchemas = []apiSchema{
 		{Name: "replaced", Type: "integer", Description: "In-place file replacements of an image monbooru already holds"},
 		{Name: "skipped", Type: "integer", Description: "Posts the gallery-dl archive already had, or files monbooru cannot ingest"},
 		{Name: "failed", Type: "integer"},
+		{Name: "matched", Type: "integer", Description: "Hashes a batch PTR lookup answered with tags; true past the bound on the items the row keeps"},
 		{Name: "canceled", Type: "integer", Description: "Items aborted by a job cancel, kept out of failed"},
 		{Name: "total", Type: "integer"},
 	}},
@@ -578,7 +615,7 @@ var apiSchemas = []apiSchema{
 		{Name: "num", Type: "integer", Description: "1-based pool page order"},
 		{Name: "url", Type: "string", Description: "canonical source post page"},
 		{Name: "status", Type: "string", Description: "pending, downloaded, uploaded, done, skipped, failed"},
-		{Name: "outcome", Type: "string", Description: "created, duplicate, enriched, replaced, skipped_archive, skipped_unsupported, failed"},
+		{Name: "outcome", Type: "string", Description: "created, duplicate, enriched, matched, replaced, skipped_archive, skipped_unsupported, failed"},
 		{Name: "monbooru_id", Type: "integer"},
 		{Name: "sha256", Type: "string"},
 		{Name: "tag_warnings", Type: "array", Items: &prop{Type: "string"}, Description: "Tags monbooru rejected on the push; recorded, not fatal"},
@@ -590,7 +627,7 @@ var apiSchemas = []apiSchema{
 		{Name: "id", Type: "integer"},
 		{Name: "url", Type: "string"},
 		{Name: "status", Type: "string", Description: "queued, running, succeeded, partial, failed, canceled, interrupted (was running when the process died; requeue to re-run)"},
-		{Name: "kind", Type: "string", Description: "download (the default, omitted), metadata (a source refetch that enriches an existing image), lookup (a hash lookup that enriches an existing image), hash_import (an md5 resolved to a post and imported), replace (a post's file downloaded and pushed over an existing image's bytes), or contrib (a PTR contribution send)"},
+		{Name: "kind", Type: "string", Description: "download (the default, omitted), metadata (a source refetch that enriches an existing image), lookup (a hash lookup that enriches an existing image), hash_import (an md5 resolved to a post and imported), replace (a post's file downloaded and pushed over an existing image's bytes), contrib (a PTR contribution send), or ptr_lookup (a batch PTR hash lookup answered in process)"},
 		{Name: "image_id", Type: "integer", Description: "monbooru image a metadata, lookup, or replace job targets"},
 		{Name: "backend", Type: "string", Description: "Lookup source (booru, ptr, or all) for a lookup job"},
 		{Name: "md5", Type: "string", Description: "File md5 a lookup or hash import is keyed on"},
@@ -680,6 +717,16 @@ var apiSchemas = []apiSchema{
 	}},
 	{Name: "PTRTagResults", Props: []prop{
 		{Name: "results", Type: "object", Description: "map of the queried tag to its PTR ideal, aliases, implications, and implied_by (monbooru form); known=false when the PTR does not have the tag"},
+	}},
+	{Name: "LookupStatus", Props: []prop{
+		{Name: "daily_budget", Type: "integer", Description: "images per day a scheduled lookup may cover; 0 refuses them all"},
+		{Name: "left_today", Type: "integer", Description: "budgeted lookups still acceptable before the next rollover"},
+		{Name: "resets_at", Type: "integer", Description: "unix time of the next local-midnight rollover"},
+		{Name: "chain", Type: "array", Items: &prop{Type: "string"}, Description: "the sources the booru walk would query, in order; empty means nothing is configured"},
+	}},
+	{Name: "PTRLookupResults", Props: []prop{
+		{Name: "index", Type: "integer", Description: "the index's applied-update cursor at answer time"},
+		{Name: "results", Type: "object", Description: "map of a matched sha256 to its monbooru-form tags; a hash the index does not hold is absent"},
 	}},
 	{Name: "PTRContribPreview", Props: []prop{
 		{Name: "provisional", Type: "boolean", Description: "the index is still syncing; the diff may overstate what is new"},

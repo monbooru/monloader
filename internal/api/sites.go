@@ -62,9 +62,14 @@ func (h *Handler) listSites(w http.ResponseWriter, r *http.Request) {
 	out := make([]SiteEntry, 0, len(h.extractors))
 	named := make(map[string]bool)
 	for _, ex := range h.extractors {
-		if ex.Category != "" {
-			named[ex.Category] = true
+		if ex.Category == "" {
+			// gallery-dl prints no category for a family's base extractors (the
+			// donmai and e621 instances among them), so the entry names no site
+			// a client could attribute a URL to. The settings search drops them
+			// the same way; the family is listed under its curated categories.
+			continue
 		}
+		named[ex.Category] = true
 		if q != "" && !matchesQuery(q, ex.Category, ex.Subcategory, h.supported[ex.Category].Name) {
 			continue
 		}

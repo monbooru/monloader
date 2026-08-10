@@ -51,15 +51,29 @@ type lookupPanelView struct {
 	DialogOff      []mapping.LookupSource
 	MinSimilarity  int
 	SaucenaoKeySet bool
+	// The scheduled-lookup budget, what is left of it today, and the
+	// saucenao cooldown the similarity client already tracks. The two
+	// stamps are unix seconds for humanDue, zero when nothing is pending.
+	ScheduledBudget int
+	ScheduledLeft   int
+	ScheduledResets int64
+	SaucenaoLimited int64
 }
 
 // lookupPanel snapshots the effective chain and the dialog's source list.
 func (s *Server) lookupPanel(csrf string) lookupPanelView {
 	cfg := s.cfg.Current()
 	now := time.Now()
+	budget, left, resets := s.queue.LookupBudget()
 	view := lookupPanelView{
-		MinSimilarity:  cfg.Lookup.MinSimilarity,
-		SaucenaoKeySet: cfg.Lookup.Saucenao.APIKey != "",
+		MinSimilarity:   cfg.Lookup.MinSimilarity,
+		SaucenaoKeySet:  cfg.Lookup.Saucenao.APIKey != "",
+		ScheduledBudget: budget,
+		ScheduledLeft:   left,
+		ScheduledResets: resets.Unix(),
+	}
+	if until := s.sim.LimitedUntil("saucenao"); now.Before(until) {
+		view.SaucenaoLimited = until.Unix()
 	}
 	for i, src := range s.mapper.LookupChain() {
 		row := chainRow{Position: i + 1, Name: src.Name, Similarity: src.Similarity, State: "ready", CSRFToken: csrf}
@@ -133,8 +147,10 @@ func (s *Server) siteNeedsCredential(site string) (string, bool) {
 }
 
 // saveLookup updates the lookup section's inline settings: the similarity
-// floor and (from its dialog) the saucenao api key. The key is a secret with
-// the site-credential semantics: blank keeps the stored value.
+// floor and the scheduled-lookup budget from the section's own row, and the
+// saucenao api key from its dialog. Each sub-form is recognised by a field
+// only it posts. The key is a secret with the site-credential semantics:
+// blank keeps the stored value.
 func (s *Server) saveLookup(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.redirectFlash(w, r, "err", "bad form")
@@ -149,6 +165,16 @@ func (s *Server) saveLookup(w http.ResponseWriter, r *http.Request) {
 		}
 		minSim = n
 	}
+	scheduled := r.Form.Has("scheduled_daily_budget")
+	budget := 0
+	if scheduled {
+		n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("scheduled_daily_budget")))
+		if err != nil || n < 0 {
+			s.redirectFlash(w, r, "err", "the daily budget must be zero or more images")
+			return
+		}
+		budget = n
+	}
 	err := s.updateConfig(func(c *config.Config) error {
 		if minSim > 0 {
 			c.Lookup.MinSimilarity = minSim
@@ -156,12 +182,16 @@ func (s *Server) saveLookup(w http.ResponseWriter, r *http.Request) {
 		if v := strings.TrimSpace(r.FormValue("api_key")); v != "" {
 			c.Lookup.Saucenao.APIKey = v
 		}
+		if scheduled {
+			c.Lookup.ScheduledDailyBudget = budget
+		}
 		return nil
 	})
 	if err != nil {
 		s.redirectFlash(w, r, "err", "save failed: "+err.Error())
 		return
 	}
+	s.queue.SetLookupBudget(s.cfg.Current().Lookup.ScheduledDailyBudget)
 	s.redirectFlash(w, r, "ok", "lookup settings saved")
 }
 

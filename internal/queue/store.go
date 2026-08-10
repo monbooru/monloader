@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     data   TEXT NOT NULL,
     seq    INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS counters (
+    name TEXT PRIMARY KEY,
+    day  TEXT NOT NULL,
+    n    INTEGER NOT NULL
+);
 `
 
 // storeDSN mirrors the ptr index's pragmas: WAL with normal synchronous
@@ -75,6 +80,8 @@ type storedJob struct {
 	Offset          int       `json:"offset,omitempty"`
 	Auto            bool      `json:"auto,omitempty"`
 	Priority        bool      `json:"priority,omitempty"`
+	Background      bool      `json:"background,omitempty"`
+	Budgeted        bool      `json:"budgeted,omitempty"`
 	ContribIDs      []int64   `json:"contrib_ids,omitempty"`
 	ContribBacklog  bool      `json:"contrib_backlog,omitempty"`
 	StatusChangedAt time.Time `json:"status_changed_at"`
@@ -87,6 +94,8 @@ func (s *Store) SaveJob(j *Job) error {
 		Offset:          j.Offset,
 		Auto:            j.Auto,
 		Priority:        j.Priority,
+		Background:      j.Background,
+		Budgeted:        j.Budgeted,
 		ContribIDs:      j.ContribIDs,
 		ContribBacklog:  j.ContribBacklog,
 		StatusChangedAt: j.StatusChangedAt,
@@ -120,6 +129,25 @@ func (s *Store) DeleteJobs(ids []int64) error {
 	return err
 }
 
+// LoadCounter reads a daily counter's stamped day and value.
+func (s *Store) LoadCounter(name string) (day string, n int, err error) {
+	err = s.db.QueryRow(`SELECT day, n FROM counters WHERE name = ?`, name).Scan(&day, &n)
+	if err == sql.ErrNoRows {
+		return "", 0, nil
+	}
+	return day, n, err
+}
+
+// SaveCounter upserts a daily counter. A restart must not refill a spent
+// budget, so this is written through on every increment.
+func (s *Store) SaveCounter(name, day string, n int) error {
+	_, err := s.db.Exec(
+		`INSERT INTO counters (name, day, n) VALUES (?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET day = excluded.day, n = excluded.n`,
+		name, day, n)
+	return err
+}
+
 // LoadJobs reads every stored job in id order, reconstructing live Job
 // values. The caller (UseStore) decides where each lands from its
 // stored status.
@@ -147,6 +175,8 @@ func (s *Store) LoadJobs() ([]*Job, error) {
 		st.Offset = rec.Offset
 		st.Auto = rec.Auto
 		st.Priority = rec.Priority
+		st.Background = rec.Background
+		st.Budgeted = rec.Budgeted
 		st.ContribIDs = rec.ContribIDs
 		st.ContribBacklog = rec.ContribBacklog
 		st.StatusChangedAt = rec.StatusChangedAt

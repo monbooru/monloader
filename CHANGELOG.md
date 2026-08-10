@@ -1,5 +1,20 @@
 # Changelog
 
+## [v1.8.0] - 2026-08-10
+### Added
+- Backend for scheduled lookups: monbooru can check up to 100 hashes against the PTR index in one call, scheduled lookups run behind any active lookups, daily budget for scheduled lookups (25 images by default). ([monbooru#65](https://github.com/monbooru/monbooru/issues/65))
+- A batch PTR lookup files one history row with its asked and matched counts.
+
+### Changed
+- The queue orders rows by when each last changed, matching the timestamp it shows.
+
+### Fixed
+- Canceling a lookup, refetch or replace tells monbooru instead of leaving it waiting.
+- A complete PTR index answers lookups right after a restart instead of refusing them.
+- The sites API no longer lists gallery-dl base extractors that name no site.
+
+Thanks to @gary-host-laptop for the suggestion (https://github.com/monbooru/monbooru/issues/65).
+
 ## [v1.7.0] - 2026-07-31
 ### Added
 - Add any of gallery-dl's ~300 sites from Settings, not just the shipped profiles. ([#21](https://github.com/monbooru/monloader/issues/21))

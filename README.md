@@ -32,11 +32,16 @@ monloader is a companion downloader for monbooru. It fetches images from the web
 
 ```mermaid
 flowchart LR
-    web["- Any booru or gallery supported by gallery-dl<br/>- Direct image URL"]
-    ptr["Hydrus<br/>Public Tag Repository"]
-    sender["<b>monsender</b><br/>browser extension"]
-    loader(["<b>monloader</b><br/>downloader"])
-    booru["<b>monbooru</b><br/>Your self-hosted booru"]
+    web["`- Any booru or gallery supported by gallery-dl
+- Direct image URL`"]
+    ptr["`Hydrus
+Public Tag Repository`"]
+    sender["`**monsender**
+browser extension`"]
+    loader(["`**monloader**
+downloader`"])
+    booru["`**monbooru**
+Your self-hosted booru`"]
 
     web -->|browse| sender
     sender -->|send URL| loader
@@ -45,7 +50,8 @@ flowchart LR
 
     booru -.->|lookup by hash| loader
     loader -.->|reverse lookup: md5 + similarity| web
-    ptr <-.->|"sync: sha256 tags + aliases + implications<br/>contribute back"| loader
+    ptr <-.->|"`sync: sha256 tags + aliases + implications
+contribute back`"| loader
 
     classDef hub  fill:#5c6bc0,stroke:#9fa8da,stroke-width:3px,color:#ffffff;
     classDef tool fill:#16161c,stroke:#5c6bc0,stroke-width:1.5px,color:#e2e2e8;

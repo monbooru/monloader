@@ -2,16 +2,31 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/ptr"
+	"github.com/monbooru/monloader/internal/queue"
 )
 
 // maxTagGraphBatch caps a single tag-graph query so a sweep pages its tag list
 // rather than asking for everything at once.
 const maxTagGraphBatch = 500
+
+// maxHashLookupBatch caps a single batch hash lookup. Lower than the tag
+// batch: one hit answers a whole tag list rather than one tag's edges.
+const maxHashLookupBatch = 100
+
+// plural is the "s" a count needs.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
 
 // ptrStatus handles GET /api/v1/ptr/status. It always answers, so monbooru's
 // capability check is one unconditional GET; a run without the PTR built in
@@ -86,6 +101,85 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 		results[t] = resolveTagInfo(t, candidates[t], graph)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+type ptrLookupImage struct {
+	ImageID int64  `json:"image_id"`
+	SHA256  string `json:"sha256"`
+}
+
+type ptrLookupRequest struct {
+	Images    []ptrLookupImage `json:"images"`
+	Gallery   string           `json:"gallery"`
+	Scheduled bool             `json:"scheduled"`
+}
+
+// ptrLookup handles POST /api/v1/ptr/lookup: the tags the index holds for a
+// batch of files, mapped into monbooru form and keyed by sha256. A
+// whole-library sweep costs one call per hundred images here instead of a
+// queue job per image, and the answer is the outcome - no enrich callback to
+// lose. Misses are absent from the results rather than present as empty
+// lists. index is the applied-update cursor at answer time, so the caller can
+// tell "the index has not moved since I last asked" from "it has, ask again".
+// Each image carries its monbooru id so the history row can name what it
+// matched.
+func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
+	if h.ptr == nil || !h.ptr.Enabled() {
+		apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr index is not available")
+		return
+	}
+	if !h.ptr.CaughtUp() {
+		apiError(w, http.StatusConflict, "ptr_syncing", "the ptr index is not fully synced yet")
+		return
+	}
+	var body ptrLookupRequest
+	if err := decodeBody(w, r, &body); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if len(body.Images) == 0 {
+		apiError(w, http.StatusBadRequest, "invalid_request", "images must not be empty")
+		return
+	}
+	if len(body.Images) > maxHashLookupBatch {
+		apiError(w, http.StatusBadRequest, "invalid_request", "too many images in one request")
+		return
+	}
+
+	results := map[string][]string{}
+	var matched []queue.Item
+	for _, img := range body.Images {
+		if r.Context().Err() != nil {
+			// A caller that gave up should not leave the rest of its batch
+			// walking the index behind it.
+			return
+		}
+		if !config.IsHexHash(img.SHA256, 64) {
+			apiError(w, http.StatusBadRequest, "invalid_request", "each sha256 must be 64 hex characters")
+			return
+		}
+		raw, ok, err := h.ptr.TagsForHash(strings.ToLower(img.SHA256))
+		if err != nil {
+			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		if !ok {
+			continue
+		}
+		tags := mapping.MapPTRTags(raw)
+		results[img.SHA256] = tags
+		matched = append(matched, queue.Item{
+			PostID:     fmt.Sprintf("%d tag%s", len(tags), plural(len(tags))),
+			Status:     queue.ItemDone,
+			Outcome:    queue.OutcomeMatched,
+			MonbooruID: img.ImageID,
+		})
+	}
+	h.queue.RecordPTRLookup(body.Gallery, body.Scheduled, len(body.Images), matched)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"index":   h.ptr.Status().Progress.UpdateIndex,
+		"results": results,
+	})
 }
 
 // resolveTagInfo picks the candidate spelling for a monbooru tag whose graph

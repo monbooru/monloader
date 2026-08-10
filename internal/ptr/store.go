@@ -269,6 +269,26 @@ const countsKey = "counts"
 // window, so the page can say how far in time the synced data reaches.
 const coveredKey = "covered"
 
+// readyKey records that the index has finished a full sync at least once. It
+// is what tells a complete index from one whose first build was cut short, a
+// distinction only the index itself can carry across a restart: without it
+// every lookup is refused until the boot-time manifest check answers, which
+// fails the queued work a restart just restored.
+const readyKey = "ready"
+
+// EverReady reports whether the index has completed a full sync. An index
+// built before the mark existed earns it on its first caught-up pass, the
+// same way the blob census and the coverage timestamp backfill.
+func (s *Store) EverReady() (bool, error) {
+	_, ok, err := syncValue(s.db, readyKey)
+	return ok, err
+}
+
+// MarkReady records that the index is complete.
+func (s *Store) MarkReady() error {
+	return upsertSync(s.db, readyKey, "1")
+}
+
 // CoveredThrough returns the persisted coverage timestamp, or 0 when no update
 // carrying one has been applied yet.
 func (s *Store) CoveredThrough() (int64, error) {

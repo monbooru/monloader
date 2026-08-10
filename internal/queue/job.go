@@ -51,9 +51,12 @@ const (
 type Outcome string
 
 const (
-	OutcomeCreated            Outcome = "created"
-	OutcomeDuplicate          Outcome = "duplicate"
-	OutcomeEnriched           Outcome = "enriched"
+	OutcomeCreated   Outcome = "created"
+	OutcomeDuplicate Outcome = "duplicate"
+	OutcomeEnriched  Outcome = "enriched"
+	// OutcomeMatched is a batch hash lookup answering with an image's tags.
+	// Distinct from enriched: nothing was written, the caller applies them.
+	OutcomeMatched            Outcome = "matched"
 	OutcomeReplaced           Outcome = "replaced"
 	OutcomeSkippedArchive     Outcome = "skipped_archive"
 	OutcomeSkippedUnsupported Outcome = "skipped_unsupported"
@@ -101,6 +104,10 @@ type Summary struct {
 	Replaced int `json:"replaced,omitempty"`
 	Skipped  int `json:"skipped"`
 	Failed   int `json:"failed"`
+	// Matched counts the hashes a batch PTR lookup answered with tags. The
+	// batch row sets it directly so the count stays true past the bound on
+	// the items it keeps.
+	Matched int `json:"matched,omitempty"`
 	// Canceled counts items aborted by a job cancel (failed with the canceled
 	// code), kept out of Failed so a deliberate cancel does not read as errors.
 	Canceled int `json:"canceled,omitempty"`
@@ -149,6 +156,10 @@ const (
 	// POST chunks. One send job per monbooru confirm, plus the manual
 	// backlog retry.
 	KindContrib JobKind = "contrib"
+	// KindPTRLookup is a batch PTR hash lookup. It never runs through a
+	// worker - the endpoint answers in process - so the row exists only so
+	// a sweep of a whole library leaves a trace of having been asked.
+	KindPTRLookup JobKind = "ptr_lookup"
 )
 
 // Lookup backends a KindLookup job can query. BackendAll runs every backend
@@ -203,8 +214,13 @@ type jobState struct {
 	Force bool `json:"force,omitempty"`
 	// Priority single-post jobs jump ahead of bulk jobs in the FIFO so a
 	// `?wait=N` request behind a long job still resolves quickly.
-	Priority bool    `json:"-"`
-	Summary  Summary `json:"summary"`
+	Priority bool `json:"-"`
+	// Background and Budgeted classify a non-interactive lookup (see
+	// Options). Off the wire like Priority: they say how the job was
+	// admitted, not what it produced.
+	Background bool    `json:"-"`
+	Budgeted   bool    `json:"-"`
+	Summary    Summary `json:"summary"`
 	// Note carries a job's human-readable result line (the contrib
 	// send's commit summary); empty for other kinds.
 	Note string `json:"note,omitempty"`
@@ -307,6 +323,8 @@ func newJob(id int64, url string, opts Options, now time.Time) *Job {
 			Root:            opts.Root,
 			Auto:            opts.Auto,
 			Priority:        opts.Priority,
+			Background:      opts.Background,
+			Budgeted:        opts.Budgeted,
 			CreatedAt:       now,
 			StatusChangedAt: now,
 		},
@@ -353,6 +371,8 @@ func (j *Job) Subject() string {
 		return "ptr contributions (retry)"
 	case j.Kind == KindContrib:
 		return "ptr contributions"
+	case j.Kind == KindPTRLookup:
+		return "ptr hash lookup"
 	case j.URL != "":
 		return j.URL
 	case j.MD5 != "":
@@ -361,6 +381,60 @@ func (j *Job) Subject() string {
 		return "sha256:" + j.SHA256
 	}
 	return ""
+}
+
+// LookupClass names why a lookup is waiting in the background lane -
+// "scheduled" for monbooru's nightly run, "bulk" for a batch the operator
+// started - or "" for one someone is watching. The queue row shows it so
+// "why is this job behind a download" has a visible answer.
+func (j *Job) LookupClass() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	switch {
+	case j.Budgeted:
+		return "scheduled"
+	case j.Background:
+		return "bulk"
+	}
+	return ""
+}
+
+// lane is the job's rank in the FIFO: a job someone is waiting on, then
+// ordinary work, then the unattended lookups monbooru sends. Both fields are
+// set at enqueue and carried across a retry, so no lock is taken.
+func (j *Job) lane() int {
+	switch {
+	case j.Priority:
+		return 0
+	case j.Background:
+		return 2
+	}
+	return 1
+}
+
+// maxPTRLookupItems bounds the items one batch-lookup row keeps. A sweep of
+// a large library can match more images than anyone will read, and the counts
+// on the summary stay true past the bound.
+const maxPTRLookupItems = 200
+
+// recordPTRLookup folds one batch answer into the row and keeps it settled as
+// a finished success: the endpoint has already answered, so the job is
+// history from the moment it exists.
+func (j *Job) recordPTRLookup(gallery string, asked int, matched []Item, now time.Time) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Gallery = gallery
+	j.Summary.Total += asked
+	j.Summary.Matched += len(matched)
+	if room := maxPTRLookupItems - len(j.Items); room > 0 {
+		j.Items = append(j.Items, matched[:min(room, len(matched))]...)
+	}
+	j.Status = JobSucceeded
+	j.FinishedAt, j.StatusChangedAt = now, now
+	if !j.finalized {
+		j.finalized = true
+		close(j.done)
+	}
 }
 
 // SetGallery records the effective monbooru gallery the processor resolved
@@ -547,6 +621,12 @@ func (j *Job) reset(force bool, now time.Time) error {
 	if !validJobTransition(j.Status, JobQueued) {
 		return fmt.Errorf("cannot retry a %s job", j.Status)
 	}
+	if j.Kind == KindPTRLookup {
+		// The endpoint answered in process, so there is no run to repeat; a
+		// worker would take the row for a download with no URL and destroy the
+		// sweep it recorded.
+		return fmt.Errorf("a batch hash lookup has nothing to re-run")
+	}
 	j.priorItems = priorImports(j.Items)
 	url := j.URL
 	if j.Kind == KindHashImport {
@@ -576,13 +656,17 @@ func (j *Job) reset(force bool, now time.Time) error {
 		// re-downloads and re-pushes them instead of archive-skipping them. A
 		// cancel and a process death both stop between those two steps, so only a
 		// succeeded run may lean on the archive.
-		Force:           force || j.Status != JobSucceeded,
-		MaxItems:        j.MaxItems,
-		PageURL:         j.PageURL,
-		Offset:          j.Offset,
-		Root:            j.Root,
-		Auto:            j.Auto,
-		Priority:        j.Priority,
+		Force:    force || j.Status != JobSucceeded,
+		MaxItems: j.MaxItems,
+		PageURL:  j.PageURL,
+		Offset:   j.Offset,
+		Root:     j.Root,
+		Auto:     j.Auto,
+		Priority: j.Priority,
+		// Carried beside Priority, which they classify: a re-run waits in the
+		// same lane and the row keeps naming why.
+		Background:      j.Background,
+		Budgeted:        j.Budgeted,
 		CreatedAt:       j.CreatedAt,
 		StatusChangedAt: now,
 	}
@@ -675,6 +759,7 @@ func (s Summary) Add(b Summary) Summary {
 		Replaced:  s.Replaced + b.Replaced,
 		Skipped:   s.Skipped + b.Skipped,
 		Failed:    s.Failed + b.Failed,
+		Matched:   s.Matched + b.Matched,
 		Canceled:  s.Canceled + b.Canceled,
 		Total:     s.Total + b.Total,
 	}
@@ -691,6 +776,8 @@ func summarize(items []Item) Summary {
 			s.Duplicate++
 		case OutcomeEnriched:
 			s.Enriched++
+		case OutcomeMatched:
+			s.Matched++
 		case OutcomeReplaced:
 			s.Replaced++
 		case OutcomeSkippedArchive, OutcomeSkippedUnsupported:
