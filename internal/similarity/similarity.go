@@ -92,8 +92,16 @@ func New(cfg *config.Provider, canonical func(string) (string, string, bool), po
 func (c *Client) Missing(service string) (string, bool) {
 	switch service {
 	case "iqdb":
+		// The upload goes through danbooru, whose CSRF gate needs both halves
+		// of the login; name the half that is missing, or the note points at a
+		// field the sites table two sections below already reports as set.
 		site := c.cfg.Current().FindSite("danbooru")
-		if site == nil || site.Username == "" || site.APIKey == "" {
+		switch {
+		case site == nil || (site.Username == "" && site.APIKey == ""):
+			return "danbooru login and api key", true
+		case site.Username == "":
+			return "danbooru username", true
+		case site.APIKey == "":
 			return "danbooru api key", true
 		}
 	case "saucenao":

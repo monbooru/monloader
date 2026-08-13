@@ -277,11 +277,13 @@ func (s *ContribStore) RescindAll() (int, error) {
 	return int(n), nil
 }
 
-// Unsent lists the staged and failed rows, oldest first.
+// Unsent lists the staged and failed rows, oldest first. Rows mid-send are
+// left out on the same rule Counts applies, so the page's list and the unsent
+// number on the status endpoint cannot disagree while a send is in flight.
 func (s *ContribStore) Unsent() ([]ContribItem, error) {
 	rows, err := s.db.Query(
 		`SELECT id, kind, tag, tag2, hash, reason, origin, status, error, created_at
-		 FROM contrib_items ORDER BY id`)
+		 FROM contrib_items WHERE status != 'sending' ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}

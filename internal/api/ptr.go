@@ -90,8 +90,12 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 		candidates[t] = cands
 		all = append(all, cands...)
 	}
-	graph, err := h.ptr.TagGraph(all)
+	graph, err := h.ptr.TagGraph(r.Context(), all)
 	if err != nil {
+		if r.Context().Err() != nil {
+			// The caller gave up mid-walk; there is nobody left to answer.
+			return
+		}
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
@@ -152,6 +156,10 @@ func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			// A caller that gave up should not leave the rest of its batch
 			// walking the index behind it.
+			return
+		}
+		if img.ImageID <= 0 {
+			apiError(w, http.StatusBadRequest, "invalid_request", "each image_id is required")
 			return
 		}
 		if !config.IsHexHash(img.SHA256, 64) {

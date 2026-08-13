@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +22,10 @@ import (
 // queue shows a row, like a metadata refetch.
 func (p *Processor) processLookup(ctx context.Context, job, snap *queue.Job) error {
 	job.SetItems([]queue.Item{p.enrichItem(ctx, snap, "")})
+	if err := p.checkLookupHash(ctx, snap); err != nil {
+		p.failEnrichFetch(ctx, job, snap, err)
+		return nil
+	}
 	switch snap.Backend {
 	case queue.BackendBooru:
 		return p.lookupBooru(ctx, job, snap)
@@ -40,6 +43,28 @@ func (p *Processor) processLookup(ctx context.Context, job, snap *queue.Job) err
 // ptrTrailName is how the trail entries name the local PTR backend; monbooru
 // splits on it to render the PTR's line apart from the online walk.
 const ptrTrailName = "Public Tag Repository"
+
+// checkLookupHash refuses a sha256 that is not the target image's. A PTR
+// enrich is unverified by construction - there is no source page or file to
+// compare - so the pair the caller names is the only thing tying those tags to
+// that image, and a replace rewrites an image's bytes and digest, which makes
+// a cached hash a reachable state rather than a hypothetical. Only a digest
+// monbooru actually reported can contradict the caller: an error or a blank
+// answer leaves the pair trusted, since the enrich that follows would fail on
+// its own.
+func (p *Processor) checkLookupHash(ctx context.Context, snap *queue.Job) error {
+	if snap.SHA256 == "" || snap.ImageID == 0 {
+		return nil
+	}
+	sha, err := p.client.ImageSHA256(ctx, snap.ImageID, snap.Gallery)
+	if err != nil || sha == "" || strings.EqualFold(sha, snap.SHA256) {
+		return nil
+	}
+	return &queue.CodedError{
+		Code: queue.ErrCodeHashMismatch,
+		Msg:  fmt.Sprintf("the sha256 is not image %d's; nothing was applied", snap.ImageID),
+	}
+}
 
 // lookupAll runs every available lookup backend for one image: the local PTR
 // index when enabled, then the booru chain. Both apply to one job item: the
@@ -513,7 +538,7 @@ func (p *Processor) similaritySource(ctx context.Context, service string, thumb 
 		// An extra that clears the floor is a confident hit on a site the
 		// walk cannot fetch tags from - still the image's likely source, so
 		// hand the best one back for the source-only record.
-		sort.SliceStable(extras, func(i, j int) bool { return extras[i].Similarity > extras[j].Similarity })
+		slices.SortStableFunc(extras, func(a, b similarity.Candidate) int { return cmp.Compare(b.Similarity, a.Similarity) })
 		if len(extras) > 0 && extras[0].Similarity >= minSim {
 			return nil, candHit(extras[0])
 		}
@@ -570,7 +595,7 @@ func closestNote(missed []similarity.Candidate) string {
 	if len(missed) == 0 {
 		return ""
 	}
-	sort.SliceStable(missed, func(i, j int) bool { return missed[i].Similarity > missed[j].Similarity })
+	slices.SortStableFunc(missed, func(a, b similarity.Candidate) int { return cmp.Compare(b.Similarity, a.Similarity) })
 	if len(missed) > 3 {
 		missed = missed[:3]
 	}

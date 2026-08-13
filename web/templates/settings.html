@@ -26,7 +26,7 @@
         <div class="field">
           <label for="mb-api-url">api url</label>
           <input id="mb-api-url" type="text" name="api_url" value="{{.Cfg.Monbooru.APIURL}}" placeholder="http://monbooru:8080">
-          <p class="field-hint">internal URL monloader uses to reach monbooru's API.</p>
+          <p class="field-hint">internal URL monloader uses to reach monbooru's API (default {{.Defaults.Monbooru.APIURL}}).</p>
         </div>
         <div class="field">
           <label for="mb-web-url">web url</label>
@@ -87,27 +87,32 @@
         <div class="field">
           <label for="dl-concurrency">concurrency</label>
           <input id="dl-concurrency" type="text" name="concurrency" value="{{.Cfg.Downloader.Concurrency}}">
-          <span class="field-hint">parallel download workers (applies on restart)</span>
+          <span class="field-hint">parallel download workers; applies on restart (default {{.Defaults.Downloader.Concurrency}})</span>
         </div>
         <div class="field">
           <label for="dl-sleep">sleep / request (s)</label>
           <input id="dl-sleep" type="text" name="sleep_request" value="{{.Cfg.GalleryDL.SleepRequest}}">
-          <span class="field-hint">delay between requests</span>
+          <span class="field-hint">delay between requests (default {{.Defaults.GalleryDL.SleepRequest}})</span>
         </div>
         <div class="field">
           <label for="dl-max-items">max items / job</label>
           <input id="dl-max-items" type="text" name="max_items_per_job" value="{{.Cfg.Downloader.MaxItemsPerJob}}">
-          <span class="field-hint">cap on posts per URL</span>
+          <span class="field-hint">cap on posts per URL (default {{.Defaults.Downloader.MaxItemsPerJob}})</span>
         </div>
         <div class="field">
           <label for="dl-folder">default folder</label>
           <input id="dl-folder" type="text" name="default_folder" value="{{.Cfg.Downloader.DefaultFolder}}">
-          <span class="field-hint">monbooru subfolder for pushes</span>
+          <span class="field-hint">monbooru subfolder for pushes (default {{.Defaults.Downloader.DefaultFolder}})</span>
         </div>
         <div class="field">
-          <label for="dl-retention">clear history after (days)</label>
+          <label for="dl-success-retention">clear succeeded after (days)</label>
+          <input id="dl-success-retention" type="text" name="success_retention_days" value="{{.Cfg.Downloader.SuccessRetentionDays}}">
+          <span class="field-hint">drop downloads with nothing left to do; 0 = off (default {{.Defaults.Downloader.SuccessRetentionDays}})</span>
+        </div>
+        <div class="field">
+          <label for="dl-retention">clear all history after (days)</label>
           <input id="dl-retention" type="text" name="history_retention_days" value="{{.Cfg.Downloader.HistoryRetentionDays}}">
-          <span class="field-hint">drop finished downloads from the queue; 0 keeps them</span>
+          <span class="field-hint">drop the rest, failures included; 0 keeps them (default {{.Defaults.Downloader.HistoryRetentionDays}})</span>
         </div>
       </div>
       <div class="section-actions">
@@ -153,13 +158,13 @@
         <div class="field">
           <label for="lk-min-similarity">min similarity %</label>
           <input id="lk-min-similarity" type="number" name="min_similarity" min="1" max="100" step="1" value="{{.LookupPanel.MinSimilarity}}">
-          <span class="field-hint">an iqdb or saucenao match scoring below this percentage is ignored</span>
+          <span class="field-hint">an iqdb or saucenao match scoring below this percentage is ignored (default {{.Defaults.Lookup.MinSimilarity}})</span>
         </div>
         <div class="field">
           <label for="lk-scheduled-budget">daily budget for scheduled lookups
             <span class="lookup-budget-left{{if not .LookupPanel.ScheduledLeft}} spent{{end}}">({{.LookupPanel.ScheduledLeft}} left today)</span></label>
           <input id="lk-scheduled-budget" type="number" name="scheduled_daily_budget" min="0" step="1" value="{{.LookupPanel.ScheduledBudget}}">
-          <span class="field-hint">images per day monbooru's nightly run may cover, 0 = refuse them all; resets {{humanDue .LookupPanel.ScheduledResets}}.</span>
+          <span class="field-hint">images per day monbooru's nightly run may cover, 0 = refuse them all (default {{.Defaults.Lookup.ScheduledDailyBudget}}); resets {{humanDue .LookupPanel.ScheduledResets}}.</span>
         </div>
       </div>
       {{if .LookupPanel.SaucenaoLimited}}<span class="field-hint">saucenao is rate limited, resets {{humanDue .LookupPanel.SaucenaoLimited}}</span>{{end}}
@@ -273,12 +278,12 @@
         <div class="field">
           <label for="ptr-data-path">data path</label>
           <input id="ptr-data-path" type="text" name="data_path" value="{{.Cfg.PTR.DataPath}}">
-          <span class="field-hint">dedicated index volume</span>
+          <span class="field-hint">dedicated index volume (default {{.Defaults.PTR.DataPath}})</span>
         </div>
         <div class="field">
           <label for="ptr-address">address</label>
           <input id="ptr-address" type="text" name="address" value="{{.Cfg.PTR.Address}}">
-          <span class="field-hint">repository to sync from</span>
+          <span class="field-hint">repository to sync from (default {{.Defaults.PTR.Address}})</span>
         </div>
         <div class="field">
           <label for="ptr-access-key">access key</label>
@@ -288,12 +293,12 @@
         <div class="field">
           <label for="ptr-fetch-sleep">fetch sleep (s)</label>
           <input id="ptr-fetch-sleep" type="text" name="fetch_sleep" value="{{.Cfg.PTR.FetchSleep}}">
-          <span class="field-hint">delay between update downloads</span>
+          <span class="field-hint">delay between update downloads (default {{.Defaults.PTR.FetchSleep}})</span>
         </div>
         <div class="field">
           <label for="ptr-min-free">min free GB</label>
           <input id="ptr-min-free" type="text" name="min_free_gb" value="{{.Cfg.PTR.MinFreeGB}}">
-          <span class="field-hint">refuse the initial sync below this free space</span>
+          <span class="field-hint">refuse the initial sync below this free space (default {{.Defaults.PTR.MinFreeGB}})</span>
         </div>
         <div class="field">
           <label>danger</label>
@@ -321,14 +326,22 @@
   <section class="settings-section" id="advanced">
     <h2>advanced</h2>
     {{if eq .FlashSection "advanced"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
-    <form method="POST" action="/settings/raw">
-      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <label class="hint" for="raw-config">raw gallery-dl config (JSON):</label>
-      <textarea id="raw-config" name="raw_config">{{.Cfg.GalleryDL.RawConfig}}</textarea>
-      <div class="section-actions">
-        <button type="submit">save raw config</button>
+    <div class="settings-cols">
+      <div class="settings-sub">
+        <h4>gallery-dl version</h4>
+        {{template "gallerydl_panel" .GDLPanel}}
       </div>
-    </form>
+      <div class="settings-sub gdl-raw">
+        <h4>raw gallery-dl config (JSON)</h4>
+        <form method="POST" action="/settings/raw">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <textarea id="raw-config" name="raw_config">{{.Cfg.GalleryDL.RawConfig}}</textarea>
+          <div class="section-actions">
+            <button type="submit">save raw config</button>
+          </div>
+        </form>
+      </div>
+    </div>
   </section>
 
   <section class="settings-section" id="stats">

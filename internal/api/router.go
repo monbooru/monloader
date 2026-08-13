@@ -20,7 +20,7 @@ import (
 // means the PTR is not built into the run (status reports disabled).
 type PTRService interface {
 	Status() ptr.Status
-	TagGraph(names []string) (map[string]ptr.TagInfo, error)
+	TagGraph(ctx context.Context, names []string) (map[string]ptr.TagInfo, error)
 	TagsForHash(hashHex string) (tags []string, ok bool, err error)
 	Enabled() bool
 	HasPersonalKey() bool
@@ -53,38 +53,35 @@ type PairHandlers struct {
 
 // Handler serves monloader's own /api/v1/ surface.
 type Handler struct {
-	queue      *queue.Queue
-	runner     gdl.Runner
-	mapper     *mapping.Mapper
-	cfg        *config.Provider
-	extractors []gdl.Extractor
-	supported  map[string]gdl.SupportedSite
-	version    string
-	gdlVersion string
-	siteState  *sitestate.Tracker
-	ptr        PTRService
-	pair       PairHandlers
+	queue     *queue.Queue
+	runner    gdl.Runner
+	mapper    *mapping.Mapper
+	cfg       *config.Provider
+	catalog   *gdl.Catalog
+	version   string
+	siteState *sitestate.Tracker
+	ptr       PTRService
+	pair      PairHandlers
 	// saveConfig persists a config mutation through the owner's save
 	// path (the web layer's updateConfig); nil in tests that never
 	// persist.
 	saveConfig func(func(*config.Config) error) error
 }
 
-// New builds the API handler. extractors is the cached --list-extractors
-// result; version and gdlVersion feed /health; siteState is the shared "last
-// reached" tracker the test probe records into; ptr backs the PTR endpoints
-// (nil when the PTR is not built into the run); pair carries the web layer's
-// pairing handlers.
-func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, extractors []gdl.Extractor, supported map[string]gdl.SupportedSite, version, gdlVersion string, siteState *sitestate.Tracker, ptrSvc PTRService, pair PairHandlers, saveConfig func(func(*config.Config) error) error) *Handler {
+// New builds the API handler. catalog is the shared gallery-dl inventory
+// (version, extractors, supportedsites rows), refreshed by the web layer when
+// a managed install changes the binary; version feeds /health; siteState is
+// the shared "last reached" tracker the test probe records into; ptr backs
+// the PTR endpoints (nil when the PTR is not built into the run); pair
+// carries the web layer's pairing handlers.
+func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, catalog *gdl.Catalog, version string, siteState *sitestate.Tracker, ptrSvc PTRService, pair PairHandlers, saveConfig func(func(*config.Config) error) error) *Handler {
 	return &Handler{
 		queue:      q,
 		runner:     runner,
 		mapper:     mapper,
 		cfg:        cfg,
-		extractors: extractors,
-		supported:  supported,
+		catalog:    catalog,
 		version:    version,
-		gdlVersion: gdlVersion,
 		siteState:  siteState,
 		ptr:        ptrSvc,
 		pair:       pair,

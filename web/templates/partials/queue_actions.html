@@ -1,4 +1,11 @@
-{{define "queue_actions"}}<span id="queue-actions" class="queue-actions" hx-get="/internal/queue-actions" hx-trigger="every 2s [!confirmOpen()]" hx-target="#queue-actions" hx-swap="outerHTML">
+{{define "queue_actions"}}{{/* The bulk buttons sit outside #queue-rows, so
+they inherit its page number from here instead: a clear answering with page 1
+would swap its rows in under a pager still reading page N. */}}<span id="queue-actions" class="queue-actions" hx-get="/internal/queue-actions" hx-trigger="every 2s [!confirmOpen()]" hx-target="#queue-actions" hx-swap="outerHTML" hx-vals='js:{page: queuePageNum()}'>
+  {{if .HasSucceeded}}
+  <button type="button" hx-post="/queue/clear-succeeded" hx-target="#queue-rows" hx-swap="innerHTML"
+          hx-confirm="clear every download that finished with nothing left to do?"
+          data-confirm-ok="clear succeeded" data-confirm-danger>clear succeeded</button>
+  {{end}}
   {{if .HasFinished}}
   <button type="button" hx-post="/queue/clear" hx-target="#queue-rows" hx-swap="innerHTML"
           hx-confirm="clear recent history?"

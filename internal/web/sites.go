@@ -42,12 +42,13 @@ func (s *Server) searchSites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	supported := s.catalog.Supported()
 	matches := map[string]bool{}
-	for _, ex := range s.extractors {
+	for _, ex := range s.catalog.Extractors() {
 		if ex.Category == "" {
 			continue
 		}
-		if matchesQuery(q, ex.Category, ex.Subcategory, s.supported[ex.Category].Name) {
+		if matchesQuery(q, ex.Category, ex.Subcategory, supported[ex.Category].Name) {
 			matches[ex.Category] = true
 		}
 	}
@@ -56,11 +57,11 @@ func (s *Server) searchSites(w http.ResponseWriter, r *http.Request) {
 	// supported rows keep the search working when the boot-time extractor
 	// listing failed.
 	for _, cat := range s.mapper.CuratedCategories() {
-		if matchesQuery(q, cat, s.supported[cat].Name) {
+		if matchesQuery(q, cat, supported[cat].Name) {
 			matches[cat] = true
 		}
 	}
-	for cat, sup := range s.supported {
+	for cat, sup := range supported {
 		if matchesQuery(q, cat, sup.Name) {
 			matches[cat] = true
 		}
@@ -86,7 +87,7 @@ func (s *Server) searchSites(w http.ResponseWriter, r *http.Request) {
 			family = p.Family
 		}
 		rows = append(rows, siteSearchRow{
-			Category: cat, Name: s.supported[cat].Name, Family: family, Login: label,
+			Category: cat, Name: supported[cat].Name, Family: family, Login: label,
 			Configured: configured[cat],
 		})
 	}
@@ -112,7 +113,7 @@ func (s *Server) effectiveAuth(category string) string {
 	if p, ok := s.mapper.Lookup(category); ok {
 		return p.Auth
 	}
-	return mapping.SeedAuthKind(s.supported[category].Auth)
+	return mapping.SeedAuthKind(s.catalog.Supported()[category].Auth)
 }
 
 // siteDialog renders the whole edit dialog (GET /settings/sites/{name}/dialog):
@@ -380,8 +381,16 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 			c.Sites = append(c.Sites, config.Site{Name: name})
 			site = &c.Sites[len(c.Sites)-1]
 		}
-		if v := strings.TrimSpace(r.FormValue("username")); v != "" {
-			site.Username = v
+		// The dialog renders username and user id as their stored values, so an
+		// emptied one reads as "remove this" and is honoured like the gallery
+		// and label beside them; a field the form did not post keeps its value.
+		// The two password-type fields render empty with the placeholder that
+		// states the keep-on-blank rule, so blank there means "leave it".
+		if r.Form.Has("username") {
+			site.Username = strings.TrimSpace(r.FormValue("username"))
+		}
+		if r.Form.Has("user_id") {
+			site.UserID = strings.TrimSpace(r.FormValue("user_id"))
 		}
 		if v := strings.TrimSpace(r.FormValue("password")); v != "" {
 			site.Password = v
@@ -389,20 +398,25 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		if v := strings.TrimSpace(r.FormValue("api_key")); v != "" {
 			site.APIKey = v
 		}
-		if v := strings.TrimSpace(r.FormValue("user_id")); v != "" {
-			site.UserID = v
+		if r.Form.Has("gallery") {
+			site.Gallery = strings.TrimSpace(r.FormValue("gallery"))
 		}
-		site.Gallery = strings.TrimSpace(r.FormValue("gallery"))
-		site.Label = strings.TrimSpace(r.FormValue("label"))
-		site.Cookies = strings.TrimSpace(r.FormValue("cookies"))
+		if r.Form.Has("label") {
+			site.Label = strings.TrimSpace(r.FormValue("label"))
+		}
+		if r.Form.Has("cookies") {
+			site.Cookies = strings.TrimSpace(r.FormValue("cookies"))
+		}
 		if pastedCookies != "" {
 			site.Cookies = pastedCookies
 		}
-		opts := strings.TrimSpace(r.FormValue("options"))
-		if err := config.ValidateSiteOptions(opts); err != nil {
-			return err
+		if r.Form.Has("options") {
+			opts := strings.TrimSpace(r.FormValue("options"))
+			if err := config.ValidateSiteOptions(opts); err != nil {
+				return err
+			}
+			site.Options = opts
 		}
-		site.Options = opts
 		return nil
 	})
 	if err != nil {

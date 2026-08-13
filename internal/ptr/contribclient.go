@@ -86,29 +86,29 @@ func (c *Client) AccountTypes(ctx context.Context) ([]AccountType, error) {
 	return ParseAccountTypes(raw)
 }
 
+// keyRequest GETs one of the account handshake's key endpoints, which each
+// take a single query parameter and answer a single hex field.
+func (c *Client) keyRequest(ctx context.Context, path, param, value, field string) (string, error) {
+	raw, err := c.doContrib(ctx, http.MethodGet, path, url.Values{param: {value}}, nil)
+	if err != nil {
+		return "", err
+	}
+	return ParseKeyResponse(raw, field)
+}
+
 // RegistrationKey requests a single-use registration key for the given
 // account type. The velocity refusal comes back as a *ServerError with
 // status 400: unavailable-now, not malformed - the request is built
 // from a type the server just served.
 func (c *Client) RegistrationKey(ctx context.Context, accountTypeKey string) (string, error) {
-	q := url.Values{"account_type_key": {accountTypeKey}}
-	raw, err := c.doContrib(ctx, http.MethodGet, "/auto_create_registration_key", q, nil)
-	if err != nil {
-		return "", err
-	}
-	return ParseKeyResponse(raw, "registration_key")
+	return c.keyRequest(ctx, "/auto_create_registration_key", "account_type_key", accountTypeKey, "registration_key")
 }
 
 // RedeemAccessKey trades a registration key for the account's access
 // key. Redemption is single-use server-side; the caller must persist
 // the returned key immediately.
 func (c *Client) RedeemAccessKey(ctx context.Context, registrationKey string) (string, error) {
-	q := url.Values{"registration_key": {registrationKey}}
-	raw, err := c.doContrib(ctx, http.MethodGet, "/access_key", q, nil)
-	if err != nil {
-		return "", err
-	}
-	return ParseKeyResponse(raw, "access_key")
+	return c.keyRequest(ctx, "/access_key", "registration_key", registrationKey, "access_key")
 }
 
 // Account fetches the current account's state: type, permissions,

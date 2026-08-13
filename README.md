@@ -21,7 +21,8 @@ It also runs in reverse: for a file monbooru already holds, monloader looks up i
 - **Pools and manga.** A booru pool's pages import as an ordered collection; a manga or comic gallery bundles into a single `.cbz` for monbooru's reader.
 - **Metadata mapped to monbooru.** Tags by category (artist / character / copyright / meta / ...), rating, and source, normalized across booru families so tags land the way monbooru expects them.
 - **Any gallery-dl site.** 50+ shipped profiles for the booru families and manga/comic sites, and everything else gallery-dl supports works through a generic fallback.
-- **Queue management.** Each download shows whether it was added, was already in your library, got skipped, or failed so you can see at a glance what happened to every item. Re-submitting a search skips posts already fetched, while re-submitting a single post refreshes it, updating the image monbooru already holds to the source's current tags. Pause and resume downloads globally from the topbar (or the monsender popup) to queue up a batch before it starts.
+- **Update gallery-dl.** When a site fix lands in a gallery-dl release, install it (or roll back) without waiting for a monloader image.
+- **Queue management.** Each download shows whether it was added, was already in your library, got skipped, or failed so you can see at a glance what happened to every item. 
 - **Find tags by file hash or image similarity.** Paste an image's md5 to import the matching booru post, or have monbooru fetch tags for a file it already holds; monloader walks the sources you pick in order: exact md5 searches, plus iqdb and SauceNAO similarity lookups that find re-encoded copies from the image's thumbnail. An optional local copy of the Hydrus Public Tag Repository adds offline sha256 lookups.
 
 ---

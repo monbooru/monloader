@@ -109,11 +109,13 @@ func (s *Server) monbooruBlocked() string {
 // hashImportTarget recognizes an md5 pasted into the add bar - bare or with an
 // "md5:" prefix - returning the lower-cased hash. The prefix lets an operator
 // force the hash reading of an ambiguous string, but a bare 32-hex string is
-// treated as a hash too, since nothing else looks like one.
+// treated as a hash too, since nothing else looks like one. Case is forgiven
+// on both halves: a hash pasted from a source that renders it upper-case
+// carries its prefix the same way.
 func hashImportTarget(s string) (string, bool) {
-	s = strings.TrimPrefix(s, "md5:")
+	s = strings.TrimPrefix(strings.ToLower(s), "md5:")
 	if config.IsHexHash(s, 32) {
-		return strings.ToLower(s), true
+		return s, true
 	}
 	return "", false
 }
@@ -121,7 +123,7 @@ func hashImportTarget(s string) (string, bool) {
 // looksLikeSHA256 reports whether s is a bare 64-hex string, so the add bar can
 // explain that a sha256 cannot be imported rather than failing it as a bad URL.
 func looksLikeSHA256(s string) bool {
-	return config.IsHexHash(strings.TrimPrefix(s, "sha256:"), 64)
+	return config.IsHexHash(strings.TrimPrefix(strings.ToLower(s), "sha256:"), 64)
 }
 
 // sha256AddHint explains what a sha256 does at the add bar: it is not an import
@@ -189,13 +191,18 @@ func (s *Server) queueScreen(w http.ResponseWriter, r *http.Request) {
 // queueActionsView gates the add bar's bulk buttons: each shows only while the
 // queue holds what it acts on, so the url field takes the rest of the row.
 type queueActionsView struct {
-	HasPending  bool
-	HasFinished bool
+	HasPending   bool
+	HasFinished  bool
+	HasSucceeded bool
 }
 
 func (s *Server) queueActions() queueActionsView {
 	counts := s.queueCounts()
-	return queueActionsView{HasPending: counts.Queued > 0, HasFinished: counts.Finished > 0}
+	return queueActionsView{
+		HasPending:   counts.Queued > 0,
+		HasFinished:  counts.Finished > 0,
+		HasSucceeded: s.queue.ClearableSucceeded() > 0,
+	}
 }
 
 // queueCounts tallies the tracked jobs by state. The items are left behind:
@@ -256,13 +263,64 @@ type jobGroup struct {
 	Root    int64
 	Lead    *queue.Job
 	Summary queue.Summary
+	// Worst is the window the row reports on: live work leads, otherwise the
+	// window in the most demanding terminal state. The row's status and its
+	// retry are the operator's only cue that a window needs re-running, so a
+	// continuation that came back clean must not bury an earlier one. Lead
+	// still owns the row's identity and the continue action, which belongs to
+	// the latest window.
+	Worst *queue.Job
+	// Continue is the window a continue would run from: the latest one that
+	// came back capped. Not the lead - a cancel restamps its window as the
+	// series' most recent activity, which would otherwise take the action away
+	// from a search that still has more to fetch. Any window is a safe target,
+	// since the follow-up starts past the furthest the whole series reached.
+	Continue *queue.Job
 	// IDs are the jobs behind the row, oldest window first; Items is filled
 	// from them for the rows that actually render.
 	IDs   []int64
 	Items []queue.Item
+	// Count is how many items the row's windows hold, summed from the
+	// snapshots so a finished row - whose items load lazily on expand - needs
+	// none of them to size itself.
+	Count int
 	// NextWindow is how many posts the continue action would fetch, filled by
 	// fillQueue since it depends on the current config.
 	NextWindow int
+}
+
+// rowStatusRank orders the states a collapsed row can report, most demanding
+// first: a live window leads (the row then offers cancel), then the terminal
+// states by how much each still asks of the operator.
+func rowStatusRank(s queue.JobStatus) int {
+	switch s {
+	case queue.JobRunning:
+		return 0
+	case queue.JobQueued:
+		return 1
+	case queue.JobFailed:
+		return 2
+	case queue.JobPartial:
+		return 3
+	case queue.JobInterrupted:
+		return 4
+	case queue.JobCanceled:
+		return 5
+	}
+	return 6
+}
+
+// continuable reports whether a window carries a next one to fetch: its resolve
+// hit the cap, and the run that hit it actually finished.
+func continuable(j *queue.Job) bool {
+	return j.Capped && j.Status != queue.JobCanceled && j.Status != queue.JobFailed
+}
+
+// Live reports whether the row still has a window queued or running, which is
+// what decides between the cancel action and the finished ones, and between
+// rendering the items inline and lazy-loading them on expand.
+func (g jobGroup) Live() bool {
+	return g.Worst.Status == queue.JobQueued || g.Worst.Status == queue.JobRunning
 }
 
 // Windows is how many jobs the row collapses, so the remove confirm can say
@@ -272,15 +330,7 @@ func (g jobGroup) Windows() int { return len(g.IDs) }
 // ArchiveSkips counts the items gallery-dl passed over because its archive
 // already held them - the only ones a force download can fetch again. A file
 // monbooru cannot ingest is skipped too, but re-downloading it changes nothing.
-func (g jobGroup) ArchiveSkips() int {
-	n := 0
-	for _, it := range g.Items {
-		if it.Outcome == queue.OutcomeSkippedArchive {
-			n++
-		}
-	}
-	return n
-}
+func (g jobGroup) ArchiveSkips() int { return g.Summary.Archived }
 
 // Phase labels a group's progress next to the row's item count: "downloading"
 // while any item is still waiting to be fetched, "pushing" once the files are
@@ -289,7 +339,7 @@ func (g jobGroup) Phase() string {
 	if g.Lead == nil {
 		return ""
 	}
-	if g.Lead.Status != queue.JobRunning && g.Lead.Status != queue.JobQueued {
+	if !g.Live() {
 		return "finished"
 	}
 	for _, it := range g.Items {
@@ -323,16 +373,29 @@ func groupJobs(jobs []*queue.Job) []jobGroup {
 			g.IDs = append([]int64{j.ID}, g.IDs...)
 			g.Items = slices.Concat(j.Items, g.Items)
 			g.Summary = g.Summary.Add(j.Summary)
+			g.Count += j.ItemCount()
+			if rowStatusRank(j.Status) < rowStatusRank(g.Worst.Status) {
+				g.Worst = j
+			}
+			if continuable(j) && (g.Continue == nil || j.ID > g.Continue.ID) {
+				g.Continue = j
+			}
 			continue
 		}
 		at[root] = len(groups)
-		groups = append(groups, jobGroup{
+		g := jobGroup{
 			Root:    root,
 			Lead:    j,
+			Worst:   j,
 			Summary: j.Summary,
 			IDs:     []int64{j.ID},
 			Items:   j.Items,
-		})
+			Count:   j.ItemCount(),
+		}
+		if continuable(j) {
+			g.Continue = j
+		}
+		groups = append(groups, g)
 	}
 	return groups
 }
@@ -358,8 +421,16 @@ func (s *Server) fillQueue(r *http.Request, data map[string]any) {
 	shown := groups[lo:min(lo+pageSize, len(groups))]
 	configured := s.cfg.Current().Downloader.MaxItemsPerJob
 	for i := range shown {
-		shown[i].NextWindow = nextWindow(shown[i].Lead.Cap, configured)
-		s.fillItems(&shown[i])
+		if c := shown[i].Continue; c != nil {
+			shown[i].NextWindow = nextWindow(c.Cap, configured)
+		}
+		// Only a live row renders its items inline; a finished one loads them
+		// on expand, and reading twenty windows' item slices out from under the
+		// queue lock twice a second to show two numbers is what the item-less
+		// list exists to avoid.
+		if shown[i].Live() {
+			s.fillItems(&shown[i])
+		}
 	}
 	data["Groups"] = shown
 	data["Page"] = page
@@ -490,6 +561,13 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 // clearQueue drops the finished-job history; running and pending jobs stay.
 func (s *Server) clearQueue(w http.ResponseWriter, r *http.Request) {
 	s.queue.Clear()
+	s.queueRows(w, r)
+}
+
+// clearSucceededQueue drops only the rows with nothing left to act on, the
+// manual half of the success-retention window.
+func (s *Server) clearSucceededQueue(w http.ResponseWriter, r *http.Request) {
+	s.queue.ClearSucceeded()
 	s.queueRows(w, r)
 }
 
@@ -686,15 +764,11 @@ func setFlash(data map[string]any, kind, section, msg string) {
 func (s *Server) settingsData(r *http.Request) map[string]any {
 	data := s.base(r, "settings", "Settings - "+s.titleName())
 	data["Cfg"] = s.cfg.Current()
+	// The field hints quote the built-in defaults, read from the same place a
+	// first run writes them so the two cannot drift.
+	data["Defaults"] = config.Default()
 
-	if galleries, ok := s.galleries(r); ok {
-		data["Galleries"] = galleries
-		gallery := s.cfg.Current().Monbooru.DefaultGallery
-		data["GalleryMissing"] = defaultGalleryMissing(gallery, galleries)
-		if warn := defaultGalleryWarning(gallery, galleries); warn != "" {
-			data["GalleryWarn"] = warn
-		}
-	}
+	s.fillGalleryFields(r, data)
 
 	csrf := s.csrfToken(sessionFromContext(r.Context()))
 	boorus, manga, other := s.visibleSites()
@@ -702,6 +776,7 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 	data["MangaSites"] = s.siteRows(manga, csrf)
 	data["OtherSites"] = s.siteRows(other, csrf)
 	data["LookupPanel"] = s.lookupPanel(csrf)
+	data["GDLPanel"] = s.gdlPanel(r.Context(), csrf)
 	ptrStatus := s.ptr.Status()
 	data["PTRDiskBytes"] = ptrStatus.DiskBytes
 	data["PTREnabled"] = ptrStatus.Enabled
@@ -722,6 +797,24 @@ func (s *Server) galleries(r *http.Request) ([]monbooru.Gallery, bool) {
 	defer cancel()
 	galleries, err := s.client.ListGalleries(ctx)
 	return galleries, err == nil
+}
+
+// fillGalleryFields adds monbooru's gallery list and the state of the
+// configured default to a render. The "missing default gallery" rule is one the
+// operator meets in two places - the settings field and the post-pairing
+// out-of-band refresh - so it is stated once. An unavailable list adds nothing
+// and the field falls back to its own empty state.
+func (s *Server) fillGalleryFields(r *http.Request, data map[string]any) {
+	galleries, ok := s.galleries(r)
+	if !ok {
+		return
+	}
+	gallery := s.cfg.Current().Monbooru.DefaultGallery
+	data["Galleries"] = galleries
+	data["GalleryMissing"] = defaultGalleryMissing(gallery, galleries)
+	if warn := defaultGalleryWarning(gallery, galleries); warn != "" {
+		data["GalleryWarn"] = warn
+	}
 }
 
 // defaultGalleryWarning flags a default gallery pushes will not reach: unset
@@ -755,14 +848,7 @@ func (s *Server) renderDefaultGalleryOOB(w http.ResponseWriter, r *http.Request)
 		"Paired":         s.hasPairedToken("monbooru"),
 		"DefaultGallery": s.cfg.Current().Monbooru.DefaultGallery,
 	}
-	if galleries, ok := s.galleries(r); ok {
-		data["Galleries"] = galleries
-		gallery := s.cfg.Current().Monbooru.DefaultGallery
-		data["GalleryMissing"] = defaultGalleryMissing(gallery, galleries)
-		if warn := defaultGalleryWarning(gallery, galleries); warn != "" {
-			data["GalleryWarn"] = warn
-		}
-	}
+	s.fillGalleryFields(r, data)
 	s.render(w, "monbooru_gallery", data)
 }
 
@@ -818,8 +904,8 @@ func (s *Server) gatherStats() statsData {
 	runtime.ReadMemStats(&ms)
 	st := statsData{
 		Mem:        memStats{RSS: readRSS(), Sys: int64(ms.Sys), HeapAlloc: int64(ms.HeapAlloc), Goroutines: runtime.NumGoroutine()},
-		GDLVersion: s.gdlVersion,
-		Extractors: len(s.extractors),
+		GDLVersion: s.catalog.Version(),
+		Extractors: len(s.catalog.Extractors()),
 		Queue:      s.queueCounts(),
 	}
 	// The running worker count, not the saved setting: concurrency takes
@@ -871,7 +957,7 @@ func sectionForPath(path string) string {
 		return "ptr"
 	case strings.HasPrefix(path, "/settings/sites"), strings.HasPrefix(path, "/settings/host-labels"):
 		return "sites"
-	case strings.HasPrefix(path, "/settings/raw"):
+	case strings.HasPrefix(path, "/settings/gallerydl"), strings.HasPrefix(path, "/settings/raw"):
 		return "advanced"
 	}
 	return ""
@@ -953,7 +1039,8 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 	maxItems, setMaxItems := num("max_items_per_job", "max items / job", 1)
 	// Zero is meaningful here (keep history until the ring evicts it), so
 	// unlike the caps above it is accepted rather than treated as unset.
-	retention, setRetention := num("history_retention_days", "clear history after (days)", 0)
+	retention, setRetention := num("history_retention_days", "clear all history after (days)", 0)
+	successRetention, setSuccessRetention := num("success_retention_days", "clear succeeded after (days)", 0)
 	// monbooru refuses an absolute folder or one carrying a .. segment, so such
 	// a value reports "saved" and then fails every push with no pointer back to
 	// the field; refuse it here instead.
@@ -974,6 +1061,20 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 			bad = append(bad, "sleep / request must be a number of 0 or more")
 		}
 	}
+	// The two sweeps run independently, so a succeeded window past the history
+	// one could never take effect - the wider sweep drops the row first - and
+	// the operator would be left reading a number that does nothing.
+	cur := s.cfg.Current().Downloader
+	keep := func(set bool, posted, stored int) int {
+		if set {
+			return posted
+		}
+		return stored
+	}
+	if history := keep(setRetention, retention, cur.HistoryRetentionDays); history > 0 &&
+		keep(setSuccessRetention, successRetention, cur.SuccessRetentionDays) > history {
+		bad = append(bad, "clear succeeded after must not be longer than clear all history after")
+	}
 	if len(bad) > 0 {
 		s.redirectFlash(w, r, "err", strings.Join(bad, "; ")+" - nothing was saved")
 		return
@@ -991,6 +1092,9 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 		if setRetention {
 			c.Downloader.HistoryRetentionDays = retention
 		}
+		if setSuccessRetention {
+			c.Downloader.SuccessRetentionDays = successRetention
+		}
 		if setFolder {
 			c.Downloader.DefaultFolder = folder
 		}
@@ -1002,6 +1106,7 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 	}
 	s.rewriteGDLConfig()
 	s.queue.SetRetention(s.cfg.Current().Downloader.HistoryRetention())
+	s.queue.SetSuccessRetention(s.cfg.Current().Downloader.SuccessRetention())
 	s.redirectFlash(w, r, "ok", "download settings saved")
 }
 
@@ -1061,7 +1166,7 @@ func (s *Server) resetSite(w http.ResponseWriter, r *http.Request) {
 // state cell.
 func (s *Server) testSite(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	probeURL := s.mapper.ExampleURL(s.extractors, name)
+	probeURL := s.mapper.ExampleURL(s.catalog.Extractors(), name)
 	if probeURL == "" {
 		siteState(w, "err", "no example URL", "", time.Time{})
 		return

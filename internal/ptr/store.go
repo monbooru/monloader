@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS sync (
 );
 CREATE INDEX IF NOT EXISTS tags_by_name ON tags(tag);
 CREATE INDEX IF NOT EXISTS siblings_by_good ON siblings(good_tag_id);
+CREATE INDEX IF NOT EXISTS parents_by_parent ON parents(parent_tag_id);
 `
 
 // Store is the local PTR index over SQLite. The replay gets its own handle:
@@ -246,16 +247,20 @@ func (s *Store) Close() error {
 	return err
 }
 
-// Cursor returns the highest fully processed update index, and whether any has
-// been processed yet.
-func (s *Store) Cursor() (uint64, bool, error) {
-	v, ok, err := syncValue(s.db, cursorKey)
+// syncUint reads one sync KV row as an unsigned count, reporting whether it has
+// been recorded at all.
+func (s *Store) syncUint(key string) (uint64, bool, error) {
+	v, ok, err := syncValue(s.db, key)
 	if err != nil || !ok {
 		return 0, false, err
 	}
 	n, err := strconv.ParseUint(v, 10, 64)
 	return n, true, err
 }
+
+// Cursor returns the highest fully processed update index, and whether any has
+// been processed yet.
+func (s *Store) Cursor() (uint64, bool, error) { return s.syncUint(cursorKey) }
 
 // cursorKey persists the highest fully processed update index.
 const cursorKey = "cursor"
@@ -316,14 +321,7 @@ const blobsKey = "blobs"
 // BlobsApplied returns the persisted applied-blob census, and whether it has
 // been recorded; an index synced before it existed reports false until the
 // engine backfills it.
-func (s *Store) BlobsApplied() (uint64, bool, error) {
-	v, ok, err := syncValue(s.db, blobsKey)
-	if err != nil || !ok {
-		return 0, false, err
-	}
-	n, err := strconv.ParseUint(v, 10, 64)
-	return n, true, err
-}
+func (s *Store) BlobsApplied() (uint64, bool, error) { return s.syncUint(blobsKey) }
 
 // SeedBlobsApplied persists the applied-blob census outside a replay - the
 // backfill for an index synced before the census was recorded.

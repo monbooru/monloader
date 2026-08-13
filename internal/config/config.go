@@ -85,11 +85,20 @@ type DownloaderConfig struct {
 	// HistoryRetentionDays drops a finished job from the queue's recent-history
 	// ring once it is this old; 0 keeps it until the ring's bound evicts it.
 	HistoryRetentionDays int `toml:"history_retention_days"`
+	// SuccessRetentionDays drops a finished job that imported everything and has
+	// no window left to fetch once it is this old, so the history keeps only what
+	// still needs looking at; 0 leaves it to HistoryRetentionDays.
+	SuccessRetentionDays int `toml:"success_retention_days"`
 }
 
 // HistoryRetention is the retention window as a duration, for the queue.
 func (d DownloaderConfig) HistoryRetention() time.Duration {
 	return time.Duration(d.HistoryRetentionDays) * 24 * time.Hour
+}
+
+// SuccessRetention is the shorter window for finished-clean jobs, as a duration.
+func (d DownloaderConfig) SuccessRetention() time.Duration {
+	return time.Duration(d.SuccessRetentionDays) * 24 * time.Hour
 }
 
 // GalleryDLConfig controls the gallery-dl subprocess. ConfigPath is the
@@ -421,7 +430,8 @@ func Default() *Config {
 			Concurrency:          1,
 			MaxItemsPerJob:       200,
 			DefaultFolder:        "downloads",
-			HistoryRetentionDays: 7,
+			HistoryRetentionDays: 14,
+			SuccessRetentionDays: 3,
 		},
 		GalleryDL: GalleryDLConfig{
 			BinaryPath:         "gallery-dl",
@@ -671,35 +681,29 @@ func (cfg *Config) FindSite(name string) *Site {
 	return nil
 }
 
-// ValidateRawConfig rejects a non-empty raw gallery-dl passthrough that is
-// not a JSON object. An empty string is valid (no passthrough). The
-// settings page calls this before Save so invalid JSON is never persisted.
-func ValidateRawConfig(s string) error {
+// validateJSONObject rejects a non-empty value that is not a JSON object; what
+// names it in the refusal.
+func validateJSONObject(s, what string) error {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
 	}
 	var obj map[string]any
 	if err := json.Unmarshal([]byte(s), &obj); err != nil {
-		return fmt.Errorf("raw gallery-dl config must be a JSON object: %w", err)
+		return fmt.Errorf("%s must be a JSON object: %w", what, err)
 	}
 	return nil
 }
 
+// ValidateRawConfig rejects a non-empty raw gallery-dl passthrough that is
+// not a JSON object. An empty string is valid (no passthrough). The
+// settings page calls this before Save so invalid JSON is never persisted.
+func ValidateRawConfig(s string) error { return validateJSONObject(s, "raw gallery-dl config") }
+
 // ValidateSiteOptions rejects a non-empty per-site options value that is not
 // a JSON object; empty means no options. Same save-time gate as the raw
 // passthrough.
-func ValidateSiteOptions(s string) error {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(s), &obj); err != nil {
-		return fmt.Errorf("site options must be a JSON object: %w", err)
-	}
-	return nil
-}
+func ValidateSiteOptions(s string) error { return validateJSONObject(s, "site options") }
 
 // applyEnvOverrides lets a MONLOADER_* variable override its config field, so
 // a container env can set what the file does not. Adding a variable is one
@@ -739,6 +743,7 @@ func applyEnvOverrides(cfg *Config) {
 		{"MONLOADER_DOWNLOADER_CONCURRENCY", &cfg.Downloader.Concurrency},
 		{"MONLOADER_DOWNLOADER_MAX_ITEMS_PER_JOB", &cfg.Downloader.MaxItemsPerJob},
 		{"MONLOADER_DOWNLOADER_HISTORY_RETENTION_DAYS", &cfg.Downloader.HistoryRetentionDays},
+		{"MONLOADER_DOWNLOADER_SUCCESS_RETENTION_DAYS", &cfg.Downloader.SuccessRetentionDays},
 		{"MONLOADER_PTR_MIN_FREE_GB", &cfg.PTR.MinFreeGB},
 		{"MONLOADER_LOOKUP_MIN_SIMILARITY", &cfg.Lookup.MinSimilarity},
 	} {
@@ -807,6 +812,7 @@ func validate(cfg *Config) error {
 	// A negative window would expire every job the moment it finished; read it
 	// as "no age limit" rather than fail a user-fixable typo.
 	cfg.Downloader.HistoryRetentionDays = max(cfg.Downloader.HistoryRetentionDays, 0)
+	cfg.Downloader.SuccessRetentionDays = max(cfg.Downloader.SuccessRetentionDays, 0)
 	cfg.GalleryDL.SleepRequest = max(cfg.GalleryDL.SleepRequest, 0)
 	if cfg.Auth.SessionLifetimeDays <= 0 {
 		cfg.Auth.SessionLifetimeDays = 7

@@ -23,7 +23,7 @@ import (
 type ptrEngine interface {
 	Enabled() bool
 	Status() ptr.Status
-	TagGraph(names []string) (map[string]ptr.TagInfo, error)
+	TagGraph(ctx context.Context, names []string) (map[string]ptr.TagInfo, error)
 	TagsForHash(hashHex string) (tags []string, ok bool, err error)
 	Enable() error
 	Disable()

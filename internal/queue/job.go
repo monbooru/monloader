@@ -103,6 +103,11 @@ type Summary struct {
 	// already holds.
 	Replaced int `json:"replaced,omitempty"`
 	Skipped  int `json:"skipped"`
+	// Archived is the archive half of Skipped: the posts gallery-dl passed
+	// over because it already had them, which are the only ones a force
+	// download can fetch again. Counted here so the queue row can offer that
+	// action without materializing every item.
+	Archived int `json:"archived,omitempty"`
 	Failed   int `json:"failed"`
 	// Matched counts the hashes a batch PTR lookup answered with tags. The
 	// batch row sets it directly so the count stays true past the bound on
@@ -256,6 +261,9 @@ type Job struct {
 
 	finalized bool
 	done      chan struct{}
+	// itemCount rides a snapshot taken without the item list, so a caller that
+	// pages rows before materializing items can still size each one.
+	itemCount int
 	// seq orders persisted snapshots: it advances under j.mu on every
 	// Snapshot, so a snapshot taken later carries a higher value and the
 	// store can refuse to let an earlier one overwrite it.
@@ -524,6 +532,16 @@ func (j *Job) finishedAt() time.Time {
 	return j.FinishedAt
 }
 
+// noFollowUp reports whether a finished job leaves nothing to act on: every
+// item landed and the source has no further window. A capped job is excluded
+// even though it succeeded - its row carries the offset a continue needs, so
+// forgetting it would lose the rest of the search.
+func (j *Job) noFollowUp() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.Status == JobSucceeded && !j.Capped
+}
+
 // seriesKey identifies the continue-series a job belongs to. Root is set for
 // every job routed through Enqueue; the fallback covers a job built directly.
 // Both fields are immutable after creation, so no lock is taken.
@@ -745,7 +763,16 @@ func (j *Job) snapshot(withItems bool) *Job {
 		state.Summary = summarize(j.Items)
 	}
 	j.seq++
-	return &Job{jobState: state, finalized: j.finalized, seq: j.seq}
+	return &Job{jobState: state, finalized: j.finalized, seq: j.seq, itemCount: len(j.Items)}
+}
+
+// ItemCount is how many items the job holds. A snapshot taken without the item
+// list still carries it, so the queue view can size a row - and tell whether it
+// has one to expand - without copying every item out from under the lock.
+func (j *Job) ItemCount() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.itemCount
 }
 
 // Add returns the field-wise sum of two summaries, for merging a
@@ -758,6 +785,7 @@ func (s Summary) Add(b Summary) Summary {
 		Enriched:  s.Enriched + b.Enriched,
 		Replaced:  s.Replaced + b.Replaced,
 		Skipped:   s.Skipped + b.Skipped,
+		Archived:  s.Archived + b.Archived,
 		Failed:    s.Failed + b.Failed,
 		Matched:   s.Matched + b.Matched,
 		Canceled:  s.Canceled + b.Canceled,
@@ -780,7 +808,10 @@ func summarize(items []Item) Summary {
 			s.Matched++
 		case OutcomeReplaced:
 			s.Replaced++
-		case OutcomeSkippedArchive, OutcomeSkippedUnsupported:
+		case OutcomeSkippedArchive:
+			s.Skipped++
+			s.Archived++
+		case OutcomeSkippedUnsupported:
 			s.Skipped++
 		case OutcomeFailed:
 			if it.ErrorCode == ErrCodeCanceled {

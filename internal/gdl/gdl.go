@@ -92,12 +92,15 @@ type Runner interface {
 }
 
 // Tool is the real Runner: it shells out to the gallery-dl binary named in
-// config, passing the managed config file written by WriteManagedConfig.
-// The site lists are guarded because a profile save replaces them while a
-// worker may be resolving.
+// config - or, when a managed install shadows the default (managed.go), to
+// that install, resolved per invocation so a switch needs no restart. It
+// passes the managed config file written by WriteManagedConfig. The site
+// lists are guarded because a profile save replaces them while a worker may
+// be resolving.
 type Tool struct {
 	cfg           *config.Config
 	mu            sync.RWMutex
+	managedRoot   string
 	flatTagSites  []string
 	notesSites    []string
 	metadataSites []string
@@ -120,6 +123,22 @@ func (t *Tool) SetSiteLists(flatTagSites, metadataSites, notesSites []string) {
 	t.flatTagSites, t.metadataSites, t.notesSites = flatTagSites, metadataSites, notesSites
 }
 
+// SetManagedRoot names the managed-install directory binary resolution
+// checks; unset (the test default), only the configured binary path is used.
+func (t *Tool) SetManagedRoot(root string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.managedRoot = root
+}
+
+// binary resolves the gallery-dl to run for one invocation.
+func (t *Tool) binary() string {
+	t.mu.RLock()
+	root := t.managedRoot
+	t.mu.RUnlock()
+	return EffectiveBinary(t.cfg, root)
+}
+
 // siteLists snapshots the cached lists for one invocation.
 func (t *Tool) siteLists() (flatTagSites, metadataSites, notesSites []string) {
 	t.mu.RLock()
@@ -140,14 +159,15 @@ type runResult struct {
 // non-zero exit is reported via runResult.exitCode, not err; err is reserved
 // for failures to launch the process at all.
 func (t *Tool) run(ctx context.Context, args ...string) (runResult, error) {
-	cmd := exec.CommandContext(ctx, t.cfg.GalleryDL.BinaryPath, args...)
+	bin := t.binary()
+	cmd := exec.CommandContext(ctx, bin, args...)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	exit, err := exitStatus(cmd.Run())
 	res := runResult{stdout: out.Bytes(), stderr: strings.TrimSpace(errBuf.String()), exitCode: exit}
 	if err != nil {
-		return res, fmt.Errorf("running %s: %w", t.cfg.GalleryDL.BinaryPath, err)
+		return res, fmt.Errorf("running %s: %w", bin, err)
 	}
 	return res, nil
 }
@@ -314,7 +334,8 @@ func (t *Tool) Download(ctx context.Context, url, rng, workDir string, force boo
 		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	args := append(t.configArgs(), downloadArgs(workDir, rng, url, force, deep)...)
-	cmd := exec.CommandContext(ctx, t.cfg.GalleryDL.BinaryPath, args...)
+	bin := t.binary()
+	cmd := exec.CommandContext(ctx, bin, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
@@ -322,7 +343,7 @@ func (t *Tool) Download(ctx context.Context, url, rng, workDir string, force boo
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
 	if err := cmd.Start(); err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: fmt.Errorf("running %s: %w", t.cfg.GalleryDL.BinaryPath, err).Error()}
+		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: fmt.Errorf("running %s: %w", bin, err).Error()}
 	}
 	// Drain stdout to EOF (collecting results as they land) before Wait, per the
 	// StdoutPipe contract.

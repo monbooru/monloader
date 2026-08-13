@@ -1,7 +1,7 @@
 package mapping
 
 import (
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/monbooru/monloader/internal/ptr"
@@ -25,7 +25,7 @@ func MapPTRTags(tags []string) []string {
 			out = append(out, s)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 

@@ -73,6 +73,8 @@ func main() {
 	}
 
 	runner := gdl.New(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites())
+	managedRoot := gdl.ManagedRoot(filepath.Dir(*configPath))
+	runner.SetManagedRoot(managedRoot)
 	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites(), mapper.SiteOptions()); err != nil {
 		logx.Warnf("could not write the managed gallery-dl config: %v", err)
 	}
@@ -82,22 +84,36 @@ func main() {
 	bootCtx, bootCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	gdlVersion := runner.Version(bootCtx)
 	extractors, exErr := runner.ListExtractors(bootCtx)
+	gdlManaged := gdl.ManagedActive(cfg, managedRoot)
+	bundledVersion := gdlVersion
+	if gdlManaged {
+		bundledVersion = gdl.BinaryVersion(bootCtx, cfg.GalleryDL.BinaryPath)
+	}
 	bootCancel()
-	if gdlVersion == "" {
-		logx.Warnf("gallery-dl not available at %q; downloads will fail until it is installed", cfg.GalleryDL.BinaryPath)
-	} else {
+	switch {
+	case gdlVersion == "":
+		// The binary that was actually run, which is the managed install when
+		// one shadows the default - naming the bundled path there would point
+		// at the one binary that is fine.
+		logx.Warnf("gallery-dl not available at %q; downloads will fail until it is installed", gdl.EffectiveBinary(cfg, managedRoot))
+	case gdlManaged:
+		logx.Infof("gallery-dl %s (managed install, bundled %s), %d extractors", gdlVersion, bundledVersion, len(extractors))
+	default:
 		logx.Infof("gallery-dl %s, %d extractors", gdlVersion, len(extractors))
 	}
 	if exErr != nil {
 		logx.Warnf("listing gallery-dl extractors: %v", exErr)
 	}
 
-	// The bundled supportedsites.md seeds display names and auth kinds for
-	// sites without a shipped profile; without it those just seed empty.
-	supported, supErr := gdl.ParseSupportedSites(cfg.GalleryDL.SupportedSitesPath)
+	// supportedsites.md seeds display names and auth kinds for sites without a
+	// shipped profile - the managed install's fetched copy when one is active,
+	// the bundled one otherwise; without either those just seed empty.
+	supportedPath := gdl.EffectiveSupportedSitesPath(cfg, managedRoot)
+	supported, supErr := gdl.ParseSupportedSites(supportedPath)
 	if supErr != nil {
-		logx.Infof("supportedsites data unavailable at %q: %v", cfg.GalleryDL.SupportedSitesPath, supErr)
+		logx.Infof("supportedsites data unavailable at %q: %v", supportedPath, supErr)
 	}
+	catalog := gdl.NewCatalog(gdlVersion, bundledVersion, gdlManaged, extractors, supported)
 
 	client := monbooru.New(provider)
 	workRoot := resolveWorkRoot()
@@ -118,6 +134,7 @@ func main() {
 
 	q := queue.New(proc, cfg.Downloader.Concurrency, 100)
 	q.SetRetention(cfg.Downloader.HistoryRetention())
+	q.SetSuccessRetention(cfg.Downloader.SuccessRetention())
 	q.SetLookupBudget(cfg.Lookup.ScheduledDailyBudget)
 	if qs, err := queue.OpenStore(filepath.Dir(*configPath)); err != nil {
 		logx.Warnf("queue history store unavailable, falling back to in-memory only: %v", err)
@@ -127,7 +144,7 @@ func main() {
 	}
 	q.Start()
 
-	srv, err := internalweb.NewServer(provider, *configPath, q, client, runner, mapper, extractors, supported, gdlVersion, siteState, ptrEngine, sim)
+	srv, err := internalweb.NewServer(provider, *configPath, q, client, runner, mapper, catalog, siteState, ptrEngine, sim)
 	if err != nil {
 		log.Fatalf("FATAL creating web server: %v", err)
 	}

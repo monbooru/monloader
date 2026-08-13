@@ -1,5 +1,33 @@
 # Changelog
 
+## [v1.9.0] - 2026-08-13
+### Added
+- User can install or roll back a gallery-dl release from Settings, without waiting for a new image. ([#24](https://github.com/monbooru/monloader/issues/24))
+- Successful downloads clear from the history sooner (3 days by default). ([#23](https://github.com/monbooru/monloader/issues/23))
+- Add a "clear succeeded" button on the queue. ([#23](https://github.com/monbooru/monloader/issues/23))
+- The container image now runs on arm64 as well as amd64.
+
+### Changed
+- The default full-history window is now 14 days, up from 7. (So by default succeeded downloads disappear after 3 days, and failed ones after 14 days)
+- Each settings field's hint includes its built-in default.
+- Some perf improvement for PTR tag batch.
+- Bundled gallery-dl updated to 1.32.9.
+
+### Fixed
+- monloader builds on Windows again, with the PTR free-space check working there. ([#22](https://github.com/monbooru/monloader/issues/22))
+- A manga gallery that re-resolves short is no longer pushed as a complete `.cbz`.
+- A job canceled at shutdown stays canceled instead of running again on the next start.
+- The add bar and the API accept an upper-case `md5:` prefix and a padded URL.
+- Saving a site clears an emptied credential and leaves fields the form omitted alone.
+- The iqdb chain row names whichever danbooru credential is missing, username or api key.
+- Clicking connect twice in the extension no longer creates two pairings.
+
+Thanks to @gary-host-laptop for the suggestion (https://github.com/monbooru/monloader/issues/24).
+Thanks to @CeareDelafont for the suggestion (https://github.com/monbooru/monloader/issues/23).
+Thanks to @QiE2035 for the fix (https://github.com/monbooru/monloader/issues/22).
+
+Co-authored-by: 企鹅2035 <qie2035@qq.com>
+
 ## [v1.8.0] - 2026-08-10
 ### Added
 - Backend for scheduled lookups: monbooru can check up to 100 hashes against the PTR index in one call, scheduled lookups run behind any active lookups, daily budget for scheduled lookups (25 images by default). ([monbooru#65](https://github.com/monbooru/monbooru/issues/65))

@@ -35,7 +35,8 @@ type SiteEntry struct {
 // fill completes an entry from the effective profile, the supportedsites
 // data, and the site's configured state.
 func (h *Handler) fill(e *SiteEntry) {
-	e.Name = h.supported[e.Category].Name
+	supported := h.catalog.Supported()
+	e.Name = supported[e.Category].Name
 	if p, ok := h.mapper.Lookup(e.Category); ok {
 		e.Curated = true
 		e.Auth = p.Auth
@@ -45,7 +46,7 @@ func (h *Handler) fill(e *SiteEntry) {
 			e.Kind = mapping.KindBooru
 		}
 	} else {
-		e.Auth = mapping.SeedAuthKind(h.supported[e.Category].Auth)
+		e.Auth = mapping.SeedAuthKind(supported[e.Category].Auth)
 		e.Kind = mapping.KindOther
 	}
 	e.CustomProfile = h.mapper.CustomProfile(e.Category)
@@ -59,9 +60,10 @@ func (h *Handler) fill(e *SiteEntry) {
 // name) and sorted curated-first then alphabetically.
 func (h *Handler) listSites(w http.ResponseWriter, r *http.Request) {
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
-	out := make([]SiteEntry, 0, len(h.extractors))
+	extractors, supported := h.catalog.Extractors(), h.catalog.Supported()
+	out := make([]SiteEntry, 0, len(extractors))
 	named := make(map[string]bool)
-	for _, ex := range h.extractors {
+	for _, ex := range extractors {
 		if ex.Category == "" {
 			// gallery-dl prints no category for a family's base extractors (the
 			// donmai and e621 instances among them), so the entry names no site
@@ -70,7 +72,7 @@ func (h *Handler) listSites(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		named[ex.Category] = true
-		if q != "" && !matchesQuery(q, ex.Category, ex.Subcategory, h.supported[ex.Category].Name) {
+		if q != "" && !matchesQuery(q, ex.Category, ex.Subcategory, supported[ex.Category].Name) {
 			continue
 		}
 		e := SiteEntry{Category: ex.Category, Subcategory: ex.Subcategory, Example: ex.Example}
@@ -86,7 +88,7 @@ func (h *Handler) listSites(w http.ResponseWriter, r *http.Request) {
 		if named[cat] {
 			continue
 		}
-		if q != "" && !matchesQuery(q, cat, h.supported[cat].Name) {
+		if q != "" && !matchesQuery(q, cat, supported[cat].Name) {
 			continue
 		}
 		if p, ok := h.mapper.Lookup(cat); ok {
@@ -146,7 +148,7 @@ func (h *Handler) testSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if probeURL == "" {
-		probeURL = h.mapper.ExampleURL(h.extractors, name)
+		probeURL = h.mapper.ExampleURL(h.catalog.Extractors(), name)
 	}
 	if probeURL == "" {
 		apiError(w, http.StatusNotFound, "not_found", "no example URL for site "+name+"; supply a url")

@@ -101,7 +101,7 @@ func (h *Handler) endpoints() []endpoint {
 			Request: &reqBody{
 				Required: []string{"url"},
 				Props: []prop{
-					{Name: "url", Type: "string", Description: "A booru post, pool, tag-search, or artist URL gallery-dl supports; or \"md5:<32 hex>\" to find and import the post carrying that file hash via the lookup walk"},
+					{Name: "url", Type: "string", Description: "A booru post, pool, tag-search, or artist URL gallery-dl supports; or \"md5:<32 hex>\" to find and import the post carrying that file hash via the lookup walk. Surrounding whitespace is trimmed and the md5: prefix is matched case-insensitively; a bare hash is not accepted here"},
 					{Name: "options", Type: "object", Props: []prop{
 						{Name: "gallery", Type: "string", Description: "Target monbooru gallery; overrides the per-source default"},
 						{Name: "folder", Type: "string", Description: "Destination subfolder under the gallery"},
@@ -328,7 +328,7 @@ func (h *Handler) endpoints() []endpoint {
 			Request: &reqBody{
 				Required: []string{"images"},
 				Props: []prop{
-					{Name: "images", Type: "array", Items: &prop{Type: "object"}, Description: "At most 100 `{ image_id, sha256 }` pairs; the id names the image on the queue row the answer files"},
+					{Name: "images", Type: "array", Items: &prop{Type: "object"}, Description: "At most 100 `{ image_id, sha256 }` pairs; the id names the image on the queue row the answer files, and is required on each entry like it is on the per-image lookup"},
 					{Name: "gallery", Type: "string", Description: "Gallery the images come from; recorded on that row"},
 					{Name: "scheduled", Type: "boolean", Description: "Set by monbooru's nightly run, so the row reads as scheduled rather than bulk"},
 				},
@@ -605,6 +605,7 @@ var apiSchemas = []apiSchema{
 		{Name: "enriched", Type: "integer", Description: "Source refetches and hash lookups that merged tags into an image monbooru already holds"},
 		{Name: "replaced", Type: "integer", Description: "In-place file replacements of an image monbooru already holds"},
 		{Name: "skipped", Type: "integer", Description: "Posts the gallery-dl archive already had, or files monbooru cannot ingest"},
+		{Name: "archived", Type: "integer", Description: "The archive half of skipped: the posts a forced retry can fetch again"},
 		{Name: "failed", Type: "integer"},
 		{Name: "matched", Type: "integer", Description: "Hashes a batch PTR lookup answered with tags; true past the bound on the items the row keeps"},
 		{Name: "canceled", Type: "integer", Description: "Items aborted by a job cancel, kept out of failed"},

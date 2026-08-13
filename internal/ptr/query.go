@@ -1,6 +1,7 @@
 package ptr
 
 import (
+	"context"
 	"database/sql"
 	"encoding/hex"
 	"slices"
@@ -178,10 +179,16 @@ type TagInfo struct {
 // TagGraph answers alias / implication questions for raw hydrus tag spellings.
 // For each queried name it returns the ideal form, every alias that resolves to
 // that ideal (the queried spelling excluded), and the implications. A name the
-// index does not know returns Known=false.
-func (s *Store) TagGraph(names []string) (map[string]TagInfo, error) {
+// index does not know returns Known=false. A batch is hundreds of names deep
+// and each one walks the graph, so ctx is checked between them: a caller that
+// timed out and retried would otherwise leave the first walk running to
+// completion and stack a second on the same small connection pool.
+func (s *Store) TagGraph(ctx context.Context, names []string) (map[string]TagInfo, error) {
 	out := make(map[string]TagInfo, len(names))
 	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		info, err := s.tagInfo(name)
 		if err != nil {
 			return nil, err

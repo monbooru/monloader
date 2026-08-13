@@ -70,9 +70,19 @@ func (ps *pairStore) create(app, source string, scopes []string) (string, bool) 
 	ps.sweepLocked()
 	pending := 0
 	for _, r := range ps.m {
-		if r.State == pairPending {
-			pending++
+		if r.State != pairPending {
+			continue
 		}
+		// One extension, one pairing: a repeat offer from an app already
+		// waiting is the same request, not a second one. Two rows the operator
+		// cannot tell apart would approve into two live tokens under one name,
+		// neither individually revocable. The newest offer's terms win and its
+		// click restarts the clock.
+		if strings.EqualFold(r.App, app) {
+			r.Source, r.Scopes, r.CreatedAt = source, scopes, time.Now()
+			return r.ID, true
+		}
+		pending++
 	}
 	if pending >= pairMaxPending {
 		return "", false

@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -298,7 +297,7 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 		add("rating:" + pf.Rating)
 	}
 
-	sort.Strings(tags)
+	slices.Sort(tags)
 	pf.Tags = tags
 
 	if kwdict.String(meta, "subcategory") == "pool" {

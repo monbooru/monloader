@@ -34,9 +34,12 @@ func (q *Queue) Close() {
 	q.cond.Broadcast()
 	q.mu.Unlock()
 	// A pending job never runs after this point; settle it so a caller parked in
-	// Wait returns at once rather than holding the HTTP drain open.
+	// Wait returns at once rather than holding the HTTP drain open, and mirror
+	// that terminal state, or the store's row stays queued and boot recovery
+	// runs a job monbooru has already been told was canceled.
 	for _, j := range pending {
 		q.settleDropped(j)
+		q.persist(j)
 	}
 	q.reportDropped(pending...)
 	q.wg.Wait()

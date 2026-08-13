@@ -111,10 +111,12 @@ type Queue struct {
 	index       map[int64]*Job
 	maxFinished int
 	// retention drops finished jobs older than this from the ring; zero keeps
-	// them until the bound evicts them.
-	retention time.Duration
-	nextID    int64
-	closed    bool
+	// them until the bound evicts them. successRetention is the shorter window
+	// for jobs that left nothing to act on.
+	retention        time.Duration
+	successRetention time.Duration
+	nextID           int64
+	closed           bool
 	// paused holds a global download pause: workers finish the job in flight
 	// but pick up no new one while set, so submissions queue behind a manual
 	// resume. It survives no restart (the queue itself is in memory).
@@ -261,6 +263,14 @@ func (q *Queue) SetRetention(d time.Duration) {
 	q.mu.Unlock()
 }
 
+// SetSuccessRetention bounds how long a finished job that imported everything
+// and has no window left stays in the ring; zero leaves it to SetRetention.
+func (q *Queue) SetSuccessRetention(d time.Duration) {
+	q.mu.Lock()
+	q.successRetention = d
+	q.mu.Unlock()
+}
+
 // Pause holds the queue: workers finish any job already running but start no
 // new one until Resume. Submissions still enqueue and wait their turn.
 func (q *Queue) Pause() {
@@ -373,10 +383,13 @@ func (q *Queue) RecordPTRLookup(gallery string, scheduled bool, asked int, match
 		Kind: KindPTRLookup, Gallery: gallery, Background: true, Budgeted: scheduled,
 	}, now)
 	j.Root = j.ID
+	// Settled before anything can see it: the row is history from the moment it
+	// exists, and the retention sweep every List runs reads a zero FinishedAt
+	// as older than any cutoff.
+	j.recordPTRLookup(gallery, asked, matched, now)
 	q.index[j.ID] = j
 	evicted := q.pushFinishedLocked(j)
 	q.mu.Unlock()
-	j.recordPTRLookup(gallery, asked, matched, now)
 	q.persist(j)
 	q.persistDelete(evicted)
 }
@@ -705,9 +718,15 @@ func (q *Queue) cancelKeepingRow(id int64) error {
 		return nil
 	}
 	q.removeFromPendingLocked(id)
+	// Settle before the ring takes the job: the retention sweep every List runs
+	// reads FinishedAt, and a zero one is older than any cutoff, so a poll
+	// landing in the gap would drop the row and delete its store entry under
+	// the settle that follows. The done signal still goes last, so a woken Wait
+	// caller sees the job already in history.
+	j.cancel(q.now())
 	evicted := q.pushFinishedLocked(j)
 	q.mu.Unlock()
-	q.settleDropped(j)
+	j.signalDone()
 	q.reportDropped(j)
 	q.persist(j)
 	q.persistDelete(evicted)
@@ -849,6 +868,23 @@ func (q *Queue) Clear() {
 	q.persistDelete(ids)
 }
 
+// ClearSucceeded drops the finished jobs the success window would take, without
+// waiting for it. Running and pending jobs are left untouched.
+func (q *Queue) ClearSucceeded() {
+	q.mu.Lock()
+	ids := q.dropFinishedLocked(q.clearableLocked(q.now()))
+	q.mu.Unlock()
+	q.persistDelete(ids)
+}
+
+// ClearableSucceeded counts what ClearSucceeded would drop, so the queue page
+// offers the action only while it has something to take.
+func (q *Queue) ClearableSucceeded() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.clearableLocked(q.now()))
+}
+
 // pushPendingLocked inserts a job after the last one of its lane or better, so
 // each lane jumps ahead of the ones below it while order inside a lane stays
 // FIFO. A background lookup therefore waits behind a URL the operator pastes
@@ -886,32 +922,73 @@ func (q *Queue) removeFromFinishedLocked(id int64) {
 	q.finished = slices.DeleteFunc(q.finished, func(j *Job) bool { return j.ID == id })
 }
 
-// sweepFinishedLocked drops finished jobs whose terminal time is older than
-// the retention window, so an instance left running for weeks does not show
-// history from weeks ago. Returns the dropped ids for the store delete.
-// Caller holds mu.
+// sweepFinishedLocked drops finished jobs past either retention window, so an
+// instance left running for weeks does not show history from weeks ago and the
+// rows that still need looking at are not buried under the ones that do not.
+// Returns the dropped ids for the store delete. Caller holds mu.
 func (q *Queue) sweepFinishedLocked(now time.Time) []int64 {
-	if q.retention <= 0 {
-		return nil
+	var stale []int64
+	if q.retention > 0 {
+		cutoff := now.Add(-q.retention)
+		for _, j := range q.finished {
+			if j.finishedAt().Before(cutoff) {
+				stale = append(stale, j.ID)
+			}
+		}
 	}
-	var dropped []int64
-	cutoff := now.Add(-q.retention)
-	kept := q.finished[:0]
-	for _, j := range q.finished {
-		if j.finishedAt().Before(cutoff) {
-			delete(q.index, j.ID)
-			dropped = append(dropped, j.ID)
+	if q.successRetention > 0 {
+		stale = append(stale, q.clearableLocked(now.Add(-q.successRetention))...)
+	}
+	return q.dropFinishedLocked(stale)
+}
+
+// clearableLocked lists the finished jobs that left nothing to act on and whose
+// series last finished at or before cutoff. A series is judged whole - one
+// window still live, failed, or holding more to fetch keeps them all - because
+// the queue view collapses it into a single row, and dropping part of one would
+// shrink the counts that row shows. Caller holds mu.
+func (q *Queue) clearableLocked(cutoff time.Time) []int64 {
+	pinned := map[int64]bool{}
+	newest := map[int64]time.Time{}
+	for _, j := range q.index {
+		key := j.seriesKey()
+		if !j.noFollowUp() {
+			pinned[key] = true
 			continue
 		}
-		kept = append(kept, j)
+		if t := j.finishedAt(); t.After(newest[key]) {
+			newest[key] = t
+		}
 	}
-	// Null the vacated tail before reslicing, for the reason pushFinishedLocked
-	// gives: a dropped job stays reachable in the backing array otherwise.
-	for i := len(kept); i < len(q.finished); i++ {
-		q.finished[i] = nil
+	var ids []int64
+	for _, j := range q.finished {
+		if key := j.seriesKey(); !pinned[key] && !newest[key].After(cutoff) {
+			ids = append(ids, j.ID)
+		}
 	}
-	q.finished = kept
-	return dropped
+	return ids
+}
+
+// dropFinishedLocked removes the named jobs from the history ring and the
+// index, returning the ids it actually took (an id may be listed twice when
+// both windows reach the same job). Caller holds mu.
+func (q *Queue) dropFinishedLocked(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	drop := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		drop[id] = true
+	}
+	var taken []int64
+	for _, j := range q.finished {
+		if drop[j.ID] {
+			delete(q.index, j.ID)
+			taken = append(taken, j.ID)
+		}
+	}
+	q.finished = slices.DeleteFunc(q.finished, func(j *Job) bool { return drop[j.ID] })
+	return taken
 }
 
 // pushFinishedLocked appends a finished job to the ring and evicts the

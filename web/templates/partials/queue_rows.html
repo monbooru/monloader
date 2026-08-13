@@ -2,7 +2,7 @@
 {{if not .Groups}}<tr><td colspan="7" class="hint">queue is empty</td></tr>{{end}}
 {{range .Groups}}
 <tr class="job-row">
-  <td class="st-{{.Lead.Status}}">{{.Lead.Status}}<span class="job-time" title="{{stampLocal .Lead.StatusChangedAt}}">{{humanSince .Lead.StatusChangedAt}}</span></td>
+  <td class="st-{{.Worst.Status}}">{{.Worst.Status}}<span class="job-time" title="{{stampLocal .Worst.StatusChangedAt}}">{{humanSince .Worst.StatusChangedAt}}</span></td>
   <td class="queue-url">{{.Lead.Subject}}{{if .Lead.URL}} <a class="queue-view" href="{{.Lead.URL}}" target="_blank" rel="noopener" title="open the source in a new tab">view</a>{{end}}</td>
   <td><span class="job-kind" title="{{if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}} job">{{if eq .Lead.Kind "lookup"}}{{if eq .Lead.Backend "all"}}lookup{{else}}lookup:{{.Lead.Backend}}{{end}}{{else if eq .Lead.Kind "hash_import"}}import{{else if eq .Lead.Kind "contrib"}}contrib:ptr{{else if eq .Lead.Kind "ptr_lookup"}}lookup:ptr{{else if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}}</span>{{with .Lead.LookupClass}}<span class="job-lane">{{.}}</span>{{end}}</td>
   <td class="queue-site" title="{{.Lead.Site}}">{{.Lead.Site}}</td>
@@ -10,9 +10,9 @@
   <td class="queue-summary">
     {{if and (eq .Summary.Total 0) .Lead.ErrorCode}}
     <span class="o-failed" title="{{.Lead.Error}}">{{.Lead.ErrorCode}}</span>
-    {{else if and (eq .Summary.Total 0) (eq .Lead.Status "succeeded")}}
+    {{else if and (eq .Summary.Total 0) (eq .Worst.Status "succeeded")}}
     <span class="hint">no posts matched</span>
-    {{else if and (eq .Summary.Total 0) (eq .Lead.Status "interrupted")}}
+    {{else if and (eq .Summary.Total 0) (eq .Worst.Status "interrupted")}}
     <span class="hint" title="the process stopped before this job recorded what it had resolved">contents unknown</span>
     {{else}}
     {{if .Summary.Created}}<span class="o-created">{{.Summary.Created}} created</span>{{end}}
@@ -24,24 +24,24 @@
     {{if .Summary.Failed}}<span class="o-failed">{{.Summary.Failed}} failed</span>{{end}}
     {{if .Summary.Canceled}}<span class="o-canceled">{{.Summary.Canceled}} canceled</span>{{end}}
     <span>{{.Summary.Total}} total</span>
-    {{if and .Lead.Capped (ne .Lead.Status "canceled") (ne .Lead.Status "failed")}}<span class="o-capped" title="the first {{.Summary.Total}} were fetched; get more for the next">more available</span>{{end}}
+    {{if .Continue}}<span class="o-capped" title="the first {{.Summary.Total}} were fetched; get more for the next">more available</span>{{end}}
     {{if .Lead.ErrorCode}}<span class="o-failed" title="{{.Lead.Error}}">{{.Lead.ErrorCode}}</span>{{end}}
     {{end}}
   </td>
   <td>
     <span class="actions">
-      {{if or (eq .Lead.Status "queued") (eq .Lead.Status "running")}}
-        <button hx-post="/queue/{{.Lead.ID}}/cancel">cancel</button>
+      {{if .Live}}
+        <button hx-post="/queue/{{.Worst.ID}}/cancel">cancel</button>
       {{else}}
-        {{if and .Lead.Capped (ne .Lead.Status "canceled") (ne .Lead.Status "failed")}}
-        <button class="needs-monbooru" hx-post="/queue/{{.Lead.ID}}/continue"
-                title="download the next {{.NextWindow}} items">get next {{.NextWindow}}</button>
-        <button class="needs-monbooru" hx-post="/queue/{{.Lead.ID}}/continue-all"
+        {{$next := .NextWindow}}{{with .Continue}}
+        <button class="needs-monbooru" hx-post="/queue/{{.ID}}/continue"
+                title="download the next {{$next}} items">get next {{$next}}</button>
+        <button class="needs-monbooru" hx-post="/queue/{{.ID}}/continue-all"
                 hx-confirm="fetch all remaining items? this can take a while"
                 title="keep fetching until the search runs out">get all</button>
         {{end}}
-        {{if ne .Lead.Status "succeeded"}}
-        <button class="needs-monbooru" hx-post="/queue/{{.Lead.ID}}/retry">{{if eq .Lead.Status "interrupted"}}requeue{{else}}retry{{end}}</button>
+        {{if ne .Worst.Status "succeeded"}}
+        <button class="needs-monbooru" hx-post="/queue/{{.Worst.ID}}/retry">{{if eq .Worst.Status "interrupted"}}requeue{{else}}retry{{end}}</button>
         {{end}}
         {{if gt .ArchiveSkips 0}}
         <button class="needs-monbooru" hx-post="/queue/{{.Lead.ID}}/retry?force=1"
@@ -54,12 +54,12 @@
     </span>
   </td>
 </tr>
-{{if .Items}}
-{{$active := or (eq .Lead.Status "queued") (eq .Lead.Status "running")}}
+{{if .Count}}
+{{$active := .Live}}
 <tr class="items-row">
   <td colspan="7">
     <details data-job="{{.Root}}" open{{if not $active}} id="job-{{.Root}}" hx-preserve="true" hx-get="/internal/queue-rows/{{.Root}}/items" hx-trigger="load once" hx-target="find .job-items" hx-swap="innerHTML"{{end}}>
-      <summary>{{len .Items}} item{{if ne (len .Items) 1}}s{{end}}{{$ph := .Phase}}{{if $ph}} <span class="job-phase job-phase-{{$ph}}">{{if eq $ph "downloading"}}downloading...{{else if eq $ph "pushing"}}pushing...{{else}}finished{{end}}</span>{{end}}</summary>
+      <summary>{{.Count}} item{{if ne .Count 1}}s{{end}}{{$ph := .Phase}}{{if $ph}} <span class="job-phase job-phase-{{$ph}}">{{if eq $ph "downloading"}}downloading...{{else if eq $ph "pushing"}}pushing...{{else}}finished{{end}}</span>{{end}}</summary>
       <div class="job-items">{{if $active}}{{template "queue_items_capped" (dict "Items" .Items "MonbooruURL" $.MonbooruURL "Site" .Lead.Site "ImageID" .Lead.ImageID "Kind" .Lead.Kind)}}{{end}}</div>
     </details>
   </td>

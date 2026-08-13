@@ -1,0 +1,33 @@
+{{define "gallerydl_panel"}}
+<div id="gdl-panel"{{if .Running}} hx-get="/internal/gallerydl-status" hx-trigger="every 1s" hx-swap="outerHTML"{{end}}>
+  <p>active <strong>{{if .ActiveVersion}}{{.ActiveVersion}}{{else}}not available{{end}}</strong>
+    {{if .Managed}}<span class="badge">installed</span>{{else}}<span class="badge">bundled</span>{{end}}</p>
+  {{if .Managed}}<p class="field-hint">bundled fallback {{.BundledVersion}}</p>{{end}}
+  {{if .Inactive}}<p class="field-hint">{{.Inactive}}</p>{{end}}
+  {{if .Msg}}<div class="flash flash-{{.MsgKind}}">{{.Msg}}</div>{{end}}
+  {{if .Running}}
+  <p style="margin-top:10px">installing <strong>{{.Version}}</strong></p>
+  <div class="gdl-progress">
+    <div class="gdl-bar"><div class="gdl-bar-fill" style="width:{{.Percent}}%"></div></div>
+    <span class="gdl-pct">{{.Percent}}%</span>
+  </div>
+  <span class="field-hint">{{.Step}}</span>
+  {{else}}
+  <div class="field gdl-field">
+    <label for="gdl-version">install a release</label>
+    <form class="gdl-row" hx-post="/settings/gallerydl/install" hx-target="#gdl-panel" hx-swap="outerHTML">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <input id="gdl-version" type="text" name="version" placeholder="blank = latest">
+      <button type="submit">install</button>
+      {{if .Installed}}<button type="submit" form="gdl-revert-form">revert</button>{{end}}
+    </form>
+    <span class="field-hint">newer or older; the install lives in /config and survives image updates, until one moves python to a new version.</span>
+  </div>
+  {{if .Installed}}
+  <form method="POST" id="gdl-revert-form" action="/settings/gallerydl/revert" hx-confirm="remove the installed gallery-dl and return to the bundled {{.BundledVersion}}?" data-confirm-ok="revert">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  </form>
+  {{end}}
+  {{end}}
+</div>
+{{end}}

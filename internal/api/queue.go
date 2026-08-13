@@ -57,14 +57,18 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
 	}
+	// A URL copied out of a browser or a chat client routinely arrives padded,
+	// which the add bar trims and this refused as not an http(s) URL.
+	body.URL = strings.TrimSpace(body.URL)
 	if body.URL == "" {
 		apiError(w, http.StatusBadRequest, "invalid_request", "url is required")
 		return
 	}
 	// "md5:<hash>" imports the post carrying that hash via the lookup walk.
 	// The prefix is required on the API so a bare hash is never mistaken for a
-	// malformed URL; the web add bar accepts both forms.
-	md5, isHash := strings.CutPrefix(body.URL, "md5:")
+	// malformed URL; the web add bar accepts both forms. Case is forgiven on
+	// both, since a pasted hash carries whatever the source rendered.
+	md5, isHash := strings.CutPrefix(strings.ToLower(body.URL), "md5:")
 	if isHash && !config.IsHexHash(md5, 32) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "md5: must carry a 32-hex hash")
 		return
@@ -103,7 +107,7 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 
 	var id int64
 	if isHash {
-		id = h.queue.EnqueueHashImport(strings.ToLower(md5), opts)
+		id = h.queue.EnqueueHashImport(md5, opts)
 	} else {
 		id = h.queue.Enqueue(body.URL, opts)
 	}

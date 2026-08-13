@@ -10,11 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -155,9 +155,18 @@ func (p *Processor) processDownload(ctx context.Context, job, snap *queue.Job) e
 		// A re-resolve that comes back short (a rate limit, a flaky page) would
 		// empty a work the capped pass proved non-empty, which then downloads
 		// every page and pushes none; keep the capped window instead.
-		if len(whole.Items) >= len(resolved) {
+		switch {
+		case len(whole.Items) >= len(resolved):
 			resolved = whole.Items
 			rng = ""
+		case cbz:
+			// A pool's pages push one by one, so the window is a real partial
+			// import; a book is one file, and bundling the window would push a
+			// short archive as a complete manga.
+			return abortJob(ctx, job, &queue.CodedError{
+				Code: queue.ErrCodeDownloadFailed,
+				Msg:  fmt.Sprintf("re-resolving the whole gallery returned %d pages, fewer than the %d already found", len(whole.Items), len(resolved)),
+			})
 		}
 	} else if limit > 0 && len(resolved) >= limit {
 		// A resolve that returned the full cap likely truncated a larger source,
@@ -697,14 +706,11 @@ func (p *Processor) aggregatePool(downloaded []gdl.Downloaded, poolURL, poolName
 			tagSet[tag] = true
 		}
 	}
-	tags := make([]string, 0, len(tagSet)+1)
-	for tag := range tagSet {
-		tags = append(tags, tag)
-	}
+	tags := slices.Collect(maps.Keys(tagSet))
 	if strictest != "" {
 		tags = append(tags, "rating:"+strictest)
 	}
-	sort.Strings(tags)
+	slices.Sort(tags)
 
 	name := poolName
 	if name == "" {

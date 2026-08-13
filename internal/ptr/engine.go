@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/monbooru/monloader/internal/config"
@@ -409,12 +408,12 @@ func (e *Engine) TagsForHash(hashHex string) (tags []string, ok bool, err error)
 }
 
 // TagGraph answers alias / implication queries, or nil when disabled.
-func (e *Engine) TagGraph(names []string) (map[string]TagInfo, error) {
+func (e *Engine) TagGraph(ctx context.Context, names []string) (map[string]TagInfo, error) {
 	store := e.currentStore()
 	if store == nil {
 		return nil, nil
 	}
-	return store.TagGraph(names)
+	return store.TagGraph(ctx, names)
 }
 
 // loop is the sync goroutine: drive to caught-up, then poll for the next
@@ -826,16 +825,6 @@ func FreeBytes(path string) int64 {
 		}
 		p = parent
 	}
-}
-
-// freeBytes returns the bytes available to an unprivileged user on the volume
-// holding path.
-func freeBytes(path string) (uint64, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(path, &st); err != nil {
-		return 0, err
-	}
-	return st.Bavail * uint64(st.Bsize), nil
 }
 
 // indexPath is the sqlite file path for a data dir.

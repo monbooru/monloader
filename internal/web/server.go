@@ -44,16 +44,19 @@ type Server struct {
 	pairAttempt *outboundPair
 	pairs       *pairStore
 
-	queue      *queue.Queue
-	client     *monbooru.Client
-	runner     gdl.Runner
-	mapper     *mapping.Mapper
-	extractors []gdl.Extractor
-	supported  map[string]gdl.SupportedSite
-	gdlVersion string
-	siteState  *sitestate.Tracker
-	ptr        ptrEngine
-	sim        simService
+	queue     *queue.Queue
+	client    *monbooru.Client
+	runner    gdl.Runner
+	mapper    *mapping.Mapper
+	catalog   *gdl.Catalog
+	siteState *sitestate.Tracker
+	ptr       ptrEngine
+	sim       simService
+
+	// gdlMu guards the managed install a settings request started; it runs on
+	// past that request, and the panel polls it for its progress.
+	gdlMu  sync.Mutex
+	gdlJob *gdlJob
 
 	// statusMu guards the cached footer-light probe result. base() seeds each
 	// page's initial render from it so the light shows its last known state at
@@ -70,11 +73,12 @@ type Server struct {
 	staticFS   fs.FS
 }
 
-// NewServer wires the UI server. extractors is the cached --list-extractors
-// result and gdlVersion the bundled gallery-dl version (both feed the API and
-// settings); siteState is the shared "last reached" tracker the settings sites
-// table reads and the test probe writes (the pipeline writes it on a fetch).
-func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, extractors []gdl.Extractor, supported map[string]gdl.SupportedSite, gdlVersion string, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client) (*Server, error) {
+// NewServer wires the UI server. catalog is the boot-seeded gallery-dl
+// inventory - version, extractors, supportedsites rows - the settings screens
+// and the API read, refreshed when a managed install changes the binary;
+// siteState is the shared "last reached" tracker the settings sites table
+// reads and the test probe writes (the pipeline writes it on a fetch).
+func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, catalog *gdl.Catalog, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client) (*Server, error) {
 	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(webFS.FS, "templates/*.html", "templates/partials/*.html")
 	if err != nil {
 		return nil, err
@@ -91,9 +95,7 @@ func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *
 		pairs:      newPairStore(),
 		runner:     runner,
 		mapper:     mapper,
-		extractors: extractors,
-		supported:  supported,
-		gdlVersion: gdlVersion,
+		catalog:    catalog,
 		siteState:  siteState,
 		ptr:        ptrEngine,
 		sim:        sim,
@@ -127,6 +129,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /queue/{id}/continue", s.continueJob)
 	mux.HandleFunc("POST /queue/{id}/continue-all", s.continueAllJob)
 	mux.HandleFunc("POST /queue/clear", s.clearQueue)
+	mux.HandleFunc("POST /queue/clear-succeeded", s.clearSucceededQueue)
 	mux.HandleFunc("POST /queue/cancel-pending", s.cancelPendingJobs)
 	mux.HandleFunc("POST /queue/pause", s.pauseDownloads)
 	mux.HandleFunc("POST /queue/resume", s.resumeDownloads)
@@ -165,6 +168,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/sites/{name}/reset", s.resetSite)
 	mux.HandleFunc("POST /settings/sites/{name}/test", s.testSite)
 	mux.HandleFunc("POST /settings/host-labels", s.saveHostLabels)
+	mux.HandleFunc("POST /settings/gallerydl/install", s.gdlInstall)
+	mux.HandleFunc("POST /settings/gallerydl/revert", s.gdlRevert)
+	mux.HandleFunc("GET /internal/gallerydl-status", s.gdlStatusFragment)
 	mux.HandleFunc("POST /settings/raw", s.saveRaw)
 	mux.HandleFunc("POST /settings/ptr", s.savePTR)
 	mux.HandleFunc("POST /settings/ptr/delete", s.ptrDelete)
@@ -194,7 +200,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /", s.notFound)
 
 	pair := api.PairHandlers{Request: s.extPairRequest, Status: s.extPairStatus, Teardown: s.extPairTeardown}
-	api.New(s.queue, s.runner, s.mapper, s.cfg, s.extractors, s.supported, Version, s.gdlVersion, s.siteState, s.ptr, pair, s.updateConfig).Mount(mux)
+	api.New(s.queue, s.runner, s.mapper, s.cfg, s.catalog, Version, s.siteState, s.ptr, pair, s.updateConfig).Mount(mux)
 
 	var h http.Handler = mux
 	h = s.CSRFMiddleware(h)
@@ -349,7 +355,7 @@ func (s *Server) base(r *http.Request, nav, title string) map[string]any {
 		"CSRFToken":        s.csrfToken(sessionFromContext(r.Context())),
 		"AuthEnabled":      s.cfg.Current().Auth.EnablePassword,
 		"Version":          Version,
-		"GalleryDLVersion": s.gdlVersion,
+		"GalleryDLVersion": s.catalog.Version(),
 		"RepoURL":          RepoURL,
 		"DocURL":           DocURL,
 		"CustomCSS":        s.cfg.Current().Server.CustomCSS != "",
