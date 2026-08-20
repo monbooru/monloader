@@ -397,6 +397,12 @@ func (e *Engine) currentStore() *Store {
 	return e.store
 }
 
+// DataPath is the index directory this run opened. The engine snapshots its
+// config at boot, so a path edited in settings only takes effect on the next
+// one; a caller that reads its own copy would describe a different index than
+// the one the status, the disk figure and delete all act on.
+func (e *Engine) DataPath() string { return e.cfg.DataPath }
+
 // TagsForHash answers a PTR hash lookup, or ok=false when the backend is not
 // available or the hash is unknown.
 func (e *Engine) TagsForHash(hashHex string) (tags []string, ok bool, err error) {
@@ -414,6 +420,15 @@ func (e *Engine) TagGraph(ctx context.Context, names []string) (map[string]TagIn
 		return nil, nil
 	}
 	return store.TagGraph(ctx, names)
+}
+
+// SearchTags answers spelling searches, or nothing when disabled.
+func (e *Engine) SearchTags(ctx context.Context, ranges []TagRange, scanCap int) ([]TagMatch, bool, error) {
+	store := e.currentStore()
+	if store == nil {
+		return nil, false, nil
+	}
+	return store.SearchTags(ctx, ranges, scanCap)
 }
 
 // loop is the sync goroutine: drive to caught-up, then poll for the next

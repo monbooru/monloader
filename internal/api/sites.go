@@ -72,7 +72,7 @@ func (h *Handler) listSites(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		named[ex.Category] = true
-		if q != "" && !matchesQuery(q, ex.Category, ex.Subcategory, supported[ex.Category].Name) {
+		if q != "" && !mapping.MatchesQuery(q, ex.Category, ex.Subcategory, supported[ex.Category].Name) {
 			continue
 		}
 		e := SiteEntry{Category: ex.Category, Subcategory: ex.Subcategory, Example: ex.Example}
@@ -88,7 +88,7 @@ func (h *Handler) listSites(w http.ResponseWriter, r *http.Request) {
 		if named[cat] {
 			continue
 		}
-		if q != "" && !matchesQuery(q, cat, supported[cat].Name) {
+		if q != "" && !mapping.MatchesQuery(q, cat, supported[cat].Name) {
 			continue
 		}
 		if p, ok := h.mapper.Lookup(cat); ok {
@@ -105,17 +105,6 @@ func (h *Handler) listSites(w http.ResponseWriter, r *http.Request) {
 			cmp.Compare(a.Subcategory, b.Subcategory))
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"total": len(out), "sites": out})
-}
-
-// matchesQuery reports whether the lower-cased query is a substring of any
-// field, the same matching rule the settings add-site box applies.
-func matchesQuery(q string, fields ...string) bool {
-	for _, f := range fields {
-		if strings.Contains(strings.ToLower(f), q) {
-			return true
-		}
-	}
-	return false
 }
 
 // boolRank orders true ahead of false in a cmp.Compare chain.

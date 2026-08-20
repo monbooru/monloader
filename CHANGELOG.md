@@ -1,5 +1,33 @@
 # Changelog
 
+## [v1.10.0] - 2026-08-20
+### Added
+- Backend for PTR tag search: required so monbooru can find which spellings the index holds for a tag. ([monbooru#82](https://github.com/monbooru/monbooru/issues/82))
+- A tag contribution preview flags a tag the PTR does not hold at all. ([monbooru#82](https://github.com/monbooru/monbooru/issues/82))
+- Pushes carry the source post's dimensions, byte size and extension, so monbooru can spot upgradable files. ([monbooru#80](https://github.com/monbooru/monbooru/issues/80))
+- Notes carry the source's own formatting beside the flattened text. ([monbooru#84](https://github.com/monbooru/monbooru/issues/84))
+
+### Changed
+- Canceling pending jobs leaves canceled rows to re-read or retry instead of dropping them.
+
+### Fixed
+- Get all on a manga title advances through its chapters instead of re-importing the first ones.
+- A pool that re-resolves short is marked partial, so continue works instead of refusing.
+- A PTR tag lookup no longer misses a spelling that mixes an underscore with a space.
+- A lookup or a refetch records the tags monbooru refused, like a fresh push does.
+- The PTR page shows and deletes the index the engine opened, not the edited path.
+- Force download on a series says when it re-queued nothing.
+- A job id is never handed out twice after clearing the history or a restart.
+- A batch lookup row counts each image once, not once per time it was asked.
+- A hash lookup names the post it resolved instead of still showing the hash.
+- Installing a gallery-dl release gives up on a stalled PyPI instead of hanging the settings page.
+- Rescinding a contribution that already started sending says so instead of looking successful.
+- A bulk queue action answers on the page you are reading, not page 1.
+- A queued job's API record omits its start and finish times instead of sending a zero date.
+
+Thanks to @CeareDelafont for the suggestion (https://github.com/monbooru/monbooru/issues/82).
+Thanks to @gary-host-laptop for the suggestions (https://github.com/monbooru/monbooru/issues/80, https://github.com/monbooru/monbooru/issues/84).
+
 ## [v1.9.0] - 2026-08-13
 ### Added
 - User can install or roll back a gallery-dl release from Settings, without waiting for a new image. ([#24](https://github.com/monbooru/monloader/issues/24))

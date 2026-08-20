@@ -1,9 +1,12 @@
 package api
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
@@ -19,6 +22,15 @@ const maxTagGraphBatch = 500
 // maxHashLookupBatch caps a single batch hash lookup. Lower than the tag
 // batch: one hit answers a whole tag list rather than one tag's edges.
 const maxHashLookupBatch = 100
+
+// Spelling-search bounds. The scan cap is per range and bounds the rows a range
+// answers with - a substring query still walks its namespace to find them - and
+// the limit bounds what a dropdown has to render.
+const (
+	defaultTagSearchLimit = 20
+	maxTagSearchLimit     = 50
+	tagSearchScanCap      = 200
+)
 
 // plural is the "s" a count needs.
 func plural(n int) string {
@@ -105,6 +117,182 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 		results[t] = resolveTagInfo(t, candidates[t], graph)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// ptrTagCluster is one sibling cluster a spelling search found, in monbooru
+// form. The counts describe the cluster's graph so a caller can rank and label
+// the list without a query per row.
+type ptrTagCluster struct {
+	Ideal        string   `json:"ideal"`
+	Matched      []string `json:"matched"`
+	Aliases      int      `json:"aliases"`
+	Implications int      `json:"implications"`
+	ImpliedBy    int      `json:"implied_by"`
+}
+
+// ptrTagSearch handles GET /api/v1/ptr/tags/search: the spellings the index
+// holds under a monbooru-form prefix, folded to one row per sibling cluster.
+// The graph query answers about a name the caller already knows; this one is
+// how the caller finds out what to ask about, which is otherwise a guess at
+// the repository's exact spelling.
+func (h *Handler) ptrTagSearch(w http.ResponseWriter, r *http.Request) {
+	if h.ptr == nil || !h.ptr.Enabled() {
+		apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr index is not available")
+		return
+	}
+	if !h.ptr.CaughtUp() {
+		apiError(w, http.StatusConflict, "ptr_syncing", "the ptr index is not fully synced yet")
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		apiError(w, http.StatusBadRequest, "invalid_request", "q must not be empty")
+		return
+	}
+	limit := defaultTagSearchLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > maxTagSearchLimit {
+			apiError(w, http.StatusBadRequest, "invalid_request", "limit must be 1.."+strconv.Itoa(maxTagSearchLimit))
+			return
+		}
+		limit = n
+	}
+	mode := r.URL.Query().Get("mode")
+	if mode != "" && mode != "prefix" && mode != "contains" {
+		apiError(w, http.StatusBadRequest, "invalid_request", "mode must be prefix or contains")
+		return
+	}
+	ranges, ok := tagSearchRanges(q, mode == "contains")
+	if !ok {
+		apiError(w, http.StatusBadRequest, "namespace_required",
+			"matching anywhere in the name needs a category: prefix to bound the scan")
+		return
+	}
+
+	matches, truncated, err := h.ptr.SearchTags(r.Context(), ranges, tagSearchScanCap)
+	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	clusters, more := renderTagClusters(q, matches, limit)
+	writeJSON(w, http.StatusOK, map[string]any{"clusters": clusters, "truncated": truncated || more})
+}
+
+// tagSearchRanges renders a monbooru-form query into the index ranges to scan:
+// one per candidate hydrus spelling for a prefix search, one per namespace for
+// a substring search. A bare (general) query has no namespace to bound a
+// substring scan, and the whole tag table is far too big to walk, so that one
+// shape is refused rather than served slowly.
+func tagSearchRanges(q string, contains bool) ([]ptr.TagRange, bool) {
+	spellings := mapping.PTRSpellingsFor(q)
+	if !contains {
+		ranges := make([]ptr.TagRange, 0, len(spellings))
+		for _, sp := range spellings {
+			ranges = append(ranges, ptr.TagRange{Prefix: sp.Full})
+		}
+		return ranges, true
+	}
+	var ranges []ptr.TagRange
+	at := map[string]int{}
+	for _, sp := range spellings {
+		if sp.Namespace == "" {
+			return nil, false
+		}
+		i, ok := at[sp.Namespace]
+		if !ok {
+			i = len(ranges)
+			at[sp.Namespace] = i
+			ranges = append(ranges, ptr.TagRange{Prefix: sp.Namespace})
+		}
+		ranges[i].Contains = append(ranges[i].Contains, sp.Subtag)
+	}
+	return ranges, len(ranges) > 0
+}
+
+// renderTagClusters maps the raw matches into monbooru form, drops the ones
+// whose ideal lands in a namespace the router does not carry, and orders them:
+// the exact query first, then clusters that carry relations, then the shortest
+// ideal, then by name. Ranking on the counts is what floats the real cluster
+// above the near-misses sharing its stem.
+func renderTagClusters(queried string, matches []ptr.TagMatch, limit int) (rows []ptrTagCluster, more bool) {
+	out := make([]ptrTagCluster, 0, len(matches))
+	at := map[string]int{}
+	for _, m := range matches {
+		c, ok := renderTagCluster(m)
+		if !ok {
+			continue
+		}
+		// Two clusters whose raw ideals differ only by the underscore-space
+		// fold project to one monbooru name. The caller picks a name, so a
+		// second row under it is a row it cannot tell apart; fold them and
+		// let the graph query sort the spellings out on the way back.
+		if i, seen := at[c.Ideal]; seen {
+			out[i] = mergeTagCluster(out[i], c)
+			continue
+		}
+		at[c.Ideal] = len(out)
+		out = append(out, c)
+	}
+	slices.SortStableFunc(out, func(a, b ptrTagCluster) int {
+		return cmp.Or(
+			cmp.Compare(boolRank(b.Ideal == queried), boolRank(a.Ideal == queried)),
+			cmp.Compare(boolRank(relations(b) > 0), boolRank(relations(a) > 0)),
+			cmp.Compare(len(a.Ideal), len(b.Ideal)),
+			cmp.Compare(a.Ideal, b.Ideal))
+	})
+	if len(out) > limit {
+		return out[:limit], true
+	}
+	return out, false
+}
+
+// relations is a cluster's total graph size, the second ranking key.
+func relations(c ptrTagCluster) int {
+	return c.Aliases + c.Implications + c.ImpliedBy
+}
+
+// mergeTagCluster folds a second cluster onto the row already holding its
+// monbooru name, keeping every matched spelling and the larger of each count.
+func mergeTagCluster(into, from ptrTagCluster) ptrTagCluster {
+	seen := make(map[string]bool, len(into.Matched))
+	for _, n := range into.Matched {
+		seen[n] = true
+	}
+	for _, n := range from.Matched {
+		if !seen[n] {
+			seen[n] = true
+			into.Matched = append(into.Matched, n)
+		}
+	}
+	into.Aliases = max(into.Aliases, from.Aliases)
+	into.Implications = max(into.Implications, from.Implications)
+	into.ImpliedBy = max(into.ImpliedBy, from.ImpliedBy)
+	return into
+}
+
+// renderTagCluster maps one match into monbooru form. A cluster whose ideal
+// projects to nothing is not offerable - the caller could not hold the name -
+// and a matched spelling that projects away simply drops off the row.
+func renderTagCluster(m ptr.TagMatch) (ptrTagCluster, bool) {
+	ideal := mapping.MapPTRTag(m.Ideal)
+	if ideal == "" {
+		return ptrTagCluster{}, false
+	}
+	c := ptrTagCluster{Ideal: ideal, Matched: []string{}, Aliases: m.Aliases, Implications: m.Implications, ImpliedBy: m.ImpliedBy}
+	seen := map[string]bool{}
+	for _, raw := range m.Matched {
+		name := mapping.MapPTRTag(raw)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		c.Matched = append(c.Matched, name)
+	}
+	return c, true
 }
 
 type ptrLookupImage struct {

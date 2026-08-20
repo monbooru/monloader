@@ -22,6 +22,10 @@ var ErrNotFound = errors.New("job not found")
 // there is no next window to fetch.
 var ErrNotCapped = errors.New("job was not capped")
 
+// ErrNoneRetried is returned by RetrySeries when no window could be re-queued,
+// so the caller can say so instead of re-rendering the unchanged rows.
+var ErrNoneRetried = errors.New("no window could be re-run")
+
 // ErrNotRunning is returned by CancelLive for a job that has already finished,
 // so a cancel never falls through to a removal.
 var ErrNotRunning = errors.New("job is not running")
@@ -210,10 +214,18 @@ func (q *Queue) UseStore(st *Store) {
 		logx.Warnf("queue: budget counter reload failed: %v", err)
 		budgetDay, budgetSpent = "", 0
 	}
+	// Ids continue past every job ever handed out, not just the surviving rows:
+	// monbooru holds job ids and reconciles them on its own schedule, so a
+	// reissued id would answer about a different job.
+	high, err := st.HighestJobID()
+	if err != nil {
+		logx.Warnf("queue: job id high-water reload failed: %v", err)
+	}
 	var evicted []int64
 	q.mu.Lock()
 	q.store = st
 	q.budgetDay, q.budgetSpent = budgetDay, budgetSpent
+	q.nextID = max(q.nextID, high)
 	for _, j := range jobs {
 		if j.ID > q.nextID {
 			q.nextID = j.ID
@@ -539,8 +551,14 @@ func (q *Queue) RetrySeries(id int64, force bool) error {
 	}
 	q.mu.Unlock()
 	slices.Sort(ids)
+	var requeued int
 	for _, jid := range ids {
-		_ = q.Retry(jid, force)
+		if q.Retry(jid, force) == nil {
+			requeued++
+		}
+	}
+	if requeued == 0 {
+		return ErrNoneRetried
 	}
 	return nil
 }
@@ -814,26 +832,30 @@ func (q *Queue) reportDropped(jobs ...*Job) {
 	wg.Wait()
 }
 
-// CancelPending drops every queued job that has not started: the FIFO empties
-// in one sweep and its rows go with it, mirroring the API's DELETE /queue/{id}.
-// The row's own cancel goes through cancelKeepingRow instead, which settles a
-// never-started job as canceled in the history rather than dropping it.
-// Running jobs and history are untouched.
+// CancelPending empties the FIFO of every job that has not started, settling
+// each as canceled in the history like the row's own cancel: the URLs an
+// operator pasted stay visible and retriable instead of disappearing with no
+// record. Only the API's DELETE /queue/{id} removes a job outright. Running
+// jobs and history are untouched.
 func (q *Queue) CancelPending() {
 	q.mu.Lock()
-	ids := make([]int64, 0, len(q.pending))
-	for _, j := range q.pending {
-		ids = append(ids, j.ID)
-		delete(q.index, j.ID)
-	}
 	dropped := q.pending
 	q.pending = nil
+	var evicted []int64
+	for _, j := range dropped {
+		// Settled before the ring takes the job, for the reason
+		// cancelKeepingRow spells out: the retention sweep every List runs
+		// reads a zero FinishedAt as older than any cutoff.
+		j.cancel(q.now())
+		evicted = append(evicted, q.pushFinishedLocked(j)...)
+	}
 	q.mu.Unlock()
 	for _, j := range dropped {
-		q.settleDropped(j)
+		j.signalDone()
+		q.persist(j)
 	}
 	q.reportDropped(dropped...)
-	q.persistDelete(ids)
+	q.persistDelete(evicted)
 }
 
 // Wait blocks until the job reaches a terminal state or ctx is done,

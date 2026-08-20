@@ -21,6 +21,7 @@ import (
 type PTRService interface {
 	Status() ptr.Status
 	TagGraph(ctx context.Context, names []string) (map[string]ptr.TagInfo, error)
+	SearchTags(ctx context.Context, ranges []ptr.TagRange, scanCap int) ([]ptr.TagMatch, bool, error)
 	TagsForHash(hashHex string) (tags []string, ok bool, err error)
 	Enabled() bool
 	HasPersonalKey() bool

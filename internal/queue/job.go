@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -252,6 +253,30 @@ type jobState struct {
 	StatusChangedAt time.Time `json:"-"`
 }
 
+// MarshalJSON omits a stamp that has not happened yet. omitempty does not skip
+// a zero time.Time, so a queued job would serialize "0001-01-01T00:00:00Z"
+// for both, which a consumer rendering the declared date-time shows verbatim.
+// The shadow fields sit shallower than the embedded ones, so they win.
+func (j jobState) MarshalJSON() ([]byte, error) {
+	type plain jobState
+	return json.Marshal(struct {
+		plain
+		StartedAt  *time.Time `json:"started_at,omitempty"`
+		FinishedAt *time.Time `json:"finished_at,omitempty"`
+	}{
+		plain:      plain(j),
+		StartedAt:  stampOrNil(j.StartedAt),
+		FinishedAt: stampOrNil(j.FinishedAt),
+	})
+}
+
+func stampOrNil(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
 // Job is a queued URL and its resolved items. The mutex guards every mutable
 // field; callers read through Snapshot (which returns an independent copy) and
 // the worker/processor mutate through the methods below.
@@ -421,21 +446,35 @@ func (j *Job) lane() int {
 }
 
 // maxPTRLookupItems bounds the items one batch-lookup row keeps. A sweep of
-// a large library can match more images than anyone will read, and the counts
-// on the summary stay true past the bound.
+// a large library can match more images than anyone will read; past the bound
+// the counts keep rising but an image is no longer recognized as one already
+// answered for.
 const maxPTRLookupItems = 200
 
 // recordPTRLookup folds one batch answer into the row and keeps it settled as
 // a finished success: the endpoint has already answered, so the job is
-// history from the moment it exists.
+// history from the moment it exists. The fold is per image, not per answer -
+// a sweep re-asking what it has not resolved yet would otherwise list the same
+// image once per pass and count it that many times as matched.
 func (j *Job) recordPTRLookup(gallery string, asked int, matched []Item, now time.Time) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.Gallery = gallery
 	j.Summary.Total += asked
-	j.Summary.Matched += len(matched)
-	if room := maxPTRLookupItems - len(j.Items); room > 0 {
-		j.Items = append(j.Items, matched[:min(room, len(matched))]...)
+	at := make(map[int64]int, len(j.Items))
+	for i, it := range j.Items {
+		at[it.MonbooruID] = i
+	}
+	for _, it := range matched {
+		if i, seen := at[it.MonbooruID]; seen {
+			j.Items[i] = it // the newest answer for an image replaces the old
+			continue
+		}
+		j.Summary.Matched++
+		if len(j.Items) < maxPTRLookupItems {
+			at[it.MonbooruID] = len(j.Items)
+			j.Items = append(j.Items, it)
+		}
 	}
 	j.Status = JobSucceeded
 	j.FinishedAt, j.StatusChangedAt = now, now

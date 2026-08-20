@@ -1,7 +1,7 @@
 package ptr
 
 import (
-	"fmt"
+	"encoding/hex"
 	"net/url"
 	"strings"
 )
@@ -13,7 +13,7 @@ func ContribItemLabel(kind, tag, tag2 string, hash []byte) string {
 	case ContribMappingAdd, ContribMappingPetition:
 		short := ""
 		if len(hash) >= 4 {
-			short = " @ " + strings.ToLower(strings.TrimSpace(fmt.Sprintf("%x", hash[:4]))) + ".."
+			short = " @ " + hex.EncodeToString(hash[:4]) + ".."
 		}
 		return tag + short
 	default:
@@ -55,7 +55,7 @@ func ContribItemLink(base, kind, tag string, hash []byte) string {
 		if len(hash) == 0 {
 			return ""
 		}
-		return base + "/i/" + strings.ToLower(fmt.Sprintf("%x", hash))
+		return base + "/i/" + hex.EncodeToString(hash)
 	default:
 		if _, sub, hasNS := strings.Cut(tag, ":"); hasNS {
 			tag = sub

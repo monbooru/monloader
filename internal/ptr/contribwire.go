@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // The write half of the hydrus wire format. The read side (wire.go)
@@ -526,7 +527,7 @@ func (f *TagFilter) Blocks(tag string) (bool, string) {
 	if rule, ok := f.rules[tag]; ok {
 		return rule == 1, tag
 	}
-	ns, _, hasNS := cutNamespace(tag)
+	ns, _, hasNS := strings.Cut(tag, ":")
 	if hasNS {
 		if rule, ok := f.rules[ns+":"]; ok {
 			return rule == 1, ns + ":"
@@ -540,16 +541,6 @@ func (f *TagFilter) Blocks(tag string) (bool, string) {
 		return rule == 1, ""
 	}
 	return false, ""
-}
-
-// cutNamespace splits a hydrus tag on its first colon.
-func cutNamespace(tag string) (ns, sub string, ok bool) {
-	for i := 0; i < len(tag); i++ {
-		if tag[i] == ':' {
-			return tag[:i], tag[i+1:], true
-		}
-	}
-	return "", tag, false
 }
 
 // DecodedUpdate is a POST /update body decoded back into its actions

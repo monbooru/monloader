@@ -24,6 +24,19 @@ var categoryNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 // file name and a gallery-dl extractor key.
 func ValidCategoryName(name string) bool { return categoryNameRE.MatchString(name) }
 
+// MatchesQuery reports whether the lower-cased query is a substring of any
+// field. It sits beside the site data it filters because the settings add-site
+// box and GET /api/v1/sites answer the same question and have to answer it the
+// same way.
+func MatchesQuery(q string, fields ...string) bool {
+	for _, f := range fields {
+		if strings.Contains(strings.ToLower(f), q) {
+			return true
+		}
+	}
+	return false
+}
+
 // The value lists the settings profile editor renders; the validation sets
 // derive from them so the form and the file loader cannot drift apart.
 var (

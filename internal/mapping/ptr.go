@@ -90,13 +90,34 @@ func ptrNamespace(ns string) (category string, keep, rating bool) {
 // name could have come from, so the tag-graph query can look a monbooru tag up
 // in the PTR's vocabulary. A bare name (general) matches an unnamespaced hydrus
 // tag; a `category:name` name matches every namespace that routes to that
-// category. Underscores also try the space-joined hydrus spelling.
+// category. Underscores also try the hydrus spellings that fold back to them.
 func PTRNamespacesFor(monbooruTag string) []string {
+	parts := PTRSpellingsFor(monbooruTag)
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		out[i] = p.Full
+	}
+	return out
+}
+
+// PTRSpelling is one hydrus form a monbooru-form name could have come from,
+// kept split so a caller can bound a scan to the namespace. Namespace carries
+// its trailing colon and is empty for a bare tag.
+type PTRSpelling struct {
+	Full      string
+	Namespace string
+	Subtag    string
+}
+
+// PTRSpellingsFor is PTRNamespacesFor with the split kept: a spelling search
+// range-scans Full for a prefix query and Namespace for a substring one, which
+// a bare tag has nothing to bound.
+func PTRSpellingsFor(monbooruTag string) []PTRSpelling {
 	cat, name, hasCat := strings.Cut(monbooruTag, ":")
 	if !hasCat {
 		return spellings("", monbooruTag)
 	}
-	var out []string
+	var out []PTRSpelling
 	for _, row := range ptrNamespaceTable {
 		if row.category == cat {
 			out = append(out, spellings(row.ns, name)...)
@@ -108,23 +129,60 @@ func PTRNamespacesFor(monbooruTag string) []string {
 	return out
 }
 
-// spellings renders a namespace + name into the hydrus spellings to try: the
-// verbatim name and, when it carries underscores, the space-joined form hydrus
-// commonly stores.
-func spellings(ns, name string) []string {
-	forms := []string{name}
-	if spaced := strings.ReplaceAll(name, "_", " "); spaced != name {
-		forms = append(forms, spaced)
-	}
-	out := make([]string, 0, len(forms))
+// maxSubtagForms bounds the separator enumeration below. The forms double per
+// underscore, and a name long enough to pass the bound is past what a booru
+// spelling mixes anyway.
+const maxSubtagForms = 8
+
+// spellings renders a namespace + name into the hydrus spellings to try.
+func spellings(ns, name string) []PTRSpelling {
+	forms := subtagForms(name)
+	out := make([]PTRSpelling, 0, len(forms))
 	for _, f := range forms {
 		if ns == "" {
-			out = append(out, f)
-		} else {
-			out = append(out, ns+":"+f)
+			out = append(out, PTRSpelling{Full: f, Subtag: f})
+			continue
 		}
+		out = append(out, PTRSpelling{Full: ns + ":" + f, Namespace: ns + ":", Subtag: f})
 	}
 	return out
+}
+
+// subtagForms lists the hydrus spellings a monbooru name could have been stored
+// as, verbatim first and the space-joined form second - the two hydrus
+// commonly holds. Every mix of the two follows, because the projection back to
+// monbooru form folds spaces to underscores: a booru-imported tag that kept one
+// underscore and separated the rest with spaces ("kagamine_rin cosplay") reads
+// as the same name and is otherwise unreachable from it.
+func subtagForms(name string) []string {
+	at := []int{}
+	for i, r := range name {
+		if r == '_' {
+			at = append(at, i)
+		}
+	}
+	if len(at) == 0 {
+		return []string{name}
+	}
+	spaced := strings.ReplaceAll(name, "_", " ")
+	forms := []string{name, spaced}
+	if 1<<len(at) > maxSubtagForms {
+		return forms
+	}
+	// Bit i of mask spaces the i-th underscore; the all-set and all-clear masks
+	// are the two forms above.
+	b := []byte(name)
+	for mask := 1; mask < 1<<len(at)-1; mask++ {
+		for i, pos := range at {
+			if mask&(1<<i) != 0 {
+				b[pos] = ' '
+			} else {
+				b[pos] = '_'
+			}
+		}
+		forms = append(forms, string(b))
+	}
+	return forms
 }
 
 // ptrSupportedNamespaces is the PTR's documented supported-namespace

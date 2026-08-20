@@ -25,6 +25,9 @@ type contribToAdd struct {
 	// (already staged in monloader awaiting a send).
 	Status string `json:"status"`
 	Note   string `json:"note,omitempty"`
+	// UnknownTag marks a new row whose PTR spelling is not a tag the index
+	// holds at all: sending it creates the tag, not just the mapping.
+	UnknownTag bool `json:"unknown_tag,omitempty"`
 }
 
 // contribPTROnly is one PTR-current tag the submitted list lacks - a
@@ -188,6 +191,8 @@ func (p *contribPreview) adds(tags []string) []contribToAdd {
 			entry.Status = "known"
 		} else {
 			entry.Status = "new"
+			_, exists, err := p.h.ptr.IdealTag(mapped.PTR)
+			entry.UnknownTag = err == nil && !exists
 		}
 		out = append(out, entry)
 	}
@@ -935,6 +940,13 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := decodeBody(w, r, &body); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(body.A) == "" || strings.TrimSpace(body.B) == "" {
+		// Both are declared required; without this a field-name typo reads as
+		// "the repository would rewrite this tag", which is a verdict about a
+		// tag rather than about the request.
+		apiError(w, http.StatusBadRequest, "invalid_request", "a and b are required")
 		return
 	}
 	aMapped, bMapped := mapping.ContribTagFor(body.A), mapping.ContribTagFor(body.B)

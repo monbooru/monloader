@@ -36,6 +36,11 @@ type PushMeta struct {
 	Original        string
 	ParentURL       string
 	Notes           []NoteBox
+	// What the post says about the file it serves; monbooru records it on
+	// the origin row and compares it against the local file.
+	PostWidth, PostHeight int
+	PostSize              int64
+	PostExt               string
 }
 
 // NoteBox is one positional note pushed alongside a file; the field names match
@@ -46,6 +51,9 @@ type NoteBox struct {
 	W    int    `json:"w"`
 	H    int    `json:"h"`
 	Body string `json:"body"`
+	// BodyHTML is the source's own markup for the box. monbooru converts it
+	// and falls back to Body, which is what an older one reads.
+	BodyHTML string `json:"body_html,omitempty"`
 }
 
 // Result is a successful push outcome.
@@ -248,7 +256,8 @@ func (c *Client) sendReplace(ctx context.Context, endpoint, contentType string, 
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return &Result{Outcome: queue.OutcomeReplaced, MonbooruID: imageID, MergeNote: replaceNote(respBody)}, nil
+		_, warnings := enrichResult(respBody)
+		return &Result{Outcome: queue.OutcomeReplaced, MonbooruID: imageID, MergeNote: replaceNote(respBody), TagWarnings: warnings}, nil
 	case http.StatusConflict:
 		code := apiErrCode(respBody)
 		if code != queue.ErrCodeAlreadyExists && code != queue.ErrCodeWrongType {
@@ -300,6 +309,10 @@ type EnrichPayload struct {
 	Original   string    `json:"original,omitempty"`
 	ParentURL  string    `json:"parent_url,omitempty"`
 	Notes      []NoteBox `json:"notes,omitempty"`
+	PostWidth  int       `json:"post_width,omitempty"`
+	PostHeight int       `json:"post_height,omitempty"`
+	PostSize   int64     `json:"post_size,omitempty"`
+	PostExt    string    `json:"post_ext,omitempty"`
 }
 
 // EnrichImage applies fetched metadata to an existing monbooru image via
@@ -324,7 +337,8 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return &Result{Outcome: queue.OutcomeEnriched, MonbooruID: imageID, MergeNote: enrichMergeNote(respBody)}, nil
+		note, warnings := enrichResult(respBody)
+		return &Result{Outcome: queue.OutcomeEnriched, MonbooruID: imageID, MergeNote: note, TagWarnings: warnings}, nil
 	case http.StatusConflict:
 		return nil, &queue.CodedError{Code: queue.ErrCodeHashMismatch, Msg: apiErrMessage(respBody, resp.Status)}
 	default:
@@ -332,15 +346,21 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 	}
 }
 
-// enrichMergeNote reads the optional {merge:{...}} block from an enrich 200.
-func enrichMergeNote(data []byte) string {
+// enrichResult reads the optional {merge:{...}} block and the tags monbooru
+// refused from an enrich 200. The warnings say a lookup only partly applied,
+// which otherwise reads the same as one that applied everything.
+func enrichResult(data []byte) (note string, warnings []string) {
 	var env struct {
-		Merge json.RawMessage `json:"merge"`
+		Merge       json.RawMessage `json:"merge"`
+		TagWarnings []string        `json:"tag_warnings"`
 	}
-	if json.Unmarshal(data, &env) != nil || len(env.Merge) == 0 {
-		return ""
+	if json.Unmarshal(data, &env) != nil {
+		return "", nil
 	}
-	return mergeNote(env.Merge)
+	if len(env.Merge) > 0 {
+		note = mergeNote(env.Merge)
+	}
+	return note, env.TagWarnings
 }
 
 // ReportFetchOutcome tells monbooru how a metadata fetch ended when it failed
@@ -522,6 +542,16 @@ func writeMetaFields(w *multipart.Writer, meta PushMeta) error {
 	if meta.CollectionOrder > 0 {
 		field("collection_order", strconv.Itoa(meta.CollectionOrder))
 	}
+	if meta.PostWidth > 0 {
+		field("post_width", strconv.Itoa(meta.PostWidth))
+	}
+	if meta.PostHeight > 0 {
+		field("post_height", strconv.Itoa(meta.PostHeight))
+	}
+	if meta.PostSize > 0 {
+		field("post_size", strconv.FormatInt(meta.PostSize, 10))
+	}
+	field("post_ext", meta.PostExt)
 	return err
 }
 

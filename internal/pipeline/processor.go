@@ -167,6 +167,12 @@ func (p *Processor) processDownload(ctx context.Context, job, snap *queue.Job) e
 				Code: queue.ErrCodeDownloadFailed,
 				Msg:  fmt.Sprintf("re-resolving the whole gallery returned %d pages, fewer than the %d already found", len(whole.Items), len(resolved)),
 			})
+		default:
+			// The window that ships is a partial import of the pool, so say so:
+			// otherwise the row reads complete and the remaining pages can only
+			// be recovered by re-submitting the URL.
+			job.SetCapped(limit)
+			logx.Infof("queue: job %d capped to the first %d pages: re-resolving the whole pool returned %d, fewer than the %d already found", snap.ID, limit, len(whole.Items), len(resolved))
 		}
 	} else if limit > 0 && len(resolved) >= limit {
 		// A resolve that returned the full cap likely truncated a larger source,
@@ -221,6 +227,7 @@ func (p *Processor) enrichItem(ctx context.Context, snap *queue.Job, url string)
 func (p *Processor) enrichFromMeta(ctx context.Context, job, snap *queue.Job, meta map[string]any, url, md5 string, sim float64) {
 	// Label the row's site like a download job's, even though nothing is fetched.
 	job.SetSite(kwdict.String(meta, "category"))
+	labelEnrichPost(job, meta)
 	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, p.mapEnrichPayload(meta, url, md5, sim))
 	if err != nil {
 		if ctx.Err() != nil {
@@ -250,17 +257,26 @@ func (p *Processor) mapEnrichPayload(meta map[string]any, url, md5 string, sim f
 		Original:   pf.Original,
 		ParentURL:  pf.ParentURL,
 		Notes:      toNoteBoxes(pf.Notes),
+		PostWidth:  pf.PostWidth,
+		PostHeight: pf.PostHeight,
+		PostSize:   pf.PostSize,
+		PostExt:    pf.PostExt,
 	}
 }
 
 // markEnriched walks the job's single item to the enriched terminal state,
-// attaching the monbooru id, the merge note, and (when the item has none) the
-// source url. An enrich that merged nothing says so, so a repeat lookup does
-// not read as a fresh enrichment.
+// attaching the monbooru id, the merge note, the tags monbooru refused, and
+// (when the item has none) the source url. An enrich that merged nothing says
+// so, so a repeat lookup does not read as a fresh enrichment.
 func (p *Processor) markEnriched(job, snap *queue.Job, res *monbooru.Result, url string) {
 	note := res.MergeNote
 	if note == "" {
 		note = "no new tags"
+	}
+	// A hash-keyed job starts with no URL and the row shows the hash; once the
+	// walk names a post, the row names it too, like a hash import's does.
+	if snap.URL == "" && url != "" {
+		job.SetURL(url)
 	}
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemDownloaded })
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemUploaded })
@@ -269,8 +285,20 @@ func (p *Processor) markEnriched(job, snap *queue.Job, res *monbooru.Result, url
 		it.Outcome = queue.OutcomeEnriched
 		it.MonbooruID = snap.ImageID
 		it.MergeNote = note
+		it.TagWarnings = res.TagWarnings
 		if it.URL == "" {
 			it.URL = url
+		}
+	})
+}
+
+// labelEnrichPost names the post an enrich resolved on the item, so a lookup
+// row reads like a download's. A similarity hit already labelled the item with
+// its score, which says more than the post id.
+func labelEnrichPost(job *queue.Job, meta map[string]any) {
+	job.UpdateItem(0, func(it *queue.Item) {
+		if it.PostID == "" {
+			it.PostID = kwdict.ID(meta)
 		}
 	})
 }
@@ -518,22 +546,31 @@ func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded
 		if pf.Collection != "" && order == 0 {
 			order = i + 1
 		}
-		meta := monbooru.PushMeta{
-			Filename:        filepath.Base(d.Path),
-			Tags:            pf.Tags,
-			Source:          pf.Source,
-			PostID:          kwdict.ID(d.Meta),
-			URL:             p.itemURL(d.Meta, submittedURL, pageURL),
-			Collection:      pf.Collection,
-			CollectionOrder: order,
-			Via:             pf.Via,
-			Folder:          folder,
-			Commentary:      pf.Commentary,
-			Original:        pf.Original,
-			ParentURL:       pf.ParentURL,
-			Notes:           toNoteBoxes(pf.Notes),
-		}
+		meta := pushMetaFrom(pf, d.Path, p.itemURL(d.Meta, submittedURL, pageURL), kwdict.ID(d.Meta))
+		meta.Collection, meta.CollectionOrder = pf.Collection, order
+		meta.Via, meta.Folder = pf.Via, folder
 		p.pushOne(ctx, job, i, d.Path, meta, gallery)
+	}
+}
+
+// pushMetaFrom builds the push body every mode shares: what the mapper made of
+// the post, the file it landed in, and the post it came from. A mapped field
+// added here reaches a fresh push and an in-place replace by construction.
+func pushMetaFrom(pf mapping.PushFields, path, url, postID string) monbooru.PushMeta {
+	return monbooru.PushMeta{
+		Filename:   filepath.Base(path),
+		Tags:       pf.Tags,
+		Source:     pf.Source,
+		PostID:     postID,
+		URL:        url,
+		Commentary: pf.Commentary,
+		Original:   pf.Original,
+		ParentURL:  pf.ParentURL,
+		Notes:      toNoteBoxes(pf.Notes),
+		PostWidth:  pf.PostWidth,
+		PostHeight: pf.PostHeight,
+		PostSize:   pf.PostSize,
+		PostExt:    pf.PostExt,
 	}
 }
 
@@ -546,7 +583,7 @@ func toNoteBoxes(in []mapping.NoteBox) []monbooru.NoteBox {
 	}
 	out := make([]monbooru.NoteBox, len(in))
 	for i, n := range in {
-		out[i] = monbooru.NoteBox{X: n.X, Y: n.Y, W: n.W, H: n.H, Body: n.Body}
+		out[i] = monbooru.NoteBox{X: n.X, Y: n.Y, W: n.W, H: n.H, Body: n.Body, BodyHTML: n.BodyHTML}
 	}
 	return out
 }
@@ -569,12 +606,21 @@ func (p *Processor) pushOne(ctx context.Context, job *queue.Job, i int, path str
 // processChapters imports a manga/comic title (series) URL: each queued chapter
 // is resolved, downloaded, and bundled into its own cbz pushed as its own manga
 // (the single-gallery cbz path, run once per chapter). The job cap bounds the
-// chapter count; the full chapter list is known, so only an over-cap title is
-// flagged capped.
+// chapter count; the full chapter list is known, so only a title with chapters
+// past the window is flagged capped.
 func (p *Processor) processChapters(ctx context.Context, job, snap *queue.Job, res gdl.ResolveResult, limit int) {
 	gallery := p.beginJob(job, snap, res.Category)
 
+	// --range bounds the files an extractor yields, not the chapter handoffs a
+	// title lists, so the resolve above answers the whole list on every window
+	// and the continuation's offset has to be applied here. Without it each
+	// window re-imports the first chapters and a fetch-all chain never ends.
 	chapters := res.Queue
+	if snap.Offset < len(chapters) {
+		chapters = chapters[snap.Offset:]
+	} else {
+		chapters = nil
+	}
 	capped := limit > 0 && len(chapters) > limit
 	if capped {
 		chapters = chapters[:limit]

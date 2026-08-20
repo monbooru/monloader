@@ -105,6 +105,7 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	// the first.
 	ptrApplied := false
 	var ptrNote string
+	var warnings []string
 	if ptrHit {
 		res, enrichErr := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
 			Tags:   ptrTags,
@@ -120,13 +121,14 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 		} else {
 			ptrApplied = true
 			ptrNote = res.MergeNote
+			warnings = res.TagWarnings
 		}
 	}
 
 	if meta == nil && hit == nil {
 		// Only the PTR matched: its tags landed but no source URL did, so the
 		// item is enriched and the online trail still reports what missed.
-		p.markEnriched(job, snap, &monbooru.Result{MonbooruID: snap.ImageID, MergeNote: ptrNote}, "")
+		p.markEnriched(job, snap, &monbooru.Result{MonbooruID: snap.ImageID, MergeNote: ptrNote, TagWarnings: warnings}, "")
 		p.reportPTRTrail(ctx, snap, chainTrail)
 		return nil
 	}
@@ -135,13 +137,17 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	switch {
 	case onlineErr == nil:
 		note := composeLookupNote(ptrApplied, ptrNote, site, res.MergeNote)
-		p.markEnriched(job, snap, &monbooru.Result{MonbooruID: snap.ImageID, MergeNote: note}, url)
+		p.markEnriched(job, snap, &monbooru.Result{
+			MonbooruID: snap.ImageID, MergeNote: note,
+			// Either enrich can have had tags refused, so the item carries both.
+			TagWarnings: append(warnings, res.TagWarnings...),
+		}, url)
 	case ptrApplied:
 		// The PTR tags landed but the online post could not be enriched (a
 		// changed file, a rejection). Keep the item enriched and report a
 		// PTR-led trail so monbooru's pill is truthful rather than the "no
 		// tags applied" its enrich handler recorded for the online failure.
-		p.markEnriched(job, snap, &monbooru.Result{MonbooruID: snap.ImageID, MergeNote: ptrNote}, "")
+		p.markEnriched(job, snap, &monbooru.Result{MonbooruID: snap.ImageID, MergeNote: ptrNote, TagWarnings: warnings}, "")
 		p.reportPTRTrail(ctx, snap, append(chainTrail, site+": "+errorCode(onlineErr)))
 	default:
 		failItem(job, 0, errorCode(onlineErr), onlineErr.Error())
@@ -184,6 +190,7 @@ func (p *Processor) enrichAllOnline(ctx context.Context, job, snap *queue.Job, m
 		}
 		site := kwdict.String(meta, "category")
 		job.SetSite(site)
+		labelEnrichPost(job, meta)
 		url := p.mapper.PostURL(meta)
 		res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery,
 			p.mapEnrichPayload(meta, url, claimedMD5(meta, snap.MD5, sim), sim))
@@ -322,7 +329,7 @@ func (p *Processor) lookupPTR(ctx context.Context, job, snap *queue.Job) error {
 		return nil
 	}
 	if !ok {
-		p.failEnrichFetch(ctx, job, snap, missError([]string{"Public Tag Repository: no match"}))
+		p.failEnrichFetch(ctx, job, snap, missError([]string{ptrTrailName + ": no match"}))
 		return nil
 	}
 	tags := mapping.MapPTRTags(rawTags)

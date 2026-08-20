@@ -3,6 +3,7 @@ package queue
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -87,7 +88,23 @@ type storedJob struct {
 	StatusChangedAt time.Time `json:"status_changed_at"`
 }
 
-// SaveJob upserts one job snapshot.
+// jobIDHighWater names the counter row holding the highest job id ever handed
+// out. Ids are otherwise seeded from the surviving rows, so a clear (or the
+// retention sweep) plus a restart would reissue ids monbooru still holds as
+// reconcile handles, and a stale one would resolve against an unrelated job.
+const jobIDHighWater = "job_id_high_water"
+
+// HighestJobID reads the id high-water mark, 0 when nothing was ever saved.
+func (s *Store) HighestJobID() (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT n FROM counters WHERE name = ?`, jobIDHighWater).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return n, err
+}
+
+// SaveJob upserts one job snapshot and advances the id high-water mark.
 func (s *Store) SaveJob(j *Job) error {
 	rec := storedJob{
 		Job:             j.jobState,
@@ -112,6 +129,15 @@ func (s *Store) SaveJob(j *Job) error {
 		 WHERE excluded.seq >= jobs.seq`,
 		j.ID, string(j.Status), string(data), j.seq,
 	)
+	if err != nil {
+		return err
+	}
+	// The mark rides the job write rather than the enqueue, so it needs no lock
+	// of its own and survives the row it came from being deleted.
+	_, err = s.db.Exec(
+		`INSERT INTO counters (name, day, n) VALUES (?, '', ?)
+		 ON CONFLICT(name) DO UPDATE SET n = max(n, excluded.n)`,
+		jobIDHighWater, j.ID)
 	return err
 }
 

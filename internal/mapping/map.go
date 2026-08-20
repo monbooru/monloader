@@ -40,13 +40,20 @@ type PushFields struct {
 	Original        string
 	ParentURL       string
 	Notes           []NoteBox
+	// What the post says about the file it serves, for monbooru's upgrade
+	// surface. Zero where the site publishes nothing, which is common.
+	PostWidth, PostHeight int
+	PostSize              int64
+	PostExt               string
 }
 
 // NoteBox is one positional note overlaid on an image, in original-image pixel
-// coordinates (Danbooru "notes").
+// coordinates (Danbooru "notes"). BodyHTML keeps the source's own markup beside
+// the flattened body; monbooru converts it and falls back to Body.
 type NoteBox struct {
 	X, Y, W, H int
 	Body       string
+	BodyHTML   string
 }
 
 // Mapper turns gallery-dl metadata into monbooru push fields using the
@@ -194,10 +201,15 @@ func (m *Mapper) SourceLabel(name string) string {
 		return name
 	}
 	host := normalizeHost(name)
-	for cand := host; cand != ""; cand = parentDomain(cand) {
-		for _, hl := range cfg.HostLabels {
-			if normalizeHost(hl.Host) == cand {
-				return hl.Label
+	// A self-hosted source almost always carries a port, which is the case host
+	// labels exist for; an exact host:port row still wins, and the bare host the
+	// field's hint describes matches it too.
+	for _, start := range []string{host, hostWithoutPort(host)} {
+		for cand := start; cand != ""; cand = parentDomain(cand) {
+			for _, hl := range cfg.HostLabels {
+				if normalizeHost(hl.Host) == cand {
+					return hl.Label
+				}
 			}
 		}
 	}
@@ -212,6 +224,22 @@ func (m *Mapper) SourceLabel(name string) string {
 		return category
 	}
 	return name
+}
+
+// hostWithoutPort drops a trailing :port, leaving a bracketed IPv6 literal and
+// a bare host alone. Returns host unchanged when there is nothing to drop, so
+// the caller's second pass is a no-op rather than a special case.
+func hostWithoutPort(host string) string {
+	i := strings.LastIndex(host, ":")
+	if i < 0 || strings.Contains(host[i+1:], "]") {
+		return host
+	}
+	for _, r := range host[i+1:] {
+		if r < '0' || r > '9' {
+			return host
+		}
+	}
+	return host[:i]
 }
 
 // parentDomain strips a host's leftmost segment ("" past the registrable
@@ -311,8 +339,24 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 		pf.ParentURL = m.PostURLFor(category, id)
 	}
 	pf.Notes = notesFor(profile, meta)
+	pf.PostWidth, pf.PostHeight, pf.PostSize, pf.PostExt = postFileFor(meta)
 
 	return pf
+}
+
+// postFileFor reads what the post says its file is. gallery-dl normalizes
+// width / height across the boorus; the size and extension keys vary, so
+// each falls back through the spellings the supported sites use. Anything
+// missing stays zero: monbooru keeps whatever it already had.
+func postFileFor(meta map[string]any) (w, h int, size int64, ext string) {
+	w, h = kwdict.Int(meta, "width"), kwdict.Int(meta, "height")
+	for _, key := range []string{"file_size", "filesize", "size"} {
+		if n := kwdict.Int(meta, key); n > 0 {
+			size = int64(n)
+			break
+		}
+	}
+	return w, h, size, strings.ToLower(strings.TrimPrefix(kwdict.String(meta, "extension"), "."))
 }
 
 // parentPostID returns the id of the post's declared parent, "" when none.
@@ -419,14 +463,15 @@ func notesFor(profile Profile, meta map[string]any) []NoteBox {
 		if active, ok := n["is_active"].(bool); ok && !active {
 			continue
 		}
-		body := plainText(kwdict.String(n, "body"))
+		raw := kwdict.String(n, "body")
+		body := plainText(raw)
 		if body == "" {
 			continue
 		}
 		out = append(out, NoteBox{
 			X: kwdict.Int(n, "x"), Y: kwdict.Int(n, "y"),
 			W: kwdict.Int(n, "width"), H: kwdict.Int(n, "height"),
-			Body: body,
+			Body: body, BodyHTML: markupHTML(raw, body),
 		})
 	}
 	return out
@@ -437,12 +482,21 @@ var (
 	tagRe = regexp.MustCompile(`<[^>]*>`)
 )
 
-// plainText reduces a booru's HTML note body (or commentary) to plain text so
-// monbooru stores something safe to render: entities are decoded first so
-// entity-encoded markup is stripped like literal markup instead of being
-// reintroduced after the strip, then <br> and CRLF become newlines and the
-// remaining tags are dropped. DText markup, which is not HTML, is left as
-// readable text.
+// markupHTML returns the source's own body only when it carries markup the
+// flattening dropped, so a plain note is not pushed twice.
+func markupHTML(raw, plain string) string {
+	if strings.TrimSpace(raw) == plain {
+		return ""
+	}
+	return raw
+}
+
+// plainText reduces a booru's HTML note body (or commentary) to plain text:
+// entities are decoded first so entity-encoded markup is stripped like literal
+// markup instead of being reintroduced after the strip, then <br> and CRLF
+// become newlines and the remaining tags are dropped. DText markup, which is
+// not HTML, is left as readable text. Notes also travel in their original form
+// (NoteBox.BodyHTML); a monbooru that cannot read that falls back to this body.
 func plainText(s string) string {
 	if s == "" {
 		return ""

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/kwdict"
-	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/queue"
 )
 
@@ -83,17 +82,7 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 	}
 
 	pf := p.mapper.Map(w.Meta)
-	meta := monbooru.PushMeta{
-		Filename:   filepath.Base(w.Path),
-		Tags:       pf.Tags,
-		Source:     pf.Source,
-		PostID:     kwdict.ID(w.Meta),
-		URL:        p.itemURL(w.Meta, snap.URL, snap.PageURL),
-		Commentary: pf.Commentary,
-		Original:   pf.Original,
-		ParentURL:  pf.ParentURL,
-		Notes:      toNoteBoxes(pf.Notes),
-	}
+	meta := pushMetaFrom(pf, w.Path, p.itemURL(w.Meta, snap.URL, snap.PageURL), kwdict.ID(w.Meta))
 	pushRes, err := p.client.ReplaceImageFile(ctx, snap.ImageID, w.Path, meta, snap.Gallery)
 	if err != nil {
 		// monbooru's own refusals (already_exists, wrong_type, a rejected

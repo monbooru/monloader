@@ -450,11 +450,13 @@ func nextWindow(seriesCap, configured int) int {
 	return seriesCap
 }
 
-// pageWindow reads the ?page= param and clamps it to [1, totalPages] for a
-// list of n rows split into pageSize-row pages.
+// pageWindow reads the page param and clamps it to [1, totalPages] for a list
+// of n rows split into pageSize-row pages. Read through FormValue, since htmx
+// sends the bulk buttons' inherited hx-vals in the body on a POST and in the
+// query string on the 2 s poll.
 func pageWindow(r *http.Request, n int) (page, totalPages int) {
 	totalPages = max((n+pageSize-1)/pageSize, 1)
-	page, _ = strconv.Atoi(r.URL.Query().Get("page"))
+	page, _ = strconv.Atoi(r.FormValue("page"))
 	return min(max(page, 1), totalPages), totalPages
 }
 
@@ -472,11 +474,16 @@ func (s *Server) monbooruWebLink() string {
 
 // jobAction parses the row's {id}, runs one queue action on it, and re-renders
 // the rows. A row that is no longer tracked says so in the add bar, like the
-// API's 404; any other refusal just re-renders (the poll reports the state).
+// API's 404, and so does a series retry that could re-queue nothing; any other
+// refusal just re-renders (the poll reports the state).
 func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, action func(id int64) error) {
 	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-		if errors.Is(action(id), queue.ErrNotFound) {
+		switch err := action(id); {
+		case errors.Is(err, queue.ErrNotFound):
 			addBarFlash(w, "that job is no longer in the queue")
+			return
+		case errors.Is(err, queue.ErrNoneRetried):
+			addBarFlash(w, "this download is still running - wait for it to finish")
 			return
 		}
 	}

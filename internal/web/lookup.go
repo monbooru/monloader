@@ -282,31 +282,36 @@ func (s *Server) testLookupSite(w http.ResponseWriter, r *http.Request, site str
 	defer cancel()
 	_, err := s.runner.FetchMeta(ctx, searchURL)
 	if err != nil {
+		// The probe md5 matching nothing is the expected answer: the search
+		// executed, so the site was reached. Every other error is a failure.
 		var ce *queue.CodedError
-		if !errors.As(err, &ce) {
-			siteState(w, "err", "failed", err.Error(), time.Time{})
-			return
-		}
-		switch ce.Code {
-		case queue.ErrCodeMappingFailed:
-			// The probe md5 matched nothing: the expected answer, and the
-			// search executed, so the site was reached.
-		case queue.ErrCodeRateLimited:
-			siteState(w, "warn", "rate limited", ce.Msg, time.Time{})
-			return
-		case queue.ErrCodeAuthRequired:
-			siteState(w, "warn", "auth rejected", ce.Msg, time.Time{})
-			return
-		case queue.ErrCodeBlocked:
-			siteState(w, "err", "blocked", ce.Msg, time.Time{})
-			return
-		default:
-			siteState(w, "err", "failed", ce.Msg, time.Time{})
+		if !errors.As(err, &ce) || ce.Code != queue.ErrCodeMappingFailed {
+			probeFailure(w, err)
 			return
 		}
 	}
 	s.siteState.Reached(site, time.Now())
 	siteState(w, "ok", "ok", "", time.Time{})
+}
+
+// probeFailure renders a live probe's error into the site's state cell. An
+// unclassified error falls back to its message.
+func probeFailure(w http.ResponseWriter, err error) {
+	var ce *queue.CodedError
+	if !errors.As(err, &ce) {
+		siteState(w, "err", "failed", err.Error(), time.Time{})
+		return
+	}
+	switch ce.Code {
+	case queue.ErrCodeRateLimited:
+		siteState(w, "warn", "rate limited", ce.Msg, time.Time{})
+	case queue.ErrCodeAuthRequired:
+		siteState(w, "warn", "auth rejected", ce.Msg, time.Time{})
+	case queue.ErrCodeBlocked:
+		siteState(w, "err", "blocked", ce.Msg, time.Time{})
+	default:
+		siteState(w, "err", "failed", ce.Msg, time.Time{})
+	}
 }
 
 func (s *Server) testSimilarityService(w http.ResponseWriter, r *http.Request, service string) {
@@ -318,21 +323,7 @@ func (s *Server) testSimilarityService(w http.ResponseWriter, r *http.Request, s
 	defer cancel()
 	res, err := s.sim.Search(ctx, service, similarity.ProbeImage())
 	if err != nil {
-		var ce *queue.CodedError
-		if errors.As(err, &ce) {
-			switch ce.Code {
-			case queue.ErrCodeRateLimited:
-				siteState(w, "warn", "rate limited", ce.Msg, time.Time{})
-			case queue.ErrCodeAuthRequired:
-				siteState(w, "warn", "auth rejected", ce.Msg, time.Time{})
-			case queue.ErrCodeBlocked:
-				siteState(w, "err", "blocked", ce.Msg, time.Time{})
-			default:
-				siteState(w, "err", "failed", ce.Msg, time.Time{})
-			}
-			return
-		}
-		siteState(w, "err", "failed", err.Error(), time.Time{})
+		probeFailure(w, err)
 		return
 	}
 	msg := "ok"

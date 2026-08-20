@@ -139,7 +139,7 @@
         <td class="site-state" id="lk-state-{{.Name}}" title="{{.State}}">{{if .Warn}}<span class="flash-warn">{{.State}}</span>{{else}}<span class="flash-ok">{{.State}}</span>{{end}}</td>
         <td class="site-actions"><span class="actions">
           {{if .Position}}<button type="button" hx-post="/settings/lookup/test/{{.Name}}" hx-target="#lk-state-{{.Name}}" hx-swap="innerHTML"
-                  hx-on::before-request="document.getElementById('lk-state-{{.Name}}').innerHTML='<span class=&quot;hint&quot;>testing...</span>'"
+                  hx-on::before-request="this.closest('tr').querySelector('.site-state').innerHTML='<span class=&quot;hint&quot;>testing...</span>'"
                   title="{{if .Similarity}}run one real query with a built-in probe image{{else}}run one real md5 search with the probe image's md5{{end}}">test</button>{{end}}
           {{if eq .Name "saucenao"}}<button type="button" onclick="document.getElementById('saucenao-dialog').showModal()">key</button>{{end}}
           {{if .Site}}{{template "site_edit_btn" (dict "Row" .Site "Label" "edit site")}}{{end}}
@@ -278,12 +278,12 @@
         <div class="field">
           <label for="ptr-data-path">data path</label>
           <input id="ptr-data-path" type="text" name="data_path" value="{{.Cfg.PTR.DataPath}}">
-          <span class="field-hint">dedicated index volume (default {{.Defaults.PTR.DataPath}})</span>
+          <span class="field-hint">dedicated index volume; applies on restart (default {{.Defaults.PTR.DataPath}})</span>
         </div>
         <div class="field">
           <label for="ptr-address">address</label>
           <input id="ptr-address" type="text" name="address" value="{{.Cfg.PTR.Address}}">
-          <span class="field-hint">repository to sync from (default {{.Defaults.PTR.Address}})</span>
+          <span class="field-hint">repository to sync from; applies on restart (default {{.Defaults.PTR.Address}})</span>
         </div>
         <div class="field">
           <label for="ptr-access-key">access key</label>
@@ -293,12 +293,12 @@
         <div class="field">
           <label for="ptr-fetch-sleep">fetch sleep (s)</label>
           <input id="ptr-fetch-sleep" type="text" name="fetch_sleep" value="{{.Cfg.PTR.FetchSleep}}">
-          <span class="field-hint">delay between update downloads (default {{.Defaults.PTR.FetchSleep}})</span>
+          <span class="field-hint">delay between update downloads; applies on restart (default {{.Defaults.PTR.FetchSleep}})</span>
         </div>
         <div class="field">
           <label for="ptr-min-free">min free GB</label>
           <input id="ptr-min-free" type="text" name="min_free_gb" value="{{.Cfg.PTR.MinFreeGB}}">
-          <span class="field-hint">refuse the initial sync below this free space (default {{.Defaults.PTR.MinFreeGB}})</span>
+          <span class="field-hint">refuse the initial sync below this free space; applies on restart (default {{.Defaults.PTR.MinFreeGB}})</span>
         </div>
         <div class="field">
           <label>danger</label>

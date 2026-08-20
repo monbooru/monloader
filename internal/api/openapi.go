@@ -320,6 +320,25 @@ func (h *Handler) endpoints() []endpoint {
 			Handler: h.ptrTags,
 		},
 		{
+			Method: "GET", Path: "/api/v1/ptr/tags/search",
+			Summary: "Search the PTR's spellings", OperationID: "ptrTagSearch",
+			Description: "Find the spellings the index holds under a monbooru-form prefix, folded to one " +
+				"row per sibling cluster with the size of each cluster's graph. The graph query answers " +
+				"about a name the caller already knows; this is how it finds out which name to ask " +
+				"about when the operator's own spelling is not the repository's.",
+			Params: []param{
+				{Name: "q", In: "query", Required: true, Description: "monbooru-form prefix, `category:name` or bare for general"},
+				{Name: "limit", In: "query", Description: "Clusters to return, 1..50 (default 20)"},
+				{Name: "mode", In: "query", Description: "`prefix` (default) seeks the range; `contains` walks the namespace instead and needs a category-qualified q, since a bare one has nothing to bound the scan. Anything else is refused"},
+			},
+			Responses: []response{
+				{Status: "200", Description: "Matching clusters, best first", Ref: "PTRTagSearch"},
+				{Status: "400", Description: "Empty q, a limit out of range, or contains with no namespace to bound it", Ref: "Error"},
+				{Status: "409", Description: "The PTR index is not available or not fully synced", Ref: "Error"},
+			},
+			Handler: h.ptrTagSearch,
+		},
+		{
 			Method: "POST", Path: "/api/v1/ptr/lookup",
 			Summary: "Look a batch of file hashes up in the PTR index", OperationID: "ptrLookup",
 			Description: "Return the tags the local index holds for each file sha256, in monbooru form. " +
@@ -719,6 +738,16 @@ var apiSchemas = []apiSchema{
 	{Name: "PTRTagResults", Props: []prop{
 		{Name: "results", Type: "object", Description: "map of the queried tag to its PTR ideal, aliases, implications, and implied_by (monbooru form); known=false when the PTR does not have the tag"},
 	}},
+	{Name: "PTRTagSearch", Props: []prop{
+		{Name: "clusters", Type: "array", Items: &prop{Type: "object", Props: []prop{
+			{Name: "ideal", Type: "string", Description: "the cluster's preferred spelling in monbooru form; the name to look up or pull under"},
+			{Name: "matched", Type: "array", Items: &prop{Type: "string"}, Description: "the spellings of this cluster the query matched, in monbooru form"},
+			{Name: "aliases", Type: "integer", Description: "other spellings resolving to the ideal"},
+			{Name: "implications", Type: "integer", Description: "distinct tags the cluster implies"},
+			{Name: "implied_by", Type: "integer", Description: "distinct tags implying the cluster, capped at 200 like the graph answer"},
+		}}},
+		{Name: "truncated", Type: "boolean", Description: "a scan or the limit cut the answer short; narrow the query to see the rest"},
+	}},
 	{Name: "LookupStatus", Props: []prop{
 		{Name: "daily_budget", Type: "integer", Description: "images per day a scheduled lookup may cover; 0 refuses them all"},
 		{Name: "left_today", Type: "integer", Description: "budgeted lookups still acceptable before the next rollover"},
@@ -736,6 +765,7 @@ var apiSchemas = []apiSchema{
 			{Name: "ptr", Type: "string", Description: "the exact PTR spelling a send would use; empty when ineligible"},
 			{Name: "status", Type: "string", Description: "new, known, ineligible, filtered, or unsent"},
 			{Name: "note", Type: "string", Description: "why the tag is ineligible or filtered"},
+			{Name: "unknown_tag", Type: "boolean", Description: "on a new row, the PTR spelling is not a tag the index holds at all; absent otherwise"},
 		}}},
 		{Name: "ptr_only", Type: "array", Items: &prop{Type: "object", Props: []prop{
 			{Name: "tag", Type: "string", Description: "monbooru form of a PTR-current tag the submitted list lacks"},

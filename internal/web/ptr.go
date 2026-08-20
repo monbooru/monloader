@@ -23,7 +23,9 @@ import (
 type ptrEngine interface {
 	Enabled() bool
 	Status() ptr.Status
+	DataPath() string
 	TagGraph(ctx context.Context, names []string) (map[string]ptr.TagInfo, error)
+	SearchTags(ctx context.Context, ranges []ptr.TagRange, scanCap int) ([]ptr.TagMatch, bool, error)
 	TagsForHash(hashHex string) (tags []string, ok bool, err error)
 	Enable() error
 	Disable()
@@ -74,16 +76,20 @@ type ptrView struct {
 func (s *Server) ptrData(r *http.Request) ptrView {
 	cfg := s.cfg.Current().PTR
 	st := s.ptr.Status()
+	// Every path-derived figure comes from the engine, not the saved config: a
+	// path edited but not yet restarted into would otherwise show one index
+	// while the state, the disk size and delete act on another.
+	path := s.ptr.DataPath()
 	v := ptrView{
 		Status:    st,
 		Address:   cfg.Address,
-		DataPath:  cfg.DataPath,
-		HasIndex:  ptr.IndexExists(cfg.DataPath),
-		FreeBytes: ptr.FreeBytes(cfg.DataPath),
+		DataPath:  path,
+		HasIndex:  ptr.IndexExists(path),
+		FreeBytes: ptr.FreeBytes(path),
 		MinFreeGB: cfg.MinFreeGB,
 		CSRFToken: s.csrfToken(sessionFromContext(r.Context())),
 	}
-	if _, err := os.Stat(cfg.DataPath); os.IsNotExist(err) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 		v.PathMissing = true
 	}
 	// The blob fraction weights updates by their published volume; the update
@@ -597,10 +603,18 @@ func (s *Server) ptrContribRescindUnsent(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "ptr disabled", http.StatusConflict)
 		return
 	}
+	msg := ""
 	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-		_, _ = store.Rescind(id)
+		switch ok, rerr := store.Rescind(id); {
+		case rerr != nil:
+			msg = "could not rescind: " + rerr.Error()
+		case !ok:
+			// The row moved to sending between the render and the click, which
+			// is the case Rescind's status guard exists for.
+			msg = "that contribution is already on its way out"
+		}
 	}
-	s.render(w, "ptr_contrib", s.ptrContribData(r, ""))
+	s.render(w, "ptr_contrib", s.ptrContribData(r, msg))
 }
 
 // ptrContribLogRescind petitions a committed mapping add back off under

@@ -48,7 +48,7 @@ func (s *Server) searchSites(w http.ResponseWriter, r *http.Request) {
 		if ex.Category == "" {
 			continue
 		}
-		if matchesQuery(q, ex.Category, ex.Subcategory, supported[ex.Category].Name) {
+		if mapping.MatchesQuery(q, ex.Category, ex.Subcategory, supported[ex.Category].Name) {
 			matches[ex.Category] = true
 		}
 	}
@@ -57,12 +57,12 @@ func (s *Server) searchSites(w http.ResponseWriter, r *http.Request) {
 	// supported rows keep the search working when the boot-time extractor
 	// listing failed.
 	for _, cat := range s.mapper.CuratedCategories() {
-		if matchesQuery(q, cat, supported[cat].Name) {
+		if mapping.MatchesQuery(q, cat, supported[cat].Name) {
 			matches[cat] = true
 		}
 	}
 	for cat, sup := range supported {
-		if matchesQuery(q, cat, sup.Name) {
+		if mapping.MatchesQuery(q, cat, sup.Name) {
 			matches[cat] = true
 		}
 	}
@@ -92,17 +92,6 @@ func (s *Server) searchSites(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	s.render(w, "site_search", map[string]any{"Rows": rows, "More": total - len(cats)})
-}
-
-// matchesQuery reports whether the lower-cased query is a substring of any
-// field, the add-site box's matching rule.
-func matchesQuery(q string, fields ...string) bool {
-	for _, f := range fields {
-		if strings.Contains(strings.ToLower(f), q) {
-			return true
-		}
-	}
-	return false
 }
 
 // effectiveAuth resolves a category's auth kind: its profile's when one

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/logx"
@@ -46,6 +47,12 @@ type InstallProgress func(step string, percent int)
 
 // pypiJSONURL answers the latest-release query; swapped in tests.
 var pypiJSONURL = "https://pypi.org/pypi/gallery-dl/json"
+
+// releaseMetaClient bounds the two release-metadata fetches. Both run inside
+// the settings install request, and the server sets no WriteTimeout (a wait=N
+// enqueue and a large push both need it), so an unanswered connection would
+// hang that POST until the operator gave up on the tab.
+var releaseMetaClient = &http.Client{Timeout: 30 * time.Second}
 
 // ManagedRoot is the managed install's directory under the config dir.
 func ManagedRoot(configDir string) string {
@@ -136,7 +143,7 @@ func LatestVersion(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := releaseMetaClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -271,7 +278,7 @@ func fetchManagedSupportedSites(ctx context.Context, root, version string) {
 		fail(err.Error())
 		return
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := releaseMetaClient.Do(req)
 	if err != nil {
 		fail(err.Error())
 		return
