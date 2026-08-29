@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.11.1] - 2026-08-29
+### Fixed
+- Fix the Flatpak bundle build CI.
+
 ## [v1.11.0] - 2026-08-29
 ### Added
 - Add Windows installer, Flatpak, and binary tarballs. ([monbooru#114](https://github.com/monbooru/monbooru/issues/114))

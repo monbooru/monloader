@@ -7,13 +7,21 @@ set -eu
 app=io.github.monbooru.Monloader
 VERSION=$(tr -d '[:space:]' < VERSION.md)
 
-if ! bwrap --ro-bind / / --unshare-user --unshare-pid --proc /proc true 2>/dev/null; then
+if ! err=$(bwrap --ro-bind / / --unshare-user --unshare-pid --proc /proc true 2>&1); then
   {
-    echo "bwrap cannot mount /proc here, so flatpak-builder cannot build a module."
-    echo "This job's container has a masked /proc, and nothing in this script"
-    echo "can unmask it. The runner has to start the job's container"
-    echo "privileged, or the job has to run outside a container, as it does"
-    echo "on GitHub."
+    echo "$err"
+    if bwrap --ro-bind / / --unshare-user true 2>/dev/null; then
+      echo "bwrap cannot mount /proc here, so flatpak-builder cannot build a module."
+      echo "This job's container has a masked /proc, and nothing in this script"
+      echo "can unmask it. The runner has to start the job's container"
+      echo "privileged, or the job has to run outside a container."
+    else
+      echo "bwrap cannot open a user namespace here, so flatpak-builder cannot"
+      echo "build a module. Ubuntu 24.04 and newer refuse one to any binary no"
+      echo "AppArmor profile covers, and bubblewrap ships none. The job has to"
+      echo "set kernel.apparmor_restrict_unprivileged_userns=0, or load"
+      echo "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict."
+    fi
   } >&2
   exit 1
 fi

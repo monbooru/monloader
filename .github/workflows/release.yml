@@ -226,6 +226,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
 
+      - name: Let bwrap open a user namespace
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Check the route to flathub
         run: |
           probe=https://dl.flathub.org/repo/config
