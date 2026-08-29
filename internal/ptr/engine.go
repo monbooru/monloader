@@ -2,6 +2,7 @@ package ptr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -176,8 +177,14 @@ func (e *Engine) Enable() error {
 	}
 	e.mu.Unlock()
 
-	if err := os.MkdirAll(e.cfg.DataPath, 0o755); err != nil {
-		return fmt.Errorf("creating ptr data dir: %w", err)
+	// The volume is the operator's, not ours to conjure: a missing path is a
+	// container with nothing mounted there, where the index would go with the
+	// container the first time it is recreated.
+	if e.cfg.DataPath == "" {
+		return errors.New("no ptr data path is set")
+	}
+	if fi, err := os.Stat(e.cfg.DataPath); err != nil || !fi.IsDir() {
+		return fmt.Errorf("the ptr data path %s does not exist", e.cfg.DataPath)
 	}
 	// The floor only guards the initial build; an existing index (a resume) is
 	// past the big download and may legitimately sit on a fuller disk.
@@ -397,11 +404,31 @@ func (e *Engine) currentStore() *Store {
 	return e.store
 }
 
-// DataPath is the index directory this run opened. The engine snapshots its
-// config at boot, so a path edited in settings only takes effect on the next
-// one; a caller that reads its own copy would describe a different index than
-// the one the status, the disk figure and delete all act on.
-func (e *Engine) DataPath() string { return e.cfg.DataPath }
+// DataPath is the index directory the engine would open, and the one it has
+// open when the sync is running. A caller that reads its own copy of the
+// config would describe a different index than the one the status, the disk
+// figure and delete all act on.
+func (e *Engine) DataPath() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cfg.DataPath
+}
+
+// SetDataPath re-points the engine at path, so a first run that sets one in
+// settings can start the sync without a restart. An open index keeps the path
+// it opened - the status, the disk figure and delete all describe that one -
+// so a change under a running sync waits for the next boot and answers false.
+func (e *Engine) SetDataPath(path string) bool {
+	e.lifecycleMu.Lock()
+	defer e.lifecycleMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.store != nil {
+		return e.cfg.DataPath == path
+	}
+	e.cfg.DataPath = path
+	return true
+}
 
 // TagsForHash answers a PTR hash lookup, or ok=false when the backend is not
 // available or the hash is unknown.

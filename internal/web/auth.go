@@ -394,6 +394,18 @@ func filterScopes(in []string) []string {
 	return out
 }
 
+// grantedScopes is what approving a request actually mints: the implemented
+// scopes it asked for, or read alone when it asked for none. The approval
+// table renders this rather than the raw ask, so the operator approves what
+// they were shown - a request naming "admin" would otherwise read as one that
+// gets it.
+func grantedScopes(requested []string) []string {
+	if sc := filterScopes(requested); len(sc) > 0 {
+		return sc
+	}
+	return []string{config.ScopeRead}
+}
+
 // renderAuthPasswordOOB re-renders the password sub-section out of band so its
 // enabled/disabled line updates after a change without a full page reload.
 func (s *Server) renderAuthPasswordOOB(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,15 @@
+{{define "desktop_actions"}}{{/* Polled because both prompts count the queue,
+and a count rendered with the page is wrong by the time the operator clicks.
+The filter is the queue actions': swapping while the pop-in is open detaches
+the form whose confirmed submit is pending. */}}<div id="desktop-actions" class="actions" hx-get="/internal/desktop-actions" hx-trigger="every 5s [!confirmOpen()]" hx-target="#desktop-actions" hx-swap="outerHTML">
+  <form method="POST" action="/settings/restart"
+        hx-confirm="{{.RestartPrompt}}" data-confirm-ok="restart" data-confirm-danger>
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <button type="submit">restart monloader</button>
+  </form>
+  <form method="POST" action="/settings/quit"
+        hx-confirm="{{.QuitPrompt}}" data-confirm-ok="stop" data-confirm-danger>
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <button type="submit" class="btn-danger">stop monloader</button>
+  </form>
+</div>{{end}}

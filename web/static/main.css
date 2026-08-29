@@ -428,3 +428,20 @@ dialog p { margin-bottom: 10px; }
 .ptr-activity-legend { display: flex; align-items: center; justify-content: flex-end; gap: 3px; margin-top: 4px; font-size: 10px; color: var(--fg-dim); }
 button.danger { color: var(--error); border-color: var(--error); }
 .danger-row { display: flex; gap: 8px; }
+
+/* Directory picker and the desktop-profile controls in Settings. */
+.path-row { display: flex; align-items: center; gap: 6px; }
+.path-row input[type="text"] { flex: 1 1 auto; min-width: 0; }
+.dir-picker-dialog { min-width: 480px; max-width: 90vw; }
+.dir-picker-path { margin: 0 0 6px; overflow-wrap: anywhere; }
+.dir-picker-list { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; border: 1px solid var(--border); }
+.dir-picker-entry { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--fg); padding: 2px 6px; cursor: pointer; font: inherit; }
+.dir-picker-entry:hover { background: var(--bg-surface); color: var(--accent); }
+.dir-picker-entry:focus-visible { outline: 1px solid var(--accent); }
+.desktop-folders { display: flex; gap: 6px; flex-wrap: wrap; }
+.desktop-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+
+#setup-page { max-width: 620px; margin: 40px auto; padding: 0 16px; }
+#setup-page h1 { margin: 0; }
+#setup-page h2 { margin: 18px 0 10px; }
+.setup-actions { display: flex; align-items: center; gap: 12px; margin-top: 18px; }

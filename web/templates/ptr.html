@@ -18,7 +18,7 @@
 {{template "doc_foot" .}}{{end}}
 
 {{define "ptr_body"}}{{with .PTR}}
-{{if .PathMissing}}<p class="flash-warn">the data path {{.DataPath}} does not exist. In docker, mount a volume there before enabling: an index created inside the container is lost when the container is recreated.</p>{{end}}
+{{if .PathMissing}}<p class="flash-warn">{{if .DataPath}}the data path {{.DataPath}} does not exist.{{else}}no data path is set.{{end}} Change it in the settings. In docker, mount a volume there before enabling.</p>{{end}}
 {{if eq .Status.State "disabled"}}
 <section class="settings-section">
   <h2>disabled</h2>
@@ -36,7 +36,7 @@
       <tr><th>free space</th><td>{{if .FreeBytes}}{{humanBytes .FreeBytes}}{{else}}unknown{{end}}{{if and .MinFreeGB (not .HasIndex)}} (needs {{.MinFreeGB}} GB to start){{end}}</td></tr>
     </tbody>
   </table>
-  {{template "postbtn" dict "Action" "/ptr/enable" "CSRF" .CSRFToken "Label" $label}}
+  {{if not .PathMissing}}{{template "postbtn" dict "Action" "/ptr/enable" "CSRF" .CSRFToken "Label" $label}}{{end}}
 </section>
 {{else}}
 <section class="settings-section">

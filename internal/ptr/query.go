@@ -35,19 +35,7 @@ func (s *Store) TagsForHash(hashHex string) (tags []string, ok bool, err error) 
 	if err != nil {
 		return nil, false, err
 	}
-	tagIDs, err := s.tagIDsForHash(hashID)
-	if err != nil {
-		return nil, false, err
-	}
-	ideals := map[uint64]bool{}
-	for _, id := range tagIDs {
-		ideal, rerr := s.resolveSibling(id)
-		if rerr != nil {
-			return nil, false, rerr
-		}
-		ideals[ideal] = true
-	}
-	closed, err := s.parentClosure(ideals)
+	closed, err := s.displayIdeals(hashID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -144,6 +132,38 @@ func (s *Store) parentClosure(seed map[uint64]bool) (map[uint64]bool, error) {
 // stable order so the graph answer does not shuffle between runs.
 func (s *Store) parentsOf(childID uint64) ([]uint64, error) {
 	return s.queryUint64s(`SELECT parent_tag_id FROM parents WHERE child_tag_id=? ORDER BY parent_tag_id`, int64(childID))
+}
+
+// displayIdeals is a hash's display view: every raw mapping on it
+// sibling-resolved to its ideal, closed over its parents. The tag lookup
+// answers with it and the contribution diff compares against it, so the
+// derivation is named once rather than spelled out on each side.
+func (s *Store) displayIdeals(hashID uint64) (map[uint64]bool, error) {
+	tagIDs, err := s.tagIDsForHash(hashID)
+	if err != nil {
+		return nil, err
+	}
+	ideals := map[uint64]bool{}
+	for _, id := range tagIDs {
+		ideal, err := s.resolveSibling(id)
+		if err != nil {
+			return nil, err
+		}
+		ideals[ideal] = true
+	}
+	return s.parentClosure(ideals)
+}
+
+// tagName resolves one tag id to its string, or "" for an id with no
+// definition - a mapping can reference a tag defined in an update the sync has
+// not reached yet.
+func (s *Store) tagName(id uint64) (string, error) {
+	var name string
+	err := s.db.QueryRow(`SELECT tag FROM tags WHERE tag_id=?`, int64(id)).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return name, err
 }
 
 // tagNames resolves a set of tag ids to their strings, dropping any id without a
@@ -298,14 +318,11 @@ func (s *Store) scanRange(ctx context.Context, rng TagRange, cap int) (out []str
 // sizes of the three relation sets TagGraph would answer with, counted the
 // same way so a search row and a later graph query agree.
 func (s *Store) tagMatch(idealID uint64) (TagMatch, error) {
-	names, err := s.tagNames(map[uint64]bool{idealID: true})
+	name, err := s.tagName(idealID)
 	if err != nil {
 		return TagMatch{}, err
 	}
-	m := TagMatch{}
-	if len(names) > 0 {
-		m.Ideal = names[0]
-	}
+	m := TagMatch{Ideal: name}
 	aliases, err := s.aliasesOf(idealID)
 	if err != nil {
 		return TagMatch{}, err
@@ -408,14 +425,11 @@ func (s *Store) tagInfo(name string) (TagInfo, error) {
 	if err != nil {
 		return TagInfo{}, err
 	}
-	idealName, err := s.tagNames(map[uint64]bool{idealID: true})
+	idealName, err := s.tagName(idealID)
 	if err != nil {
 		return TagInfo{}, err
 	}
-	info := TagInfo{Known: true}
-	if len(idealName) > 0 {
-		info.Ideal = idealName[0]
-	}
+	info := TagInfo{Known: true, Ideal: idealName}
 	// Aliases: every tag that resolves to the same ideal, minus the query.
 	aliasIDs, err := s.aliasesOf(idealID)
 	if err != nil {
@@ -425,11 +439,13 @@ func (s *Store) tagInfo(name string) (TagInfo, error) {
 		if aid == id {
 			continue
 		}
-		names, err := s.tagNames(map[uint64]bool{aid: true})
+		name, err := s.tagName(aid)
 		if err != nil {
 			return TagInfo{}, err
 		}
-		info.Aliases = append(info.Aliases, names...)
+		if name != "" {
+			info.Aliases = append(info.Aliases, name)
+		}
 	}
 	// Implications and implied-by: the direct edges declared on any spelling in
 	// the cluster, each end resolved to its ideal. Only declared edges - the
@@ -496,11 +512,13 @@ func (s *Store) idealNames(ids []uint64, exclude uint64, limit int) ([]string, e
 			continue
 		}
 		seen[ideal] = true
-		names, err := s.tagNames(map[uint64]bool{ideal: true})
+		name, err := s.tagName(ideal)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, names...)
+		if name != "" {
+			out = append(out, name)
+		}
 	}
 	return out, nil
 }

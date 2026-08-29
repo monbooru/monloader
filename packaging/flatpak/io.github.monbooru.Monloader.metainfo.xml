@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.monbooru.Monloader</id>
+  <name>Monloader</name>
+  <summary>Downloader for monbooru</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <launchable type="desktop-id">io.github.monbooru.Monloader.desktop</launchable>
+
+  <description>
+    <p>
+      monloader allows you to download images and tags from the internet into your monbooru gallery: 
+      it takes a booru or gallery URL, fetches the files and their tags through
+      gallery-dl, and pushes them into a monbooru gallery. It also answers
+      reverse lookups against boorus, IQDB and SauceNAO, and can sync the
+      Hydrus Public Tag Repository to backfill tags by hash.
+    </p>
+  </description>
+
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+  </categories>
+
+  <url type="homepage">https://github.com/monbooru/monloader</url>
+  <url type="bugtracker">https://github.com/monbooru/monloader/issues</url>
+  <url type="help">https://monbooru.github.io/mondocs/addons/monloader/index.html</url>
+
+  <content_rating type="oars-1.1"/>
+
+  <!-- The bundled gallery-dl is aggregated, not linked: it is called as a
+       separate process and carries its own licence. -->
+  <!-- The version and date below are rewritten during the Flatpak build from
+       VERSION.md and the newest CHANGELOG entry; a release bumps neither. -->
+  <releases>
+    <release version="1.10.0" date="2026-08-20"/>
+  </releases>
+</component>

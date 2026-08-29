@@ -21,7 +21,7 @@
       <button type="submit">install</button>
       {{if .Installed}}<button type="submit" form="gdl-revert-form">revert</button>{{end}}
     </form>
-    <span class="field-hint">newer or older; the install lives in /config and survives image updates, until one moves python to a new version.</span>
+    <span class="field-hint">newer or older; the install is kept with monloader's own data and survives an update.</span>
   </div>
   {{if .Installed}}
   <form method="POST" id="gdl-revert-form" action="/settings/gallerydl/revert" hx-confirm="remove the installed gallery-dl and return to the bundled {{.BundledVersion}}?" data-confirm-ok="revert">

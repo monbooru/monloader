@@ -259,11 +259,11 @@ func (c *Client) sendReplace(ctx context.Context, endpoint, contentType string, 
 		_, warnings := enrichResult(respBody)
 		return &Result{Outcome: queue.OutcomeReplaced, MonbooruID: imageID, MergeNote: replaceNote(respBody), TagWarnings: warnings}, nil
 	case http.StatusConflict:
-		code := apiErrCode(respBody)
+		msg, code := apiErr(respBody, resp.Status)
 		if code != queue.ErrCodeAlreadyExists && code != queue.ErrCodeWrongType {
 			code = queue.ErrCodeMonbooruRejected
 		}
-		return nil, &queue.CodedError{Code: code, Msg: apiErrMessage(respBody, resp.Status)}
+		return nil, &queue.CodedError{Code: code, Msg: msg}
 	case http.StatusRequestEntityTooLarge:
 		return nil, &queue.CodedError{Code: queue.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}
 	default:
@@ -616,29 +616,26 @@ func rejected(body []byte, status string) *queue.CodedError {
 	return &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: apiErrMessage(body, status)}
 }
 
-// apiErrMessage pulls monbooru's {error,code} message out of an error body,
-// falling back to the HTTP status line.
-func apiErrMessage(body []byte, status string) string {
+// apiErr decodes monbooru's {error, code} envelope once: msg falls back to the
+// HTTP status line, and code is empty when the body is not one.
+func apiErr(body []byte, status string) (msg, code string) {
 	var e struct {
 		Error string `json:"error"`
 		Code  string `json:"code"`
 	}
-	if json.Unmarshal(body, &e) == nil && e.Error != "" {
-		return e.Error
+	if json.Unmarshal(body, &e) != nil {
+		return status, ""
 	}
-	return status
+	if e.Error == "" {
+		return status, e.Code
+	}
+	return e.Error, e.Code
 }
 
-// apiErrCode reads the machine code off a monbooru error envelope; empty
-// when the body isn't one.
-func apiErrCode(body []byte) string {
-	var e struct {
-		Code string `json:"code"`
-	}
-	if json.Unmarshal(body, &e) == nil {
-		return e.Code
-	}
-	return ""
+// apiErrMessage is apiErr's message-only form, which is what most callers want.
+func apiErrMessage(body []byte, status string) string {
+	msg, _ := apiErr(body, status)
+	return msg
 }
 
 // ListGalleries reads GET /api/v1/galleries for the settings dropdown.
@@ -701,6 +698,12 @@ func (c *Client) PairRequest(ctx context.Context, peerToken, selfURL string, sco
 			return "", fmt.Errorf("%s", out.Error)
 		}
 		return "", fmt.Errorf("monbooru pairing request failed: %s", resp.Status)
+	}
+	// A monbooru still on its own first-run wizard redirects the API to that
+	// page, which the client follows into a 200 carrying HTML. Without this
+	// the empty id reads as a request that was filed and never answered.
+	if out.RequestID == "" {
+		return "", fmt.Errorf("monbooru answered the pairing request with no request id; it may not be set up yet")
 	}
 	return out.RequestID, nil
 }

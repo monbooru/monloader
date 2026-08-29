@@ -81,6 +81,12 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 	opts := queue.Options{}
 	if body.Options != nil {
 		opts.Gallery = body.Options.Gallery
+		// The same rule the settings field applies: refuse it here rather than
+		// fetch the post's bytes first and have monbooru refuse the push.
+		if !config.IsRelativeFolder(body.Options.Folder) {
+			apiError(w, http.StatusBadRequest, "invalid_request", "folder must be a relative path with no .. segment")
+			return
+		}
 		opts.Folder = body.Options.Folder
 		// A zero max_items is indistinguishable from omitted, so it means "no
 		// override"; a negative value is a mistake.

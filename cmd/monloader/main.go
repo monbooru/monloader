@@ -16,6 +16,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/desktop"
 	"github.com/monbooru/monloader/internal/gdl"
 	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/mapping"
@@ -37,11 +38,13 @@ func main() {
 
 	configPath := flag.String("config", "./monloader.toml", "path to the monloader.toml config file")
 	hashPassword := flag.String("hash-password", "", "print the bcrypt hash of the given password and exit")
+	desktopMode := flag.Bool("desktop", defaultDesktop == "true", "desktop profile: OS-native paths, a log file, a browser at startup")
+	noBrowser := flag.Bool("no-browser", false, "with -desktop, do not open a browser at startup")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("monloader", internalweb.Version)
+		fmt.Println(versionLine())
 		return
 	}
 	if *hashPassword != "" {
@@ -54,14 +57,61 @@ func main() {
 		return
 	}
 
+	// Registered before every other defer, so a Restart's fresh process
+	// starts only once this one has released the port, the queue store, the
+	// index and the log file.
+	restartOnExit := false
+	defer func() {
+		if restartOnExit {
+			relaunch()
+		}
+	}()
+
+	var seed func(*config.Config)
+	var profile internalweb.Desktop
+	// stateDir is where what monloader writes for itself lives - the queue
+	// store and the managed gallery-dl install. The container keeps them
+	// beside the config on its one volume; the desktop profile follows the
+	// OS split, so the config directory holds only what the operator wrote.
+	stateDir := ""
+	if *desktopMode {
+		dialogOnFatal = true
+		layout, err := desktop.Resolve(appName, explicitFlag("config", *configPath))
+		if err != nil {
+			fatalf("resolving the desktop paths: %v", err)
+		}
+		*configPath = layout.ConfigPath
+		profile = internalweb.Desktop{Active: true, LogDir: layout.LogDir}
+		// Before config load, so every fatal below reaches the file too.
+		if f, err := desktop.OpenLog(layout.LogDir, appName); err != nil {
+			logx.Warnf("could not open a log file under %s: %v", layout.LogDir, err)
+		} else {
+			defer func() { _ = f.Close() }()
+		}
+		seed = desktopSeed(layout)
+		stateDir = layout.DataDir
+	}
+	if stateDir == "" {
+		stateDir = filepath.Dir(*configPath)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		fatalf("creating the state directory %s: %v", stateDir, err)
+	}
+
 	_, statErr := os.Stat(*configPath)
 	freshConfig := os.IsNotExist(statErr)
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.LoadWithDefaults(*configPath, seed)
 	if err != nil {
-		log.Fatalf("FATAL loading config: %v", err)
+		fatalf("loading config: %v", err)
 	}
 	logx.Set(cfg.Log.Level)
+	if *desktopMode {
+		if !claimPort(cfg.Server.BindAddress, !*noBrowser) {
+			return
+		}
+		ptrFolder(cfg, *configPath, stateDir)
+	}
 
 	// One provider shared by every component that reads UI-mutable config, so a
 	// settings save publishes a new snapshot all of them observe without a race.
@@ -69,11 +119,11 @@ func main() {
 
 	mapper, err := mapping.New(provider, filepath.Join(filepath.Dir(*configPath), "profiles"))
 	if err != nil {
-		log.Fatalf("FATAL loading mappings: %v", err)
+		fatalf("loading mappings: %v", err)
 	}
 
 	runner := gdl.New(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites())
-	managedRoot := gdl.ManagedRoot(filepath.Dir(*configPath))
+	managedRoot := gdl.ManagedRoot(stateDir)
 	runner.SetManagedRoot(managedRoot)
 	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites(), mapper.SiteOptions()); err != nil {
 		logx.Warnf("could not write the managed gallery-dl config: %v", err)
@@ -116,7 +166,7 @@ func main() {
 	catalog := gdl.NewCatalog(gdlVersion, bundledVersion, gdlManaged, extractors, supported)
 
 	client := monbooru.New(provider)
-	workRoot := resolveWorkRoot()
+	workRoot := resolveWorkRoot(*desktopMode)
 	clearWorkRoot(workRoot)
 	// One tracker shared by the pipeline and the web server: both record a reach
 	// (on a fetch and on a test probe), and the settings sites table reads it.
@@ -136,7 +186,7 @@ func main() {
 	q.SetRetention(cfg.Downloader.HistoryRetention())
 	q.SetSuccessRetention(cfg.Downloader.SuccessRetention())
 	q.SetLookupBudget(cfg.Lookup.ScheduledDailyBudget)
-	if qs, err := queue.OpenStore(filepath.Dir(*configPath)); err != nil {
+	if qs, err := queue.OpenStore(stateDir); err != nil {
 		logx.Warnf("queue history store unavailable, falling back to in-memory only: %v", err)
 	} else {
 		q.UseStore(qs)
@@ -144,9 +194,9 @@ func main() {
 	}
 	q.Start()
 
-	srv, err := internalweb.NewServer(provider, *configPath, q, client, runner, mapper, catalog, siteState, ptrEngine, sim)
+	srv, err := internalweb.NewServer(provider, *configPath, stateDir, q, client, runner, mapper, catalog, siteState, ptrEngine, sim, profile)
 	if err != nil {
-		log.Fatalf("FATAL creating web server: %v", err)
+		fatalf("creating web server: %v", err)
 	}
 
 	httpSrv := &http.Server{
@@ -164,19 +214,39 @@ func main() {
 	go func() {
 		logx.Infof("monloader listening on %s (work dir %s)", cfg.Server.BindAddress, workRoot)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			if freshConfig {
+			if freshConfig && !*desktopMode {
 				log.Printf("monloader wrote %s with default settings meant for the docker image.", *configPath)
 				log.Printf("edit server.bind_address (and monbooru.api_url once monbooru runs), then run it again. docs: %s", internalweb.DocURL)
 			}
-			log.Fatalf("FATAL HTTP server: %v", err)
+			if *desktopMode {
+				// Closes the race between two launches that both probed an
+				// empty port: whoever lost the bind asks again.
+				claimPort(cfg.Server.BindAddress, !*noBrowser)
+			}
+			fatalf("HTTP server: %v", err)
 		}
 	}()
 
-	<-quit
+	if *desktopMode {
+		if !*noBrowser {
+			go openWhenServing(cfg.Server.BindAddress)
+		}
+		if srv.TrayEnabled() {
+			trayCtx, stopTray := context.WithCancel(context.Background())
+			defer stopTray()
+			go runTray(trayCtx, srv, cfg.Server.BindAddress)
+		}
+	}
+
+	select {
+	case <-quit:
+	case <-srv.QuitRequested():
+	}
 	logx.Infof("shutting down...")
 	_ = drainHTTP(httpSrv, shutdownDrain)
 	q.Close()           // cancels the in-flight job and waits for workers to exit
 	ptrEngine.Disable() // stops the sync goroutine and closes the index
+	restartOnExit = srv.RestartRequested()
 }
 
 // shutdownDrain bounds how long a stop waits on requests already in flight.
@@ -196,8 +266,14 @@ func drainHTTP(srv *http.Server, timeout time.Duration) error {
 // conventional /work mount when it is writable, else a temp dir for non
 // container runs. The directory must never be a host bind in production;
 // that is a deployment concern, not enforced here.
-func resolveWorkRoot() string {
+func resolveWorkRoot(desktopMode bool) string {
 	const mount = "/work"
+	// On a desktop the scratch belongs in the OS temp directory: /work is a
+	// container convention, and a writable one on a workstation would be
+	// somebody else's directory.
+	if desktopMode {
+		return filepath.Join(os.TempDir(), "monloader-work")
+	}
 	if err := os.MkdirAll(mount, 0o755); err == nil {
 		if f, err := os.CreateTemp(mount, ".probe"); err == nil {
 			name := f.Name()

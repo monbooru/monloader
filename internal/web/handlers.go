@@ -771,9 +771,18 @@ func setFlash(data map[string]any, kind, section, msg string) {
 func (s *Server) settingsData(r *http.Request) map[string]any {
 	data := s.base(r, "settings", "Settings - "+s.titleName())
 	data["Cfg"] = s.cfg.Current()
+	local := s.desktopLocal(r)
+	data["DesktopProfile"] = local
+	if local {
+		data["DesktopFolders"] = s.availableFolders()
+		data["Desktop"] = s.desktopIntegration()
+		data["DesktopQuitPrompt"] = s.desktopQuitPrompt()
+		data["DesktopRestartPrompt"] = s.desktopRestartPrompt()
+	}
 	// The field hints quote the built-in defaults, read from the same place a
 	// first run writes them so the two cannot drift.
 	data["Defaults"] = config.Default()
+	data["MonbooruAPIHint"] = s.monbooruAPIHint()
 
 	s.fillGalleryFields(r, data)
 
@@ -966,6 +975,8 @@ func sectionForPath(path string) string {
 		return "sites"
 	case strings.HasPrefix(path, "/settings/gallerydl"), strings.HasPrefix(path, "/settings/raw"):
 		return "advanced"
+	case strings.HasPrefix(path, "/settings/desktop"), path == "/internal/open-folder":
+		return "desktop"
 	}
 	return ""
 }
@@ -1054,7 +1065,7 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 	folder, setFolder := "", false
 	if r.Form.Has("default_folder") {
 		folder = strings.TrimSpace(r.FormValue("default_folder"))
-		if strings.HasPrefix(folder, "/") || slices.Contains(strings.Split(folder, "/"), "..") {
+		if !config.IsRelativeFolder(folder) {
 			bad = append(bad, "default folder must be a relative path with no .. segment")
 		} else {
 			setFolder = true

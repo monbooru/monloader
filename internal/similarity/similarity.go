@@ -76,8 +76,17 @@ type Client struct {
 // New builds a Client against the services' real endpoints.
 func New(cfg *config.Provider, canonical func(string) (string, string, bool), postURL func(site, id string) string) *Client {
 	return &Client{
-		cfg:          cfg,
-		http:         &http.Client{Timeout: 30 * time.Second},
+		cfg: cfg,
+		http: &http.Client{
+			Timeout: 30 * time.Second,
+			// Both services carry their credential in the query string, and Go
+			// re-sends the URL as given: a redirect would hand the danbooru
+			// login or the saucenao key to whatever host it names. Neither
+			// endpoint has a legitimate one, so the 30x is the answer.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		canonical:    canonical,
 		postURL:      postURL,
 		iqdbURL:      "https://danbooru.donmai.us/iqdb_queries.json",

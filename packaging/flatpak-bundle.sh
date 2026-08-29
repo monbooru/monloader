@@ -1,0 +1,52 @@
+#!/bin/sh
+# packaging/flatpak-bundle.sh
+#
+# Installs the runtime and builds the Flatpak bundle into dist/.
+set -eu
+
+app=io.github.monbooru.Monloader
+VERSION=$(tr -d '[:space:]' < VERSION.md)
+
+if ! bwrap --ro-bind / / --unshare-user --unshare-pid --proc /proc true 2>/dev/null; then
+  {
+    echo "bwrap cannot mount /proc here, so flatpak-builder cannot build a module."
+    echo "This job's container has a masked /proc, and nothing in this script"
+    echo "can unmask it. The runner has to start the job's container"
+    echo "privileged, or the job has to run outside a container, as it does"
+    echo "on GitHub."
+  } >&2
+  exit 1
+fi
+
+fbver=$(flatpak-builder --version | awk '{print $NF}')
+fbrest=${fbver#*.}
+if [ "${fbver%%.*}" -lt 1 ] || { [ "${fbver%%.*}" -eq 1 ] && [ "${fbrest%%.*}" -lt 4 ]; }; then
+  echo "flatpak-builder $fbver is too old for this runtime; 1.4 or newer" >&2
+  exit 1
+fi
+
+flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+cfg="$HOME/.local/share/flatpak/repo/config"
+if [ -f "$cfg" ]; then
+  sed -i '/^\[remote "flathub"\]/a http2=false' "$cfg"
+fi
+
+ok=0
+for attempt in 1 2 3; do
+  if flatpak install --user -y --noninteractive flathub \
+       org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08 \
+       org.freedesktop.Sdk.Extension.golang//25.08; then
+    ok=1
+    break
+  fi
+  echo "flathub did not answer (attempt $attempt of 3); retrying"
+  sleep 60
+done
+[ "$ok" = 1 ] || { echo "flathub is not answering" >&2; exit 1; }
+
+mkdir -p dist
+flatpak-builder --user --disable-rofiles-fuse --force-clean --repo=repo \
+  build-dir "packaging/flatpak/$app.yml"
+flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+  repo "dist/monloader_${VERSION#v}_desktop_bundled_x86_64.flatpak" "$app"
+ls -la dist

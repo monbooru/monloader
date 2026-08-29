@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -92,25 +93,34 @@ func (s *Server) monbooruPairConnect(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "monbooru_pair", s.monbooruPairData(r, "already paired; remove the pairing first to re-pair"))
 		return
 	}
+	if err := s.startMonbooruPairing(r.Context()); err != nil {
+		s.render(w, "monbooru_pair", s.monbooruPairData(r, err.Error()))
+		return
+	}
+	s.render(w, "monbooru_pair", s.monbooruPairData(r, "waiting"))
+}
+
+// startMonbooruPairing asks monbooru for a pairing and records the attempt
+// the poll then follows. Shared with the setup wizard, whose first step
+// offers the same handshake before the operator has seen Settings.
+func (s *Server) startMonbooruPairing(ctx context.Context) error {
 	cfg := s.cfg.Current()
 	if strings.TrimSpace(cfg.Monbooru.APIURL) == "" {
-		s.render(w, "monbooru_pair", s.monbooruPairData(r, "set the monbooru api url above first"))
-		return
+		return errors.New("set the monbooru api url first")
 	}
 	peerSecret := config.GenerateSecret()
 	tok := config.TokenFromSecret("monbooru (paired)", peerSecret, config.AllScopes)
 	tok.Paired = "monbooru"
 	tok.PeerURL = cfg.Monbooru.APIURL
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	requestID, err := s.client.PairRequest(ctx, peerSecret, pairSelfURL(cfg), []string{config.ScopeRead, config.ScopeWrite})
+	requestID, err := s.client.PairRequest(reqCtx, peerSecret, pairSelfURL(cfg), []string{config.ScopeRead, config.ScopeWrite})
 	if err != nil {
-		s.render(w, "monbooru_pair", s.monbooruPairData(r, "could not reach monbooru: "+err.Error()))
-		return
+		return errors.New("could not reach monbooru: " + err.Error())
 	}
 	s.setPairAttempt(&outboundPair{requestID: requestID, token: tok})
 	logx.Infof("pairing: requested pairing with monbooru")
-	s.render(w, "monbooru_pair", s.monbooruPairData(r, "waiting"))
+	return nil
 }
 
 // monbooruPairPoll checks the pending attempt; on approval it commits the

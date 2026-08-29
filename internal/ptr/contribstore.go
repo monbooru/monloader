@@ -209,8 +209,9 @@ func (s *ContribStore) ClaimBacklog() ([]ContribItem, error) {
 	return s.claimWhere(`status IN ('staged', 'failed')`)
 }
 
-// Complete moves one sent item into the ledger and prunes it to the
-// newest contribLogKeep rows.
+// Complete moves one sent item into the ledger and ages settled rows out past
+// contribLogKeepDays. Unsettled rows stay at any age: they are the dedup
+// guard against re-sending what the repository has not answered for yet.
 func (s *ContribStore) Complete(it ContribItem) (logID int64, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -492,19 +493,7 @@ func (idx *Store) HashHasIdeals(hashHex string, tags []string) (map[string]bool,
 	if err != nil || !ok {
 		return has, err
 	}
-	tagIDs, err := idx.tagIDsForHash(hashID)
-	if err != nil {
-		return nil, err
-	}
-	ideals := map[uint64]bool{}
-	for _, id := range tagIDs {
-		ideal, err := idx.resolveSibling(id)
-		if err != nil {
-			return nil, err
-		}
-		ideals[ideal] = true
-	}
-	displayed, err := idx.parentClosure(ideals)
+	displayed, err := idx.displayIdeals(hashID)
 	if err != nil {
 		return nil, err
 	}
@@ -536,11 +525,11 @@ func (idx *Store) IdealTag(tag string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	names, err := idx.tagNames(map[uint64]bool{idealID: true})
-	if err != nil || len(names) == 0 {
+	name, err := idx.tagName(idealID)
+	if err != nil || name == "" {
 		return "", false, err
 	}
-	return names[0], true, nil
+	return name, true, nil
 }
 
 // HashHasRaw reports whether the exact raw (tag, hash) mapping is

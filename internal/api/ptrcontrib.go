@@ -54,6 +54,22 @@ func (h *Handler) contribGate(w http.ResponseWriter) bool {
 	return true
 }
 
+// contribStore answers the store the ledger endpoints act on, or refuses:
+// off, or on with no store beside the index. ok=false means a response was
+// already written. The staging endpoints pair the check with
+// contribAccountGate instead, so they keep their own.
+func (h *Handler) contribStore(w http.ResponseWriter) (*ptr.ContribStore, bool) {
+	if !h.contribGate(w) {
+		return nil, false
+	}
+	store := h.ptr.Contrib()
+	if store == nil {
+		apiError(w, http.StatusConflict, "ptr_unavailable", "the contribution store is not available")
+		return nil, false
+	}
+	return store, true
+}
+
 // ptrContribPreview handles POST /api/v1/ptr/contrib/preview: the
 // two-way diff for one file. Tags arrive in monbooru form; the answer
 // carries the exact PTR spelling a send would use so the operator sees
@@ -76,6 +92,13 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	if !sha256HexRe.MatchString(body.SHA256) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "sha256 must be 64 lowercase hex characters")
+		return
+	}
+	// A body without the field would answer an empty diff, which reads exactly
+	// like a file with nothing worth contributing; a caller that stopped
+	// sending it would report that for a whole library.
+	if body.Tags == nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "tags is required; send an empty list for an untagged file")
 		return
 	}
 
@@ -619,14 +642,17 @@ func (h *Handler) mappingAddKnown(displayed bool, ptrTag string, hash []byte, co
 }
 
 // currentPetitionPair finds the raw spellings of a pair petition that the
-// index actually holds. Like a mapping petition, each endpoint is tried
+// index actually holds. Each endpoint is tried in every namespace the
+// category could route through, in both separator forms, so a pair held under
+// a secondary namespace (artist: beside creator:, studio: beside copyright:)
+// is still matched. Like a mapping petition, each endpoint is tried
 // verbatim before its monbooru-form mapping, so a raw the outbound mapper
 // would rewrite - a literal underscore, a space, a shifted namespace -
 // stays petitionable on whichever side carries it. ok=false when no
 // combination is current.
 func (h *Handler) currentPetitionPair(current func(a, b string) (bool, error), a, b string) (ra, rb string, ok bool, err error) {
-	for _, x := range petitionForms(a) {
-		for _, y := range petitionForms(b) {
+	for _, x := range mapping.PTRNamespacesFor(a) {
+		for _, y := range mapping.PTRNamespacesFor(b) {
 			cur, err := current(x, y)
 			if err != nil {
 				return "", "", false, err
@@ -646,7 +672,7 @@ func (h *Handler) currentPetitionPair(current func(a, b string) (bool, error), a
 // the first hit.
 func (h *Handler) endpointIdeals(t string) (map[string]bool, error) {
 	out := map[string]bool{}
-	for _, f := range petitionForms(t) {
+	for _, f := range mapping.PTRNamespacesFor(t) {
 		ideal, ok, err := h.ptr.IdealTag(f)
 		if err != nil {
 			return nil, err
@@ -666,15 +692,6 @@ func sharesIdeal(a, b map[string]bool) bool {
 		}
 	}
 	return false
-}
-
-// petitionForms lists the PTR spellings a monbooru-form endpoint might
-// carry: every namespace the category could route through, each in its
-// underscore and space forms, so a pair the index holds under a secondary
-// namespace (artist: beside creator:, studio: beside copyright:) is still
-// matched.
-func petitionForms(t string) []string {
-	return mapping.PTRNamespacesFor(t)
 }
 
 // contribUnsentJSON is one unsent row on the ledger endpoint.
@@ -707,12 +724,8 @@ type contribLogJSON struct {
 // ptrContribLedger handles GET /api/v1/ptr/contrib: the unsent backlog,
 // counts, and the newest slice of the committed history.
 func (h *Handler) ptrContribLedger(w http.ResponseWriter, r *http.Request) {
-	if !h.contribGate(w) {
-		return
-	}
-	store := h.ptr.Contrib()
-	if store == nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the contribution store is not available")
+	store, ok := h.contribStore(w)
+	if !ok {
 		return
 	}
 	unsent, err := store.Unsent()
@@ -761,12 +774,8 @@ func (h *Handler) ptrContribLedger(w http.ResponseWriter, r *http.Request) {
 // ptrContribRescind handles DELETE /api/v1/ptr/contrib/{id}: rescind
 // one unsent item exactly - nothing ever left the machine.
 func (h *Handler) ptrContribRescind(w http.ResponseWriter, r *http.Request) {
-	if !h.contribGate(w) {
-		return
-	}
-	store := h.ptr.Contrib()
-	if store == nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the contribution store is not available")
+	store, ok := h.contribStore(w)
+	if !ok {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -774,12 +783,12 @@ func (h *Handler) ptrContribRescind(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "bad item id")
 		return
 	}
-	ok, err := store.Rescind(id)
+	found, err := store.Rescind(id)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if !ok {
+	if !found {
 		apiError(w, http.StatusNotFound, "not_found", "no unsent item with that id")
 		return
 	}
@@ -788,12 +797,8 @@ func (h *Handler) ptrContribRescind(w http.ResponseWriter, r *http.Request) {
 
 // ptrContribRescindAll handles DELETE /api/v1/ptr/contrib.
 func (h *Handler) ptrContribRescindAll(w http.ResponseWriter, r *http.Request) {
-	if !h.contribGate(w) {
-		return
-	}
-	store := h.ptr.Contrib()
-	if store == nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the contribution store is not available")
+	store, ok := h.contribStore(w)
+	if !ok {
 		return
 	}
 	n, err := store.RescindAll()

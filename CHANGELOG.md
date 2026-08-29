@@ -1,5 +1,25 @@
 # Changelog
 
+## [v1.11.0] - 2026-08-29
+### Added
+- Add Windows installer, Flatpak, and binary tarballs. ([monbooru#114](https://github.com/monbooru/monbooru/issues/114))
+- A desktop install adds a first-run setup page to set monbooru's address and who can reach monloader, opens a browser, adds a tray icon (on supported systems), can start at login, adds buttons to restart/stop monloader, adds buttons to open its folders. ([monbooru#114](https://github.com/monbooru/monbooru/issues/114))
+
+### Changed
+- monloader now serves port 8456 by default, beside monbooru's 8455; (you may need to update your compose if you didn't define the port via MONLOADER_SERVER_BIND_ADDRESS).
+- Installing a gallery-dl release takes upstream's one-file build, needing no Python.
+- Enabling the PTR sync refuses a data path that does not exist.
+- Bundled gallery-dl updated to 1.32.10.
+
+### Fixed
+- A pushed note keeps its inline formatting only, not the rest of the source's markup.
+- The pairing approval row names the scopes the approval actually grants.
+- A lookup note says when the PTR half was skipped.
+- Setting a PTR data path starts the sync without a restart.
+- An API enqueue with a bad folder is refused instead of failing after the download.
+
+Thanks to @gary-host-laptop for the suggestion (https://github.com/monbooru/monbooru/issues/114).
+
 ## [v1.10.0] - 2026-08-20
 ### Added
 - Backend for PTR tag search: required so monbooru can find which spellings the index holds for a tag. ([monbooru#82](https://github.com/monbooru/monbooru/issues/82))

@@ -1,0 +1,28 @@
+{{define "dir_picker"}}
+<div class="dir-picker">
+  <p class="dir-picker-path"><code>{{.Path}}</code></p>
+  {{if .Err}}<p class="field-hint">{{.Err}}</p>{{end}}
+  <ul class="dir-picker-list">
+    {{if .Parent}}
+    <li><button type="button" class="dir-picker-entry" hx-get="{{browseURL .Into .Parent}}"
+                hx-target="#dir-picker-body" hx-swap="innerHTML">..</button></li>
+    {{end}}
+    {{range .Roots}}
+    <li><button type="button" class="dir-picker-entry" hx-get="{{browseURL $.Into .Path}}"
+                hx-target="#dir-picker-body" hx-swap="innerHTML">{{.Name}}</button></li>
+    {{end}}
+    {{range .Entries}}
+    <li><button type="button" class="dir-picker-entry" hx-get="{{browseURL $.Into .Path}}"
+                hx-target="#dir-picker-body" hx-swap="innerHTML">{{.Name}}/</button></li>
+    {{end}}
+  </ul>
+  {{if not .Entries}}
+  <p class="field-hint">{{if .Sandboxed}}No subfolders here. A sandboxed install only sees what it was granted; use Flatseal to add a disk or a network mount.{{else}}No subfolders here.{{end}}</p>
+  {{end}}
+  {{if .Truncated}}<p class="field-hint">Only the first {{.Limit}} subfolders are listed; type the path instead.</p>{{end}}
+  <div class="dialog-actions">
+    <button type="button" class="dir-picker-use" data-into="{{.Into}}" data-path="{{.Path}}">Use this folder</button>
+    <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+  </div>
+</div>
+{{end}}

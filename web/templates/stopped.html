@@ -1,0 +1,23 @@
+{{define "stopped"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.BooruName}} has stopped</title>
+  <link rel="stylesheet" href="/static/main.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-box">
+      <h1>{{.BooruName}} has stopped</h1>
+      {{if .InFlight}}
+      <p class="field-hint">{{.InFlight}} job(s) were running or waiting. Stopping cancelled them; retry them from the queue next time you start it.</p>
+      {{else}}
+      <p class="field-hint">You can close this tab. Start it again from the applications menu.</p>
+      {{end}}
+    </div>
+  </div>
+</body>
+</html>
+{{end}}

@@ -2,7 +2,7 @@
 ContainerName=monloader
 Image=ghcr.io/monbooru/monloader:latest
 
-PublishPort=127.0.0.1:8081:8081
+PublishPort=127.0.0.1:8456:8456
 
 NoNewPrivileges=true
 DropCapability=ALL
@@ -10,9 +10,9 @@ DropCapability=ALL
 Volume=/path/to/monloader/config:/config
 # Volume=/path/to/monloader/ptr:/ptr
 
-Environment=MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8081
-Environment=MONLOADER_MONBOORU_API_URL=http://monbooru:8080
-Environment=MONLOADER_MONBOORU_WEB_URL=http://localhost:8080
+Environment=MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8456
+Environment=MONLOADER_MONBOORU_API_URL=http://monbooru:8455
+Environment=MONLOADER_MONBOORU_WEB_URL=http://localhost:8455
 #Environment=TZ=Etc/UTC
 
 HealthCmd=["/usr/local/bin/monloader","healthcheck","-config","/config/monloader.toml"]

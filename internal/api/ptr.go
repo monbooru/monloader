@@ -64,19 +64,29 @@ type ptrTagInfo struct {
 	ImpliedBy    []string `json:"implied_by,omitempty"`
 }
 
+// ptrReady refuses the endpoints that read the index: one that is off cannot
+// answer, and a half-built one would hand over a partial tag set the caller
+// mirrors as the repository's whole answer. ok=false means a response was
+// already written. ptrAccountCreate keeps its own wording and its lack of a
+// caught-up requirement.
+func (h *Handler) ptrReady(w http.ResponseWriter) bool {
+	if h.ptr == nil || !h.ptr.Enabled() {
+		apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr index is not available")
+		return false
+	}
+	if !h.ptr.CaughtUp() {
+		apiError(w, http.StatusConflict, "ptr_syncing", "the ptr index is not fully synced yet")
+		return false
+	}
+	return true
+}
+
 // ptrTags handles POST /api/v1/ptr/tags: for each monbooru-form tag it returns
 // the PTR's ideal spelling, aliases, and implications, mapped back to monbooru
 // form. monbooru sweeps its tag list through this to propose aliases and
 // implications.
 func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
-	if h.ptr == nil || !h.ptr.Enabled() {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr index is not available")
-		return
-	}
-	if !h.ptr.CaughtUp() {
-		// A half-built index would hand over a graph missing edges the caller
-		// then mirrors as the repository's whole answer.
-		apiError(w, http.StatusConflict, "ptr_syncing", "the ptr index is not fully synced yet")
+	if !h.ptrReady(w) {
 		return
 	}
 	var body ptrTagsRequest
@@ -136,12 +146,7 @@ type ptrTagCluster struct {
 // how the caller finds out what to ask about, which is otherwise a guess at
 // the repository's exact spelling.
 func (h *Handler) ptrTagSearch(w http.ResponseWriter, r *http.Request) {
-	if h.ptr == nil || !h.ptr.Enabled() {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr index is not available")
-		return
-	}
-	if !h.ptr.CaughtUp() {
-		apiError(w, http.StatusConflict, "ptr_syncing", "the ptr index is not fully synced yet")
+	if !h.ptrReady(w) {
 		return
 	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -316,12 +321,7 @@ type ptrLookupRequest struct {
 // Each image carries its monbooru id so the history row can name what it
 // matched.
 func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
-	if h.ptr == nil || !h.ptr.Enabled() {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr index is not available")
-		return
-	}
-	if !h.ptr.CaughtUp() {
-		apiError(w, http.StatusConflict, "ptr_syncing", "the ptr index is not fully synced yet")
+	if !h.ptrReady(w) {
 		return
 	}
 	var body ptrLookupRequest

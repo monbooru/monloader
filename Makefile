@@ -1,4 +1,4 @@
-.PHONY: build test lint coverage ptr-smoke
+.PHONY: build build-tray test lint coverage
 
 VERSION  := $(shell cat VERSION.md 2>/dev/null | tr -d '[:space:]')
 REPO_URL := $(shell cat REPOSITORY.md 2>/dev/null | tr -d '[:space:]')
@@ -7,6 +7,9 @@ LDFLAGS  := -ldflags="-X 'github.com/monbooru/monloader/internal/web.Version=$(V
 
 build:
 	go build $(LDFLAGS) ./cmd/monloader
+
+build-tray:
+	go build -tags tray $(LDFLAGS) ./cmd/monloader
 
 test:
 	go test -race ./...
@@ -17,7 +20,3 @@ lint:
 coverage:
 	go test -coverprofile=coverage.out $(shell go list ./... | grep -v '/cmd/')
 	go tool cover -html=coverage.out -o coverage.html
-
-# Live smoke test against the real Hydrus PTR 
-ptr-smoke:
-	go test -tags ptrsmoke -run TestPTRSmoke -v ./internal/ptr

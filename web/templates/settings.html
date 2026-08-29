@@ -3,6 +3,7 @@
 <div class="settings-shell">
   <aside class="settings-rail">
     <nav class="settings-nav">
+      {{if .DesktopProfile}}<a href="#desktop">desktop</a>{{end}}
       <a href="#monbooru">monbooru</a>
       <a href="#pairing">pairing</a>
       <a href="#auth">authentication</a>
@@ -17,6 +18,61 @@
   <main id="content" class="settings-content">
   <h1 style="margin-bottom:12px">Settings</h1>
 
+  {{if .DesktopProfile}}
+  {{$dk := .Desktop}}
+  <section class="settings-section" id="desktop">
+    <h2>desktop</h2>
+    {{if eq .FlashSection "desktop"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
+    {{/* The switches sit in columns beside the folders, which are forms of
+         their own, so the form they belong to is empty and they reach it by
+         name. */}}
+    <form id="desktop-switches" method="POST" action="/settings/desktop">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    </form>
+    <div class="settings-cols">
+      <div class="settings-sub">
+        <h4>folders</h4>
+        <div class="desktop-folders">
+          {{range $kind := .DesktopFolders}}
+          <form method="POST" action="/internal/open-folder" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+            <input type="hidden" name="kind" value="{{$kind}}">
+            <button type="submit">{{$kind}}</button>
+          </form>
+          {{end}}
+        </div>
+      </div>
+      {{if $dk.Supported}}
+      <div class="settings-sub">
+        <h4>launching</h4>
+        <div class="field">
+          {{if $dk.MenuSupported}}
+          <label><input type="checkbox" name="menu_entry" form="desktop-switches" {{if $dk.MenuEnabled}}checked{{end}}> add to the applications menu</label>
+          {{end}}
+          {{if $dk.AutostartSupported}}
+          <label><input type="checkbox" name="start_at_login" form="desktop-switches" {{if $dk.AutostartEnabled}}checked{{end}}> start at login</label>
+          <p class="field-hint">the queue keeps retries and a daily budget, so leaving monloader running is what makes them run.</p>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+      {{if $dk.TraySupported}}
+      <div class="settings-sub">
+        <h4>tray</h4>
+        <div class="field">
+          <label><input type="checkbox" name="tray" form="desktop-switches" {{if $dk.TrayEnabled}}checked{{end}}> show the tray icon</label>
+          <p class="field-hint">takes effect after a restart.</p>
+        </div>
+      </div>
+      {{end}}
+    </div>
+    <div class="desktop-actions">
+      {{template "desktop_actions" (dict "CSRFToken" .CSRFToken "QuitPrompt" .DesktopQuitPrompt "RestartPrompt" .DesktopRestartPrompt)}}
+      {{if or $dk.Supported $dk.TraySupported}}<button type="submit" form="desktop-switches">save</button>{{end}}
+    </div>
+  </section>
+  {{end}}
+
   <section class="settings-section" id="monbooru">
     <h2>monbooru</h2>
     {{if eq .FlashSection "monbooru"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
@@ -25,12 +81,12 @@
       <div class="settings-cols">
         <div class="field">
           <label for="mb-api-url">api url</label>
-          <input id="mb-api-url" type="text" name="api_url" value="{{.Cfg.Monbooru.APIURL}}" placeholder="http://monbooru:8080">
-          <p class="field-hint">internal URL monloader uses to reach monbooru's API (default {{.Defaults.Monbooru.APIURL}}).</p>
+          <input id="mb-api-url" type="text" name="api_url" value="{{.Cfg.Monbooru.APIURL}}" placeholder="{{.MonbooruAPIHint}}">
+          <p class="field-hint">internal URL monloader uses to reach monbooru's API (default {{.MonbooruAPIHint}}).</p>
         </div>
         <div class="field">
           <label for="mb-web-url">web url</label>
-          <input id="mb-web-url" type="text" name="web_url" value="{{.Cfg.Monbooru.WebURL}}" placeholder="http://localhost:8080">
+          <input id="mb-web-url" type="text" name="web_url" value="{{.Cfg.Monbooru.WebURL}}" placeholder="http://localhost:8455">
           <p class="field-hint">browser URL for links back to monbooru; blank = same as api url.</p>
         </div>
       </div>
@@ -204,7 +260,7 @@
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <p>edit the <strong>saucenao</strong> api key</p>
         <div class="field"><label for="saucenao-key">api key</label>
-          <input id="saucenao-key" type="password" name="api_key" placeholder="{{if .LookupPanel.SaucenaoKeySet}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
+          <input id="saucenao-key" type="password" name="api_key" autocomplete="off" placeholder="{{if .LookupPanel.SaucenaoKeySet}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
         <p class="field-hint">From saucenao.com account settings; the service is skipped until one is set. Queries upload the image's thumbnail to saucenao.com.</p>
         <div class="dialog-actions">
           <button type="button" onclick="document.getElementById('saucenao-dialog').close()">cancel</button>
@@ -277,7 +333,14 @@
       <div class="downloads-grid">
         <div class="field">
           <label for="ptr-data-path">data path</label>
-          <input id="ptr-data-path" type="text" name="data_path" value="{{.Cfg.PTR.DataPath}}">
+          <div class="path-row">
+            <input id="ptr-data-path" type="text" name="data_path" value="{{.Cfg.PTR.DataPath}}">
+            {{if .DesktopProfile}}
+            <button type="button" class="btn-sm dir-picker-open" data-into="ptr-data-path"
+                    hx-get="/internal/browse?into=ptr-data-path" hx-target="#dir-picker-body"
+                    hx-swap="innerHTML">browse</button>
+            {{end}}
+          </div>
           <span class="field-hint">dedicated index volume; applies on restart (default {{.Defaults.PTR.DataPath}})</span>
         </div>
         <div class="field">
@@ -287,7 +350,7 @@
         </div>
         <div class="field">
           <label for="ptr-access-key">access key</label>
-          <input id="ptr-access-key" type="password" name="access_key" placeholder="{{if .Cfg.PTR.AccessKey}}(set - leave blank to keep){{else}}(unset - uses the public read-only key){{end}}">
+          <input id="ptr-access-key" type="password" name="access_key" autocomplete="off" placeholder="{{if .Cfg.PTR.AccessKey}}(set - leave blank to keep){{else}}(unset - uses the public read-only key){{end}}">
           <span class="field-hint">a private repository key or the personal contribution account</span>
         </div>
         <div class="field">
@@ -385,5 +448,11 @@
   </section>
   </main>
 </div>
+{{if .DesktopProfile}}
+<dialog id="dir-picker-dialog" class="dir-picker-dialog">
+  <h4>choose a folder</h4>
+  <div id="dir-picker-body">loading...</div>
+</dialog>
+{{end}}
 {{template "footer" .}}
 {{template "doc_foot" .}}{{end}}

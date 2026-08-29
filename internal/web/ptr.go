@@ -36,6 +36,7 @@ type ptrEngine interface {
 	HasPersonalKey() bool
 	AccessKey() string
 	SetAccessKey(key string)
+	SetDataPath(path string) bool
 	CreateContribAccount(ctx context.Context) (string, error)
 	ContribAccount(ctx context.Context) (*ptr.Account, error)
 	RefreshAccount(ctx context.Context) (*ptr.Account, error)
@@ -174,7 +175,9 @@ func (s *Server) ptrRetry(w http.ResponseWriter, r *http.Request) {
 // client snapshot the config at boot, so changes apply on restart; the access
 // key is a secret with the site-credential semantics: blank keeps the stored
 // value. The enabled box is the exception: it takes effect at once, starting or
-// stopping the sync like the ptr page's own controls.
+// stopping the sync like the ptr page's own controls - and so does the data
+// path while no index is open, or a first run could never start the sync it
+// just set a path for.
 func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.redirectFlash(w, r, "err", "bad form")
@@ -208,8 +211,13 @@ func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
 	// Re-point the live client so a key change (set or cleared back to
 	// the public one) applies with no restart.
 	s.ptr.SetAccessKey(s.cfg.Current().PTR.AccessKey)
+	repointed := s.ptr.SetDataPath(path)
 	if err := s.applyPTREnabled(r.FormValue("enabled") == "1"); err != nil {
 		s.redirectFlash(w, r, "err", "settings saved, but the sync could not start: "+err.Error())
+		return
+	}
+	if !repointed {
+		s.redirectFlash(w, r, "ok", "ptr settings saved; the new data path applies after a restart, since the sync is running on the old one")
 		return
 	}
 	s.redirectFlash(w, r, "ok", "ptr settings saved")

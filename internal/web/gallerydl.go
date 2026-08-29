@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -58,7 +57,7 @@ type gdlPanel struct {
 }
 
 func (s *Server) gdlPanel(ctx context.Context, csrf string) gdlPanel {
-	root := gdl.ManagedRoot(s.configDir())
+	root := gdl.ManagedRoot(s.stateDir)
 	s.reconcileGDLCatalog(ctx, root)
 	p := gdlPanel{
 		ActiveVersion:  s.catalog.Version(),
@@ -85,8 +84,6 @@ func (s *Server) gdlPanel(ctx context.Context, csrf string) gdlPanel {
 	return p
 }
 
-func (s *Server) configDir() string { return filepath.Dir(s.configPath) }
-
 // reconcileGDLCatalog re-probes when the cached inventory was built against a
 // different binary than the one that would run now. The cache is filled at
 // boot and after a switch, so a managed install that stopped answering since -
@@ -103,8 +100,9 @@ func (s *Server) reconcileGDLCatalog(ctx context.Context, root string) {
 	s.refreshGDLCatalog(probeCtx)
 }
 
-// gdlInactiveReason says why an install sitting in /config is not the binary
-// answering: an explicit binary_path outranks it, or its venv no longer runs.
+// gdlInactiveReason says why an install under the state directory is not the
+// binary answering: an explicit binary_path outranks it, or it no longer runs
+// (a legacy venv whose interpreter moved is the usual way).
 func gdlInactiveReason(root string) string {
 	if gdl.ManagedBinary(root) == "" {
 		return "the installed gallery-dl no longer runs - revert to remove it"
@@ -172,8 +170,8 @@ func (s *Server) gdlSwitchGuard() (done func(), reason string) {
 }
 
 // gdlInstall (POST /settings/gallerydl/install) starts a managed install of a
-// gallery-dl release under /config and answers the panel. A blank version
-// means the newest PyPI release.
+// gallery-dl release under the state directory and answers the panel. A blank
+// version means the newest PyPI release.
 func (s *Server) gdlInstall(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.renderGDLPanel(w, r, "err", "bad form")
@@ -214,7 +212,7 @@ func (s *Server) runGDLInstall(version string, done func()) {
 	defer done()
 	ctx, cancel := context.WithTimeout(context.Background(), gdlInstallTimeout)
 	defer cancel()
-	if err := installManaged(ctx, s.configDir(), version, s.gdlStep); err != nil {
+	if err := installManaged(ctx, s.stateDir, version, s.gdlStep); err != nil {
 		// A failed upgrade may have torn the managed install down; re-probe
 		// so the panel and /health report what is actually active.
 		s.refreshGDLCatalog(ctx)
@@ -251,7 +249,7 @@ func (s *Server) renderGDLPanel(w http.ResponseWriter, r *http.Request, kind, ms
 // gdlRevert (POST /settings/gallerydl/revert) removes the managed install;
 // the bundled binary answers again from the next invocation.
 func (s *Server) gdlRevert(w http.ResponseWriter, r *http.Request) {
-	if !gdl.ManagedInstalled(gdl.ManagedRoot(s.configDir())) {
+	if !gdl.ManagedInstalled(gdl.ManagedRoot(s.stateDir)) {
 		s.redirectFlash(w, r, "err", "already running the bundled gallery-dl")
 		return
 	}
@@ -261,7 +259,7 @@ func (s *Server) gdlRevert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer done()
-	if err := gdl.RevertManaged(s.configDir()); err != nil {
+	if err := gdl.RevertManaged(s.stateDir); err != nil {
 		s.redirectFlash(w, r, "err", "could not remove the managed install: "+err.Error())
 		return
 	}
@@ -277,7 +275,7 @@ func (s *Server) gdlRevert(w http.ResponseWriter, r *http.Request) {
 // slightly stale one.
 func (s *Server) refreshGDLCatalog(ctx context.Context) {
 	cfg := s.cfg.Current()
-	root := gdl.ManagedRoot(s.configDir())
+	root := gdl.ManagedRoot(s.stateDir)
 	version := s.runner.Version(ctx)
 	extractors, err := s.runner.ListExtractors(ctx)
 	if err != nil {

@@ -7,22 +7,17 @@ import (
 	"strings"
 
 	"github.com/monbooru/monloader/internal/logx"
-	"github.com/monbooru/monloader/internal/queue"
 )
 
 // ListExtractors runs `gallery-dl --list-extractors` and parses the blocks into
 // the supported-site list. Instance extractors (danbooru, gelbooru, ...) print a
 // blank category, which is preserved.
 func (t *Tool) ListExtractors(ctx context.Context) ([]Extractor, error) {
-	args := append(t.configArgs(), "--list-extractors")
-	res, err := t.run(ctx, args...)
+	out, err := t.runOut(ctx, append(t.configArgs(), "--list-extractors")...)
 	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+		return nil, err
 	}
-	if res.exitCode != 0 {
-		return nil, classifyError(res.exitCode, res.stderr)
-	}
-	return parseExtractors(res.stdout), nil
+	return parseExtractors(out), nil
 }
 
 // parseExtractors splits the listing into blocks and pulls Category /

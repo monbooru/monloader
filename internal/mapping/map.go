@@ -482,13 +482,28 @@ var (
 	tagRe = regexp.MustCompile(`<[^>]*>`)
 )
 
-// markupHTML returns the source's own body only when it carries markup the
-// flattening dropped, so a plain note is not pushed twice.
+// noteTagRe matches the formatting a note box may keep: the inline tags the
+// feature exists for, an anchor only with an http(s) target (a relative one
+// would resolve against monbooru's own host), and their closers, which carry
+// nothing and are inert alone. The bytes come from a booru's note api -
+// remote and unreviewed - so everything else the source wrote is dropped
+// rather than forwarded to monbooru, which cannot know where it came from.
+var noteTagRe = regexp.MustCompile(`(?i)^(<a href="https?://[^"<>\s]*">|</?(a|b|i|u|s|em|strong|br)\s*/?>)$`)
+
+// markupHTML returns the source's own body, reduced to those tags, and only
+// when it still carries markup the flattening dropped - a plain note is not
+// pushed twice.
 func markupHTML(raw, plain string) string {
-	if strings.TrimSpace(raw) == plain {
+	safe := tagRe.ReplaceAllStringFunc(raw, func(tag string) string {
+		if noteTagRe.MatchString(tag) {
+			return tag
+		}
+		return ""
+	})
+	if strings.TrimSpace(safe) == plain {
 		return ""
 	}
-	return raw
+	return safe
 }
 
 // plainText reduces a booru's HTML note body (or commentary) to plain text:

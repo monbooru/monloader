@@ -21,6 +21,12 @@ import (
 // Config holds all monloader configuration. The override tables back the
 // per-site tag and rating settings.
 type Config struct {
+	// SetupDone gates the desktop profile's first-run wizard. A file
+	// monloader creates starts at false; one that already exists without the
+	// key loads as true, so an upgrade never shows the wizard to an operator
+	// who configured by hand. Outside the desktop profile the flag changes
+	// nothing.
+	SetupDone       bool             `toml:"setup_done"`
 	Server          ServerConfig     `toml:"server"`
 	Monbooru        MonbooruConfig   `toml:"monbooru"`
 	Downloader      DownloaderConfig `toml:"downloader"`
@@ -29,6 +35,7 @@ type Config struct {
 	Log             LogConfig        `toml:"log"`
 	PTR             PTRConfig        `toml:"ptr"`
 	Lookup          LookupConfig     `toml:"lookup"`
+	Desktop         DesktopConfig    `toml:"desktop"`
 	Sites           []Site           `toml:"sites"`
 	TagOverrides    []TagOverride    `toml:"tag_overrides"`
 	RatingOverrides []RatingOverride `toml:"rating_overrides"`
@@ -111,9 +118,10 @@ type GalleryDLConfig struct {
 	CookiesDir   string  `toml:"cookies_dir"`
 	SleepRequest float64 `toml:"sleep_request"`
 	RawConfig    string  `toml:"raw_config"`
-	// SupportedSitesPath is gallery-dl's docs/supportedsites.md, bundled in
-	// the image at the pinned version; it seeds display names and auth kinds
-	// for sites without a shipped profile. Missing is fine.
+	// SupportedSitesPath is gallery-dl's docs/supportedsites.md; it seeds
+	// display names and auth kinds for sites without a shipped profile.
+	// Empty - the default - means the copy embedded in the binary at the
+	// pinned version. A path overrides it; missing is fine either way.
 	SupportedSitesPath string `toml:"supportedsites_path"`
 }
 
@@ -195,6 +203,14 @@ func IsHexHash(s string, n int) bool {
 func IsHTTPURL(s string) bool {
 	u, err := url.Parse(s)
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+// IsRelativeFolder reports whether s is safe as a gallery folder: relative,
+// with no ".." segment. Both the settings field and a per-job folder option
+// apply it, so the same value is not refused in one place and downloaded
+// against in the other.
+func IsRelativeFolder(s string) bool {
+	return !strings.HasPrefix(s, "/") && !slices.Contains(strings.Split(s, "/"), "..")
 }
 
 func newTokenID() string {
@@ -294,6 +310,14 @@ func (cfg *Config) SetTokenScopes(id string, scopes []string) bool {
 // LogConfig controls log verbosity: "warn" (default), "info", "debug".
 type LogConfig struct {
 	Level string `toml:"level"`
+}
+
+// DesktopConfig holds what the desktop profile keeps in the config file.
+// The applications-menu entry and start-at-login are files the platform
+// reads, so the tray is the only switch with nowhere else to live. Absent
+// from a file written before the key existed, it loads as the default.
+type DesktopConfig struct {
+	Tray bool `toml:"tray"`
 }
 
 // PTRConfig controls the optional Hydrus Public Tag Repository thin client. It
@@ -419,12 +443,15 @@ type HostLabel struct {
 // Default returns a fully populated config with the built-in defaults.
 func Default() *Config {
 	return &Config{
+		// 8456, the port beside monbooru's 8455: one pair of adjacent
+		// numbers wherever the two run, rather than one set for containers
+		// and another for a desktop.
 		Server: ServerConfig{
-			BindAddress: "0.0.0.0:8081",
-			BaseURL:     "http://localhost:8081",
+			BindAddress: "0.0.0.0:8456",
+			BaseURL:     "http://localhost:8456",
 		},
 		Monbooru: MonbooruConfig{
-			APIURL: "http://monbooru:8080",
+			APIURL: "http://monbooru:8455",
 		},
 		Downloader: DownloaderConfig{
 			Concurrency:          1,
@@ -434,12 +461,11 @@ func Default() *Config {
 			SuccessRetentionDays: 3,
 		},
 		GalleryDL: GalleryDLConfig{
-			BinaryPath:         "gallery-dl",
-			ConfigPath:         "/config/gallery-dl.json",
-			ArchivePath:        "/config/gallery-dl-archive.sqlite",
-			CookiesDir:         "/config/cookies",
-			SleepRequest:       1.0,
-			SupportedSitesPath: "/usr/local/share/monloader/supportedsites.md",
+			BinaryPath:   "gallery-dl",
+			ConfigPath:   "/config/gallery-dl.json",
+			ArchivePath:  "/config/gallery-dl-archive.sqlite",
+			CookiesDir:   "/config/cookies",
+			SleepRequest: 1.0,
 		},
 		Auth: AuthConfig{
 			SessionLifetimeDays: 7,
@@ -459,6 +485,9 @@ func Default() *Config {
 			Iqdb:                 LookupService{Order: 2},
 			Saucenao:             LookupService{Order: 3},
 			ScheduledDailyBudget: defaultScheduledDailyBudget,
+		},
+		Desktop: DesktopConfig{
+			Tray: true,
 		},
 		Sites: append([]Site(nil), defaultLookupSites...),
 	}
@@ -503,13 +532,21 @@ var legacyLookupOrders = map[string]int{
 	"danbooru": 1, "gelbooru": 2, "rule34": 3, "e621": 4, "yandere": 5, "konachan": 6,
 }
 
-// Load reads the config (creating it with defaults when absent), applies
-// MONLOADER_* env overrides, and validates. The result is the effective
-// runtime view. Env overrides are applied before the final validation so a
-// MONLOADER_* value is sanity-checked the same way a file value is.
-func Load(path string) (*Config, error) {
+// LoadWithDefaults reads the config (creating it with defaults when absent),
+// applies MONLOADER_* env overrides, and validates. The result is the
+// effective runtime view; env overrides are applied before the final
+// validation so a MONLOADER_* value is sanity-checked the same way a file
+// value is. seed adjusts the defaults before a missing file is written, and
+// runs only on that path: a config already on disk is loaded as it stands,
+// whatever profile is active, so the container volume layout the shipped
+// image depends on is never rewritten.
+func LoadWithDefaults(path string, seed func(*Config)) (*Config, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if writeErr := Save(Default(), path); writeErr != nil {
+		fresh := Default()
+		if seed != nil {
+			seed(fresh)
+		}
+		if writeErr := Save(fresh, path); writeErr != nil {
 			return nil, fmt.Errorf("creating default config: %w", writeErr)
 		}
 	} else if err != nil {
@@ -591,6 +628,7 @@ func LoadFromFile(path string) (*Config, error) {
 		cfg.RatingOverrides = nil
 		cfg.HostLabels = nil
 		cfg.Lookup = LookupConfig{}
+		cfg.SetupDone = true
 		md, err := toml.DecodeFile(path, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("parsing config file %q: %w", path, err)

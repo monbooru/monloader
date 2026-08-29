@@ -104,7 +104,7 @@ func (h *Handler) endpoints() []endpoint {
 					{Name: "url", Type: "string", Description: "A booru post, pool, tag-search, or artist URL gallery-dl supports; or \"md5:<32 hex>\" to find and import the post carrying that file hash via the lookup walk. Surrounding whitespace is trimmed and the md5: prefix is matched case-insensitively; a bare hash is not accepted here"},
 					{Name: "options", Type: "object", Props: []prop{
 						{Name: "gallery", Type: "string", Description: "Target monbooru gallery; overrides the per-source default"},
-						{Name: "folder", Type: "string", Description: "Destination subfolder under the gallery"},
+						{Name: "folder", Type: "string", Description: "Destination subfolder under the gallery; relative, no .. segment"},
 						{Name: "max_items", Type: "integer", Minimum: 1, Description: "Cap on posts fetched this run (--range 1-N); only lowers the cap, never above the server's max_items_per_job. A pool is exempt and always fetched whole"},
 						{Name: "page_url", Type: "string", Description: "The page a direct-file send came from; a directlink job records it as the item's source link instead of the bare file URL"},
 					}},
@@ -655,7 +655,7 @@ var apiSchemas = []apiSchema{
 		{Name: "page_url", Type: "string", Description: "Page a direct-file send came from; a directlink item records it as its source link"},
 		{Name: "site", Type: "string", Description: "gallery-dl category, set after resolve"},
 		{Name: "gallery", Type: "string", Description: "target monbooru gallery"},
-		{Name: "folder", Type: "string", Description: "destination subfolder under the gallery"},
+		{Name: "folder", Type: "string", Description: "destination subfolder under the gallery; relative, no .. segment"},
 		{Name: "max_items", Type: "integer", Description: "per-job item cap supplied at enqueue"},
 		{Name: "force", Type: "boolean", Description: "Last/next run bypasses the gallery-dl archive (set by a forced retry)"},
 		{Name: "summary", Ref: "Summary"},
@@ -808,7 +808,7 @@ func buildSpec(baseURL, version string, eps []endpoint) map[string]any {
 					"type":         "http",
 					"scheme":       "bearer",
 					"bearerFormat": "token",
-					"description":  "Required on every endpoint except /health, /api/v1/openapi.json, /api/v1/docs, and the unauthenticated /api/v1/pair/* pairing bootstrap (not listed in this document). Use a named, scoped token from Settings -> Authentication (read: queue/sites; write: enqueue/manage); the API is disabled until at least one token exists.",
+					"description":  "Required on every endpoint except /health, /api/v1/openapi.json, /api/v1/docs, and the unauthenticated /api/v1/pair/* pairing bootstrap. Use a named, scoped token from Settings -> Authentication (read: queue/sites; write: enqueue/manage); the API is disabled until at least one token exists.",
 				},
 			},
 			"schemas": schemas,
@@ -905,13 +905,10 @@ func refJSON(name string) map[string]any {
 	return map[string]any{"$ref": "#/components/schemas/" + name}
 }
 
+var anchorReplacer = strings.NewReplacer("/", "-", "{", "", "}", "", ".", "-")
+
 func anchorize(s string) string {
-	r := strings.ToLower(s)
-	r = strings.ReplaceAll(r, "/", "-")
-	r = strings.ReplaceAll(r, "{", "")
-	r = strings.ReplaceAll(r, "}", "")
-	r = strings.ReplaceAll(r, ".", "-")
-	r = strings.Trim(r, "-")
+	r := strings.Trim(anchorReplacer.Replace(strings.ToLower(s)), "-")
 	if r == "" {
 		r = "root"
 	}

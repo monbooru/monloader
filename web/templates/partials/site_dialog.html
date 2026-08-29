@@ -50,9 +50,9 @@
     <p class="field-hint auth-field auth-none">this site reads without credentials - change the login type if yours needs one</p>
     <p class="field-hint auth-field auth-oauth">run gallery-dl's oauth flow once (gallery-dl oauth:{{.Category}}) and put the resulting tokens in the advanced tab's private options</p>
     <div class="field auth-field auth-username"><label>username</label><input type="text" name="username" value="{{.Username}}"></div>
-    <div class="field auth-field auth-password"><label>password</label><input type="password" name="password" placeholder="{{if .HasPassword}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
+    <div class="field auth-field auth-password"><label>password</label><input type="password" name="password" autocomplete="off" placeholder="{{if .HasPassword}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
     <div class="field auth-field auth-userid"><label>user id</label><input type="text" name="user_id" value="{{.UserID}}"></div>
-    <div class="field auth-field auth-apikey"><label>api key</label><input type="password" name="api_key" placeholder="{{if .HasAPIKey}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
+    <div class="field auth-field auth-apikey"><label>api key</label><input type="password" name="api_key" autocomplete="off" placeholder="{{if .HasAPIKey}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
     <div class="field auth-field auth-cookies"><label>cookies file</label><input type="text" name="cookies" value="{{.Cookies}}" placeholder="{{.CookiesPlaceholder}}"></div>
     <div class="field auth-field auth-cookies"><label>paste cookies (Netscape export)</label>
       <textarea name="cookies_paste" placeholder="# Netscape HTTP Cookie File&#10;.x.com&#9;TRUE&#9;/&#9;TRUE&#9;1785167999&#9;auth_token&#9;..."></textarea>

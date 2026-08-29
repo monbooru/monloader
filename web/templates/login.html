@@ -5,7 +5,8 @@
     {{if .Error}}<div class="login-error">{{.Error}}</div>{{end}}
     <form method="POST" action="/login">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <input type="password" name="password" placeholder="password" autofocus>
+      <input type="text" name="username" value="operator" autocomplete="username" hidden>
+      <input type="password" name="password" placeholder="password" autocomplete="current-password" autofocus>
       <button type="submit">log in</button>
     </form>
   </div>

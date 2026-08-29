@@ -8,8 +8,10 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/monbooru/monloader/internal/api"
@@ -30,15 +32,43 @@ import (
 var (
 	Version = "dev"
 	RepoURL = "https://github.com/monbooru/monloader"
-	DocURL  = "https://leqwin.github.io/mondocs/addons/monloader/index.html"
+	DocURL  = "https://monbooru.github.io/mondocs/addons/monloader/index.html"
 )
+
+// Package names whatever produced this artifact ("docker", "tarball", "zip",
+// "installer", "flatpak"), injected at build time via -ldflags. With several
+// artifacts in circulation every bug report opens on the question it answers.
+// "source" is a plain go build and renders as nothing.
+var Package = "source"
+
+// BuildLabel is the artifact stamp rendered beside the version, empty on a
+// plain source build.
+func BuildLabel() string {
+	if Package == "" || Package == "source" {
+		return ""
+	}
+	return Package
+}
+
+// Desktop is what the -desktop profile tells the server: whether it is
+// active, and where it put the log file. The second is not derivable here
+// because the command resolves the layout before the config is loaded.
+type Desktop struct {
+	Active bool
+	LogDir string
+}
 
 // Server renders the three-screen htmx UI and mounts the JSON API on the same
 // mux.
 type Server struct {
 	cfg        *config.Provider
 	configPath string
-	cfgMu      sync.Mutex
+	// stateDir is where monloader keeps what it writes for itself, the managed
+	// gallery-dl install among it. The container puts it beside the config; the
+	// desktop profile splits the two, so deriving it from configPath would have
+	// the panel install where the runner never looks.
+	stateDir string
+	cfgMu    sync.Mutex
 
 	pairMu      sync.Mutex
 	pairAttempt *outboundPair
@@ -71,6 +101,39 @@ type Server struct {
 	csrfSecret []byte
 	tmpl       *template.Template
 	staticFS   fs.FS
+
+	// desktop marks the -desktop profile. It gates the controls that only
+	// make sense on the machine the operator is sitting at: the directory
+	// picker, the folder opener, Quit, and the first-run redirect.
+	desktop bool
+	logDir  string
+	// quit carries a Quit click to the command's shutdown select, so the
+	// stop path is the same one SIGTERM takes. A Restart click rides the
+	// same path with the flag set, and the command starts a fresh process
+	// once it has drained.
+	quit     chan struct{}
+	quitOnce sync.Once
+	restart  atomic.Bool
+}
+
+// QuitRequested fires when the Quit control asks the process to stop.
+func (s *Server) QuitRequested() <-chan struct{} { return s.quit }
+
+// RequestQuit asks the command to shut down, for the tray's Quit entry and
+// for the settings control once its page has reached the browser.
+func (s *Server) RequestQuit() {
+	s.quitOnce.Do(func() { close(s.quit) })
+}
+
+// RestartRequested reports whether the shutdown under way should be followed
+// by a fresh process. Read by the command once it has drained.
+func (s *Server) RestartRequested() bool { return s.restart.Load() }
+
+// RequestRestart stops the process and asks the command to start it again,
+// for the settings that only take effect at boot.
+func (s *Server) RequestRestart() {
+	s.restart.Store(true)
+	s.RequestQuit()
 }
 
 // NewServer wires the UI server. catalog is the boot-seeded gallery-dl
@@ -78,7 +141,7 @@ type Server struct {
 // and the API read, refreshed when a managed install changes the binary;
 // siteState is the shared "last reached" tracker the settings sites table
 // reads and the test probe writes (the pipeline writes it on a fetch).
-func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, catalog *gdl.Catalog, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client) (*Server, error) {
+func NewServer(cfg *config.Provider, configPath, stateDir string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, catalog *gdl.Catalog, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client, dk Desktop) (*Server, error) {
 	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(webFS.FS, "templates/*.html", "templates/partials/*.html")
 	if err != nil {
 		return nil, err
@@ -90,6 +153,7 @@ func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *
 	return &Server{
 		cfg:        cfg,
 		configPath: configPath,
+		stateDir:   stateDir,
 		queue:      q,
 		client:     client,
 		pairs:      newPairStore(),
@@ -103,6 +167,9 @@ func NewServer(cfg *config.Provider, configPath string, q *queue.Queue, client *
 		csrfSecret: mustRandBytes(32),
 		tmpl:       tmpl,
 		staticFS:   staticFS,
+		desktop:    dk.Active,
+		logDir:     dk.LogDir,
+		quit:       make(chan struct{}),
 	}, nil
 }
 
@@ -171,6 +238,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/gallerydl/install", s.gdlInstall)
 	mux.HandleFunc("POST /settings/gallerydl/revert", s.gdlRevert)
 	mux.HandleFunc("GET /internal/gallerydl-status", s.gdlStatusFragment)
+	mux.HandleFunc("GET /setup", s.setupPage)
+	mux.HandleFunc("POST /setup", s.setupPost)
+	mux.HandleFunc("GET /internal/browse", s.browseDirs)
+	mux.HandleFunc("POST /internal/open-folder", s.openFolder)
+	mux.HandleFunc("GET /internal/desktop-actions", s.desktopActionsFragment)
+	mux.HandleFunc("POST /settings/desktop", s.settingsDesktopPost)
+	mux.HandleFunc("POST /settings/quit", s.settingsQuit)
+	mux.HandleFunc("POST /settings/restart", s.settingsRestart)
 	mux.HandleFunc("POST /settings/raw", s.saveRaw)
 	mux.HandleFunc("POST /settings/ptr", s.savePTR)
 	mux.HandleFunc("POST /settings/ptr/delete", s.ptrDelete)
@@ -204,6 +279,7 @@ func (s *Server) Handler() http.Handler {
 
 	var h http.Handler = mux
 	h = s.CSRFMiddleware(h)
+	h = s.SetupMiddleware(h)
 	h = s.SessionMiddleware(h)
 	h = loggingMiddleware(h)
 	return h
@@ -222,6 +298,7 @@ func templateFuncs() template.FuncMap {
 			}
 			return m
 		},
+		"browseURL":   browseURL,
 		"humanBytes":  humanBytes,
 		"humanSince":  humanSince,
 		"humanDue":    humanDue,
@@ -238,6 +315,14 @@ func templateFuncs() template.FuncMap {
 	}
 }
 
+// browseURL builds one directory picker entry's navigation target. hx-get is
+// not a URL attribute to html/template, so a path is only HTML-escaped there:
+// a folder named "R&D" or "a+b" would arrive at the handler cut in half or
+// with its plus decoded to a space.
+func browseURL(into, path string) string {
+	return "/internal/browse?" + url.Values{"into": {into}, "path": {path}}.Encode()
+}
+
 // docPage resolves a page (optionally with a fragment) under the documentation
 // root, so a deep link follows a DocURL overridden at build time instead of
 // pinning the shipped host.
@@ -245,42 +330,45 @@ func docPage(page string) string {
 	return strings.TrimSuffix(DocURL, "index.html") + page
 }
 
-// moreSummary describes the items hidden behind a "+N more" toggle as a compact
-// "3 downloading, 2 created" by state - only the non-zero parts. An item not yet
-// at a terminal outcome counts as downloading.
-func moreSummary(items []queue.Item) string {
-	var downloading, created, duplicate, enriched, replaced, skipped, failed, canceled int
-	for _, it := range items {
-		switch {
-		case it.ErrorCode == queue.ErrCodeCanceled:
-			canceled++
-		case it.Outcome == queue.OutcomeCreated:
-			created++
-		case it.Outcome == queue.OutcomeDuplicate:
-			duplicate++
-		case it.Outcome == queue.OutcomeEnriched:
-			enriched++
-		case it.Outcome == queue.OutcomeReplaced:
-			replaced++
-		case it.Outcome == queue.OutcomeSkippedArchive, it.Outcome == queue.OutcomeSkippedUnsupported:
-			skipped++
-		case it.Outcome == queue.OutcomeFailed:
-			failed++
-		default:
-			downloading++
-		}
+// moreOrder is the order the hidden-item summary reads in, and the whole set
+// of words it can use.
+var moreOrder = []string{"downloading", "created", "duplicate", "enriched",
+	"replaced", "skipped", "failed", "canceled"}
+
+// moreBucket is the word one item counts under. An item not yet at a terminal
+// outcome is still downloading.
+func moreBucket(it queue.Item) string {
+	switch {
+	case it.ErrorCode == queue.ErrCodeCanceled:
+		return "canceled"
+	case it.Outcome == queue.OutcomeCreated:
+		return "created"
+	case it.Outcome == queue.OutcomeDuplicate:
+		return "duplicate"
+	case it.Outcome == queue.OutcomeEnriched:
+		return "enriched"
+	case it.Outcome == queue.OutcomeReplaced:
+		return "replaced"
+	case it.Outcome == queue.OutcomeSkippedArchive, it.Outcome == queue.OutcomeSkippedUnsupported:
+		return "skipped"
+	case it.Outcome == queue.OutcomeFailed:
+		return "failed"
+	default:
+		return "downloading"
 	}
-	parts := make([]string, 0, 8)
-	for _, c := range []struct {
-		n     int
-		label string
-	}{
-		{downloading, "downloading"}, {created, "created"}, {duplicate, "duplicate"},
-		{enriched, "enriched"}, {replaced, "replaced"},
-		{skipped, "skipped"}, {failed, "failed"}, {canceled, "canceled"},
-	} {
-		if c.n > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", c.n, c.label))
+}
+
+// moreSummary describes the items hidden behind a "+N more" toggle as a compact
+// "3 downloading, 2 created" by state - only the non-zero parts.
+func moreSummary(items []queue.Item) string {
+	n := map[string]int{}
+	for _, it := range items {
+		n[moreBucket(it)]++
+	}
+	parts := make([]string, 0, len(moreOrder))
+	for _, label := range moreOrder {
+		if n[label] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n[label], label))
 		}
 	}
 	return strings.Join(parts, ", ")
@@ -355,6 +443,7 @@ func (s *Server) base(r *http.Request, nav, title string) map[string]any {
 		"CSRFToken":        s.csrfToken(sessionFromContext(r.Context())),
 		"AuthEnabled":      s.cfg.Current().Auth.EnablePassword,
 		"Version":          Version,
+		"Build":            BuildLabel(),
 		"GalleryDLVersion": s.catalog.Version(),
 		"RepoURL":          RepoURL,
 		"DocURL":           DocURL,

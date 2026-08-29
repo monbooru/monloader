@@ -21,7 +21,7 @@ It also runs in reverse: for a file monbooru already holds, monloader looks up i
 - **Pools and manga.** A booru pool's pages import as an ordered collection; a manga or comic gallery bundles into a single `.cbz` for monbooru's reader.
 - **Metadata mapped to monbooru.** Tags by category (artist / character / copyright / meta / ...), rating, and source, normalized across booru families so tags land the way monbooru expects them.
 - **Any gallery-dl site.** 50+ shipped profiles for the booru families and manga/comic sites, and everything else gallery-dl supports works through a generic fallback.
-- **Update gallery-dl.** When a site fix lands in a gallery-dl release, install it (or roll back) without waiting for a monloader image.
+- **Update gallery-dl.** When a site fix lands in a gallery-dl release, install it (or roll back) without waiting for a new monloader version.
 - **Queue management.** Each download shows whether it was added, was already in your library, got skipped, or failed so you can see at a glance what happened to every item. 
 - **Find tags by file hash or image similarity.** Paste an image's md5 to import the matching booru post, or have monbooru fetch tags for a file it already holds; monloader walks the sources you pick in order: exact md5 searches, plus iqdb and SauceNAO similarity lookups that find re-encoded copies from the image's thumbnail. An optional local copy of the Hydrus Public Tag Repository adds offline sha256 lookups.
 
@@ -69,7 +69,7 @@ contribute back`"| loader
 
 ---
 
-## Quick start
+## Quick start (Docker)
 
 monloader ships in monbooru's `docker/docker-compose.yml` :
 
@@ -77,10 +77,15 @@ monloader ships in monbooru's `docker/docker-compose.yml` :
    ```bash
    docker compose up -d monloader
    ```
-2. Open monloader at `http://localhost:8081`, go to **Settings -> pairing**, and click **connect to monbooru** (the default api url in the monbooru section, `http://monbooru:8080`, works on the shared compose network).
+2. Open monloader at `http://localhost:8456`, go to **Settings -> pairing**, and click **connect to monbooru** (the default api url in the monbooru section, `http://monbooru:8455`, works on the shared compose network).
 3. In monbooru, approve the pairing request in its monloader settings. monloader stores the token monbooru issues; there are no keys to copy by hand.
 4. Back in monloader, pick a **default gallery** and **save**.
 5. Paste a URL into the command bar on the home screen and press Enter.
+
+## Quick start (desktop)
+
+Download a build for your system from the [releases](https://github.com/monbooru/monloader/releases), unpack it, and run it. It opens a browser at `http://localhost:8456`.
+
 
 See the [monloader documentation](https://monbooru.github.io/mondocs/addons/monloader/index.html) for help.
 

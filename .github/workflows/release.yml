@@ -1,6 +1,9 @@
 name: Release
 
 # Builds the Docker image for amd64 and arm64 to GHCR and creates a GitHub release
+#
+# It also builds every downloadable artifact: the plain binaries, the bundled
+# ones carrying gallery-dl, the Flatpak and the Windows installer. 
 
 on:
   push:
@@ -11,6 +14,13 @@ on:
 permissions:
   contents: write
   packages: write
+
+env:
+  GO_VERSION: '1.27.0'
+  GO_SHA256_LINUX_AMD64: 675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685
+  GDL_VERSION: '1.32.10'
+  GDL_SHA256_LINUX_AMD64: ac077cbff1b048916d61d7bcd8f43cf56b1e6a6b0698bd5c55bb436649e5748d
+  GDL_SHA256_WINDOWS_AMD64: 1e4febe66444cf87e0b6d1de6fdf3004522f5d91a9c15b720db43ec34a1b73c9
 
 jobs:
   docker:
@@ -25,17 +35,17 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Lowercase image name
         id: img
         run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -43,7 +53,7 @@ jobs:
 
       - name: Build and push ${{ matrix.arch }}
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile
@@ -63,7 +73,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digests-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -79,17 +89,17 @@ jobs:
         run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digests-*
           merge-multiple: true
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -105,7 +115,7 @@ jobs:
 
       - name: Login to GHCR (legacy namespace)
         continue-on-error: true
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: leqwin
@@ -124,7 +134,7 @@ jobs:
     needs: manifest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Extract changelog entry
         run: |
@@ -135,8 +145,127 @@ jobs:
           fi
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body_path: .latest_changelog.md
+
+  binaries:
+    name: Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Go
+        run: |
+          curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256_LINUX_AMD64}  /tmp/go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go
+          sudo tar -C /usr/local -xzf /tmp/go.tgz
+          echo /usr/local/go/bin >> "$GITHUB_PATH"
+
+      - name: Fetch the bundled gallery-dl
+        run: ./packaging/fetch-tools.sh
+
+      - name: Build
+        run: ./packaging/build-binaries.sh
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries-plain
+          path: dist/*
+          if-no-files-found: error
+
+  windows-installer:
+    name: Windows installer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install the build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+          curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256_LINUX_AMD64}  /tmp/go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go
+          sudo tar -C /usr/local -xzf /tmp/go.tgz
+          echo /usr/local/go/bin >> "$GITHUB_PATH"
+
+      - name: Fetch the bundled gallery-dl
+        run: ./packaging/fetch-tools.sh
+
+      - name: Build
+        run: ./packaging/build-binaries.sh
+
+      - name: Build the installers
+        run: |
+          ./packaging/build-installer.sh lite
+          ./packaging/build-installer.sh bundled
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries-windows-installer
+          path: dist/monloader_*_setup.exe
+          if-no-files-found: error
+
+  flatpak:
+    name: Flatpak bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+
+      - name: Check the route to flathub
+        run: |
+          probe=https://dl.flathub.org/repo/config
+          getent hosts dl.flathub.org || true
+          v4=0
+          v6=0
+          curl -4 -fsS --max-time 30 -o /dev/null \
+            -w 'ipv4: %{http_code} in %{time_total}s from %{remote_ip}\n' "$probe" && v4=1 || echo "ipv4: no answer"
+          curl -6 -fsS --max-time 30 -o /dev/null \
+            -w 'ipv6: %{http_code} in %{time_total}s from %{remote_ip}\n' "$probe" && v6=1 || echo "ipv6: no answer"
+          if [ "$v4" = 1 ] && [ "$v6" = 0 ]; then
+            echo "ipv6 is broken here; preferring ipv4"
+            echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf
+          fi
+
+      - name: Build the bundle
+        run: ./packaging/flatpak-bundle.sh
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries-flatpak
+          path: dist/*
+          if-no-files-found: error
+
+  attach:
+    name: Attach the artifacts to the release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [release, binaries, windows-installer, flatpak]
+    steps:
+      - name: Download every artifact
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Attach
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*

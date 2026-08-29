@@ -5,7 +5,7 @@ services:
     # Image runs as uid/gid 1000; set this to your host uid:gid.
     user: "1000:1000"
     ports:
-      - "127.0.0.1:8081:8081"
+      - "127.0.0.1:8456:8456"
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -15,10 +15,10 @@ services:
       # Required to enable the Public Tag Repository syncing (>70GB required)
       # - /path/to/monloader/ptr:/ptr
     environment:
-      - MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8081
+      - MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8456
       # Internal URL: how the container reach monbooru on the network
-      - MONLOADER_MONBOORU_API_URL=http://monbooru:8080
+      - MONLOADER_MONBOORU_API_URL=http://monbooru:8455
       # Browser URL: how you reach monbooru in the browser
-      - MONLOADER_MONBOORU_WEB_URL=http://localhost:8080
+      - MONLOADER_MONBOORU_WEB_URL=http://localhost:8455
       # - TZ=Etc/UTC
     restart: unless-stopped

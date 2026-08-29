@@ -210,6 +210,28 @@ onClick(".maprow-del", function (del) {
   del.closest(".maprow").remove();
 });
 
+// The directory picker: a browser cannot hand the server a filesystem path,
+// so the choice is made against a server-rendered listing. The Browse button
+// only opens the dialog - htmx has already been told to fetch the listing
+// into it - and "Use this folder" writes the result back into the input the
+// button named.
+document.addEventListener("click", function (e) {
+  if (e.target.closest(".dir-picker-open")) {
+    var dlg = document.getElementById("dir-picker-dialog");
+    if (dlg && !dlg.open) dlg.showModal();
+    return;
+  }
+  var use = e.target.closest(".dir-picker-use");
+  if (!use) return;
+  var input = document.getElementById(use.dataset.into || "");
+  if (input) {
+    input.value = use.dataset.path || "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  var open = use.closest("dialog");
+  if (open) open.close();
+});
+
 // Route hx-confirm prompts through an in-page pop-in instead of the browser's
 // native confirm(). A destructive action carries data-confirm-danger, which
 // reddens the OK button and lands focus on cancel so an accidental Enter does

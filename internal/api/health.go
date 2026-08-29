@@ -9,6 +9,9 @@ import "net/http"
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{
+		// "app" is what lets a second launch tell our own instance from
+		// whatever else already took the port.
+		"app":               "monloader",
 		"status":            "ok",
 		"version":           h.version,
 		"gallerydl_version": h.catalog.Version(),

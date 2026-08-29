@@ -77,7 +77,7 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	var trail []string
 	ptrTags, ptrHit, ptrMiss := p.ptrTagsFor(snap.SHA256)
 	if ptrMiss != "" {
-		trail = append(trail, ptrMiss)
+		trail = append(trail, ptrTrailName+": "+ptrMiss)
 	}
 	meta, hit, chainTrail, err := p.lookupChain(ctx, snap)
 	if err != nil {
@@ -136,7 +136,7 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	res, url, site, onlineErr := p.enrichAllOnline(ctx, job, snap, meta, hit)
 	switch {
 	case onlineErr == nil:
-		note := composeLookupNote(ptrApplied, ptrNote, site, res.MergeNote)
+		note := composeLookupNote(ptrApplied, ptrNote, ptrMiss, site, res.MergeNote)
 		p.markEnriched(job, snap, &monbooru.Result{
 			MonbooruID: snap.ImageID, MergeNote: note,
 			// Either enrich can have had tags refused, so the item carries both.
@@ -156,23 +156,24 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 }
 
 // ptrTagsFor asks the local index for a sha256's tags on a backend=all job,
-// returning the mapped tags and the trail entry naming why nothing came back.
-// A backend that is off answers neither, since the job never promised one; one
-// still syncing says so, because a partial index answers a partial tag set
-// that reads like the whole truth.
+// returning the mapped tags and, when nothing came back, the bare reason - the
+// trail and the item's note each phrase it their own way. A backend that is
+// off answers neither, since the job never promised one; one still syncing
+// says so, because a partial index answers a partial tag set that reads like
+// the whole truth.
 func (p *Processor) ptrTagsFor(sha256 string) (tags []string, hit bool, miss string) {
 	if p.ptr == nil || !p.ptr.Enabled() || sha256 == "" {
 		return nil, false, ""
 	}
 	if !p.ptr.CaughtUp() {
-		return nil, false, ptrTrailName + ": skipped, still syncing"
+		return nil, false, "skipped, still syncing"
 	}
 	rawTags, ok, err := p.ptr.TagsForHash(sha256)
 	switch {
 	case err != nil:
-		return nil, false, ptrTrailName + ": " + err.Error()
+		return nil, false, err.Error()
 	case !ok:
-		return nil, false, ptrTrailName + ": no match"
+		return nil, false, "no match"
 	}
 	return mapping.MapPTRTags(rawTags), true, ""
 }
@@ -214,10 +215,12 @@ func (p *Processor) sourceOnlyEnrich(ctx context.Context, job, snap *queue.Job, 
 	})
 }
 
-// composeLookupNote summarises a backend=all outcome for the queue row: the
-// PTR's merge note and the online site's, each shown only when that backend
-// applied. An empty merge note reads as "no new tags".
-func composeLookupNote(ptrApplied bool, ptrNote, site, onlineNote string) string {
+// composeLookupNote summarises a backend=all outcome for the queue row: what
+// each backend folded in, or why it could not. A PTR that was asked and did
+// not answer says so - a skipped backend and one that held nothing for the
+// file must not read alike, since monbooru's retry ladder advances on either.
+// An empty merge note reads as "no new tags".
+func composeLookupNote(ptrApplied bool, ptrNote, ptrMiss, site, onlineNote string) string {
 	noteOrNone := func(note string) string {
 		if note == "" {
 			return "no new tags"
@@ -225,8 +228,11 @@ func composeLookupNote(ptrApplied bool, ptrNote, site, onlineNote string) string
 		return note
 	}
 	var parts []string
-	if ptrApplied {
+	switch {
+	case ptrApplied:
 		parts = append(parts, "ptr "+noteOrNone(ptrNote))
+	case ptrMiss != "":
+		parts = append(parts, "ptr "+ptrMiss)
 	}
 	parts = append(parts, site+" "+noteOrNone(onlineNote))
 	return strings.Join(parts, "; ")

@@ -1,0 +1,44 @@
+{{define "restarting"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60;url=/">
+  <title>{{.BooruName}} is restarting</title>
+  <link rel="stylesheet" href="/static/main.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-box">
+      <h1>{{.BooruName}} is restarting</h1>
+      <p class="field-hint">This page will reload automatically.</p>
+      {{if .InFlight}}
+      <p class="field-hint">{{.InFlight}} job(s) were running or waiting. The restart cancelled them; retry them from the queue once it is back.</p>
+      {{end}}
+    </div>
+  </div>
+  <script>
+    // Come back when the listener does, rather than on a fixed timer that
+    // lands on a refused connection whenever the new process takes longer to
+    // bind. Seeing it refuse once is the reliable signal; a restart can also
+    // be quick enough that no probe catches the gap, so after a couple of
+    // seconds a server that answers is taken to be the new one. The meta
+    // refresh above is the no-script fallback, past this poll's own cap.
+    (function () {
+      var down = false, tries = 0;
+      var probe = function () {
+        if (tries++ > 240) { return; }
+        var settled = down || tries > 8;
+        fetch("/health", { cache: "no-store" })
+          .then(function (r) {
+            if (r.ok && settled) { location.replace("/"); } else { setTimeout(probe, 250); }
+          })
+          .catch(function () { down = true; setTimeout(probe, 250); });
+      };
+      setTimeout(probe, 250);
+    })();
+  </script>
+</body>
+</html>
+{{end}}

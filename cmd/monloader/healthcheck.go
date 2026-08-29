@@ -3,12 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/monbooru/monloader/internal/desktop"
 )
 
 // runHealthcheck is the `monloader healthcheck` subcommand: it GETs the local
@@ -52,16 +53,7 @@ func resolveHealthAddr(configPath string) string {
 		}
 	}
 	if addr == "" {
-		addr = "127.0.0.1:8081"
+		addr = "127.0.0.1:8456"
 	}
-
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	switch host {
-	case "", "0.0.0.0", "::", "[::]":
-		host = "127.0.0.1"
-	}
-	return net.JoinHostPort(host, port)
+	return desktop.LoopbackAddr(addr)
 }

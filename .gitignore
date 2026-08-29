@@ -1,6 +1,11 @@
 # Built binary
 /monloader
 
+/dist/
+/stage/
+/tools/
+/packaging/windows/payload/
+
 # Local config
 /monloader.toml
 

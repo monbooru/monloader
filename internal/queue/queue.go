@@ -460,6 +460,16 @@ func (q *Queue) Get(id int64) (*Job, error) {
 	return j.Snapshot(), nil
 }
 
+// InFlight counts the jobs a stop would end: running now, or waiting to
+// run. Close cancels both - the store's resume path is for a crash, not for
+// a stop that got to settle them - so the Quit confirmation offers a retry
+// rather than promising they come back.
+func (q *Queue) InFlight() (running, queued int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.running), len(q.pending)
+}
+
 // ListOptions filters and paginates List.
 type ListOptions struct {
 	Status JobStatus // "" = every status

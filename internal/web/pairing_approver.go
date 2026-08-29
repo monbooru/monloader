@@ -261,12 +261,7 @@ func (s *Server) extPairStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mintExtToken(req pairReq) (string, error) {
-	scopes := filterScopes(req.Scopes)
-	if len(scopes) == 0 {
-		// No scopes requested: grant the least, not everything.
-		scopes = []string{config.ScopeRead}
-	}
-	tok, secret := config.GenerateToken(req.App+" (paired)", scopes)
+	tok, secret := config.GenerateToken(req.App+" (paired)", grantedScopes(req.Scopes))
 	tok.Paired = req.App
 	if err := s.updateConfig(func(c *config.Config) error {
 		c.Auth.Tokens = append(c.Auth.Tokens, tok)
@@ -279,8 +274,14 @@ func (s *Server) mintExtToken(req pairReq) (string, error) {
 }
 
 func (s *Server) extPairData(r *http.Request) map[string]any {
+	pending := s.pairs.listPending()
+	for i := range pending {
+		// The scopes column is the only basis the operator approves against,
+		// so it names the grant rather than whatever the client asked for.
+		pending[i].Scopes = grantedScopes(pending[i].Scopes)
+	}
 	return map[string]any{
-		"Pending":   s.pairs.listPending(),
+		"Pending":   pending,
 		"Paired":    s.hasPairedToken("monsender"),
 		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
 	}

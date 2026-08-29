@@ -161,6 +161,7 @@ type runResult struct {
 func (t *Tool) run(ctx context.Context, args ...string) (runResult, error) {
 	bin := t.binary()
 	cmd := exec.CommandContext(ctx, bin, args...)
+	hideConsole(cmd)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
@@ -245,6 +246,24 @@ func downloadArgs(workDir, rng, url string, force, deep bool) []string {
 	return append(args, url)
 }
 
+// runOut runs gallery-dl and answers its stdout, or a coded error: a canceled
+// context first (a kill looks like a failure otherwise), then the classified
+// exit. Resolve keeps its own copy - it needs the coded error unwrapped, to
+// spot unsupported_url before falling back to a directlink.
+func (t *Tool) runOut(ctx context.Context, args ...string) ([]byte, error) {
+	res, err := t.run(ctx, args...)
+	if ctx.Err() != nil {
+		return nil, &queue.CodedError{Code: queue.ErrCodeCanceled, Msg: ctx.Err().Error()}
+	}
+	if err != nil {
+		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+	}
+	if res.exitCode != 0 {
+		return nil, classifyError(res.exitCode, res.stderr)
+	}
+	return res.stdout, nil
+}
+
 // Resolve runs `gallery-dl -j [--range] <url>` and parses the authoritative
 // item list. It turns the per-post enrichment options off (see
 // resolveOffArgs), whose extra fetches are wasted on this pass. A non-zero exit
@@ -288,19 +307,11 @@ func (t *Tool) Resolve(ctx context.Context, url, rng string, deep bool) (Resolve
 // backs the source-refetch path, which maps that metadata and enriches an image
 // monbooru already holds.
 func (t *Tool) FetchMeta(ctx context.Context, url string) (map[string]any, error) {
-	args := t.configArgs()
-	args = append(args, "-j", url)
-	res, err := t.run(ctx, args...)
-	if ctx.Err() != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeCanceled, Msg: ctx.Err().Error()}
-	}
+	out, err := t.runOut(ctx, append(t.configArgs(), "-j", url)...)
 	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+		return nil, err
 	}
-	if res.exitCode != 0 {
-		return nil, classifyError(res.exitCode, res.stderr)
-	}
-	return firstPostMeta(res.stdout)
+	return firstPostMeta(out)
 }
 
 // firstPostMeta pulls the first resolved post's kwdict out of a -j output
@@ -336,6 +347,7 @@ func (t *Tool) Download(ctx context.Context, url, rng, workDir string, force boo
 	args := append(t.configArgs(), downloadArgs(workDir, rng, url, force, deep)...)
 	bin := t.binary()
 	cmd := exec.CommandContext(ctx, bin, args...)
+	hideConsole(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}

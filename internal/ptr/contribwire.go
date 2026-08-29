@@ -234,14 +234,8 @@ func metaValue(v any) (any, error) {
 }
 
 func asInt(v any) (int, error) {
-	switch n := v.(type) {
-	case json.Number:
-		i, err := n.Int64()
-		return int(i), err
-	case float64:
-		return int(n), nil
-	}
-	return 0, fmt.Errorf("not a number: %T", v)
+	n, err := asInt64(v)
+	return int(n), err
 }
 
 func asInt64(v any) (int64, error) {

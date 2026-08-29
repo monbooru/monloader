@@ -23,19 +23,10 @@ func String(m map[string]any, key string) string {
 // manga/comic gallery extractors (nhentai, hitomi, ...) key the post by
 // gallery_id instead, so fall back to it for a stable bundle id.
 func ID(m map[string]any) string {
-	switch v := m["id"].(type) {
-	case float64:
-		return strconv.FormatInt(int64(v), 10)
-	case string:
-		return v
+	if s := String(m, "id"); s != "" {
+		return s
 	}
-	switch v := m["gallery_id"].(type) {
-	case float64:
-		return strconv.FormatInt(int64(v), 10)
-	case string:
-		return v
-	}
-	return ""
+	return String(m, "gallery_id")
 }
 
 // Num is the per-file ordinal that tells a post's files apart: `num`, falling
