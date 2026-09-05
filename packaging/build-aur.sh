@@ -25,7 +25,7 @@ image=archlinux:base-devel@sha256:68bfc3b0d277b08a99101dc9b94aaa03e5ae70cf1b4fb9
 cid=$(docker create -w /pkg "$image" sh -c \
   'useradd -m build && chown -R build /pkg && runuser -u build -- makepkg --printsrcinfo > .SRCINFO')
 trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
-docker cp "$out" "$cid:/pkg"
+docker cp "$out/." "$cid:/pkg"
 docker start -a "$cid"
 status=$(docker wait "$cid")
 [ "$status" = 0 ] || { echo "makepkg --printsrcinfo exited with status $status" >&2; exit 1; }

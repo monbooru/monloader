@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.12.1] - 2026-09-05
+### Fixed
+- Fix the AUR build CI.
+
 ## [v1.12.0] - 2026-09-05
 ### Added
 - Re-run a finished item through gallery-dl with debug logging, from its row in the queue. ([#27](https://github.com/monbooru/monloader/issues/27))
