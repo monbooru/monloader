@@ -80,29 +80,24 @@ func (s *Server) searchSites(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]siteSearchRow, 0, len(cats))
 	for _, cat := range cats {
-		auth := s.effectiveAuth(cat)
-		label, _ := loginInfo(auth, nil)
 		family := mapping.FamilyGeneric
 		if p, ok := s.mapper.Lookup(cat); ok {
 			family = p.Family
 		}
 		rows = append(rows, siteSearchRow{
-			Category: cat, Name: supported[cat].Name, Family: family, Login: label,
+			Category: cat, Name: supported[cat].Name, Family: family, Login: s.siteView(cat).Login,
 			Configured: configured[cat],
 		})
 	}
 	s.render(w, "site_search", map[string]any{"Rows": rows, "More": total - len(cats)})
 }
 
-// effectiveAuth resolves a category's auth kind: its profile's when one
-// exists, else the kind seeded from the bundled supportedsites data. The seed
-// is a starting point the profile editor can correct; nothing is stored until
-// a save.
-func (s *Server) effectiveAuth(category string) string {
-	if p, ok := s.mapper.Lookup(category); ok {
-		return p.Auth
-	}
-	return mapping.SeedAuthKind(s.catalog.Supported()[category].Auth)
+// siteView assembles what the app knows about a category, seeding the auth
+// kind from the bundled supportedsites data when no profile carries one. The
+// seed is a starting point the profile editor can correct; nothing is stored
+// until a save.
+func (s *Server) siteView(category string) mapping.SiteView {
+	return s.mapper.SiteView(category, s.catalog.Supported()[category].Auth)
 }
 
 // siteDialog renders the whole edit dialog (GET /settings/sites/{name}/dialog):
@@ -115,9 +110,28 @@ func (s *Server) siteDialog(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s.render(w, "site_dialog", s.siteDialogData(r, name))
+}
+
+// siteOptions answers the private options field's reveal. The dialog renders
+// it empty because the auth tab sends gallery-dl's oauth tokens there, so the
+// stored value crosses the wire only when the operator asks to edit it.
+func (s *Server) siteOptions(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	site := s.cfg.Current().FindSite(name)
+	if !mapping.ValidCategoryName(name) || site == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.render(w, "site_options", site.Options)
+}
+
+// siteDialogData builds that view. Split from the handler so a refused save
+// can hand the dialog back carrying what was typed.
+func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 	p, ok := s.mapper.Lookup(name)
 	if !ok {
-		p = mapping.Profile{Family: mapping.FamilyGeneric, Kind: mapping.KindOther, Auth: s.effectiveAuth(name)}
+		p = mapping.Profile{Family: mapping.FamilyGeneric, Kind: mapping.KindOther, Auth: s.siteView(name).Auth}
 	}
 	// The export tab serializes the stored shape, captured before the
 	// display defaults below pad the form's selects.
@@ -149,7 +163,8 @@ func (s *Server) siteDialog(w http.ResponseWriter, r *http.Request) {
 		"Ratings":            mapping.RatingLevels,
 		"Categories":         mapping.TagCategories,
 		"Username":           "", "UserID": "", "Gallery": "", "Label": "", "Cookies": "",
-		"OptionsPrivate": "", "HasPassword": false, "HasAPIKey": false, "CookieCount": 0,
+		"OptionsPrivate": "", "HasOptions": false, "HasPassword": false, "HasAPIKey": false, "CookieCount": 0,
+		"CookiesPaste": "",
 	}
 	if site := s.cfg.Current().FindSite(name); site != nil {
 		data["Username"] = site.Username
@@ -157,7 +172,9 @@ func (s *Server) siteDialog(w http.ResponseWriter, r *http.Request) {
 		data["Gallery"] = site.Gallery
 		data["Label"] = site.Label
 		data["Cookies"] = site.Cookies
-		data["OptionsPrivate"] = site.Options
+		// Withheld like the credentials beside it: the auth tab tells the
+		// operator to keep their gallery-dl oauth tokens in this field.
+		data["HasOptions"] = site.Options != ""
 		data["HasPassword"] = site.Password != ""
 		data["HasAPIKey"] = site.APIKey != ""
 		if site.Cookies != "" {
@@ -167,7 +184,34 @@ func (s *Server) siteDialog(w http.ResponseWriter, r *http.Request) {
 	if galleries, ok := s.galleries(r); ok {
 		data["Galleries"] = galleries
 	}
-	s.render(w, "site_dialog", data)
+	return data
+}
+
+// refuseSiteSave answers a rejected site save with the settings page carrying
+// the dialog as it was submitted, reopened. Everything the operator typed is
+// still in it - including the cookies export, which is not something anyone
+// wants to fetch a second time.
+func (s *Server) refuseSiteSave(w http.ResponseWriter, r *http.Request, name, msg string) {
+	dialog := s.siteDialogData(r, name)
+	if p, err := profileFromForm(r); err == nil {
+		dialog["Profile"] = p
+	}
+	for field, key := range map[string]string{
+		"gallery": "Gallery", "label": "Label", "username": "Username",
+		"user_id": "UserID", "cookies": "Cookies", "options": "OptionsPrivate",
+		"cookies_paste": "CookiesPaste",
+	} {
+		if r.Form.Has(field) {
+			dialog[key] = r.FormValue(field)
+		}
+	}
+	if r.FormValue("options_edit") == "1" {
+		dialog["HasOptions"] = false
+	}
+	data := s.settingsData(r)
+	data["SiteDialog"] = dialog
+	setFlash(data, "err", "sites", msg)
+	s.render(w, "settings", data)
 }
 
 // exportLine is one rendered line of the export tab's profile view.
@@ -334,14 +378,33 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		s.redirectFlash(w, r, "err", "invalid site name")
 		return
 	}
+	// The dialog is one form with one save button, so everything it can
+	// refuse is checked before any of it is written: the profile half landing
+	// on disk while the [[sites]] half did not is a save the operator was
+	// told had failed still rewriting every later import from the site.
+	var profile *mapping.Profile
 	if r.Form.Has("family") {
 		p, err := profileFromForm(r)
 		if err != nil {
-			s.redirectFlash(w, r, "err", err.Error())
+			s.refuseSiteSave(w, r, name, err.Error())
 			return
 		}
-		if err := s.mapper.SaveUserProfile(name, p); err != nil {
-			s.redirectFlash(w, r, "err", err.Error())
+		profile = &p
+	}
+	paste := r.FormValue("cookies_paste")
+	if strings.TrimSpace(paste) != "" && !looksLikeNetscapeCookies(paste) {
+		s.refuseSiteSave(w, r, name, "pasted cookies are not a Netscape cookies.txt export")
+		return
+	}
+	options := strings.TrimSpace(r.FormValue("options"))
+	if err := config.ValidateSiteOptions(options); err != nil {
+		s.refuseSiteSave(w, r, name, err.Error())
+		return
+	}
+
+	if profile != nil {
+		if err := s.mapper.SaveUserProfile(name, *profile); err != nil {
+			s.refuseSiteSave(w, r, name, err.Error())
 			return
 		}
 	}
@@ -349,18 +412,14 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 	// pointed at it; the paste box is write-only, so its content is only ever
 	// read here.
 	pastedCookies := ""
-	if paste := r.FormValue("cookies_paste"); strings.TrimSpace(paste) != "" {
-		if !looksLikeNetscapeCookies(paste) {
-			s.redirectFlash(w, r, "err", "pasted cookies are not a Netscape cookies.txt export")
-			return
-		}
+	if strings.TrimSpace(paste) != "" {
 		pastedCookies = filepath.Join(s.cfg.Current().GalleryDL.CookiesDir, name+".txt")
 		err := config.WriteFileAtomic(pastedCookies, func(f *os.File) error {
 			_, err := f.WriteString(paste)
 			return err
 		})
 		if err != nil {
-			s.redirectFlash(w, r, "err", "writing the cookies file: "+err.Error())
+			s.refuseSiteSave(w, r, name, "writing the cookies file: "+err.Error())
 			return
 		}
 	}
@@ -399,17 +458,15 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		if pastedCookies != "" {
 			site.Cookies = pastedCookies
 		}
-		if r.Form.Has("options") {
-			opts := strings.TrimSpace(r.FormValue("options"))
-			if err := config.ValidateSiteOptions(opts); err != nil {
-				return err
-			}
-			site.Options = opts
+		// Blank keeps, like the password and the api key: the field renders
+		// empty until it is revealed, so an untouched save must not clear it.
+		if r.Form.Has("options") && r.FormValue("options_edit") == "1" {
+			site.Options = options
 		}
 		return nil
 	})
 	if err != nil {
-		s.redirectFlash(w, r, "err", "save failed: "+err.Error())
+		s.refuseSiteSave(w, r, name, "save failed: "+err.Error())
 		return
 	}
 	s.refreshSiteLists()

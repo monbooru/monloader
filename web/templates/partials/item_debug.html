@@ -1,0 +1,27 @@
+{{define "item_debug"}}
+{{if .Error}}
+<p class="flash flash-err">{{.Error}}</p>
+{{else if .Log}}
+<div class="debug-log-head">
+  <span class="hint">{{.URL}}</span>
+  <span><button type="button" class="linklike" data-copy-from="#debug-log-text">[copy]</button>
+    <span class="copy-flash hint" hidden>copied</span></span>
+</div>
+{{if .NoExtractor}}<p class="field-hint">gallery-dl matches no extractor for this url. monloader fetched the file itself, which is why the item imported - what follows is that refusal, not what happened.</p>{{end}}
+<pre id="debug-log-text" class="debug-log">{{.Log}}</pre>
+<p class="field-hint">{{if .Redacted}}{{.Redacted}} value{{if ne .Redacted 1}}s{{end}} removed. {{end}}Urls and headers may carry private information.</p>
+{{else}}
+<p>No debug log for this item yet.</p>
+<p class="hint">{{.URL}}</p>
+<form hx-post="/internal/item-debug" hx-target="#debug-log-body" hx-swap="innerHTML" hx-indicator="#debug-log-running" hx-disabled-elt="find button">
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  <input type="hidden" name="url" value="{{.URL}}">
+  <button type="submit">run this post again with debug</button>
+  <span id="debug-log-running" class="htmx-indicator hint">fetching the post...</span>
+</form>
+<p class="field-hint">Re-runs this one post with gallery-dl's debug logging on. Nothing is pushed to monbooru.</p>
+{{end}}
+<div class="dialog-actions">
+  <button type="button" onclick="this.closest('dialog').close()">close</button>
+</div>
+{{end}}

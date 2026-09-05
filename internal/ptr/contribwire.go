@@ -132,6 +132,11 @@ type ServerError struct {
 }
 
 func (e *ServerError) Error() string {
+	// An address that is not a hydrus repository answers plain text rather
+	// than the JSON envelope, so there is no exception type to name.
+	if e.ExceptionType == "" {
+		return fmt.Sprintf("server answered %d: %s", e.Status, e.Message)
+	}
 	return fmt.Sprintf("server answered %d (%s): %s", e.Status, e.ExceptionType, e.Message)
 }
 
@@ -140,9 +145,9 @@ func (e *ServerError) Retryable() bool {
 	return e.Status == 429 || e.Status >= 500
 }
 
-// ParseServerError decodes a non-200 hydrus response body (plain JSON,
+// parseServerError decodes a non-200 hydrus response body (plain JSON,
 // not zlib). A body that does not parse still yields a usable error.
-func ParseServerError(status int, body []byte) *ServerError {
+func parseServerError(status int, body []byte) *ServerError {
 	var raw struct {
 		Error         string `json:"error"`
 		ExceptionType string `json:"exception_type"`
@@ -321,8 +326,8 @@ func parseAccountTypeTuple(v any) (AccountType, error) {
 	return at, nil
 }
 
-// ParseAccountTypes decodes GET /auto_create_account_types.
-func ParseAccountTypes(body []byte) ([]AccountType, error) {
+// parseAccountTypes decodes GET /auto_create_account_types.
+func parseAccountTypes(body []byte) ([]AccountType, error) {
 	dict, err := parseResponseDict(body)
 	if err != nil {
 		return nil, err
@@ -354,9 +359,9 @@ func ParseAccountTypes(body []byte) ([]AccountType, error) {
 	return out, nil
 }
 
-// ParseKeyResponse extracts a hex key field (registration_key,
+// parseKeyResponse extracts a hex key field (registration_key,
 // access_key) from a response dictionary.
-func ParseKeyResponse(body []byte, field string) (string, error) {
+func parseKeyResponse(body []byte, field string) (string, error) {
 	dict, err := parseResponseDict(body)
 	if err != nil {
 		return "", err
@@ -385,11 +390,11 @@ type Account struct {
 	Message string
 }
 
-// ParseAccountResponse decodes GET /account. The account tuple is
+// parseAccountResponse decodes GET /account. The account tuple is
 // [key_hex, account_type_tuple, created, expires, dictionary_string]
 // where dictionary_string is an embedded JSON [21, 2, entries] carrying
 // banned_info (null or [reason, created, expires]) and message.
-func ParseAccountResponse(body []byte) (*Account, error) {
+func parseAccountResponse(body []byte) (*Account, error) {
 	dict, err := parseResponseDict(body)
 	if err != nil {
 		return nil, err
@@ -464,8 +469,8 @@ type TagFilter struct {
 	rules map[string]int
 }
 
-// NewTagFilter builds a filter from a rule set, for callers that hold
-// rules outside the wire form.
+// NewTagFilter builds a filter from a rule set; this export exists for tests,
+// which hold rules outside the wire form.
 func NewTagFilter(rules map[string]int) *TagFilter {
 	f := &TagFilter{rules: map[string]int{}}
 	for k, v := range rules {
@@ -474,8 +479,8 @@ func NewTagFilter(rules map[string]int) *TagFilter {
 	return f
 }
 
-// ParseTagFilter decodes GET /tag_filter.
-func ParseTagFilter(body []byte) (*TagFilter, error) {
+// parseTagFilter decodes GET /tag_filter.
+func parseTagFilter(body []byte) (*TagFilter, error) {
 	dict, err := parseResponseDict(body)
 	if err != nil {
 		return nil, err
@@ -542,17 +547,17 @@ func (f *TagFilter) Blocks(tag string) (bool, string) {
 // and the commit-engine tests assert on it; the local-hydrus smoke can
 // use it to eyeball an outgoing payload.
 type DecodedUpdate struct {
-	Actions []DecodedAction
+	Actions []decodedAction
 }
 
-// DecodedAction groups one action's content entries.
-type DecodedAction struct {
+// decodedAction groups one action's content entries.
+type decodedAction struct {
 	Action  int
-	Entries []DecodedEntry
+	Entries []decodedEntry
 }
 
-// DecodedEntry is one content+reason pair.
-type DecodedEntry struct {
+// decodedEntry is one content+reason pair.
+type decodedEntry struct {
 	ContentType int
 	Data        any
 	Reason      string
@@ -586,7 +591,7 @@ func DecodeC2SUpdate(body []byte) (DecodedUpdate, error) {
 		if err != nil {
 			return DecodedUpdate{}, err
 		}
-		da := DecodedAction{Action: action}
+		da := decodedAction{Action: action}
 		entries, ok := pair[1].([]any)
 		if !ok {
 			return DecodedUpdate{}, fmt.Errorf("action entries not a list")
@@ -613,7 +618,7 @@ func DecodeC2SUpdate(body []byte) (DecodedUpdate, error) {
 				return DecodedUpdate{}, err
 			}
 			reason, _ := cr[1].(string)
-			da.Entries = append(da.Entries, DecodedEntry{ContentType: ct, Data: cp[1], Reason: reason})
+			da.Entries = append(da.Entries, decodedEntry{ContentType: ct, Data: cp[1], Reason: reason})
 		}
 		out.Actions = append(out.Actions, da)
 	}

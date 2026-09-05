@@ -18,13 +18,13 @@ import (
 
 // SetAccessKey re-points the client at a new key with no restart; the
 // next request (sync included) uses it.
-func (c *Client) SetAccessKey(key string) {
+func (c *client) SetAccessKey(key string) {
 	c.keyMu.Lock()
 	c.accessKey = key
 	c.keyMu.Unlock()
 }
 
-func (c *Client) key() string {
+func (c *client) key() string {
 	c.keyMu.RLock()
 	defer c.keyMu.RUnlock()
 	return c.accessKey
@@ -33,7 +33,7 @@ func (c *Client) key() string {
 // doContrib issues one request and returns the body; a non-200 answer
 // parses into a *ServerError (wrapped retryable when transient) so the
 // caller can branch on the server's own status and message.
-func (c *Client) doContrib(ctx context.Context, method, path string, q url.Values, body io.Reader) ([]byte, error) {
+func (c *client) doContrib(ctx context.Context, method, path string, q url.Values, body io.Reader) ([]byte, error) {
 	u := c.addr + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
@@ -68,7 +68,7 @@ func (c *Client) doContrib(ctx context.Context, method, path string, q url.Value
 		return nil, &retryable{err: fmt.Errorf("reading the response: %w", err)}
 	}
 	if resp.StatusCode != http.StatusOK {
-		serr := ParseServerError(resp.StatusCode, raw)
+		serr := parseServerError(resp.StatusCode, raw)
 		if serr.Retryable() {
 			return nil, &retryable{err: serr}
 		}
@@ -78,60 +78,60 @@ func (c *Client) doContrib(ctx context.Context, method, path string, q url.Value
 }
 
 // AccountTypes fetches the repository's auto-creatable account types.
-func (c *Client) AccountTypes(ctx context.Context) ([]AccountType, error) {
+func (c *client) AccountTypes(ctx context.Context) ([]AccountType, error) {
 	raw, err := c.doContrib(ctx, http.MethodGet, "/auto_create_account_types", nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	return ParseAccountTypes(raw)
+	return parseAccountTypes(raw)
 }
 
 // keyRequest GETs one of the account handshake's key endpoints, which each
 // take a single query parameter and answer a single hex field.
-func (c *Client) keyRequest(ctx context.Context, path, param, value, field string) (string, error) {
+func (c *client) keyRequest(ctx context.Context, path, param, value, field string) (string, error) {
 	raw, err := c.doContrib(ctx, http.MethodGet, path, url.Values{param: {value}}, nil)
 	if err != nil {
 		return "", err
 	}
-	return ParseKeyResponse(raw, field)
+	return parseKeyResponse(raw, field)
 }
 
 // RegistrationKey requests a single-use registration key for the given
 // account type. The velocity refusal comes back as a *ServerError with
 // status 400: unavailable-now, not malformed - the request is built
 // from a type the server just served.
-func (c *Client) RegistrationKey(ctx context.Context, accountTypeKey string) (string, error) {
+func (c *client) RegistrationKey(ctx context.Context, accountTypeKey string) (string, error) {
 	return c.keyRequest(ctx, "/auto_create_registration_key", "account_type_key", accountTypeKey, "registration_key")
 }
 
 // RedeemAccessKey trades a registration key for the account's access
 // key. Redemption is single-use server-side; the caller must persist
 // the returned key immediately.
-func (c *Client) RedeemAccessKey(ctx context.Context, registrationKey string) (string, error) {
+func (c *client) RedeemAccessKey(ctx context.Context, registrationKey string) (string, error) {
 	return c.keyRequest(ctx, "/access_key", "registration_key", registrationKey, "access_key")
 }
 
 // Account fetches the current account's state: type, permissions,
 // creation time, ban and janitor message.
-func (c *Client) Account(ctx context.Context) (*Account, error) {
+func (c *client) Account(ctx context.Context) (*Account, error) {
 	raw, err := c.doContrib(ctx, http.MethodGet, "/account", nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	return ParseAccountResponse(raw)
+	return parseAccountResponse(raw)
 }
 
 // FetchTagFilter fetches the repository's live tag filter.
-func (c *Client) FetchTagFilter(ctx context.Context) (*TagFilter, error) {
+func (c *client) FetchTagFilter(ctx context.Context) (*TagFilter, error) {
 	raw, err := c.doContrib(ctx, http.MethodGet, "/tag_filter", nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	return ParseTagFilter(raw)
+	return parseTagFilter(raw)
 }
 
 // PostUpdate uploads one encoded ClientToServerUpdate.
-func (c *Client) PostUpdate(ctx context.Context, u *C2SUpdate) error {
+func (c *client) PostUpdate(ctx context.Context, u *C2SUpdate) error {
 	body, err := u.EncodePOSTBody()
 	if err != nil {
 		return err

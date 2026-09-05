@@ -75,7 +75,8 @@ document.body.addEventListener("htmx:afterSwap", function (e) {
 // transient "checking" state leaves the server-rendered state in place so the
 // banner does not flash.
 function applyMonbooruState(conn) {
-  if (conn !== "down" && conn !== "ok" && conn !== "rejected" && conn !== "unpaired" && conn !== "paused") {
+  if (conn !== "down" && conn !== "ok" && conn !== "rejected" && conn !== "unpaired" &&
+      conn !== "paused" && conn !== "unconfigured") {
     return;
   }
   var blocked = conn !== "ok";
@@ -86,6 +87,7 @@ function applyMonbooruState(conn) {
     if (msg && blocked) {
       msg.textContent = conn === "rejected" ? "monbooru rejected the api token"
         : conn === "unpaired" ? "monbooru is not paired"
+        : conn === "unconfigured" ? "monbooru is not configured"
         : conn === "paused" ? "the monbooru link is paused - downloads are disabled until you resume it from the footer light"
         : "monbooru is unreachable";
     }
@@ -106,6 +108,19 @@ document.body.addEventListener("htmx:afterSwap", function () {
     applyMonbooruState(light.dataset.conn);
   }
 });
+
+// The pause control is a glyph in a corner, so the page itself has to say why
+// a job just added is sitting at queued. The toggle polls, so a pause set from
+// another tab (or from monsender) reaches the banner too.
+function applyPauseState() {
+  var banner = document.getElementById("queue-paused-banner");
+  var btn = document.querySelector("#pause-toggle .pause-btn");
+  if (banner && btn) {
+    banner.hidden = !btn.classList.contains("paused");
+  }
+}
+document.addEventListener("DOMContentLoaded", applyPauseState);
+document.body.addEventListener("htmx:afterSwap", applyPauseState);
 
 // Delegated clicks: the queue rows, the site dialog and the mapping editors are
 // all swapped in by htmx, so every handler binds once on the body and matches
@@ -129,6 +144,29 @@ onClick(".edit-site", function (btn) {
   });
 });
 
+// A refused save renders the dialog with the page rather than fetching it, so
+// it has to be reopened on the operator's typed values instead of a fresh one.
+document.addEventListener("DOMContentLoaded", function () {
+  var body = document.getElementById("site-dialog-body");
+  if (body && body.firstElementChild) {
+    document.getElementById("site-edit-dialog").showModal();
+    applyAuthFields(document.getElementById("sd-auth").value);
+  }
+});
+
+// A refusal re-renders in place, so there is no #section anchor to land on and
+// its flash can sit thousands of pixels below the fold - the save then reads
+// as one that worked. A redirect brings its own anchor and is left alone.
+document.addEventListener("DOMContentLoaded", function () {
+  if (location.hash) {
+    return;
+  }
+  var flash = document.querySelector("#content .flash");
+  if (flash) {
+    flash.scrollIntoView({ block: "center" });
+  }
+});
+
 // The dialog's tab strip switches its panels; hidden panels' fields still
 // submit, so the one save button writes every tab.
 onClick(".dialog-tab", function (tab) {
@@ -137,13 +175,14 @@ onClick(".dialog-tab", function (tab) {
   dlg.querySelectorAll(".dialog-panel").forEach(function (p) { p.hidden = p.id !== tab.dataset.panel; });
 });
 
-// The export tab's copy button reads the profile file from its hidden
-// textarea; the execCommand fallback covers contexts without the
-// clipboard API (plain-http LAN origins).
+// The export tab copies from a hidden textarea, the debug pop-in from the
+// block it already renders, so the source is read either way rather than
+// carrying a second copy of a long log. The execCommand fallback covers
+// contexts without the clipboard API (plain-http LAN origins).
 onClick("[data-copy-from]", function (btn, e) {
   e.preventDefault();
   var src = document.querySelector(btn.dataset.copyFrom);
-  var text = src ? src.value : "";
+  var text = src ? (src.value !== undefined ? src.value : src.textContent) : "";
   var flash = btn.parentElement && btn.parentElement.querySelector(".copy-flash");
   var done = function () {
     if (!flash) { return; }
@@ -166,6 +205,14 @@ function fallbackCopy(text, done) {
   document.body.removeChild(ta);
   done();
 }
+
+// A queue item's [?]: gallery-dl's error text asks for a --verbose re-run, so
+// the pop-in offers one for that post and shows what it logged.
+onClick(".item-debug", function (btn) {
+  htmx.ajax("GET", "/internal/item-debug?url=" + encodeURIComponent(btn.dataset.url), "#debug-log-body").then(function () {
+    document.getElementById("item-debug-dialog").showModal();
+  });
+});
 
 // The auth tab shows only the credentials the selected login type uses;
 // changing the type retargets the fields at once. Without JS every field
@@ -352,11 +399,43 @@ document.body.addEventListener("dragover", function (e) {
 document.body.addEventListener("dragend", function () {
   chainDragging = null;
 });
+
+// HTML5 drag fires from neither the keyboard nor a touch screen, so each row
+// carries the same moves as buttons: the chain is the only settings control
+// with no other way to reach it.
+onClick(".chain-move", function (btn) {
+  var li = btn.closest("li");
+  var move = btn.dataset.move;
+  if (move === "up") {
+    if (li.previousElementSibling) {
+      li.parentNode.insertBefore(li, li.previousElementSibling);
+    }
+  } else if (move === "down") {
+    if (li.nextElementSibling) {
+      li.parentNode.insertBefore(li.nextElementSibling, li);
+    }
+  } else {
+    document.getElementById(move).appendChild(li);
+    li.querySelector(move === "chain-on" ? '[data-move="up"]' : '[data-move="chain-on"]').focus();
+    return;
+  }
+  btn.focus();
+});
 document.addEventListener("DOMContentLoaded", function () {
   var form = document.getElementById("chain-form");
   if (!form) {
     return;
   }
+  // The dialog is rendered once with the page and reordered in place, so
+  // closing it has to put the lists back where the server had them: an
+  // abandoned drag would otherwise sit there until the next save committed it.
+  var lists = ["chain-on", "chain-off"].map(function (id) { return document.getElementById(id); });
+  var saved = lists.map(function (list) { return Array.prototype.slice.call(list.children); });
+  document.getElementById("chain-dialog").addEventListener("close", function () {
+    lists.forEach(function (list, i) {
+      saved[i].forEach(function (li) { list.appendChild(li); });
+    });
+  });
   form.addEventListener("submit", function () {
     form.querySelectorAll("input[name^='order-']").forEach(function (i) { i.remove(); });
     var add = function (name, value) {

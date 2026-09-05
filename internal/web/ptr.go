@@ -17,42 +17,26 @@ import (
 	"github.com/monbooru/monloader/internal/ptr"
 )
 
-// ptrEngine is the PTR surface the web layer drives: status for the page, the
-// tag graph and hash lookup for the mounted API, and the lifecycle controls
-// the page's forms invoke. *ptr.Engine satisfies it; tests inject a stub.
+// ptrEngine is the PTR surface the web layer drives. The server hands its own
+// value to api.New, so whatever the mounted API needs this has to have too:
+// embedding that set states the constraint instead of restating its
+// twenty-one signatures. What is left is the lifecycle the page's forms
+// invoke and the API does not expose. *ptr.Engine satisfies it; tests inject
+// a stub.
 type ptrEngine interface {
-	Enabled() bool
-	Status() ptr.Status
-	DataPath() string
-	TagGraph(ctx context.Context, names []string) (map[string]ptr.TagInfo, error)
-	SearchTags(ctx context.Context, ranges []ptr.TagRange, scanCap int) ([]ptr.TagMatch, bool, error)
-	TagsForHash(hashHex string) (tags []string, ok bool, err error)
+	api.PTRService
+
 	Enable() error
 	Disable()
 	Pause()
 	Resume()
 	Retry()
 	Delete() error
-	HasPersonalKey() bool
 	AccessKey() string
 	SetAccessKey(key string)
+	DataPath() string
 	SetDataPath(path string) bool
-	CreateContribAccount(ctx context.Context) (string, error)
 	ContribAccount(ctx context.Context) (*ptr.Account, error)
-	RefreshAccount(ctx context.Context) (*ptr.Account, error)
-	Syncing() bool
-	Provisional() bool
-	CaughtUp() bool
-	Contrib() *ptr.ContribStore
-	TagFilterCached() *ptr.TagFilter
-	HashHasIdeal(hashHex, tag string) (bool, error)
-	HashHasIdeals(hashHex string, tags []string) (map[string]bool, error)
-	HashHasRaw(hashHex, tag string) (bool, error)
-	RawTagsForHash(hashHex string) ([]string, error)
-	IdealTag(tag string) (string, bool, error)
-	SiblingCurrent(bad, good string) (bool, error)
-	ParentCurrent(child, parent string) (bool, error)
-	ParentEdgeCovered(child, parent string) (bool, error)
 }
 
 // ptrView backs the ptr page and its status fragment.
@@ -185,8 +169,18 @@ func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimSpace(r.FormValue("data_path"))
 	if path == "" {
-		s.redirectFlash(w, r, "err", "data path required")
+		s.refuseSave(w, r, "data path required")
 		return
+	}
+	// A running sync cannot be repointed, so it never reaches the engine's own
+	// check; without this the path is written anyway and the lookup backend is
+	// simply gone after the next restart, far from the save that caused it.
+	enabled := r.FormValue("enabled") == "1"
+	if enabled {
+		if err := ptr.CheckDataPath(path); err != nil {
+			s.refuseSave(w, r, err.Error())
+			return
+		}
 	}
 	err := s.updateConfig(func(c *config.Config) error {
 		c.PTR.DataPath = path
@@ -205,14 +199,14 @@ func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		s.redirectFlash(w, r, "err", "save failed: "+err.Error())
+		s.refuseSave(w, r, "save failed: "+err.Error())
 		return
 	}
 	// Re-point the live client so a key change (set or cleared back to
 	// the public one) applies with no restart.
 	s.ptr.SetAccessKey(s.cfg.Current().PTR.AccessKey)
 	repointed := s.ptr.SetDataPath(path)
-	if err := s.applyPTREnabled(r.FormValue("enabled") == "1"); err != nil {
+	if err := s.applyPTREnabled(enabled); err != nil {
 		s.redirectFlash(w, r, "err", "settings saved, but the sync could not start: "+err.Error())
 		return
 	}

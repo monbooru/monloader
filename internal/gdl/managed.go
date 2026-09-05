@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -246,6 +245,12 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 		}
 	}
 	root := ManagedRoot(stateDir)
+	// A bundled archive ships its gallery-dl as <install>/gallery-dl, which is
+	// this exact path when the state dir is the install dir - the shape a
+	// bundled archive run with -desktop=false takes.
+	if fi, err := os.Stat(root); err == nil && !fi.IsDir() {
+		return fmt.Errorf("%s is the bundled gallery-dl, not a directory; set gallerydl.binary_path to install elsewhere", root)
+	}
 	report("resolving the release", 5)
 
 	installed := ""
@@ -404,39 +409,20 @@ func fetchManagedSupportedSites(ctx context.Context, root, version string) {
 		os.Remove(dst)
 		logx.Warnf("gdl: supportedsites for %s unavailable (%s); site names seed from the bundled copy", version, reason)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	body, err := fetch(ctx, url, maxSupportedSitesBytes+1)
 	if err != nil {
 		fail(err.Error())
 		return
 	}
-	resp, err := releaseMetaClient.Do(req)
+	if int64(len(body)) > maxSupportedSitesBytes {
+		fail("the site list is larger than expected")
+		return
+	}
+	err = config.WriteFileAtomic(dst, func(f *os.File) error {
+		_, err := f.Write(body)
+		return err
+	})
 	if err != nil {
-		fail(err.Error())
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		fail(resp.Status)
-		return
-	}
-	tmp, err := os.CreateTemp(root, ".supportedsites-*")
-	if err != nil {
-		fail(err.Error())
-		return
-	}
-	n, err := io.Copy(tmp, io.LimitReader(resp.Body, maxSupportedSitesBytes+1))
-	if err == nil && n > maxSupportedSitesBytes {
-		err = errors.New("the site list is larger than expected")
-	}
-	if err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		fail(err.Error())
-		return
-	}
-	tmp.Close()
-	if err := os.Rename(tmp.Name(), dst); err != nil {
-		os.Remove(tmp.Name())
 		fail(err.Error())
 	}
 }

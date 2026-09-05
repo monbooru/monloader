@@ -17,6 +17,19 @@ import (
 	"github.com/monbooru/monloader/internal/logx"
 )
 
+// localOnly refuses a route that reaches the filesystem or the process to
+// anything but a loopback request on a desktop build. Applied at the router,
+// so a seventh desktop route cannot be added without it.
+func (s *Server) localOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.desktopLocal(r) {
+			s.notFound(w, r)
+			return
+		}
+		h(w, r)
+	}
+}
+
 // desktopLocal gates the controls that reach the machine itself rather than
 // the queue: the directory picker, the folder opener and Quit. The profile
 // keeps a server install out entirely - it is a launch flag, not something a
@@ -70,10 +83,6 @@ type browseData struct {
 // only, never files; an unreadable entry is skipped rather than failing the
 // whole listing.
 func (s *Server) browseDirs(w http.ResponseWriter, r *http.Request) {
-	if !s.desktopLocal(r) {
-		http.NotFound(w, r)
-		return
-	}
 	into := r.URL.Query().Get("into")
 	if !browseIntoRe.MatchString(into) {
 		http.Error(w, "bad target", http.StatusBadRequest)
@@ -134,10 +143,6 @@ var openFolderKinds = []string{"config", "logs", "cookies", "ptr"}
 // openFolder shows one of monloader's own directories in the desktop's file
 // manager, creating it when it is one monloader owns.
 func (s *Server) openFolder(w http.ResponseWriter, r *http.Request) {
-	if !s.desktopLocal(r) {
-		http.NotFound(w, r)
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		s.redirectFlash(w, r, "err", "bad form")
 		return
@@ -237,10 +242,6 @@ func (s *Server) TrayEnabled() bool { return s.cfg.Current().Desktop.Tray }
 // config keys, so the form posts what it wants and the answer is re-read
 // from disk.
 func (s *Server) settingsDesktopPost(w http.ResponseWriter, r *http.Request) {
-	if !s.desktopLocal(r) {
-		http.NotFound(w, r)
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		s.redirectFlash(w, r, "err", "bad form")
 		return
@@ -282,10 +283,6 @@ const quitDelay = 300 * time.Millisecond
 // response has landed. Both stop controls take this path: the page has to
 // reach the tab before the listener goes away.
 func (s *Server) stopWithPage(w http.ResponseWriter, r *http.Request, page, verb string, act func()) {
-	if !s.desktopLocal(r) {
-		http.NotFound(w, r)
-		return
-	}
 	running, queued := s.queue.InFlight()
 	s.render(w, page, map[string]any{
 		"BooruName": s.titleName(),
@@ -337,10 +334,6 @@ func (s *Server) desktopRestartPrompt() string { return s.desktopStopPrompt("Res
 // prompts count the queue, and a count rendered with the page is stale by the
 // time the operator reaches for the button.
 func (s *Server) desktopActionsFragment(w http.ResponseWriter, r *http.Request) {
-	if !s.desktopLocal(r) {
-		http.NotFound(w, r)
-		return
-	}
 	s.render(w, "desktop_actions", map[string]any{
 		"CSRFToken":     s.csrfToken(sessionFromContext(r.Context())),
 		"QuitPrompt":    s.desktopQuitPrompt(),

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Monloader
+Comment=Downloader for monbooru
+Exec=monloader -desktop
+Icon=monloader
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=download;booru;gallery;tags;

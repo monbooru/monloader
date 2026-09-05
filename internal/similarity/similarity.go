@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/outcome"
 )
 
 // Candidate is one post a service offered for the queried image.
@@ -95,16 +95,28 @@ func New(cfg *config.Provider, canonical func(string) (string, string, bool), po
 	}
 }
 
+// CredentialSite names the [[sites]] block a service signs in through, "" for
+// one that carries its own key. The settings panel reads it rather than
+// encoding which site a service borrows from.
+func CredentialSite(service string) string {
+	if service == "iqdb" {
+		// The upload goes to danbooru, whose CSRF gate checks that block's
+		// login before the multipart body is parsed.
+		return "danbooru"
+	}
+	return ""
+}
+
 // Missing reports whether a service lacks the credential it needs, with the
 // label for the walk trail. iqdb's file upload is CSRF-refused without
 // danbooru API authentication; saucenao's API refuses anonymous queries.
 func (c *Client) Missing(service string) (string, bool) {
 	switch service {
 	case "iqdb":
-		// The upload goes through danbooru, whose CSRF gate needs both halves
-		// of the login; name the half that is missing, or the note points at a
-		// field the sites table two sections below already reports as set.
-		site := c.cfg.Current().FindSite("danbooru")
+		// Both halves of the login are needed; name the half that is missing,
+		// or the note points at a field the sites table two sections below
+		// already reports as set.
+		site := c.cfg.Current().FindSite(CredentialSite(service))
 		switch {
 		case site == nil || (site.Username == "" && site.APIKey == ""):
 			return "danbooru login and api key", true
@@ -144,7 +156,7 @@ func (c *Client) Search(ctx context.Context, service string, img []byte) (Result
 	if until := c.LimitedUntil(service); time.Now().Before(until) {
 		// The cooldown is read off a wall clock, so name it in the process
 		// timezone; a bare UTC clock time would not match the one on screen.
-		return Result{}, &queue.CodedError{Code: queue.ErrCodeRateLimited, Msg: "cooling down until " + until.In(time.Local).Format("15:04:05")}
+		return Result{}, &outcome.CodedError{Code: outcome.ErrCodeRateLimited, Msg: "cooling down until " + until.In(time.Local).Format("15:04:05")}
 	}
 	switch service {
 	case "iqdb":
@@ -152,7 +164,7 @@ func (c *Client) Search(ctx context.Context, service string, img []byte) (Result
 	case "saucenao":
 		return c.searchSauceNAO(ctx, img)
 	}
-	return Result{}, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: "unknown similarity service " + service}
+	return Result{}, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: "unknown similarity service " + service}
 }
 
 // searchIQDB queries danbooru's iqdb instance by multipart file upload. The
@@ -164,7 +176,7 @@ func (c *Client) searchIQDB(ctx context.Context, img []byte) (Result, error) {
 	params := url.Values{"limit": {"8"}}
 	// Both or neither, matching the Missing gate, so half a credential is
 	// never sent.
-	if site := c.cfg.Current().FindSite("danbooru"); site != nil && site.Username != "" && site.APIKey != "" {
+	if site := c.cfg.Current().FindSite(CredentialSite("iqdb")); site != nil && site.Username != "" && site.APIKey != "" {
 		params.Set("login", site.Username)
 		params.Set("api_key", site.APIKey)
 	}
@@ -178,7 +190,7 @@ func (c *Client) searchIQDB(ctx context.Context, img []byte) (Result, error) {
 		// create-class action, denied to restricted (unverified-email)
 		// accounts and to api keys scoped by endpoint or IP even when reads -
 		// the site test - work fine.
-		if cerr.Code == queue.ErrCodeAuthRequired && status == http.StatusForbidden && params.Has("login") {
+		if cerr.Code == outcome.ErrCodeAuthRequired && status == http.StatusForbidden && params.Has("login") {
 			cerr.Msg += " - the key was accepted but the query refused: the danbooru account must be email-verified and the api key unrestricted"
 		}
 		return Result{}, cerr
@@ -188,7 +200,7 @@ func (c *Client) searchIQDB(ctx context.Context, img []byte) (Result, error) {
 		Score  float64 `json:"score"`
 	}
 	if err := json.Unmarshal(body, &entries); err != nil {
-		return Result{}, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: "unexpected iqdb response: " + err.Error()}
+		return Result{}, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: "unexpected iqdb response: " + err.Error()}
 	}
 	res := Result{DailyRemaining: -1}
 	for _, e := range entries {
@@ -253,7 +265,7 @@ func (c *Client) searchSauceNAO(ctx context.Context, img []byte) (Result, error)
 		if msg == "" {
 			msg = fmt.Sprintf("saucenao refused the query (status %d)", answer.Header.Status)
 		}
-		return Result{}, &queue.CodedError{Code: queue.ErrCodeAuthRequired, Msg: msg}
+		return Result{}, &outcome.CodedError{Code: outcome.ErrCodeAuthRequired, Msg: msg}
 	}
 	// A positive status with results is a partial answer (an index was down);
 	// use what came back. With none, the window is closed.
@@ -263,13 +275,13 @@ func (c *Client) searchSauceNAO(ctx context.Context, img []byte) (Result, error)
 			msg, d = "daily query quota exhausted", saucenaoDailyCooldown
 		}
 		c.limit("saucenao", d)
-		return Result{}, &queue.CodedError{Code: queue.ErrCodeRateLimited, Msg: msg}
+		return Result{}, &outcome.CodedError{Code: outcome.ErrCodeRateLimited, Msg: msg}
 	}
 	if cerr := c.classify("saucenao", status, body, saucenaoShortCooldown); cerr != nil {
 		return Result{}, cerr
 	}
 	if !parsed {
-		return Result{}, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: "unexpected saucenao response"}
+		return Result{}, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: "unexpected saucenao response"}
 	}
 	res := Result{DailyRemaining: -1}
 	if answer.Header.LongRemaining != nil {
@@ -319,19 +331,19 @@ func (c *Client) post(ctx context.Context, service, endpoint string, img []byte,
 		err = w.Close()
 	}
 	if err != nil {
-		return 0, nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+		return 0, nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &buf)
 	if err != nil {
-		return 0, nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+		return 0, nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return 0, nil, &queue.CodedError{Code: queue.ErrCodeCanceled, Msg: ctx.Err().Error()}
+			return 0, nil, &outcome.CodedError{Code: outcome.ErrCodeCanceled, Msg: ctx.Err().Error()}
 		}
-		return 0, nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: service + " unreachable"}
+		return 0, nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: service + " unreachable"}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -346,29 +358,29 @@ func (c *Client) post(ctx context.Context, service, endpoint string, img []byte,
 // saucenao an invalid key the same way). The refusal carries the service's
 // own message when it sent one - "Invalid API key" and "Access Denied" need
 // different operator fixes.
-func (c *Client) classify(service string, status int, body []byte, cooldown time.Duration) *queue.CodedError {
+func (c *Client) classify(service string, status int, body []byte, cooldown time.Duration) *outcome.CodedError {
 	if status >= 200 && status < 300 {
 		return nil
 	}
 	low := strings.ToLower(string(body))
 	switch {
 	case strings.Contains(low, "cloudflare") || strings.Contains(low, "just a moment") || strings.Contains(low, "captcha"):
-		return &queue.CodedError{Code: queue.ErrCodeBlocked, Msg: fmt.Sprintf("%s answered a challenge page (HTTP %d)", service, status)}
+		return &outcome.CodedError{Code: outcome.ErrCodeBlocked, Msg: fmt.Sprintf("%s answered a challenge page (HTTP %d)", service, status)}
 	case status == http.StatusTooManyRequests:
 		c.limit(service, cooldown)
-		return &queue.CodedError{Code: queue.ErrCodeRateLimited, Msg: fmt.Sprintf("%s rate limited (HTTP %d)", service, status)}
+		return &outcome.CodedError{Code: outcome.ErrCodeRateLimited, Msg: fmt.Sprintf("%s rate limited (HTTP %d)", service, status)}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		msg := fmt.Sprintf("%s refused the credentials", service)
 		if m := serviceMessage(body); m != "" {
 			msg = m
 		}
-		return &queue.CodedError{Code: queue.ErrCodeAuthRequired, Msg: fmt.Sprintf("%s (HTTP %d)", msg, status)}
+		return &outcome.CodedError{Code: outcome.ErrCodeAuthRequired, Msg: fmt.Sprintf("%s (HTTP %d)", msg, status)}
 	default:
 		msg := ""
 		if m := serviceMessage(body); m != "" {
 			msg = ": " + m
 		}
-		return &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: fmt.Sprintf("%s answered HTTP %d%s", service, status, msg)}
+		return &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: fmt.Sprintf("%s answered HTTP %d%s", service, status, msg)}
 	}
 }
 

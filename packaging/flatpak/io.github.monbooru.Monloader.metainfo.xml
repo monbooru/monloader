@@ -28,11 +28,8 @@
 
   <content_rating type="oars-1.1"/>
 
-  <!-- The bundled gallery-dl is aggregated, not linked: it is called as a
-       separate process and carries its own licence. -->
-  <!-- The version and date below are rewritten during the Flatpak build from
-       VERSION.md and the newest CHANGELOG entry; a release bumps neither. -->
+  <!-- Filled at build time from VERSION.md and the newest CHANGELOG.md heading. -->
   <releases>
-    <release version="1.10.0" date="2026-08-20"/>
+    <!--RELEASE-->
   </releases>
 </component>

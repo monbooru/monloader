@@ -213,6 +213,18 @@ func IsRelativeFolder(s string) bool {
 	return !strings.HasPrefix(s, "/") && !slices.Contains(strings.Split(s, "/"), "..")
 }
 
+// maxViaLen mirrors monbooru's own cap on the origin label.
+const maxViaLen = 200
+
+// IsValidVia reports whether s is usable as monbooru's origin label. monbooru
+// selects the tag-source group with [data-source="<via>"], so whitespace or a
+// quote there yields a malformed selector; refusing it at enqueue means a
+// client learns before the post's bytes are fetched. Empty means "no
+// attribution" and is fine.
+func IsValidVia(s string) bool {
+	return len(s) <= maxViaLen && !strings.ContainsAny(s, " \t\n\r\"'<>[]\\")
+}
+
 func newTokenID() string {
 	return hex.EncodeToString(mustRandom(8))
 }
@@ -381,6 +393,24 @@ type LookupService struct {
 	APIKey string `toml:"api_key,omitempty"`
 }
 
+// LookupServices are the similarity services by config name, in the order the
+// chain dialog offers them. The chain, the settings panel and the chain save
+// each address a service by name, so the field-per-service layout above is
+// spelled out once, here.
+var LookupServices = []string{"iqdb", "saucenao"}
+
+// Service returns the named similarity service's settings for reading or
+// writing, nil when the name is not one of them - a site, then.
+func (l *LookupConfig) Service(name string) *LookupService {
+	switch name {
+	case "iqdb":
+		return &l.Iqdb
+	case "saucenao":
+		return &l.Saucenao
+	}
+	return nil
+}
+
 // Site is one repeatable [[sites]] block: credentials and a per-source
 // target gallery, written into the managed gallery-dl config. Name is the
 // gallery-dl category (e.g. "gelbooru", "e621").
@@ -532,6 +562,81 @@ var legacyLookupOrders = map[string]int{
 	"danbooru": 1, "gelbooru": 2, "rule34": 3, "e621": 4, "yandere": 5, "konachan": 6,
 }
 
+// The layout a portable install uses in place of Default()'s container
+// volume. Relative on purpose: that is what survives the folder being moved
+// or the stick coming back as another drive letter. The PTR index is left
+// unset, as it is on a desktop - the profile settles it at start, and it is
+// the one folder that rarely fits beside the rest.
+const portableDataDir = "data"
+
+func portableDefaults(cfg *Config) {
+	cfg.GalleryDL.ConfigPath = filepath.Join(portableDataDir, "gallery-dl.json")
+	cfg.GalleryDL.ArchivePath = filepath.Join(portableDataDir, "gallery-dl-archive.sqlite")
+	cfg.GalleryDL.CookiesDir = filepath.Join(portableDataDir, "cookies")
+	cfg.PTR.DataPath = ""
+}
+
+// absent reports whether path holds no config yet. A portable install also
+// counts an empty file, which is the marker the archives ship so that
+// unpacking one is what opts into the layout.
+func absent(path string, portable bool) (bool, error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading config file: %w", err)
+	}
+	return portable && len(strings.TrimSpace(string(b))) == 0, nil
+}
+
+// resolveIn makes the stored paths absolute against base, so everything
+// downstream sees the same shape it does under every other profile.
+// binary_path is left alone: it names a command to find on PATH as often as
+// a file.
+func resolveIn(cfg *Config, base string) {
+	cfg.GalleryDL.ConfigPath = absIn(cfg.GalleryDL.ConfigPath, base)
+	cfg.GalleryDL.ArchivePath = absIn(cfg.GalleryDL.ArchivePath, base)
+	cfg.GalleryDL.CookiesDir = absIn(cfg.GalleryDL.CookiesDir, base)
+	cfg.GalleryDL.SupportedSitesPath = absIn(cfg.GalleryDL.SupportedSitesPath, base)
+	cfg.PTR.DataPath = absIn(cfg.PTR.DataPath, base)
+}
+
+func absIn(path, base string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(base, path)
+}
+
+// RelativizeIn folds the paths a portable install stores back under base,
+// the inverse of the resolve a load does. A no-op with no base, which is
+// every other profile.
+func RelativizeIn(cfg *Config, base string) {
+	if base == "" {
+		return
+	}
+	cfg.GalleryDL.ConfigPath = RelativeTo(cfg.GalleryDL.ConfigPath, base)
+	cfg.GalleryDL.ArchivePath = RelativeTo(cfg.GalleryDL.ArchivePath, base)
+	cfg.GalleryDL.CookiesDir = RelativeTo(cfg.GalleryDL.CookiesDir, base)
+	cfg.GalleryDL.SupportedSitesPath = RelativeTo(cfg.GalleryDL.SupportedSitesPath, base)
+	cfg.PTR.DataPath = RelativeTo(cfg.PTR.DataPath, base)
+}
+
+// RelativeTo is absIn's inverse for what a portable install writes back: a
+// path under the install folder travels with it, one outside is the absolute
+// truth and stays that way.
+func RelativeTo(path, base string) string {
+	if path == "" || base == "" {
+		return path
+	}
+	rel, err := filepath.Rel(base, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path
+	}
+	return filepath.ToSlash(rel)
+}
+
 // LoadWithDefaults reads the config (creating it with defaults when absent),
 // applies MONLOADER_* env overrides, and validates. The result is the
 // effective runtime view; env overrides are applied before the final
@@ -541,19 +646,38 @@ var legacyLookupOrders = map[string]int{
 // whatever profile is active, so the container volume layout the shipped
 // image depends on is never rewritten.
 func LoadWithDefaults(path string, seed func(*Config)) (*Config, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		fresh := Default()
-		if seed != nil {
-			seed(fresh)
+	return load(path, "", seed)
+}
+
+// LoadPortable is LoadWithDefaults for an install that carries its own data:
+// what monloader writes for itself lands beside the binary rather than on
+// the container's volume, and the paths a file names relative resolve
+// against that folder, so it survives being moved or remounted. An empty
+// file is the marker the archives ship, and reads as a config still to be
+// created.
+func LoadPortable(path string, seed func(*Config)) (*Config, error) {
+	return load(path, filepath.Dir(path), seed)
+}
+
+func load(path, base string, seed func(*Config)) (*Config, error) {
+	fresh, err := absent(path, base != "")
+	if err != nil {
+		return nil, err
+	}
+	if fresh {
+		cfg := Default()
+		if base != "" {
+			portableDefaults(cfg)
 		}
-		if writeErr := Save(fresh, path); writeErr != nil {
+		if seed != nil {
+			seed(cfg)
+		}
+		if writeErr := Save(cfg, path); writeErr != nil {
 			return nil, fmt.Errorf("creating default config: %w", writeErr)
 		}
-	} else if err != nil {
-		return nil, fmt.Errorf("checking config file: %w", err)
 	}
 
-	cfg, err := LoadFromFile(path)
+	cfg, err := loadFromFileIn(path, base)
 	if err != nil {
 		return nil, err
 	}
@@ -618,7 +742,24 @@ func seedLookupDefaults(cfg *Config, md toml.MetaData) {
 // view: a settings save writes this layer so an ephemeral env value (e.g. a
 // token passed via the container env) is never baked into monloader.toml.
 func LoadFromFile(path string) (*Config, error) {
+	return loadFromFileIn(path, "")
+}
+
+// LoadFromFileIn is LoadFromFile for an install that was loaded with a base,
+// the persistence half of LoadPortable. A caller that reloads this layer has
+// to pass the same base it ran with, or a key the file omits takes the
+// container default here and a save writes that into the file.
+func LoadFromFileIn(path, base string) (*Config, error) {
+	return loadFromFileIn(path, base)
+}
+
+// loadFromFileIn is LoadFromFile with base naming the folder a portable
+// install's relative paths belong to; empty leaves every path as written.
+func loadFromFileIn(path, base string) (*Config, error) {
 	cfg := Default()
+	if base != "" {
+		portableDefaults(cfg)
+	}
 	if _, err := os.Stat(path); err == nil {
 		// Null the slices and the lookup section so the file's entries replace
 		// the defaults rather than appending to (or resurrecting) them; the
@@ -636,6 +777,9 @@ func LoadFromFile(path string) (*Config, error) {
 		seedLookupDefaults(cfg, md)
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("checking config file: %w", err)
+	}
+	if base != "" {
+		resolveIn(cfg, base)
 	}
 	if err := validate(cfg); err != nil {
 		return nil, err
@@ -717,6 +861,57 @@ func (cfg *Config) FindSite(name string) *Site {
 		}
 	}
 	return nil
+}
+
+// Secret is one configured credential paired with the key it came from, so a
+// scrubbed value can say what was removed.
+type Secret struct {
+	Name  string
+	Value string
+}
+
+// minSecretLen is the shortest value worth replacing. A two-character user id
+// would otherwise blank out every occurrence of those characters in the text,
+// including timestamps and post ids.
+const minSecretLen = 6
+
+// Secrets lists the credentials that must not survive into anything shown to
+// the operator. gallery-dl's debug output carries request URLs verbatim, and
+// the booru families that authenticate by query parameter put their key there.
+func (cfg *Config) Secrets() []Secret {
+	out := make([]Secret, 0, len(cfg.Sites)*3+2)
+	add := func(name, value string) {
+		if value != "" {
+			out = append(out, Secret{Name: name, Value: value})
+		}
+	}
+	for _, s := range cfg.Sites {
+		add(s.Name+".api_key", s.APIKey)
+		add(s.Name+".password", s.Password)
+		add(s.Name+".user_id", s.UserID)
+	}
+	add("monbooru.api_token", cfg.Monbooru.APIToken)
+	add("ptr.access_key", cfg.PTR.AccessKey)
+	return out
+}
+
+// RedactSecrets replaces each secret in text with a marker naming its key and
+// reports how many values were removed. Anything shorter than minSecretLen is
+// left alone, since replacing it would mangle unrelated text.
+func RedactSecrets(text string, secrets []Secret) (string, int) {
+	removed := 0
+	for _, s := range secrets {
+		if len(s.Value) < minSecretLen {
+			continue
+		}
+		n := strings.Count(text, s.Value)
+		if n == 0 {
+			continue
+		}
+		removed += n
+		text = strings.ReplaceAll(text, s.Value, "<redacted:"+s.Name+">")
+	}
+	return text, removed
 }
 
 // validateJSONObject rejects a non-empty value that is not a JSON object; what

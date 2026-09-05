@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/outcome"
 )
 
 // Probe runs a live per-site connectivity check: `gallery-dl -j --range 1-1`
@@ -23,7 +23,7 @@ func (t *Tool) Probe(ctx context.Context, exampleURL string) (ProbeResult, error
 		return probeFromError(classifyError(res.exitCode, res.stderr)), nil
 	}
 	if _, perr := parseResolve(res.stdout); perr != nil {
-		var ge *queue.CodedError
+		var ge *outcome.CodedError
 		if errors.As(perr, &ge) {
 			return probeFromError(ge), nil
 		}
@@ -33,12 +33,12 @@ func (t *Tool) Probe(ctx context.Context, exampleURL string) (ProbeResult, error
 }
 
 // probeFromError maps a classified gallery-dl error to a probe status.
-func probeFromError(e *queue.CodedError) ProbeResult {
+func probeFromError(e *outcome.CodedError) ProbeResult {
 	status := ProbeFailed
 	switch e.Code {
-	case queue.ErrCodeAuthRequired:
+	case outcome.ErrCodeAuthRequired:
 		status = ProbeAuthRequired
-	case queue.ErrCodeBlocked:
+	case outcome.ErrCodeBlocked:
 		status = ProbeBlocked
 	}
 	return ProbeResult{Status: status, Detail: e.Msg}

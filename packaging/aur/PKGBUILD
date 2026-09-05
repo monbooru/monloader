@@ -1,0 +1,44 @@
+# Maintainer: leqwin <216300216+leqwin@users.noreply.github.com>
+pkgname=monloader
+pkgver=0.0.0
+pkgrel=1
+pkgdesc='Downloader companion for monbooru, wrapping gallery-dl'
+arch=('x86_64' 'aarch64')
+url='https://github.com/monbooru/monloader'
+license=('AGPL-3.0-only')
+depends=('glibc' 'gallery-dl')
+makedepends=('go')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+
+build() {
+  cd "$pkgname-$pkgver"
+  export CGO_CPPFLAGS="${CPPFLAGS}"
+  export CGO_CFLAGS="${CFLAGS}"
+  export CGO_CXXFLAGS="${CXXFLAGS}"
+  export CGO_LDFLAGS="${LDFLAGS}"
+  export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
+
+  local mod='github.com/monbooru/monloader/internal/web'
+  go build \
+    -ldflags "-linkmode external \
+      -X '$mod.Version=$(tr -d '[:space:]' < VERSION.md)' \
+      -X '$mod.RepoURL=$(tr -d '[:space:]' < REPOSITORY.md)' \
+      -X '$mod.DocURL=$(tr -d '[:space:]' < DOC.md)' \
+      -X '$mod.Package=aur' \
+      -X 'main.defaultDesktop=true'" \
+    -o "$pkgname" ./cmd/monloader
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 "$pkgname" "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "packaging/$pkgname.desktop" \
+    "$pkgdir/usr/share/applications/$pkgname.desktop"
+  local size
+  for size in 48 64 128 256; do
+    install -Dm644 "packaging/icons/$pkgname-$size.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/$pkgname.png"
+  done
+}

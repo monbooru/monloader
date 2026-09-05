@@ -31,6 +31,10 @@ import (
 )
 
 func main() {
+	// Before anything prints: the Windows artifacts are linked for the GUI
+	// subsystem, which is handed no console at all.
+	desktop.AttachConsole()
+
 	if len(os.Args) >= 2 && os.Args[1] == "healthcheck" {
 		runHealthcheck(os.Args[2:])
 		return
@@ -69,6 +73,7 @@ func main() {
 
 	var seed func(*config.Config)
 	var profile internalweb.Desktop
+	var layout desktop.Layout
 	// stateDir is where what monloader writes for itself lives - the queue
 	// store and the managed gallery-dl install. The container keeps them
 	// beside the config on its one volume; the desktop profile follows the
@@ -76,12 +81,16 @@ func main() {
 	stateDir := ""
 	if *desktopMode {
 		dialogOnFatal = true
-		layout, err := desktop.Resolve(appName, explicitFlag("config", *configPath))
+		resolved, err := desktop.Resolve(appName, explicitFlag("config", *configPath))
 		if err != nil {
 			fatalf("resolving the desktop paths: %v", err)
 		}
+		layout = resolved
 		*configPath = layout.ConfigPath
 		profile = internalweb.Desktop{Active: true, LogDir: layout.LogDir}
+		if layout.Portable {
+			profile.PortableBase = layout.ConfigDir
+		}
 		// Before config load, so every fatal below reaches the file too.
 		if f, err := desktop.OpenLog(layout.LogDir, appName); err != nil {
 			logx.Warnf("could not open a log file under %s: %v", layout.LogDir, err)
@@ -90,6 +99,8 @@ func main() {
 		}
 		seed = desktopSeed(layout)
 		stateDir = layout.DataDir
+	} else if !inContainer() {
+		seed = hostSeed(*configPath)
 	}
 	if stateDir == "" {
 		stateDir = filepath.Dir(*configPath)
@@ -101,7 +112,11 @@ func main() {
 	_, statErr := os.Stat(*configPath)
 	freshConfig := os.IsNotExist(statErr)
 
-	cfg, err := config.LoadWithDefaults(*configPath, seed)
+	load := config.LoadWithDefaults
+	if layout.Portable {
+		load = config.LoadPortable
+	}
+	cfg, err := load(*configPath, seed)
 	if err != nil {
 		fatalf("loading config: %v", err)
 	}
@@ -110,7 +125,7 @@ func main() {
 		if !claimPort(cfg.Server.BindAddress, !*noBrowser) {
 			return
 		}
-		ptrFolder(cfg, *configPath, stateDir)
+		ptrFolder(cfg, layout, *configPath, stateDir)
 	}
 
 	// One provider shared by every component that reads UI-mutable config, so a
@@ -132,38 +147,19 @@ func main() {
 	// Probe gallery-dl once at boot. A missing binary is not fatal: the UI and
 	// API still run; downloads surface a clear error when attempted.
 	bootCtx, bootCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	gdlVersion := runner.Version(bootCtx)
-	extractors, exErr := runner.ListExtractors(bootCtx)
-	gdlManaged := gdl.ManagedActive(cfg, managedRoot)
-	bundledVersion := gdlVersion
-	if gdlManaged {
-		bundledVersion = gdl.BinaryVersion(bootCtx, cfg.GalleryDL.BinaryPath)
-	}
+	catalog := gdl.ProbeCatalog(bootCtx, runner, cfg, managedRoot)
 	bootCancel()
 	switch {
-	case gdlVersion == "":
+	case catalog.Version() == "":
 		// The binary that was actually run, which is the managed install when
 		// one shadows the default - naming the bundled path there would point
 		// at the one binary that is fine.
 		logx.Warnf("gallery-dl not available at %q; downloads will fail until it is installed", gdl.EffectiveBinary(cfg, managedRoot))
-	case gdlManaged:
-		logx.Infof("gallery-dl %s (managed install, bundled %s), %d extractors", gdlVersion, bundledVersion, len(extractors))
+	case catalog.Managed():
+		logx.Infof("gallery-dl %s (managed install, bundled %s), %d extractors", catalog.Version(), catalog.BundledVersion(), len(catalog.Extractors()))
 	default:
-		logx.Infof("gallery-dl %s, %d extractors", gdlVersion, len(extractors))
+		logx.Infof("gallery-dl %s, %d extractors", catalog.Version(), len(catalog.Extractors()))
 	}
-	if exErr != nil {
-		logx.Warnf("listing gallery-dl extractors: %v", exErr)
-	}
-
-	// supportedsites.md seeds display names and auth kinds for sites without a
-	// shipped profile - the managed install's fetched copy when one is active,
-	// the bundled one otherwise; without either those just seed empty.
-	supportedPath := gdl.EffectiveSupportedSitesPath(cfg, managedRoot)
-	supported, supErr := gdl.ParseSupportedSites(supportedPath)
-	if supErr != nil {
-		logx.Infof("supportedsites data unavailable at %q: %v", supportedPath, supErr)
-	}
-	catalog := gdl.NewCatalog(gdlVersion, bundledVersion, gdlManaged, extractors, supported)
 
 	client := monbooru.New(provider)
 	workRoot := resolveWorkRoot(*desktopMode)
@@ -194,7 +190,7 @@ func main() {
 	}
 	q.Start()
 
-	srv, err := internalweb.NewServer(provider, *configPath, stateDir, q, client, runner, mapper, catalog, siteState, ptrEngine, sim, profile)
+	srv, err := internalweb.NewServer(provider, *configPath, stateDir, workRoot, q, client, runner, mapper, catalog, siteState, ptrEngine, sim, profile)
 	if err != nil {
 		fatalf("creating web server: %v", err)
 	}
@@ -262,24 +258,29 @@ func drainHTTP(srv *http.Server, timeout time.Duration) error {
 	return srv.Shutdown(ctx)
 }
 
+// workMount is the container convention for the scratch directory; a var so
+// a test can probe somewhere other than the filesystem root.
+var workMount = "/work"
+
 // resolveWorkRoot picks the scratch directory for gallery-dl output: the
-// conventional /work mount when it is writable, else a temp dir for non
-// container runs. The directory must never be a host bind in production;
-// that is a deployment concern, not enforced here.
+// conventional /work mount when it is there and writable, else a temp dir for
+// non container runs. The mount is probed, never created: a run outside the
+// container as root would otherwise put scratch downloads in a directory it
+// just made at the filesystem root. The directory must never be a host bind in
+// production; that is a deployment concern, not enforced here.
 func resolveWorkRoot(desktopMode bool) string {
-	const mount = "/work"
 	// On a desktop the scratch belongs in the OS temp directory: /work is a
 	// container convention, and a writable one on a workstation would be
 	// somebody else's directory.
 	if desktopMode {
 		return filepath.Join(os.TempDir(), "monloader-work")
 	}
-	if err := os.MkdirAll(mount, 0o755); err == nil {
-		if f, err := os.CreateTemp(mount, ".probe"); err == nil {
+	if fi, err := os.Stat(workMount); err == nil && fi.IsDir() {
+		if f, err := os.CreateTemp(workMount, ".probe"); err == nil {
 			name := f.Name()
 			f.Close()
 			os.Remove(name)
-			return mount
+			return workMount
 		}
 	}
 	return filepath.Join(os.TempDir(), "monloader-work")

@@ -10,13 +10,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/kwdict"
 	"github.com/monbooru/monloader/internal/logx"
-	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/outcome"
 )
 
 // Item is one resolved post from a -j pass. Meta is the raw gallery-dl metadata
@@ -55,6 +56,11 @@ type Downloaded struct {
 	Path    string
 	Meta    map[string]any
 	Skipped bool
+	// Err names why a file gallery-dl reported as written cannot be pushed -
+	// an unreadable sidecar, a path outside the job's directory. Distinct
+	// from Skipped, which is the archive passing a post over: the operator
+	// reads that one as "already in your library", which this is not.
+	Err string
 }
 
 // Extractor is one entry from --list-extractors.
@@ -88,6 +94,7 @@ type Runner interface {
 	Download(ctx context.Context, url, rng, workDir string, force bool, onFile func(int, Downloaded), deep bool) ([]Downloaded, error)
 	ListExtractors(ctx context.Context) ([]Extractor, error)
 	Probe(ctx context.Context, exampleURL string) (ProbeResult, error)
+	DebugLog(ctx context.Context, url, workRoot string) (log string, noExtractor bool, err error)
 	Version(ctx context.Context) string
 }
 
@@ -253,10 +260,10 @@ func downloadArgs(workDir, rng, url string, force, deep bool) []string {
 func (t *Tool) runOut(ctx context.Context, args ...string) ([]byte, error) {
 	res, err := t.run(ctx, args...)
 	if ctx.Err() != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeCanceled, Msg: ctx.Err().Error()}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeCanceled, Msg: ctx.Err().Error()}
 	}
 	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	if res.exitCode != 0 {
 		return nil, classifyError(res.exitCode, res.stderr)
@@ -282,16 +289,16 @@ func (t *Tool) Resolve(ctx context.Context, url, rng string, deep bool) (Resolve
 	args = append(args, url)
 	res, err := t.run(ctx, args...)
 	if ctx.Err() != nil {
-		return ResolveResult{}, &queue.CodedError{Code: queue.ErrCodeCanceled, Msg: ctx.Err().Error()}
+		return ResolveResult{}, &outcome.CodedError{Code: outcome.ErrCodeCanceled, Msg: ctx.Err().Error()}
 	}
 	if err != nil {
-		return ResolveResult{}, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+		return ResolveResult{}, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	if res.exitCode != 0 {
 		cerr := classifyError(res.exitCode, res.stderr)
 		// gallery-dl rejects a bare media URL with no file extension as
 		// unsupported; resolve it as a directlink instead (see directfetch.go).
-		if cerr.Code == queue.ErrCodeUnsupportedURL {
+		if cerr.Code == outcome.ErrCodeUnsupportedURL {
 			if items, ok := directlinkResolve(ctx, url); ok {
 				return ResolveResult{Items: items}, nil
 			}
@@ -321,14 +328,14 @@ func (t *Tool) FetchMeta(ctx context.Context, url string) (map[string]any, error
 func firstPostMeta(data []byte) (map[string]any, error) {
 	res, err := parseResolve(data)
 	if err != nil {
-		var ce *queue.CodedError
+		var ce *outcome.CodedError
 		if errors.As(err, &ce) {
 			return nil, err
 		}
-		return nil, &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: err.Error()}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: err.Error()}
 	}
 	if len(res.Items) == 0 {
-		return nil, &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: "no post metadata in gallery-dl output"}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: "no post metadata in gallery-dl output"}
 	}
 	return res.Items[0].Meta, nil
 }
@@ -342,7 +349,7 @@ func firstPostMeta(data []byte) (map[string]any, error) {
 // download always follows Message.Queue handoffs regardless.
 func (t *Tool) Download(ctx context.Context, url, rng, workDir string, force bool, onFile func(int, Downloaded), deep bool) ([]Downloaded, error) {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	args := append(t.configArgs(), downloadArgs(workDir, rng, url, force, deep)...)
 	bin := t.binary()
@@ -350,32 +357,32 @@ func (t *Tool) Download(ctx context.Context, url, rng, workDir string, force boo
 	hideConsole(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
 	if err := cmd.Start(); err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: fmt.Errorf("running %s: %w", bin, err).Error()}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: fmt.Errorf("running %s: %w", bin, err).Error()}
 	}
 	// Drain stdout to EOF (collecting results as they land) before Wait, per the
 	// StdoutPipe contract.
-	results := reportDownloads(stdout, onFile)
+	results := reportDownloads(stdout, workDir, onFile)
 	exit, runErr := exitStatus(cmd.Wait())
 	// A canceled job kills the subprocess; that must not read like a real
 	// download failure (transportError draws the same line for pushes).
 	if ctx.Err() != nil {
-		return results, &queue.CodedError{Code: queue.ErrCodeCanceled, Msg: ctx.Err().Error()}
+		return results, &outcome.CodedError{Code: outcome.ErrCodeCanceled, Msg: ctx.Err().Error()}
 	}
 	if runErr != nil {
 		// Like the non-zero-exit branch below: hand back what landed so the
 		// pipeline can push it and mark only the rest failed.
-		return results, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: runErr.Error()}
+		return results, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: runErr.Error()}
 	}
 	if exit != 0 {
 		cerr := classifyError(exit, strings.TrimSpace(errBuf.String()))
 		// gallery-dl rejects a bare media URL with no file extension as
 		// unsupported; fetch it as a directlink instead (see directfetch.go).
-		if cerr.Code == queue.ErrCodeUnsupportedURL {
+		if cerr.Code == outcome.ErrCodeUnsupportedURL {
 			if dls, ok, derr := directlinkDownload(ctx, url, workDir, onFile); ok {
 				return dls, derr
 			}
@@ -391,9 +398,9 @@ func (t *Tool) Download(ctx context.Context, url, rng, workDir string, force boo
 // post in source order: a written file with its sidecar, or an archive skip
 // (printed as `# <path>`, no file). onFile is called for each written file at
 // its position so the caller can advance that row live. The `.json` sidecar is
-// on disk by the time its path prints; a written line whose sidecar can't be
-// read is recorded as a skip so positions stay aligned.
-func reportDownloads(r io.Reader, onFile func(int, Downloaded)) []Downloaded {
+// on disk by the time its path prints; a written line the wrapper cannot use
+// is recorded with its reason so positions stay aligned.
+func reportDownloads(r io.Reader, workDir string, onFile func(int, Downloaded)) []Downloaded {
 	var out []Downloaded
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -406,9 +413,18 @@ func reportDownloads(r io.Reader, onFile func(int, Downloaded)) []Downloaded {
 			out = append(out, Downloaded{Skipped: true})
 			continue
 		}
+		// Every path here comes from the subprocess's stdout. The managed
+		// config pins its directory to the job dir and gallery-dl sanitizes
+		// the names it derives from post metadata, so this holds today - and
+		// keeps holding if either ever stops being true.
+		if !within(workDir, line) {
+			logx.Warnf("gdl: refusing %s, outside the job directory %s", line, workDir)
+			out = append(out, Downloaded{Err: "the downloaded file landed outside the job directory"})
+			continue
+		}
 		d, ok := readSidecar(line)
 		if !ok {
-			out = append(out, Downloaded{Skipped: true})
+			out = append(out, Downloaded{Err: "the downloaded file has no readable metadata sidecar"})
 			continue
 		}
 		if onFile != nil {
@@ -448,7 +464,7 @@ func parseResolve(data []byte) (ResolveResult, error) {
 		return ResolveResult{}, fmt.Errorf("parsing gallery-dl -j output: %w", err)
 	}
 	var res ResolveResult
-	var gdlErr *queue.CodedError
+	var gdlErr *outcome.CodedError
 	for _, raw := range msgs {
 		var parts []json.RawMessage
 		if err := json.Unmarshal(raw, &parts); err != nil || len(parts) < 2 {
@@ -513,7 +529,7 @@ func (r *ResolveResult) setCategory(meta map[string]any) {
 
 // resolveError classifies a gallery-dl -j error object `{error, message}` into
 // the stable code vocabulary, reusing the stderr substring rules.
-func resolveError(raw json.RawMessage) *queue.CodedError {
+func resolveError(raw json.RawMessage) *outcome.CodedError {
 	var e struct {
 		Error   string `json:"error"`
 		Message string `json:"message"`
@@ -535,6 +551,16 @@ func itemFromMeta(meta map[string]any) Item {
 		Num:         kwdict.Num(meta),
 		Meta:        meta,
 	}
+}
+
+// within reports whether path is inside dir. An empty dir admits everything,
+// which is the shape the parser tests use.
+func within(dir, path string) bool {
+	if dir == "" {
+		return true
+	}
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && filepath.IsLocal(rel)
 }
 
 // readSidecar pairs a written file with its `.json` sidecar, reading the

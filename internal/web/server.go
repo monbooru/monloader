@@ -20,6 +20,7 @@ import (
 	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
+	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/queue"
 	"github.com/monbooru/monloader/internal/similarity"
@@ -36,8 +37,9 @@ var (
 )
 
 // Package names whatever produced this artifact ("docker", "tarball", "zip",
-// "installer", "flatpak"), injected at build time via -ldflags. With several
-// artifacts in circulation every bug report opens on the question it answers.
+// "installer", "flatpak", "appimage"), injected at build time via -ldflags.
+// With several artifacts in circulation every bug report opens on the
+// question it answers.
 // "source" is a plain go build and renders as nothing.
 var Package = "source"
 
@@ -56,6 +58,10 @@ func BuildLabel() string {
 type Desktop struct {
 	Active bool
 	LogDir string
+	// PortableBase is the install folder when the profile resolved a
+	// portable layout, and empty otherwise. What a settings save writes
+	// under it is stored relative, so the folder still moves.
+	PortableBase string
 }
 
 // Server renders the three-screen htmx UI and mounts the JSON API on the same
@@ -68,6 +74,9 @@ type Server struct {
 	// desktop profile splits the two, so deriving it from configPath would have
 	// the panel install where the runner never looks.
 	stateDir string
+	// workRoot is the ephemeral scratch the debug re-run fetches into, the same
+	// root the pipeline gives each job a directory under.
+	workRoot string
 	cfgMu    sync.Mutex
 
 	pairMu      sync.Mutex
@@ -107,6 +116,8 @@ type Server struct {
 	// picker, the folder opener, Quit, and the first-run redirect.
 	desktop bool
 	logDir  string
+	// portableBase is Desktop.PortableBase: empty for every other install.
+	portableBase string
 	// quit carries a Quit click to the command's shutdown select, so the
 	// stop path is the same one SIGTERM takes. A Restart click rides the
 	// same path with the flag set, and the command starts a fresh process
@@ -141,7 +152,7 @@ func (s *Server) RequestRestart() {
 // and the API read, refreshed when a managed install changes the binary;
 // siteState is the shared "last reached" tracker the settings sites table
 // reads and the test probe writes (the pipeline writes it on a fetch).
-func NewServer(cfg *config.Provider, configPath, stateDir string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, catalog *gdl.Catalog, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client, dk Desktop) (*Server, error) {
+func NewServer(cfg *config.Provider, configPath, stateDir, workRoot string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, catalog *gdl.Catalog, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client, dk Desktop) (*Server, error) {
 	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(webFS.FS, "templates/*.html", "templates/partials/*.html")
 	if err != nil {
 		return nil, err
@@ -151,25 +162,27 @@ func NewServer(cfg *config.Provider, configPath, stateDir string, q *queue.Queue
 		return nil, err
 	}
 	return &Server{
-		cfg:        cfg,
-		configPath: configPath,
-		stateDir:   stateDir,
-		queue:      q,
-		client:     client,
-		pairs:      newPairStore(),
-		runner:     runner,
-		mapper:     mapper,
-		catalog:    catalog,
-		siteState:  siteState,
-		ptr:        ptrEngine,
-		sim:        sim,
-		sessions:   NewSessionStore(),
-		csrfSecret: mustRandBytes(32),
-		tmpl:       tmpl,
-		staticFS:   staticFS,
-		desktop:    dk.Active,
-		logDir:     dk.LogDir,
-		quit:       make(chan struct{}),
+		cfg:          cfg,
+		configPath:   configPath,
+		stateDir:     stateDir,
+		workRoot:     workRoot,
+		queue:        q,
+		client:       client,
+		pairs:        newPairStore(),
+		runner:       runner,
+		mapper:       mapper,
+		catalog:      catalog,
+		siteState:    siteState,
+		ptr:          ptrEngine,
+		sim:          sim,
+		sessions:     NewSessionStore(),
+		csrfSecret:   mustRandBytes(32),
+		tmpl:         tmpl,
+		staticFS:     staticFS,
+		desktop:      dk.Active,
+		portableBase: dk.PortableBase,
+		logDir:       dk.LogDir,
+		quit:         make(chan struct{}),
 	}, nil
 }
 
@@ -204,6 +217,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /internal/monbooru-status", s.monbooruStatus)
 	mux.HandleFunc("POST /internal/monbooru/pause", s.monbooruPause)
 	mux.HandleFunc("POST /internal/monbooru/resume", s.monbooruResume)
+	mux.HandleFunc("GET /internal/item-debug", s.itemDebug)
+	mux.HandleFunc("POST /internal/item-debug", s.itemDebug)
 	mux.HandleFunc("GET /internal/queue-pause", s.queuePauseToggle)
 	mux.HandleFunc("GET /internal/queue-actions", s.queueActionsFragment)
 
@@ -230,6 +245,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/lookup/test/{source}", s.testLookupSource)
 	mux.HandleFunc("GET /settings/sites/search", s.searchSites)
 	mux.HandleFunc("GET /settings/sites/{name}/dialog", s.siteDialog)
+	mux.HandleFunc("GET /settings/sites/{name}/options", s.siteOptions)
 	mux.HandleFunc("POST /settings/sites/{name}/profile/reset", s.resetSiteProfile)
 	mux.HandleFunc("POST /settings/sites/{name}", s.saveSite)
 	mux.HandleFunc("POST /settings/sites/{name}/reset", s.resetSite)
@@ -240,12 +256,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /internal/gallerydl-status", s.gdlStatusFragment)
 	mux.HandleFunc("GET /setup", s.setupPage)
 	mux.HandleFunc("POST /setup", s.setupPost)
-	mux.HandleFunc("GET /internal/browse", s.browseDirs)
-	mux.HandleFunc("POST /internal/open-folder", s.openFolder)
-	mux.HandleFunc("GET /internal/desktop-actions", s.desktopActionsFragment)
-	mux.HandleFunc("POST /settings/desktop", s.settingsDesktopPost)
-	mux.HandleFunc("POST /settings/quit", s.settingsQuit)
-	mux.HandleFunc("POST /settings/restart", s.settingsRestart)
+	mux.HandleFunc("GET /internal/browse", s.localOnly(s.browseDirs))
+	mux.HandleFunc("POST /internal/open-folder", s.localOnly(s.openFolder))
+	mux.HandleFunc("GET /internal/desktop-actions", s.localOnly(s.desktopActionsFragment))
+	mux.HandleFunc("POST /settings/desktop", s.localOnly(s.settingsDesktopPost))
+	mux.HandleFunc("POST /settings/quit", s.localOnly(s.settingsQuit))
+	mux.HandleFunc("POST /settings/restart", s.localOnly(s.settingsRestart))
 	mux.HandleFunc("POST /settings/raw", s.saveRaw)
 	mux.HandleFunc("POST /settings/ptr", s.savePTR)
 	mux.HandleFunc("POST /settings/ptr/delete", s.ptrDelete)
@@ -274,8 +290,11 @@ func (s *Server) Handler() http.Handler {
 	// precedence for the add screen.
 	mux.HandleFunc("GET /", s.notFound)
 
-	pair := api.PairHandlers{Request: s.extPairRequest, Status: s.extPairStatus, Teardown: s.extPairTeardown}
-	api.New(s.queue, s.runner, s.mapper, s.cfg, s.catalog, Version, s.siteState, s.ptr, pair, s.updateConfig).Mount(mux)
+	host := api.Host{
+		Pair:       api.PairHandlers{Request: s.extPairRequest, Status: s.extPairStatus, Teardown: s.extPairTeardown},
+		SaveConfig: s.updateConfig,
+	}
+	api.New(s.queue, s.runner, s.mapper, s.cfg, s.catalog, Version, s.siteState, s.ptr, host).Mount(mux)
 
 	var h http.Handler = mux
 	h = s.CSRFMiddleware(h)
@@ -309,6 +328,7 @@ func templateFuncs() template.FuncMap {
 		"itemCap":     func() int { return maxQueueItems },
 		"moreSummary": moreSummary,
 		"itemView":    itemView,
+		"clientMeta":  clientMeta,
 		"docPage":     docPage,
 		"add":         func(a, b int) int { return a + b },
 		"sub":         func(a, b int) int { return a - b },
@@ -339,19 +359,19 @@ var moreOrder = []string{"downloading", "created", "duplicate", "enriched",
 // outcome is still downloading.
 func moreBucket(it queue.Item) string {
 	switch {
-	case it.ErrorCode == queue.ErrCodeCanceled:
+	case it.ErrorCode == outcome.ErrCodeCanceled:
 		return "canceled"
-	case it.Outcome == queue.OutcomeCreated:
+	case it.Outcome == outcome.Created:
 		return "created"
-	case it.Outcome == queue.OutcomeDuplicate:
+	case it.Outcome == outcome.Duplicate:
 		return "duplicate"
-	case it.Outcome == queue.OutcomeEnriched:
+	case it.Outcome == outcome.Enriched:
 		return "enriched"
-	case it.Outcome == queue.OutcomeReplaced:
+	case it.Outcome == outcome.Replaced:
 		return "replaced"
-	case it.Outcome == queue.OutcomeSkippedArchive, it.Outcome == queue.OutcomeSkippedUnsupported:
+	case it.Outcome == outcome.SkippedArchive, it.Outcome == outcome.SkippedUnsupported:
 		return "skipped"
-	case it.Outcome == queue.OutcomeFailed:
+	case it.Outcome == outcome.Failed:
 		return "failed"
 	default:
 		return "downloading"
@@ -548,13 +568,16 @@ func (s *Server) updateConfig(fn func(*config.Config) error) error {
 	if err := fn(next); err != nil {
 		return err
 	}
-	persist, err := config.LoadFromFile(s.configPath)
+	persist, err := config.LoadFromFileIn(s.configPath, s.portableBase)
 	if err != nil {
 		return err
 	}
 	if err := fn(persist); err != nil {
 		return err
 	}
+	// The runtime copy keeps absolute paths; the file keeps the ones under
+	// a portable folder relative, so what settings writes travels with it.
+	config.RelativizeIn(persist, s.portableBase)
 	if err := config.Save(persist, s.configPath); err != nil {
 		return err
 	}
@@ -585,7 +608,7 @@ func (s *Server) monbooruConfigured() bool {
 // reading as an outage.
 func (s *Server) checkMonbooru(ctx context.Context) (status, version string) {
 	if !s.monbooruConfigured() {
-		return "down", ""
+		return "unconfigured", ""
 	}
 	if s.cfg.Current().Monbooru.APIToken == "" {
 		return "unpaired", ""
@@ -596,8 +619,8 @@ func (s *Server) checkMonbooru(ctx context.Context) (status, version string) {
 	if err == nil {
 		return "ok", version
 	}
-	var ce *queue.CodedError
-	if errors.As(err, &ce) && ce.Code == queue.ErrCodeMonbooruRejected {
+	var ce *outcome.CodedError
+	if errors.As(err, &ce) && ce.Code == outcome.ErrCodeMonbooruRejected {
 		return "rejected", ""
 	}
 	return "down", ""
@@ -620,6 +643,11 @@ func (s *Server) monbooruPaused() bool {
 // seeding a page's initial light so it shows its last known state rather than
 // re-checking. A cold cache reads "checking".
 func (s *Server) monbooruStatusSeed() (status, version string) {
+	// An address that was never entered is not a monbooru that stopped
+	// answering, and the two want different things from the operator.
+	if !s.monbooruConfigured() {
+		return "unconfigured", ""
+	}
 	if s.monbooruPaused() {
 		return "paused", ""
 	}

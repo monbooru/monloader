@@ -81,12 +81,12 @@
       <div class="settings-cols">
         <div class="field">
           <label for="mb-api-url">api url</label>
-          <input id="mb-api-url" type="text" name="api_url" value="{{.Cfg.Monbooru.APIURL}}" placeholder="{{.MonbooruAPIHint}}">
+          <input id="mb-api-url" type="text" name="api_url" value="{{or (index .Draft "api_url") .Cfg.Monbooru.APIURL}}" placeholder="{{.MonbooruAPIHint}}">
           <p class="field-hint">internal URL monloader uses to reach monbooru's API (default {{.MonbooruAPIHint}}).</p>
         </div>
         <div class="field">
           <label for="mb-web-url">web url</label>
-          <input id="mb-web-url" type="text" name="web_url" value="{{.Cfg.Monbooru.WebURL}}" placeholder="http://localhost:8455">
+          <input id="mb-web-url" type="text" name="web_url" value="{{or (index .Draft "web_url") .Cfg.Monbooru.WebURL}}" placeholder="http://localhost:8455">
           <p class="field-hint">browser URL for links back to monbooru; blank = same as api url.</p>
         </div>
       </div>
@@ -120,7 +120,7 @@
     <div id="flash-auth"></div>
     <div class="settings-cols">
       {{template "auth_password_section" (dict "AuthEnabled" .Cfg.Auth.EnablePassword "CSRFToken" .CSRFToken)}}
-      <div class="settings-sub">
+      <div class="settings-sub settings-sub-wide">
         <h4>api keys</h4>
         <p class="field-hint">bearer tokens for the JSON API. the secret is shown once, at creation.</p>
         {{template "auth_tokens" (dict "Tokens" .Cfg.Auth.Tokens "CSRFToken" .CSRFToken)}}
@@ -140,36 +140,24 @@
     <form method="POST" action="/settings/downloader">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="downloads-grid">
-        <div class="field">
-          <label for="dl-concurrency">concurrency</label>
-          <input id="dl-concurrency" type="text" name="concurrency" value="{{.Cfg.Downloader.Concurrency}}">
-          <span class="field-hint">parallel download workers; applies on restart (default {{.Defaults.Downloader.Concurrency}})</span>
-        </div>
-        <div class="field">
-          <label for="dl-sleep">sleep / request (s)</label>
-          <input id="dl-sleep" type="text" name="sleep_request" value="{{.Cfg.GalleryDL.SleepRequest}}">
-          <span class="field-hint">delay between requests (default {{.Defaults.GalleryDL.SleepRequest}})</span>
-        </div>
-        <div class="field">
-          <label for="dl-max-items">max items / job</label>
-          <input id="dl-max-items" type="text" name="max_items_per_job" value="{{.Cfg.Downloader.MaxItemsPerJob}}">
-          <span class="field-hint">cap on posts per URL (default {{.Defaults.Downloader.MaxItemsPerJob}})</span>
-        </div>
-        <div class="field">
-          <label for="dl-folder">default folder</label>
-          <input id="dl-folder" type="text" name="default_folder" value="{{.Cfg.Downloader.DefaultFolder}}">
-          <span class="field-hint">monbooru subfolder for pushes (default {{.Defaults.Downloader.DefaultFolder}})</span>
-        </div>
-        <div class="field">
-          <label for="dl-success-retention">clear succeeded after (days)</label>
-          <input id="dl-success-retention" type="text" name="success_retention_days" value="{{.Cfg.Downloader.SuccessRetentionDays}}">
-          <span class="field-hint">drop downloads with nothing left to do; 0 = off (default {{.Defaults.Downloader.SuccessRetentionDays}})</span>
-        </div>
-        <div class="field">
-          <label for="dl-retention">clear all history after (days)</label>
-          <input id="dl-retention" type="text" name="history_retention_days" value="{{.Cfg.Downloader.HistoryRetentionDays}}">
-          <span class="field-hint">drop the rest, failures included; 0 keeps them (default {{.Defaults.Downloader.HistoryRetentionDays}})</span>
-        </div>
+        {{template "field" (dict "ID" "dl-concurrency" "Label" "concurrency" "Name" "concurrency"
+          "Value" (or (index .Draft "concurrency") .Cfg.Downloader.Concurrency)
+          "Hint" (printf "parallel download workers; applies on restart (default %v)" .Defaults.Downloader.Concurrency))}}
+        {{template "field" (dict "ID" "dl-sleep" "Label" "sleep / request (s)" "Name" "sleep_request"
+          "Value" (or (index .Draft "sleep_request") .Cfg.GalleryDL.SleepRequest)
+          "Hint" (printf "delay between requests (default %v)" .Defaults.GalleryDL.SleepRequest))}}
+        {{template "field" (dict "ID" "dl-max-items" "Label" "max items / job" "Name" "max_items_per_job"
+          "Value" (or (index .Draft "max_items_per_job") .Cfg.Downloader.MaxItemsPerJob)
+          "Hint" (printf "cap on posts per URL (default %v)" .Defaults.Downloader.MaxItemsPerJob))}}
+        {{template "field" (dict "ID" "dl-folder" "Label" "default folder" "Name" "default_folder"
+          "Value" (or (index .Draft "default_folder") .Cfg.Downloader.DefaultFolder)
+          "Hint" (printf "monbooru subfolder for pushes (default %v)" .Defaults.Downloader.DefaultFolder))}}
+        {{template "field" (dict "ID" "dl-success-retention" "Label" "clear succeeded after (days)" "Name" "success_retention_days"
+          "Value" (or (index .Draft "success_retention_days") .Cfg.Downloader.SuccessRetentionDays)
+          "Hint" (printf "drop downloads with nothing left to do; 0 = off (default %v)" .Defaults.Downloader.SuccessRetentionDays))}}
+        {{template "field" (dict "ID" "dl-retention" "Label" "clear all history after (days)" "Name" "history_retention_days"
+          "Value" (or (index .Draft "history_retention_days") .Cfg.Downloader.HistoryRetentionDays)
+          "Hint" (printf "drop the rest, failures included; 0 keeps them (default %v)" .Defaults.Downloader.HistoryRetentionDays))}}
       </div>
       <div class="section-actions">
         <button type="submit">save</button>
@@ -213,13 +201,13 @@
       <div class="lookup-fields">
         <div class="field">
           <label for="lk-min-similarity">min similarity %</label>
-          <input id="lk-min-similarity" type="number" name="min_similarity" min="1" max="100" step="1" value="{{.LookupPanel.MinSimilarity}}">
+          <input id="lk-min-similarity" type="number" name="min_similarity" min="1" max="100" step="1" value="{{or (index .Draft "min_similarity") .LookupPanel.MinSimilarity}}">
           <span class="field-hint">an iqdb or saucenao match scoring below this percentage is ignored (default {{.Defaults.Lookup.MinSimilarity}})</span>
         </div>
         <div class="field">
           <label for="lk-scheduled-budget">daily budget for scheduled lookups
             <span class="lookup-budget-left{{if not .LookupPanel.ScheduledLeft}} spent{{end}}">({{.LookupPanel.ScheduledLeft}} left today)</span></label>
-          <input id="lk-scheduled-budget" type="number" name="scheduled_daily_budget" min="0" step="1" value="{{.LookupPanel.ScheduledBudget}}">
+          <input id="lk-scheduled-budget" type="number" name="scheduled_daily_budget" min="0" step="1" value="{{or (index .Draft "scheduled_daily_budget") .LookupPanel.ScheduledBudget}}">
           <span class="field-hint">images per day monbooru's nightly run may cover, 0 = refuse them all (default {{.Defaults.Lookup.ScheduledDailyBudget}}); resets {{humanDue .LookupPanel.ScheduledResets}}.</span>
         </div>
       </div>
@@ -231,19 +219,19 @@
       <form method="POST" action="/settings/lookup/chain" id="chain-form">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <p>edit the <strong>lookup chain</strong> order</p>
-        <p class="field-hint">Drag a source between the columns; the queried column is asked top to bottom.</p>
+        <p class="field-hint">Drag a source between the columns, or use its buttons; the queried column is asked top to bottom.</p>
         <div class="chain-cols">
           <div class="chain-col">
             <h4>queried</h4>
             <ul id="chain-on">
-              {{range .LookupPanel.DialogOn}}<li draggable="true" data-name="{{.Name}}">{{.Name}}{{if .Similarity}} <span class="hint">(similarity)</span>{{end}}</li>
+              {{range .LookupPanel.DialogOn}}<li draggable="true" data-name="{{.Name}}"><span>{{.Name}}{{if .Similarity}} <span class="hint">(similarity)</span>{{end}}</span><span class="chain-moves"><button type="button" class="linklike chain-move" data-move="chain-on" aria-label="query {{.Name}}">[+]</button><button type="button" class="linklike chain-move" data-move="up" aria-label="move {{.Name}} earlier">[^]</button><button type="button" class="linklike chain-move" data-move="down" aria-label="move {{.Name}} later">[v]</button><button type="button" class="linklike chain-move" data-move="chain-off" aria-label="stop querying {{.Name}}">[x]</button></span></li>
               {{end}}
             </ul>
           </div>
           <div class="chain-col">
             <h4>not queried</h4>
             <ul id="chain-off">
-              {{range .LookupPanel.DialogOff}}<li draggable="true" data-name="{{.Name}}">{{.Name}}{{if .Similarity}} <span class="hint">(similarity)</span>{{end}}</li>
+              {{range .LookupPanel.DialogOff}}<li draggable="true" data-name="{{.Name}}"><span>{{.Name}}{{if .Similarity}} <span class="hint">(similarity)</span>{{end}}</span><span class="chain-moves"><button type="button" class="linklike chain-move" data-move="chain-on" aria-label="query {{.Name}}">[+]</button><button type="button" class="linklike chain-move" data-move="up" aria-label="move {{.Name}} earlier">[^]</button><button type="button" class="linklike chain-move" data-move="down" aria-label="move {{.Name}} later">[v]</button><button type="button" class="linklike chain-move" data-move="chain-off" aria-label="stop querying {{.Name}}">[x]</button></span></li>
               {{end}}
             </ul>
           </div>
@@ -271,7 +259,7 @@
   </section>
 
   <section class="settings-section" id="sites">
-    <h2 class="sites-title"><span>sites <span class="hint">({{len .BooruSites}} boorus, {{len .MangaSites}} manga / comics, {{len .OtherSites}} other)</span></span><a class="sites-title-link" href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">gallery-dl supported sites</a></h2>
+    <h2 class="sites-title"><span>sites <span class="hint">({{len .BooruSites}} booru{{if ne (len .BooruSites) 1}}s{{end}}, {{len .MangaSites}} manga / comics, {{len .OtherSites}} other)</span></span><a class="sites-title-link" href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">gallery-dl supported sites</a></h2>
     {{if eq .FlashSection "sites"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
     <p class="field-hint">Download credentials and per-site targets; the lookup chain is configured in the lookup section above.</p>
     <p class="field-hint">login - <strong>none</strong>: no auth &middot; <strong>api (opt)</strong>: optional key, higher rate limits &middot; <strong>api key</strong>: key required &middot; <strong>user/pass</strong>: account login &middot; <strong>cookies</strong>: needs a cookies file &middot; <strong>oauth</strong>: via gallery-dl's oauth flow</p>
@@ -316,7 +304,7 @@
     </form>
 
     <dialog id="site-edit-dialog">
-      <div id="site-dialog-body"></div>
+      <div id="site-dialog-body">{{with .SiteDialog}}{{template "site_dialog" .}}{{end}}</div>
     </dialog>
   </section>
 
@@ -334,7 +322,7 @@
         <div class="field">
           <label for="ptr-data-path">data path</label>
           <div class="path-row">
-            <input id="ptr-data-path" type="text" name="data_path" value="{{.Cfg.PTR.DataPath}}">
+            <input id="ptr-data-path" type="text" name="data_path" value="{{or (index .Draft "data_path") .Cfg.PTR.DataPath}}">
             {{if .DesktopProfile}}
             <button type="button" class="btn-sm dir-picker-open" data-into="ptr-data-path"
                     hx-get="/internal/browse?into=ptr-data-path" hx-target="#dir-picker-body"
@@ -343,26 +331,18 @@
           </div>
           <span class="field-hint">dedicated index volume; applies on restart (default {{.Defaults.PTR.DataPath}})</span>
         </div>
-        <div class="field">
-          <label for="ptr-address">address</label>
-          <input id="ptr-address" type="text" name="address" value="{{.Cfg.PTR.Address}}">
-          <span class="field-hint">repository to sync from; applies on restart (default {{.Defaults.PTR.Address}})</span>
-        </div>
-        <div class="field">
-          <label for="ptr-access-key">access key</label>
-          <input id="ptr-access-key" type="password" name="access_key" autocomplete="off" placeholder="{{if .Cfg.PTR.AccessKey}}(set - leave blank to keep){{else}}(unset - uses the public read-only key){{end}}">
-          <span class="field-hint">a private repository key or the personal contribution account</span>
-        </div>
-        <div class="field">
-          <label for="ptr-fetch-sleep">fetch sleep (s)</label>
-          <input id="ptr-fetch-sleep" type="text" name="fetch_sleep" value="{{.Cfg.PTR.FetchSleep}}">
-          <span class="field-hint">delay between update downloads; applies on restart (default {{.Defaults.PTR.FetchSleep}})</span>
-        </div>
-        <div class="field">
-          <label for="ptr-min-free">min free GB</label>
-          <input id="ptr-min-free" type="text" name="min_free_gb" value="{{.Cfg.PTR.MinFreeGB}}">
-          <span class="field-hint">refuse the initial sync below this free space; applies on restart (default {{.Defaults.PTR.MinFreeGB}})</span>
-        </div>
+        {{template "field" (dict "ID" "ptr-address" "Label" "address" "Name" "address"
+          "Value" (or (index .Draft "address") .Cfg.PTR.Address)
+          "Hint" (printf "repository to sync from; applies on restart (default %v)" .Defaults.PTR.Address))}}
+        {{template "field" (dict "ID" "ptr-access-key" "Label" "access key" "Name" "access_key" "Type" "password" "Value" ""
+          "Placeholder" (or (and .Cfg.PTR.AccessKey "(set - leave blank to keep)") "(unset - uses the public read-only key)")
+          "Hint" "a private repository key or the personal contribution account")}}
+        {{template "field" (dict "ID" "ptr-fetch-sleep" "Label" "fetch sleep (s)" "Name" "fetch_sleep"
+          "Value" (or (index .Draft "fetch_sleep") .Cfg.PTR.FetchSleep)
+          "Hint" (printf "delay between update downloads; applies on restart (default %v)" .Defaults.PTR.FetchSleep))}}
+        {{template "field" (dict "ID" "ptr-min-free" "Label" "min free GB" "Name" "min_free_gb"
+          "Value" (or (index .Draft "min_free_gb") .Cfg.PTR.MinFreeGB)
+          "Hint" (printf "refuse the initial sync below this free space; applies on restart (default %v)" .Defaults.PTR.MinFreeGB))}}
         <div class="field">
           <label>danger</label>
           <div class="danger-row">
@@ -398,7 +378,7 @@
         <h4>raw gallery-dl config (JSON)</h4>
         <form method="POST" action="/settings/raw">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-          <textarea id="raw-config" name="raw_config">{{.Cfg.GalleryDL.RawConfig}}</textarea>
+          <textarea id="raw-config" name="raw_config">{{or (index .Draft "raw_config") .Cfg.GalleryDL.RawConfig}}</textarea>
           <div class="section-actions">
             <button type="submit">save raw config</button>
           </div>

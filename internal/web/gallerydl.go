@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/gdl"
-	"github.com/monbooru/monloader/internal/logx"
 )
 
 // gdlInstallTimeout bounds one managed install: a venv creation plus a pip
@@ -270,27 +269,7 @@ func (s *Server) gdlRevert(w http.ResponseWriter, r *http.Request) {
 }
 
 // refreshGDLCatalog re-probes the active binary and swaps the cached
-// inventory wholesale. A probe that fails keeps the previous listing - an
-// empty site search would read as "no sites supported", which is worse than a
-// slightly stale one.
+// inventory wholesale.
 func (s *Server) refreshGDLCatalog(ctx context.Context) {
-	cfg := s.cfg.Current()
-	root := gdl.ManagedRoot(s.stateDir)
-	version := s.runner.Version(ctx)
-	extractors, err := s.runner.ListExtractors(ctx)
-	if err != nil {
-		logx.Warnf("listing gallery-dl extractors: %v", err)
-		extractors = s.catalog.Extractors()
-	}
-	supported, err := gdl.ParseSupportedSites(gdl.EffectiveSupportedSitesPath(cfg, root))
-	if err != nil {
-		logx.Infof("supportedsites data unavailable: %v", err)
-		supported = s.catalog.Supported()
-	}
-	managed := gdl.ManagedActive(cfg, root)
-	bundled := version
-	if managed {
-		bundled = gdl.BinaryVersion(ctx, cfg.GalleryDL.BinaryPath)
-	}
-	s.catalog.Replace(version, bundled, managed, extractors, supported)
+	s.catalog.Refresh(ctx, s.runner, s.cfg.Current(), gdl.ManagedRoot(s.stateDir))
 }

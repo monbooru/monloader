@@ -22,8 +22,8 @@ import (
 // set.
 var ErrAccountExists = errors.New("a personal account key is already set")
 
-// ErrNoAutoCreation reports a repository with no auto-creatable type.
-var ErrNoAutoCreation = errors.New("the repository offers no auto-creatable account type")
+// errNoAutoCreation reports a repository with no auto-creatable type.
+var errNoAutoCreation = errors.New("the repository offers no auto-creatable account type")
 
 // ContribStatus is the contribution gate monbooru polls on ptr/status.
 type ContribStatus struct {
@@ -98,7 +98,7 @@ func (e *Engine) CreateContribAccount(ctx context.Context) (string, error) {
 		}
 	}
 	if chosen == nil {
-		return "", ErrNoAutoCreation
+		return "", errNoAutoCreation
 	}
 	regKey, err := e.client.RegistrationKey(ctx, chosen.Key)
 	if err != nil {

@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// CleanTag replicates the hydrus server's tag normalization
+// cleanTag replicates the hydrus server's tag normalization
 // (HydrusTags.CleanTag, v678). The server runs it on every ingested tag
 // and its output is what gets stored, so the contribution path refuses
 // any tag that does not survive it byte-for-byte identical: what we
@@ -55,8 +55,8 @@ func stripTagGumpf(t string) string {
 	return strings.TrimSpace(t)
 }
 
-// CleanTag returns the form the hydrus server would store for tag.
-func CleanTag(tag string) string {
+// cleanTag returns the form the hydrus server would store for tag.
+func cleanTag(tag string) string {
 	if r := []rune(tag); len(r) > 1024 {
 		tag = string(r[:1024])
 	}
@@ -92,7 +92,7 @@ func CleanTag(tag string) string {
 // a non-empty subtag - the validity gate the mapper and stage path use.
 // A tag that fails is refused, never silently adjusted.
 func TagOK(tag string) bool {
-	if tag == "" || CleanTag(tag) != tag {
+	if tag == "" || cleanTag(tag) != tag {
 		return false
 	}
 	_, sub, has := strings.Cut(tag, ":")

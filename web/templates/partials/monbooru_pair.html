@@ -18,7 +18,7 @@
     </form>
   </p>
   {{else}}
-  <p class="field-hint">To pair with monbooru : click connect, then approve the request in monbooru's monloader settings.</p>
+  <p class="field-hint">to pair with monbooru: click connect, then approve the request in monbooru, under settings &gt; plugins.</p>
   <form hx-post="/settings/monbooru/pair/connect" hx-target="#monbooru-pair" hx-swap="outerHTML" style="display:inline">
     <input type="hidden" name="_csrf" value="{{$csrf}}">
     <button type="submit">connect to monbooru</button>

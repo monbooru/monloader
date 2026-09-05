@@ -48,7 +48,7 @@ type contribPreviewResponse struct {
 // was already written.
 func (h *Handler) contribGate(w http.ResponseWriter) bool {
 	if h.ptr == nil || !h.ptr.Enabled() {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr index is not available")
+		apiError(w, http.StatusConflict, errPTRUnavailable, "the ptr index is not available")
 		return false
 	}
 	return true
@@ -64,7 +64,7 @@ func (h *Handler) contribStore(w http.ResponseWriter) (*ptr.ContribStore, bool) 
 	}
 	store := h.ptr.Contrib()
 	if store == nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the contribution store is not available")
+		apiError(w, http.StatusConflict, errPTRUnavailable, "the contribution store is not available")
 		return nil, false
 	}
 	return store, true
@@ -87,24 +87,24 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 		Implied []string `json:"implied"`
 	}
 	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
 		return
 	}
 	if !sha256HexRe.MatchString(body.SHA256) {
-		apiError(w, http.StatusBadRequest, "invalid_request", "sha256 must be 64 lowercase hex characters")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "sha256 must be 64 lowercase hex characters")
 		return
 	}
 	// A body without the field would answer an empty diff, which reads exactly
 	// like a file with nothing worth contributing; a caller that stopped
 	// sending it would report that for a whole library.
 	if body.Tags == nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "tags is required; send an empty list for an untagged file")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "tags is required; send an empty list for an untagged file")
 		return
 	}
 
 	p, err := h.newContribPreview(body.SHA256, body.Tags)
 	if err != nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
+		apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 		return
 	}
 	resp := contribPreviewResponse{
@@ -113,11 +113,11 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 		PTROnly:     []contribPTROnly{},
 	}
 	if err := p.resolveSubmitted(body.Implied); err != nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
+		apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 		return
 	}
 	if resp.PTROnly, err = p.removals(); err != nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
+		apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -412,7 +412,7 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 		Items  []contribStageItem `json:"items"`
 	}
 	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
 		return
 	}
 	commit := body.Commit == nil || *body.Commit
@@ -425,11 +425,11 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 	}
 	store := h.ptr.Contrib()
 	if store == nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the contribution store is not available")
+		apiError(w, http.StatusConflict, errPTRUnavailable, "the contribution store is not available")
 		return
 	}
 	if len(body.Items) == 0 {
-		apiError(w, http.StatusBadRequest, "invalid_request", "items must not be empty")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "items must not be empty")
 		return
 	}
 
@@ -730,12 +730,12 @@ func (h *Handler) ptrContribLedger(w http.ResponseWriter, r *http.Request) {
 	}
 	unsent, err := store.Unsent()
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 	logRows, err := store.LogRows(100)
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 	unsentJSON := make([]contribUnsentJSON, 0, len(unsent))
@@ -780,16 +780,16 @@ func (h *Handler) ptrContribRescind(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "bad item id")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "bad item id")
 		return
 	}
 	found, err := store.Rescind(id)
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 	if !found {
-		apiError(w, http.StatusNotFound, "not_found", "no unsent item with that id")
+		apiError(w, http.StatusNotFound, errNotFound, "no unsent item with that id")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -803,7 +803,7 @@ func (h *Handler) ptrContribRescindAll(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := store.RescindAll()
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"rescinded": n})
@@ -818,7 +818,7 @@ func (h *Handler) ptrContribCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.queue.ContribSendLive() {
-		apiError(w, http.StatusConflict, "already_running", "a contribution send is already running")
+		apiError(w, http.StatusConflict, errAlreadyRunning, "a contribution send is already running")
 		return
 	}
 	jobID := h.queue.EnqueueContrib(nil, true)
@@ -836,12 +836,12 @@ func (h *Handler) ptrContribLogRescind(w http.ResponseWriter, r *http.Request) {
 	}
 	store := h.ptr.Contrib()
 	if store == nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the contribution store is not available")
+		apiError(w, http.StatusConflict, errPTRUnavailable, "the contribution store is not available")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "bad log id")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "bad log id")
 		return
 	}
 	itemID, rerr := RescindCommittedAdd(h.ptr, store, id)
@@ -944,14 +944,14 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 		B    string `json:"b"`
 	}
 	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
 		return
 	}
 	if strings.TrimSpace(body.A) == "" || strings.TrimSpace(body.B) == "" {
 		// Both are declared required; without this a field-name typo reads as
 		// "the repository would rewrite this tag", which is a verdict about a
 		// tag rather than about the request.
-		apiError(w, http.StatusBadRequest, "invalid_request", "a and b are required")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "a and b are required")
 		return
 	}
 	aMapped, bMapped := mapping.ContribTagFor(body.A), mapping.ContribTagFor(body.B)
@@ -978,7 +978,7 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 		suggestKind, petitionKind = ptr.ContribParent, ptr.ContribParentPetition
 		currentFn = h.ptr.ParentCurrent
 	default:
-		apiError(w, http.StatusBadRequest, "invalid_request", "kind must be sibling or parent")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "kind must be sibling or parent")
 		return
 	}
 	// Checked raw-first, per endpoint, exactly like the petition stage: a
@@ -987,7 +987,7 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 	// lookup keys on the raw forms the stage would use.
 	ra, rb, current, err := h.currentPetitionPair(currentFn, body.A, body.B)
 	if err != nil {
-		apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
+		apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 		return
 	}
 
@@ -1011,12 +1011,12 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 	} else if body.Kind == ptr.ContribSibling {
 		ia, err := h.endpointIdeals(body.A)
 		if err != nil {
-			apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
+			apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 			return
 		}
 		ib, err := h.endpointIdeals(body.B)
 		if err != nil {
-			apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
+			apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 			return
 		}
 		reverse, _ := h.ptr.SiblingCurrent(bMapped.PTR, aMapped.PTR)
@@ -1039,7 +1039,7 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 		default:
 			covered, err := h.parentEdgeCovered(body.A, body.B)
 			if err != nil {
-				apiError(w, http.StatusConflict, "ptr_unavailable", err.Error())
+				apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 				return
 			}
 			if covered {

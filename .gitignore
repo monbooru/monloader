@@ -4,6 +4,7 @@
 /dist/
 /stage/
 /tools/
+/AppDir/
 /packaging/windows/payload/
 
 # Local config

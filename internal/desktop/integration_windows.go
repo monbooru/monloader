@@ -44,7 +44,7 @@ func enableAutostart(h Hook) error {
 // install path (both legal here) would otherwise name a file that does not
 // exist, and start-at-login would silently stop working.
 func runValue() string {
-	exe := launchExe()
+	exe := Program()
 	if exe == "" {
 		return ""
 	}

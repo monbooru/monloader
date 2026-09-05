@@ -19,7 +19,10 @@ const monbooruProbeTimeout = 800 * time.Millisecond
 // setupData drives the wizard. Everything the operator can change is echoed
 // back when a submit has to be shown again.
 type setupData struct {
+	// BooruName is the lowercase name the body copy uses; TitleName is the
+	// capitalized one, for the browser tab alone.
 	BooruName    string
+	TitleName    string
 	CSRFToken    string
 	Err          string
 	APIURL       string
@@ -84,7 +87,9 @@ func setupExempt(path string) bool {
 
 func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 	if !s.desktop {
-		http.NotFound(w, r)
+		// A stale link or bookmark reaches this on a container install; give it
+		// the styled page with a way back, like every other unknown path.
+		s.notFound(w, r)
 		return
 	}
 	cfg := s.cfg.Current()
@@ -106,7 +111,8 @@ func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, d setupData
 		port = "8456"
 	}
 	d.Port = port
-	d.BooruName = s.titleName()
+	d.BooruName = s.booruName()
+	d.TitleName = s.titleName()
 	d.CSRFToken = s.csrfToken(sessionFromContext(r.Context()))
 	d.Paired = s.hasPairedToken("monbooru")
 	d.Integration = s.desktopIntegration()
@@ -144,7 +150,7 @@ func hostPort(raw string) string {
 // the wizard is over, whatever the optional pairing does.
 func (s *Server) setupPost(w http.ResponseWriter, r *http.Request) {
 	if !s.desktop {
-		http.NotFound(w, r)
+		s.notFound(w, r)
 		return
 	}
 	if err := r.ParseForm(); err != nil {

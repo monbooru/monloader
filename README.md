@@ -73,18 +73,20 @@ contribute back`"| loader
 
 monloader ships in monbooru's `docker/docker-compose.yml` :
 
-1. Uncomment the `monloader` service in monbooru's compose and start it:
+1. Start it from monbooru's compose file:
    ```bash
    docker compose up -d monloader
    ```
 2. Open monloader at `http://localhost:8456`, go to **Settings -> pairing**, and click **connect to monbooru** (the default api url in the monbooru section, `http://monbooru:8455`, works on the shared compose network).
-3. In monbooru, approve the pairing request in its monloader settings. monloader stores the token monbooru issues; there are no keys to copy by hand.
+3. In monbooru, approve the pairing request under **Settings -> Plugins**. monloader stores the token monbooru issues; there are no keys to copy by hand.
 4. Back in monloader, pick a **default gallery** and **save**.
 5. Paste a URL into the command bar on the home screen and press Enter.
 
 ## Quick start (desktop)
 
 Download a build for your system from the [releases](https://github.com/monbooru/monloader/releases), unpack it, and run it. It opens a browser at `http://localhost:8456`.
+
+On Linux the desktop bundled build also ships as an AppImage and as a Flatpak, each one file.
 
 
 See the [monloader documentation](https://monbooru.github.io/mondocs/addons/monloader/index.html) for help.

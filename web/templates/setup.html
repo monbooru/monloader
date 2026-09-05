@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{.BooruName}} setup</title>
+  <title>{{.TitleName}} setup</title>
   <meta name="csrf-token" content="{{.CSRFToken}}">
   <link rel="icon" type="image/png" href="/static/favicon.png">
   <link rel="stylesheet" href="/static/main.css">
@@ -23,7 +23,7 @@
     {{if .Found}}
     <p>found monbooru{{if .FoundVersion}} {{.FoundVersion}}{{end}} at this address.</p>
     {{else}}
-    <p class="field-hint">monbooru has to be running for the handshake. start it and reload, or type its address if it is on another machine. You can set it up later in settings.</p>
+    <p class="field-hint">monbooru has to be running for the handshake. start it and reload, or type its address if it is on another machine. you can set it up later in settings.</p>
     {{end}}
     <div class="field">
       <label for="setup-api-url">monbooru api url</label>
@@ -41,7 +41,7 @@
       <label><input type="radio" name="reach" value="local" {{if not .LAN}}checked{{end}}> only this computer</label>
       <p class="field-hint">monloader answers at http://localhost:{{.Port}} and at no other address.</p>
       <label><input type="radio" name="reach" value="lan" {{if .LAN}}checked{{end}}> other devices on the LAN too</label>
-      <p class="field-hint">another device on the same network opens it at this machine's address, port {{.Port}}. Takes effect when {{.BooruName}} restarts.</p>
+      <p class="field-hint">another device on the same network opens it at this machine's address, port {{.Port}}. takes effect when {{.BooruName}} restarts.</p>
     </div>
 
     {{$dk := .Integration}}

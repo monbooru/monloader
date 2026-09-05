@@ -22,8 +22,10 @@ import (
 
 // The Linux tray is behind a build tag because it needs CGo and
 // libayatana-appindicator, and on GNOME the icon does not appear at all
-// without a user-installed extension. It is built for the Flatpak, whose
-// runtime provides the libraries, and is never the only route to anything.
+// without a user-installed extension. No shipped artifact sets that tag - the
+// archives, the AppImage and the Flatpak all build CGO_ENABLED=0 - so this is
+// `make build-tray` alone, which CI compiles so it cannot rot unseen. It is
+// never the only route to anything.
 
 // trayState is the running menu. GTK owns the thread, and the callbacks
 // come back from C with no user data, so the state is package-level and

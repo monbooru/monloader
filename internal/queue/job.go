@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/monbooru/monloader/internal/outcome"
 )
 
 // JobStatus is the lifecycle state of a queued download job.
@@ -48,49 +50,6 @@ const (
 	ItemFailed     ItemStatus = "failed"
 )
 
-// Outcome is the terminal result the UI and API branch on.
-type Outcome string
-
-const (
-	OutcomeCreated   Outcome = "created"
-	OutcomeDuplicate Outcome = "duplicate"
-	OutcomeEnriched  Outcome = "enriched"
-	// OutcomeMatched is a batch hash lookup answering with an image's tags.
-	// Distinct from enriched: nothing was written, the caller applies them.
-	OutcomeMatched            Outcome = "matched"
-	OutcomeReplaced           Outcome = "replaced"
-	OutcomeSkippedArchive     Outcome = "skipped_archive"
-	OutcomeSkippedUnsupported Outcome = "skipped_unsupported"
-	OutcomeFailed             Outcome = "failed"
-)
-
-// Error-code vocabulary. Stable strings the future browser
-// extension can branch on; the gallery-dl wrapper, the monbooru client, and
-// the pipeline all classify failures into these.
-const (
-	ErrCodeDownloadFailed      = "download_failed"
-	ErrCodeUnsupportedURL      = "unsupported_url"
-	ErrCodeAuthRequired        = "auth_required"
-	ErrCodeBlocked             = "blocked"
-	ErrCodeRateLimited         = "rate_limited"
-	ErrCodeNetworkUnreachable  = "network_unreachable"
-	ErrCodeFileTooLarge        = "file_too_large"
-	ErrCodeMonbooruUnreachable = "monbooru_unreachable"
-	ErrCodeMonbooruRejected    = "monbooru_rejected"
-	ErrCodeHashMismatch        = "hash_mismatch"
-	// Replace refusals monbooru answers with a 409: the downloaded original
-	// already exists as another image, or the target row is an archive/video.
-	ErrCodeAlreadyExists      = "already_exists"
-	ErrCodeWrongType          = "wrong_type"
-	ErrCodeMappingFailed      = "mapping_failed"
-	ErrCodeCanceled           = "canceled"
-	ErrCodeHashNotFound       = "hash_not_found"
-	ErrCodePTRUnavailable     = "ptr_unavailable"
-	ErrCodePTRAccountRequired = "ptr_account_required"
-	ErrCodePTRBanned          = "ptr_banned"
-	ErrCodePTRSyncing         = "ptr_syncing"
-)
-
 // Summary aggregates per-item outcomes for the queue view and the API.
 // Skipped counts both skip outcomes (archive and unsupported type); duplicate
 // is tracked separately so the extension can say "already in your library".
@@ -128,11 +87,11 @@ type Item struct {
 	// URL is the canonical source post page (the same url pushed to monbooru),
 	// shown as a link on the item in the queue. Empty for a cbz bundle and for
 	// sources without a post-url template.
-	URL        string     `json:"url,omitempty"`
-	Status     ItemStatus `json:"status"`
-	Outcome    Outcome    `json:"outcome,omitempty"`
-	MonbooruID int64      `json:"monbooru_id,omitempty"`
-	SHA256     string     `json:"sha256,omitempty"`
+	URL        string          `json:"url,omitempty"`
+	Status     ItemStatus      `json:"status"`
+	Outcome    outcome.Outcome `json:"outcome,omitempty"`
+	MonbooruID int64           `json:"monbooru_id,omitempty"`
+	SHA256     string          `json:"sha256,omitempty"`
 	// TagWarnings are tags monbooru rejected on the push; recorded, not fatal.
 	TagWarnings []string `json:"tag_warnings,omitempty"`
 	// MergeNote summarises what a duplicate merge folded in (e.g. "+7 tags").
@@ -204,6 +163,12 @@ type jobState struct {
 	// PageURL is the page a direct-file send came from; a directlink item
 	// records it as its source link instead of the bare file URL.
 	PageURL string `json:"page_url,omitempty"`
+	// Tags, Commentary, Source, and Via are what the submitting client
+	// attached, folded into every item the job pushes.
+	Tags       []string `json:"tags,omitempty"`
+	Commentary string   `json:"commentary,omitempty"`
+	Source     string   `json:"source,omitempty"`
+	Via        string   `json:"via,omitempty"`
 	// Offset skips this many leading posts before the job's window, so a
 	// continue on a capped search fetches the next batch via --range.
 	Offset int `json:"-"`
@@ -352,6 +317,10 @@ func newJob(id int64, url string, opts Options, now time.Time) *Job {
 			Folder:          opts.Folder,
 			MaxItems:        opts.MaxItems,
 			PageURL:         opts.PageURL,
+			Tags:            opts.Tags,
+			Commentary:      opts.Commentary,
+			Source:          opts.Source,
+			Via:             opts.Via,
 			Offset:          opts.Offset,
 			Root:            opts.Root,
 			Auto:            opts.Auto,
@@ -647,7 +616,7 @@ func (j *Job) cancel(now time.Time) {
 	if j.finalized {
 		return
 	}
-	j.failPendingItems(ErrCodeCanceled, "job canceled")
+	j.failPendingItems(outcome.ErrCodeCanceled, "job canceled")
 	j.Summary = summarize(j.Items)
 	j.Status = JobCanceled
 	j.markFinishedLocked(now)
@@ -740,7 +709,7 @@ func (j *Job) failPendingItems(code, msg string) {
 			continue
 		}
 		j.Items[i].Status = ItemFailed
-		j.Items[i].Outcome = OutcomeFailed
+		j.Items[i].Outcome = outcome.Failed
 		if j.Items[i].ErrorCode == "" {
 			j.Items[i].ErrorCode = code
 			j.Items[i].Error = msg
@@ -837,23 +806,23 @@ func summarize(items []Item) Summary {
 	s := Summary{Total: len(items)}
 	for _, it := range items {
 		switch it.Outcome {
-		case OutcomeCreated:
+		case outcome.Created:
 			s.Created++
-		case OutcomeDuplicate:
+		case outcome.Duplicate:
 			s.Duplicate++
-		case OutcomeEnriched:
+		case outcome.Enriched:
 			s.Enriched++
-		case OutcomeMatched:
+		case outcome.Matched:
 			s.Matched++
-		case OutcomeReplaced:
+		case outcome.Replaced:
 			s.Replaced++
-		case OutcomeSkippedArchive:
+		case outcome.SkippedArchive:
 			s.Skipped++
 			s.Archived++
-		case OutcomeSkippedUnsupported:
+		case outcome.SkippedUnsupported:
 			s.Skipped++
-		case OutcomeFailed:
-			if it.ErrorCode == ErrCodeCanceled {
+		case outcome.Failed:
+			if it.ErrorCode == outcome.ErrCodeCanceled {
 				s.Canceled++
 			} else {
 				s.Failed++
@@ -873,7 +842,7 @@ func deriveStatus(items []Item) JobStatus {
 	}
 	failed := 0
 	for _, it := range items {
-		if it.Outcome == OutcomeFailed {
+		if it.Outcome == outcome.Failed {
 			failed++
 		}
 	}
@@ -911,7 +880,7 @@ func (j *Job) restorePriorLinksLocked() {
 	}
 	for i := range j.Items {
 		it := &j.Items[i]
-		if it.Outcome != OutcomeSkippedArchive || it.MonbooruID != 0 {
+		if it.Outcome != outcome.SkippedArchive || it.MonbooruID != 0 {
 			continue
 		}
 		if prior, ok := j.priorItems[itemKey(it.PostID, it.Num)]; ok {

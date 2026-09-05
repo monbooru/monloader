@@ -78,9 +78,9 @@ type Counts struct {
 	Parents  int64 `json:"parents"`
 }
 
-// ErrSchemaMismatch means the on-disk index was written by a different schema
+// errSchemaMismatch means the on-disk index was written by a different schema
 // version and must be rebuilt (delete and re-sync).
-var ErrSchemaMismatch = fmt.Errorf("ptr index schema mismatch; rebuild required")
+var errSchemaMismatch = fmt.Errorf("ptr index schema mismatch; rebuild required")
 
 // Page-cache budgets, in KB (sqlite's negative cache_size form), one per
 // handle. Only the replay earns a large cache: its inserts land randomly in
@@ -233,7 +233,7 @@ func (s *Store) checkSchemaVersion() error {
 	case err != nil:
 		return err
 	case v != strconv.Itoa(schemaVersion):
-		return ErrSchemaMismatch
+		return errSchemaMismatch
 	}
 	return nil
 }
@@ -425,7 +425,7 @@ func replayDefinitions(tx *sql.Tx, blobs [][]byte, applied func()) (p replayPass
 			}
 			continue
 		}
-		up, err := ParseUpdate(raw)
+		up, err := parseUpdate(raw)
 		if err != nil {
 			return p, err
 		}
@@ -454,7 +454,7 @@ func replayContent(tx *sql.Tx, blobs [][]byte, applied func()) (p replayPass, er
 		if kind != typeContentUpdate {
 			continue
 		}
-		up, err := ParseUpdate(raw)
+		up, err := parseUpdate(raw)
 		if err != nil {
 			return p, err
 		}
@@ -536,7 +536,7 @@ func (s *Store) StoredCounts() (Counts, error) {
 // one affected row whether the id was new or redefined, so a redefinition
 // overcounts by one - the repository's definitions are append-only, so in
 // practice the delta is the insert count.
-func applyDefinitions(tx *sql.Tx, defs *Definitions) (int64, error) {
+func applyDefinitions(tx *sql.Tx, defs *definitions) (int64, error) {
 	hst, err := tx.Prepare(`INSERT OR REPLACE INTO hashes(hash_id,hash) VALUES(?,?)`)
 	if err != nil {
 		return 0, err
@@ -572,7 +572,7 @@ func applyDefinitions(tx *sql.Tx, defs *Definitions) (int64, error) {
 // applyContent returns the mappings-count delta; the sibling / parent counts
 // are re-counted by the caller instead (tiny tables, and the sibling upsert's
 // affected-rows tell insert and repoint apart no better than REPLACE does).
-func applyContent(tx *sql.Tx, c *Content) (int64, error) {
+func applyContent(tx *sql.Tx, c *contentRows) (int64, error) {
 	added, err := applyMappings(tx, c.MappingsAdd, true)
 	if err != nil {
 		return 0, err
@@ -596,7 +596,7 @@ func applyContent(tx *sql.Tx, c *Content) (int64, error) {
 // applyMappings returns how many rows actually landed or left: OR IGNORE and
 // DELETE both report affected rows exactly, so the mappings census stays
 // exact without ever re-counting the table.
-func applyMappings(tx *sql.Tx, ms []Mapping, add bool) (int64, error) {
+func applyMappings(tx *sql.Tx, ms []mapping, add bool) (int64, error) {
 	if len(ms) == 0 {
 		return 0, nil
 	}
@@ -624,7 +624,7 @@ func applyMappings(tx *sql.Tx, ms []Mapping, add bool) (int64, error) {
 	return delta, nil
 }
 
-func applyPairs(tx *sql.Tx, query string, pairs []Pair) error {
+func applyPairs(tx *sql.Tx, query string, pairs []pair) error {
 	if len(pairs) == 0 {
 		return nil
 	}

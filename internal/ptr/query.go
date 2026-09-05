@@ -529,9 +529,9 @@ func (s *Store) childrenOf(parentID uint64) ([]uint64, error) {
 	return s.queryUint64s(`SELECT child_tag_id FROM parents WHERE parent_tag_id=? ORDER BY child_tag_id`, int64(parentID))
 }
 
-// aliasesOf returns the bad-tag ids that resolve (in one step) to a good tag id,
-// plus that good id's own further chain is not followed here - the graph is
-// shallow in practice and the ideal is already the chain end.
+// aliasesOf returns the bad-tag ids that resolve to a good tag id in one step,
+// following no further chain of its own: the ideal is already the chain end,
+// and the graph is shallow in practice.
 func (s *Store) aliasesOf(goodID uint64) ([]uint64, error) {
 	return s.queryUint64s(`SELECT bad_tag_id FROM siblings WHERE good_tag_id=?`, int64(goodID))
 }

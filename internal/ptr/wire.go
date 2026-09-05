@@ -58,61 +58,61 @@ const (
 // entry.
 const maxUpdateBytes = 64 << 20
 
-// MetadataSlice is the manifest returned by GET /metadata: the update files
+// metadataSlice is the manifest returned by GET /metadata: the update files
 // available from a given index onward, and when the next update is due.
-type MetadataSlice struct {
-	Updates       []UpdateEntry
+type metadataSlice struct {
+	Updates       []updateEntry
 	NextUpdateDue int64
 }
 
-// UpdateEntry is one update index: the sha256 hashes (hex) of the compressed
+// updateEntry is one update index: the sha256 hashes (hex) of the compressed
 // update files that make it up, and the server-side time window they cover.
-type UpdateEntry struct {
+type updateEntry struct {
 	Index  uint64
 	Hashes []string
 	Begin  int64
 	End    int64
 }
 
-// Definitions maps the service's integer ids to their meaning: hash_id to a
+// definitions maps the service's integer ids to their meaning: hash_id to a
 // file sha256 (hex), tag_id to a tag string.
-type Definitions struct {
+type definitions struct {
 	Hashes map[uint64]string
 	Tags   map[uint64]string
 }
 
-// Mapping is one mappings row: a tag applied to a block of files.
-type Mapping struct {
+// mapping is one mappings row: a tag applied to a block of files.
+type mapping struct {
 	TagID   uint64
 	HashIDs []uint64
 }
 
-// Pair is a sibling (bad -> good) or parent (child -> parent) relation.
-type Pair struct {
+// pair is a sibling (bad -> good) or parent (child -> parent) relation.
+type pair struct {
 	A uint64
 	B uint64
 }
 
-// Content is one ContentUpdate's rows, split by kind and action.
-type Content struct {
-	MappingsAdd []Mapping
-	MappingsDel []Mapping
-	SiblingsAdd []Pair
-	SiblingsDel []Pair
-	ParentsAdd  []Pair
-	ParentsDel  []Pair
+// contentRows is one ContentUpdate's rows, split by kind and action.
+type contentRows struct {
+	MappingsAdd []mapping
+	MappingsDel []mapping
+	SiblingsAdd []pair
+	SiblingsDel []pair
+	ParentsAdd  []pair
+	ParentsDel  []pair
 }
 
-// Update is one parsed update file: exactly one of Definitions or Content is
+// update is one parsed update file: exactly one of Definitions or Content is
 // set, per the leading type code.
-type Update struct {
-	Definitions *Definitions
-	Content     *Content
+type update struct {
+	Definitions *definitions
+	Content     *contentRows
 }
 
 // Rows counts the rows an update carries - definitions, mapping cells, and
 // relation pairs - the unit the sync's processing rate is reported in.
-func (u *Update) Rows() int64 {
+func (u *update) Rows() int64 {
 	var n int64
 	if u.Definitions != nil {
 		n += int64(len(u.Definitions.Hashes) + len(u.Definitions.Tags))
@@ -202,11 +202,11 @@ func envelope(data []byte, wantType, knownVersion int) (json.RawMessage, error) 
 	return outer[2], nil
 }
 
-// ParseMetadata decodes a GET /metadata response. The body is a
+// parseMetadata decodes a GET /metadata response. The body is a
 // SerialisableDictionary (type 21) wrapping one entry, "metadata_slice", whose
 // value is a nested Metadata object (type 37). Each dictionary side is a
 // [meta-type, value] tuple; meta-type 2 marks a nested serialisable.
-func ParseMetadata(raw []byte) (*MetadataSlice, error) {
+func parseMetadata(raw []byte) (*metadataSlice, error) {
 	data, err := inflate(raw)
 	if err != nil {
 		return nil, err
@@ -269,7 +269,7 @@ func dictNested(raw json.RawMessage) (json.RawMessage, error) {
 
 // parseMetadataObject decodes the Metadata object's [type, version, payload].
 // The payload is [ [[index, [hex hashes], begin, end], ...], next_update_due ].
-func parseMetadataObject(obj json.RawMessage) (*MetadataSlice, error) {
+func parseMetadataObject(obj json.RawMessage) (*metadataSlice, error) {
 	payload, err := envelope(obj, typeMetadata, 1)
 	if err != nil {
 		return nil, err
@@ -282,12 +282,12 @@ func parseMetadataObject(obj json.RawMessage) (*MetadataSlice, error) {
 	if err := json.Unmarshal(parts[0], &rows); err != nil {
 		return nil, fmt.Errorf("decoding metadata rows: %w", err)
 	}
-	slice := &MetadataSlice{}
+	slice := &metadataSlice{}
 	for _, row := range rows {
 		if len(row) != 4 {
 			return nil, fmt.Errorf("metadata row has %d fields, want 4", len(row))
 		}
-		var e UpdateEntry
+		var e updateEntry
 		if err := json.Unmarshal(row[0], &e.Index); err != nil {
 			return nil, fmt.Errorf("decoding update index: %w", err)
 		}
@@ -308,9 +308,9 @@ func parseMetadataObject(obj json.RawMessage) (*MetadataSlice, error) {
 	return slice, nil
 }
 
-// ParseUpdate decodes a GET /update response into either a Definitions or a
+// parseUpdate decodes a GET /update response into either a Definitions or a
 // Content update, dispatching on its leading type code.
-func ParseUpdate(raw []byte) (*Update, error) {
+func parseUpdate(raw []byte) (*update, error) {
 	data, err := inflate(raw)
 	if err != nil {
 		return nil, err
@@ -332,13 +332,13 @@ func ParseUpdate(raw []byte) (*Update, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Update{Definitions: defs}, nil
+		return &update{Definitions: defs}, nil
 	case typeContentUpdate:
 		content, err := parseContent(data)
 		if err != nil {
 			return nil, err
 		}
-		return &Update{Content: content}, nil
+		return &update{Content: content}, nil
 	default:
 		return nil, fmt.Errorf("update type %d is neither definitions (36) nor content (34)", typ)
 	}
@@ -346,7 +346,7 @@ func ParseUpdate(raw []byte) (*Update, error) {
 
 // parseDefinitions decodes a DefinitionsUpdate. The payload is a list of
 // [def-type, [[id, value], ...]] blocks; a block is present only when non-empty.
-func parseDefinitions(data []byte) (*Definitions, error) {
+func parseDefinitions(data []byte) (*definitions, error) {
 	payload, err := envelope(data, typeDefinitionsUpdate, 1)
 	if err != nil {
 		return nil, err
@@ -355,7 +355,7 @@ func parseDefinitions(data []byte) (*Definitions, error) {
 	if err := json.Unmarshal(payload, &blocks); err != nil {
 		return nil, fmt.Errorf("decoding definitions blocks: %w", err)
 	}
-	defs := &Definitions{Hashes: map[uint64]string{}, Tags: map[uint64]string{}}
+	defs := &definitions{Hashes: map[uint64]string{}, Tags: map[uint64]string{}}
 	for _, block := range blocks {
 		if len(block) != 2 {
 			return nil, fmt.Errorf("definitions block has %d parts, want 2", len(block))
@@ -394,7 +394,7 @@ func parseDefinitions(data []byte) (*Definitions, error) {
 
 // parseContent decodes a ContentUpdate. The payload is a list of
 // [content-type, [[action, [row, ...]], ...]] blocks.
-func parseContent(data []byte) (*Content, error) {
+func parseContent(data []byte) (*contentRows, error) {
 	payload, err := envelope(data, typeContentUpdate, 1)
 	if err != nil {
 		return nil, err
@@ -403,7 +403,7 @@ func parseContent(data []byte) (*Content, error) {
 	if err := json.Unmarshal(payload, &blocks); err != nil {
 		return nil, fmt.Errorf("decoding content blocks: %w", err)
 	}
-	c := &Content{}
+	c := &contentRows{}
 	for _, block := range blocks {
 		if len(block) != 2 {
 			return nil, fmt.Errorf("content block has %d parts, want 2", len(block))
@@ -434,40 +434,23 @@ func parseContent(data []byte) (*Content, error) {
 
 // addRows appends one action block's rows to the right slice by content type
 // and action. An unknown content type or action is skipped, not fatal.
-func (c *Content) addRows(contentType, action int, rows json.RawMessage) error {
+func (c *contentRows) addRows(contentType, action int, rows json.RawMessage) error {
 	switch contentType {
 	case contentTypeMappings:
 		ms, err := parseMappings(rows)
 		if err != nil {
 			return err
 		}
-		switch action {
-		case actionAdd:
-			c.MappingsAdd = append(c.MappingsAdd, ms...)
-		case actionDelete:
-			c.MappingsDel = append(c.MappingsDel, ms...)
-		}
-	case contentTypeSiblings:
+		appendByAction(action, &c.MappingsAdd, &c.MappingsDel, ms)
+	case contentTypeSiblings, contentTypeParents:
 		ps, err := parsePairs(rows)
 		if err != nil {
 			return err
 		}
-		switch action {
-		case actionAdd:
-			c.SiblingsAdd = append(c.SiblingsAdd, ps...)
-		case actionDelete:
-			c.SiblingsDel = append(c.SiblingsDel, ps...)
-		}
-	case contentTypeParents:
-		ps, err := parsePairs(rows)
-		if err != nil {
-			return err
-		}
-		switch action {
-		case actionAdd:
-			c.ParentsAdd = append(c.ParentsAdd, ps...)
-		case actionDelete:
-			c.ParentsDel = append(c.ParentsDel, ps...)
+		if contentType == contentTypeSiblings {
+			appendByAction(action, &c.SiblingsAdd, &c.SiblingsDel, ps)
+		} else {
+			appendByAction(action, &c.ParentsAdd, &c.ParentsDel, ps)
 		}
 	case contentTypeFiles:
 		// A file repository's rows; a tag repository should never carry them.
@@ -475,19 +458,29 @@ func (c *Content) addRows(contentType, action int, rows json.RawMessage) error {
 	return nil
 }
 
+// appendByAction routes a block's rows to the add or the delete slice.
+func appendByAction[T any](action int, add, del *[]T, rows []T) {
+	switch action {
+	case actionAdd:
+		*add = append(*add, rows...)
+	case actionDelete:
+		*del = append(*del, rows...)
+	}
+}
+
 // parseMappings decodes mappings rows: [tag_id, [hash_id, ...]].
-func parseMappings(rows json.RawMessage) ([]Mapping, error) {
+func parseMappings(rows json.RawMessage) ([]mapping, error) {
 	var raw []json.RawMessage
 	if err := json.Unmarshal(rows, &raw); err != nil {
 		return nil, fmt.Errorf("decoding mappings rows: %w", err)
 	}
-	out := make([]Mapping, 0, len(raw))
+	out := make([]mapping, 0, len(raw))
 	for _, r := range raw {
 		var row []json.RawMessage
 		if err := json.Unmarshal(r, &row); err != nil || len(row) != 2 {
 			return nil, fmt.Errorf("mappings row is not a [tag_id, hash_ids] pair")
 		}
-		var m Mapping
+		var m mapping
 		if err := json.Unmarshal(row[0], &m.TagID); err != nil {
 			return nil, fmt.Errorf("decoding mapping tag id: %w", err)
 		}
@@ -500,17 +493,17 @@ func parseMappings(rows json.RawMessage) ([]Mapping, error) {
 }
 
 // parsePairs decodes sibling / parent rows: [a_id, b_id].
-func parsePairs(rows json.RawMessage) ([]Pair, error) {
+func parsePairs(rows json.RawMessage) ([]pair, error) {
 	var raw [][]uint64
 	if err := json.Unmarshal(rows, &raw); err != nil {
 		return nil, fmt.Errorf("decoding id-pair rows: %w", err)
 	}
-	out := make([]Pair, 0, len(raw))
+	out := make([]pair, 0, len(raw))
 	for _, r := range raw {
 		if len(r) != 2 {
 			return nil, fmt.Errorf("id-pair row has %d fields, want 2", len(r))
 		}
-		out = append(out, Pair{A: r[0], B: r[1]})
+		out = append(out, pair{A: r[0], B: r[1]})
 	}
 	return out, nil
 }

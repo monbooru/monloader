@@ -55,7 +55,7 @@
     <div class="field auth-field auth-apikey"><label>api key</label><input type="password" name="api_key" autocomplete="off" placeholder="{{if .HasAPIKey}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
     <div class="field auth-field auth-cookies"><label>cookies file</label><input type="text" name="cookies" value="{{.Cookies}}" placeholder="{{.CookiesPlaceholder}}"></div>
     <div class="field auth-field auth-cookies"><label>paste cookies (Netscape export)</label>
-      <textarea name="cookies_paste" placeholder="# Netscape HTTP Cookie File&#10;.x.com&#9;TRUE&#9;/&#9;TRUE&#9;1785167999&#9;auth_token&#9;..."></textarea>
+      <textarea name="cookies_paste" placeholder="# Netscape HTTP Cookie File&#10;.x.com&#9;TRUE&#9;/&#9;TRUE&#9;1785167999&#9;auth_token&#9;...">{{.CookiesPaste}}</textarea>
       <span class="field-hint">{{if gt .CookieCount 0}}cookies file present ({{.CookieCount}} cookies) - replaced on paste, never shown{{else}}saving a paste writes it as the cookies file above{{end}}</span></div>
   </div>
 
@@ -143,8 +143,12 @@
 
   <div class="dialog-panel" id="sd-advanced" hidden>
     <div class="field"><label>gallery-dl options (private)</label>
-      <textarea name="options" placeholder='{"retweets": false}'>{{.OptionsPrivate}}</textarea>
-      <span class="field-hint">for this instance only; may hold secrets</span></div>
+      <textarea id="sd-options" name="options" placeholder='{{if .HasOptions}}(set - reveal to edit, blank leaves it){{else}}{"retweets": false}{{end}}'>{{.OptionsPrivate}}</textarea>
+      <input type="hidden" id="sd-options-edit" name="options_edit" value="{{if .HasOptions}}0{{else}}1{{end}}">
+      <span class="field-hint">for this instance only; the oauth tokens above land here, so it is not shown until you ask
+        {{if .HasOptions}}<button type="button" class="linklike" id="sd-options-reveal"
+          hx-get="/settings/sites/{{.Category}}/options" hx-target="#sd-options" hx-swap="innerHTML"
+          hx-on::after-request="document.getElementById('sd-options-edit').value = '1'; this.remove()">reveal</button>{{end}}</span></div>
     <div class="field"><label>gallery-dl options (public)</label>
       <textarea name="profile_options" placeholder='{"retweets": false}'>{{.OptionsPublic}}</textarea>
       <span class="field-hint">part of the shareable profile; never secrets</span></div>
@@ -161,9 +165,18 @@
   </div>
 
   <div class="dialog-actions">
-    {{if .Custom}}<button type="submit" formaction="/settings/sites/{{.Category}}/profile/reset" title="delete the user profile file; the shipped or generic mapping applies again">reset profile</button>{{end}}
+    {{if .Custom}}<button type="submit" form="sd-reset-form" class="btn-danger" title="delete the user profile file; the shipped or generic mapping applies again">reset profile</button>{{end}}
     <button type="button" onclick="document.getElementById('site-edit-dialog').close()">cancel</button>
     <button type="submit">save site</button>
   </div>
 </form>
+{{if .Custom}}
+<form method="POST" id="sd-reset-form" action="/settings/sites/{{.Category}}/profile/reset"
+      hx-confirm="reset the mapping for {{.Category}} to the shipped one?" data-confirm-ok="reset"
+      data-confirm-danger="deletes your profiles/{{.Category}}.json; the tag rules and templates in it are gone.">
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+</form>
 {{end}}
+{{end}}
+
+{{define "site_options"}}{{.}}{{end}}

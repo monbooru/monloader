@@ -13,6 +13,7 @@ import (
 	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
+	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/queue"
 	"github.com/monbooru/monloader/internal/similarity"
 )
@@ -34,7 +35,7 @@ func (p *Processor) processLookup(ctx context.Context, job, snap *queue.Job) err
 	case queue.BackendAll:
 		return p.lookupAll(ctx, job, snap)
 	default:
-		err := &queue.CodedError{Code: queue.ErrCodePTRUnavailable, Msg: "unknown lookup backend"}
+		err := &outcome.CodedError{Code: outcome.ErrCodePTRUnavailable, Msg: "unknown lookup backend"}
 		p.failEnrichFetch(ctx, job, snap, err)
 		return nil
 	}
@@ -60,8 +61,8 @@ func (p *Processor) checkLookupHash(ctx context.Context, snap *queue.Job) error 
 	if err != nil || sha == "" || strings.EqualFold(sha, snap.SHA256) {
 		return nil
 	}
-	return &queue.CodedError{
-		Code: queue.ErrCodeHashMismatch,
+	return &outcome.CodedError{
+		Code: outcome.ErrCodeHashMismatch,
 		Msg:  fmt.Sprintf("the sha256 is not image %d's; nothing was applied", snap.ImageID),
 	}
 }
@@ -86,7 +87,7 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 		}
 		// A chain that can't start (no lookup order configured) reads as one
 		// more trail entry rather than eclipsing the PTR's answer.
-		var ce *queue.CodedError
+		var ce *outcome.CodedError
 		if errors.As(err, &ce) {
 			chainTrail = []string{ce.Msg}
 		} else {
@@ -108,9 +109,8 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	var warnings []string
 	if ptrHit {
 		res, enrichErr := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
-			Tags:   ptrTags,
-			Source: "ptr",
-			Verify: false,
+			PostFields: monbooru.PostFields{Tags: ptrTags, Source: "ptr"},
+			Verify:     false,
 		})
 		if enrichErr != nil {
 			if meta == nil && hit == nil {
@@ -208,8 +208,7 @@ func (p *Processor) sourceOnlyEnrich(ctx context.Context, job, snap *queue.Job, 
 	job.SetSite(hit.site)
 	job.UpdateItem(0, func(it *queue.Item) { it.PostID = hit.note + ", source only" })
 	return p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
-		Source:     p.mapper.SourceLabel(hit.site),
-		URL:        hit.url,
+		PostFields: monbooru.PostFields{Source: p.mapper.SourceLabel(hit.site), URL: hit.url},
 		Verify:     false,
 		Similarity: hit.score,
 	})
@@ -243,7 +242,7 @@ func composeLookupNote(ptrApplied bool, ptrNote, ptrMiss, site, onlineNote strin
 // online misses.
 func (p *Processor) reportPTRTrail(ctx context.Context, snap *queue.Job, onlineTrail []string) {
 	report := append([]string{ptrTrailName + ": match, tags applied"}, onlineTrail...)
-	if rerr := p.client.ReportFetchOutcome(ctx, snap.ImageID, snap.Gallery, queue.ErrCodeHashNotFound, strings.Join(report, "; ")); rerr != nil {
+	if rerr := p.client.ReportFetchOutcome(ctx, snap.ImageID, snap.Gallery, outcome.ErrCodeHashNotFound, strings.Join(report, "; ")); rerr != nil {
 		logx.Warnf("queue: job %d fetch-status report failed: %v", snap.ID, rerr)
 	}
 }
@@ -312,7 +311,7 @@ func (p *Processor) enrichSourceOnly(ctx context.Context, job, snap *queue.Job, 
 // into the list its "No source found" flash renders, so entries must stay
 // "source: reason" shaped.
 func missError(trail []string) error {
-	return &queue.CodedError{Code: queue.ErrCodeHashNotFound, Msg: strings.Join(trail, "; ")}
+	return &outcome.CodedError{Code: outcome.ErrCodeHashNotFound, Msg: strings.Join(trail, "; ")}
 }
 
 // lookupPTR queries the local PTR index by sha256 and enriches with the tags it
@@ -320,18 +319,18 @@ func missError(trail []string) error {
 // is unverified.
 func (p *Processor) lookupPTR(ctx context.Context, job, snap *queue.Job) error {
 	if p.ptr == nil || !p.ptr.Enabled() {
-		err := &queue.CodedError{Code: queue.ErrCodePTRUnavailable, Msg: "the ptr lookup backend is not available"}
+		err := &outcome.CodedError{Code: outcome.ErrCodePTRUnavailable, Msg: "the ptr lookup backend is not available"}
 		p.failEnrichFetch(ctx, job, snap, err)
 		return nil
 	}
 	if !p.ptr.CaughtUp() {
-		err := &queue.CodedError{Code: queue.ErrCodePTRSyncing, Msg: "the ptr index is not fully synced yet"}
+		err := &outcome.CodedError{Code: outcome.ErrCodePTRSyncing, Msg: "the ptr index is not fully synced yet"}
 		p.failEnrichFetch(ctx, job, snap, err)
 		return nil
 	}
 	rawTags, ok, err := p.ptr.TagsForHash(snap.SHA256)
 	if err != nil {
-		p.failEnrichFetch(ctx, job, snap, &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: err.Error()})
+		p.failEnrichFetch(ctx, job, snap, &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: err.Error()})
 		return nil
 	}
 	if !ok {
@@ -340,9 +339,8 @@ func (p *Processor) lookupPTR(ctx context.Context, job, snap *queue.Job) error {
 	}
 	tags := mapping.MapPTRTags(rawTags)
 	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
-		Tags:   tags,
-		Source: "ptr",
-		Verify: false,
+		PostFields: monbooru.PostFields{Tags: tags, Source: "ptr"},
+		Verify:     false,
 	})
 	if err != nil {
 		p.failEnrichFetch(ctx, job, snap, err)
@@ -365,7 +363,7 @@ func (p *Processor) processHashImport(ctx context.Context, job, snap *queue.Job)
 	}
 	postURL := p.mapper.PostURL(meta)
 	if postURL == "" {
-		cerr := &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: "the matched post has no canonical URL"}
+		cerr := &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: "the matched post has no canonical URL"}
 		job.Fail(cerr.Code, cerr.Msg, time.Now())
 		return cerr
 	}
@@ -397,7 +395,7 @@ type simHit struct {
 func (p *Processor) lookupChain(ctx context.Context, snap *queue.Job) (map[string]any, *simHit, []string, error) {
 	chain := p.mapper.LookupChain()
 	if len(chain) == 0 {
-		return nil, nil, nil, &queue.CodedError{Code: queue.ErrCodeHashNotFound, Msg: "no lookup source has an order set in settings"}
+		return nil, nil, nil, &outcome.CodedError{Code: outcome.ErrCodeHashNotFound, Msg: "no lookup source has an order set in settings"}
 	}
 	var trail []string
 	var fallback *simHit
@@ -460,7 +458,7 @@ func (p *Processor) lookupChain(ctx context.Context, snap *queue.Job) (map[strin
 func (p *Processor) lookupWalk(ctx context.Context, md5 string) (map[string]any, []string, error) {
 	sites := p.mapper.LookupSites()
 	if len(sites) == 0 {
-		return nil, nil, &queue.CodedError{Code: queue.ErrCodeHashNotFound, Msg: "no site has a lookup order set in settings"}
+		return nil, nil, &outcome.CodedError{Code: outcome.ErrCodeHashNotFound, Msg: "no site has a lookup order set in settings"}
 	}
 	var trail []string
 	for _, site := range sites {
@@ -491,7 +489,7 @@ func (p *Processor) walkSite(ctx context.Context, site, md5 string, trail *[]str
 	if ctx.Err() != nil {
 		return nil
 	}
-	if code := errorCode(err); code == queue.ErrCodeMappingFailed {
+	if code := errorCode(err); code == outcome.ErrCodeMappingFailed {
 		// FetchMeta reports an empty resolve as mapping_failed: the search
 		// matched nothing, so this site does not hold the hash.
 		*trail = append(*trail, site+": no match")

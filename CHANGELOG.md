@@ -1,5 +1,39 @@
 # Changelog
 
+## [v1.12.0] - 2026-09-05
+### Added
+- Re-run a finished item through gallery-dl with debug logging, from its row in the queue. ([#27](https://github.com/monbooru/monloader/issues/27))
+- API queued item can carry tags, commentary, a source label and a via from the client. ([#26](https://github.com/monbooru/monloader/issues/26))
+- An AppImage and an AUR package, plus a `SHA256SUMS` file beside the release artifacts. ([monbooru#114](https://github.com/monbooru/monbooru/issues/114))
+
+### Changed
+- The tarball and zip are portable: unpacking one keeps its config and data in the folder.
+- Backend for pushes that carry the artist's original commentary beside the translation, both with the source's markup. ([monbooru#89](https://github.com/monbooru/monbooru/issues/89))
+- The API's site test names the missing credential, like the settings button already did.
+
+### Fixed
+- A refused settings save keeps what was typed and shows the refusal where it happened.
+- A site save is refused whole instead of leaving a rejected mapping profile on disk.
+- Resetting a site's mapping profile asks for confirmation first.
+- Canceling the lookup chain dialog puts the order back instead of keeping it.
+- Setting a PTR data path that does not exist is refused while the sync is running too.
+- The queue page says when the queue is paused.
+- monbooru reads as unconfigured, not unreachable, when no address was entered.
+- The queue add bar and the API key table fit in a narrow window.
+- Running outside a container no longer creates `/work` at the filesystem root.
+- A managed gallery-dl install names the bundled version it can revert to.
+- The queue's destructive confirms say what they affect.
+- The pairing hints point at monbooru's plugins settings, where the approval now lives.
+- On Windows, `-version`, `-hash-password` and `healthcheck` print their output instead of nothing.
+
+### Removed
+- The separate desktop and server archives; one portable build replaces both (`-desktop=false` restores the server profile).
+
+Thanks to @Toaaa for the suggestion (https://github.com/monbooru/monloader/issues/27).
+Thanks to @seli-32 for the suggestion (https://github.com/monbooru/monloader/issues/26).
+Thanks to @gary-host-laptop for the suggestion (https://github.com/monbooru/monbooru/issues/89).
+Thanks to @PROP65 for the suggestion (https://github.com/monbooru/monbooru/issues/114).
+
 ## [v1.11.1] - 2026-08-29
 ### Fixed
 - Fix the Flatpak bundle build CI.

@@ -40,30 +40,71 @@ const monbooruPort = "8455"
 const probeTimeout = 500 * time.Millisecond
 
 // desktopSeed adjusts the defaults a config file that does not exist yet is
-// written with. The bind address is the one that differs in kind from the
-// container's: monloader listens on 0.0.0.0 there because it has to, and on
-// a desktop that would put a downloader with no password in front of the
-// whole LAN. The setup wizard offers the network as the other choice.
+// written with: what monloader generates for itself moves to the OS data
+// directory, and the log file earns a level that writes something.
 func desktopSeed(l desktop.Layout) func(*config.Config) {
 	return func(cfg *config.Config) {
-		cfg.Server.BindAddress = "127.0.0.1:" + desktopPort
-		cfg.Server.BaseURL = "http://localhost:" + desktopPort
-		cfg.Monbooru.APIURL = "http://127.0.0.1:" + monbooruPort
+		localSeed(cfg)
+		// The container's /ptr is nowhere on a desktop; the profile settles
+		// that folder at start, once the data directory is known
+		// (ptrFolder), and nothing is downloaded into it until the operator
+		// asks.
+		cfg.PTR.DataPath = ""
+		cfg.PTR.Enabled = false
+		// The log file is the only thing a desktop bug report can carry, and
+		// nothing writes at the warn default while the app is healthy.
+		cfg.Log.Level = "info"
+		// A portable install takes its paths from the config package, which
+		// states the whole beside-the-program layout in one place and keeps
+		// it relative.
+		if l.Portable {
+			return
+		}
 		// Under the config directory sits only what the operator writes -
 		// the toml and the mapping profiles. Everything monloader generates
 		// for itself, cookies included, belongs with the rest of its data.
 		cfg.GalleryDL.ConfigPath = filepath.Join(l.DataDir, "gallery-dl.json")
 		cfg.GalleryDL.ArchivePath = filepath.Join(l.DataDir, "gallery-dl-archive.sqlite")
 		cfg.GalleryDL.CookiesDir = filepath.Join(l.DataDir, "cookies")
-		// The container's /ptr is nowhere on a desktop; the profile settles
-		// that folder at start, once the data directory is known (ptrFolder),
-		// and nothing is downloaded into it until the operator asks.
-		cfg.PTR.DataPath = ""
-		cfg.PTR.Enabled = false
-		// The log file is the only thing a desktop bug report can carry, and
-		// nothing writes at the warn default while the app is healthy.
-		cfg.Log.Level = "info"
 	}
+}
+
+// localSeed is what every install outside a container starts from. The
+// container's two values differ in kind: it listens on 0.0.0.0 because it
+// has to, and reaches monbooru by a compose service name that resolves
+// nowhere else. On any other machine the bind would put a downloader with
+// no password in front of the whole LAN; the setup wizard offers the
+// network as the other choice.
+func localSeed(cfg *config.Config) {
+	cfg.Server.BindAddress = "127.0.0.1:" + desktopPort
+	cfg.Server.BaseURL = "http://localhost:" + desktopPort
+	cfg.Monbooru.APIURL = "http://127.0.0.1:" + monbooruPort
+}
+
+// hostSeed puts what monloader writes for itself beside the config file it
+// was handed, the one folder a run outside a container can assume exists.
+// Absolute, so a service unit's working directory cannot move them. The PTR
+// index is named but not created, as it is in the image: the sync refusing a
+// folder that is not there is what tells an operator the disk is not mounted.
+func hostSeed(configPath string) func(*config.Config) {
+	dir := filepath.Dir(configPath)
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	return func(cfg *config.Config) {
+		localSeed(cfg)
+		cfg.GalleryDL.ConfigPath = filepath.Join(dir, "gallery-dl.json")
+		cfg.GalleryDL.ArchivePath = filepath.Join(dir, "gallery-dl-archive.sqlite")
+		cfg.GalleryDL.CookiesDir = filepath.Join(dir, "cookies")
+		cfg.PTR.DataPath = filepath.Join(dir, "ptr")
+	}
+}
+
+// inContainer reports whether the shipped image is what is running. The
+// image bakes the variable and nothing else sets it, which is what lets a
+// config created anywhere else stop inheriting its volume layout.
+func inContainer() bool {
+	return os.Getenv("MONLOADER_CONTAINER") != ""
 }
 
 // ptrFolder settles the PTR index folder for an install that names none,
@@ -72,7 +113,7 @@ func desktopSeed(l desktop.Layout) func(*config.Config) {
 // enable flag is saved against that file and a start refuses to load one
 // with the sync on and no path behind it. Settings repoints it at a disk
 // with more room - 70 GB rarely fits beside the rest of a user's data.
-func ptrFolder(cfg *config.Config, configPath, dataDir string) {
+func ptrFolder(cfg *config.Config, l desktop.Layout, configPath, dataDir string) {
 	if cfg.PTR.DataPath != "" {
 		return
 	}
@@ -81,9 +122,16 @@ func ptrFolder(cfg *config.Config, configPath, dataDir string) {
 		logx.Warnf("could not create the ptr folder %s: %v", dir, err)
 		return
 	}
-	persist, err := config.LoadFromFile(configPath)
+	// What lands in the file has to travel with a portable folder like every
+	// other path in it; the running config keeps the absolute one.
+	base := ""
+	if l.Portable {
+		base = l.ConfigDir
+	}
+	record := config.RelativeTo(dir, base)
+	persist, err := config.LoadFromFileIn(configPath, base)
 	if err == nil {
-		persist.PTR.DataPath = dir
+		persist.PTR.DataPath = record
 		err = config.Save(persist, configPath)
 	}
 	if err != nil {
@@ -127,9 +175,9 @@ func claimPort(addr string, openBrowser bool) bool {
 // binds it. -no-browser is added because the page that asked for the restart
 // is already open and reloads itself; a second tab would be noise.
 func relaunch() {
-	exe, err := os.Executable()
-	if err != nil {
-		logx.Errorf("restart: locating this executable: %v", err)
+	exe := desktop.Program()
+	if exe == "" {
+		logx.Errorf("restart: locating this executable")
 		return
 	}
 	args := os.Args[1:]

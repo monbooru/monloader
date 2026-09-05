@@ -16,13 +16,25 @@ import (
 // worker indefinitely.
 const maxWaitSeconds = 60
 
+// Caps on the metadata a client may attach, matching monbooru's own limits so
+// a value is refused at enqueue rather than after the post's bytes are fetched.
+const (
+	maxOptionTags       = 64
+	maxOptionCommentary = 10000
+	maxOptionSource     = 200
+)
+
 type enqueueRequest struct {
 	URL     string `json:"url"`
 	Options *struct {
-		Gallery  string `json:"gallery"`
-		Folder   string `json:"folder"`
-		MaxItems int    `json:"max_items"`
-		PageURL  string `json:"page_url"`
+		Gallery    string   `json:"gallery"`
+		Folder     string   `json:"folder"`
+		MaxItems   int      `json:"max_items"`
+		PageURL    string   `json:"page_url"`
+		Tags       []string `json:"tags"`
+		Commentary string   `json:"commentary"`
+		Source     string   `json:"source"`
+		Via        string   `json:"via"`
 	} `json:"options"`
 }
 
@@ -33,12 +45,12 @@ type enqueueRequest struct {
 func (h *Handler) monbooruReady(w http.ResponseWriter) bool {
 	cfg := h.cfg.Current()
 	if cfg.Monbooru.APIURL == "" {
-		apiError(w, http.StatusConflict, "monbooru_unconfigured",
+		apiError(w, http.StatusConflict, errMonbooruUnconfigured,
 			"monbooru is not configured - set its connection in monloader's settings")
 		return false
 	}
 	if cfg.Monbooru.Paused {
-		apiError(w, http.StatusConflict, "monbooru_paused",
+		apiError(w, http.StatusConflict, errMonbooruPaused,
 			"the monbooru link is paused - resume it from the light in monloader's footer")
 		return false
 	}
@@ -54,14 +66,14 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 	}
 	var body enqueueRequest
 	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
 		return
 	}
 	// A URL copied out of a browser or a chat client routinely arrives padded,
 	// which the add bar trims and this refused as not an http(s) URL.
 	body.URL = strings.TrimSpace(body.URL)
 	if body.URL == "" {
-		apiError(w, http.StatusBadRequest, "invalid_request", "url is required")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "url is required")
 		return
 	}
 	// "md5:<hash>" imports the post carrying that hash via the lookup walk.
@@ -70,11 +82,11 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 	// both, since a pasted hash carries whatever the source rendered.
 	md5, isHash := strings.CutPrefix(strings.ToLower(body.URL), "md5:")
 	if isHash && !config.IsHexHash(md5, 32) {
-		apiError(w, http.StatusBadRequest, "invalid_request", "md5: must carry a 32-hex hash")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "md5: must carry a 32-hex hash")
 		return
 	}
 	if !isHash && !config.IsHTTPURL(body.URL) {
-		apiError(w, http.StatusBadRequest, "invalid_request", "url must be an http(s) URL")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "url must be an http(s) URL")
 		return
 	}
 
@@ -84,22 +96,46 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 		// The same rule the settings field applies: refuse it here rather than
 		// fetch the post's bytes first and have monbooru refuse the push.
 		if !config.IsRelativeFolder(body.Options.Folder) {
-			apiError(w, http.StatusBadRequest, "invalid_request", "folder must be a relative path with no .. segment")
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "folder must be a relative path with no .. segment")
 			return
 		}
 		opts.Folder = body.Options.Folder
 		// A zero max_items is indistinguishable from omitted, so it means "no
 		// override"; a negative value is a mistake.
 		if body.Options.MaxItems < 0 {
-			apiError(w, http.StatusBadRequest, "invalid_request", "max_items must not be negative")
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "max_items must not be negative")
 			return
 		}
 		opts.MaxItems = body.Options.MaxItems
 		if body.Options.PageURL != "" && !config.IsHTTPURL(body.Options.PageURL) {
-			apiError(w, http.StatusBadRequest, "invalid_request", "page_url must be an http(s) URL")
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "page_url must be an http(s) URL")
 			return
 		}
 		opts.PageURL = body.Options.PageURL
+		if len(body.Options.Tags) > maxOptionTags {
+			apiError(w, http.StatusBadRequest, errInvalidRequest,
+				"at most "+strconv.Itoa(maxOptionTags)+" tags")
+			return
+		}
+		opts.Tags = body.Options.Tags
+		if len(body.Options.Commentary) > maxOptionCommentary {
+			apiError(w, http.StatusBadRequest, errInvalidRequest,
+				"commentary must be "+strconv.Itoa(maxOptionCommentary)+" characters or less")
+			return
+		}
+		opts.Commentary = body.Options.Commentary
+		if len(body.Options.Source) > maxOptionSource {
+			apiError(w, http.StatusBadRequest, errInvalidRequest,
+				"source must be "+strconv.Itoa(maxOptionSource)+" characters or less")
+			return
+		}
+		opts.Source = body.Options.Source
+		if !config.IsValidVia(body.Options.Via) {
+			apiError(w, http.StatusBadRequest, errInvalidRequest,
+				`via must be 200 characters or less with no whitespace or any of: " ' < > [ ] \`)
+			return
+		}
+		opts.Via = body.Options.Via
 	}
 
 	wait := waitSeconds(r)
@@ -143,15 +179,15 @@ type imageJobRequest struct {
 func (h *Handler) enqueueImageJob(w http.ResponseWriter, r *http.Request, enqueue func(imageID int64, gallery, url string) int64) {
 	var body imageJobRequest
 	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
 		return
 	}
 	if body.ImageID <= 0 {
-		apiError(w, http.StatusBadRequest, "invalid_request", "image_id is required")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "image_id is required")
 		return
 	}
 	if !config.IsHTTPURL(body.URL) {
-		apiError(w, http.StatusBadRequest, "invalid_request", "url must be an http(s) URL")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "url must be an http(s) URL")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": enqueue(body.ImageID, body.Gallery, body.URL)})
@@ -191,34 +227,34 @@ type lookupRequest struct {
 func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 	var body lookupRequest
 	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
 		return
 	}
 	if body.ImageID <= 0 {
-		apiError(w, http.StatusBadRequest, "invalid_request", "image_id is required")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "image_id is required")
 		return
 	}
 	switch body.Backend {
 	case queue.BackendBooru:
 		if !config.IsHexHash(body.MD5, 32) {
-			apiError(w, http.StatusBadRequest, "invalid_request", "the booru backend needs a 32-hex md5")
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "the booru backend needs a 32-hex md5")
 			return
 		}
 	case queue.BackendPTR:
 		if !config.IsHexHash(body.SHA256, 64) {
-			apiError(w, http.StatusBadRequest, "invalid_request", "the ptr backend needs a 64-hex sha256")
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "the ptr backend needs a 64-hex sha256")
 			return
 		}
 		if h.ptr == nil || !h.ptr.Enabled() {
 			// Refuse rather than queue a job doomed to fail, so monbooru's button
 			// can degrade in place if its capability check was stale.
-			apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr lookup backend is disabled")
+			apiError(w, http.StatusConflict, errPTRUnavailable, "the ptr lookup backend is disabled")
 			return
 		}
 		if !h.ptr.CaughtUp() {
 			// A half-built index answers with a partial tag set that reads like
 			// the whole truth, so it answers nothing until it is current.
-			apiError(w, http.StatusConflict, "ptr_syncing", "the ptr index is not fully synced yet")
+			apiError(w, http.StatusConflict, errPTRSyncing, "the ptr index is not fully synced yet")
 			return
 		}
 	case queue.BackendAll:
@@ -226,25 +262,25 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 		// here, the job just runs the booru walk alone, so the sha256 is only
 		// demanded while the PTR could use it.
 		if !config.IsHexHash(body.MD5, 32) {
-			apiError(w, http.StatusBadRequest, "invalid_request", "the all backend needs a 32-hex md5")
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "the all backend needs a 32-hex md5")
 			return
 		}
 		if h.ptr != nil && h.ptr.Enabled() && !config.IsHexHash(body.SHA256, 64) {
-			apiError(w, http.StatusBadRequest, "invalid_request", "the all backend needs a 64-hex sha256 while the ptr is enabled")
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "the all backend needs a 64-hex sha256 while the ptr is enabled")
 			return
 		}
 		if body.SHA256 != "" && !config.IsHexHash(body.SHA256, 64) {
-			apiError(w, http.StatusBadRequest, "invalid_request", "sha256 must be 64 hex characters")
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "sha256 must be 64 hex characters")
 			return
 		}
 	default:
-		apiError(w, http.StatusBadRequest, "invalid_request", "backend must be \"booru\", \"ptr\", or \"all\"")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "backend must be \"booru\", \"ptr\", or \"all\"")
 		return
 	}
 	if body.Budgeted && !h.queue.TakeLookupBudget() {
 		// Authoritative: monbooru does not keep its own count, it stops its
 		// nightly walk for the day on this answer.
-		apiError(w, http.StatusTooManyRequests, "budget_exhausted",
+		apiError(w, http.StatusTooManyRequests, errBudgetExhausted,
 			"today's scheduled-lookup budget is spent")
 		return
 	}
@@ -291,7 +327,7 @@ func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
 	page, limit := parsePage(r, 50, 200)
 	status := queue.JobStatus(r.URL.Query().Get("status"))
 	if status != "" && !queue.ValidJobStatus(status) {
-		apiError(w, http.StatusBadRequest, "invalid_request", "unknown status filter")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "unknown status filter")
 		return
 	}
 	jobs, total := h.queue.List(queue.ListOptions{
@@ -328,7 +364,7 @@ func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := h.queue.Get(id)
 	if err != nil {
-		apiError(w, http.StatusNotFound, "not_found", "job not found")
+		apiError(w, http.StatusNotFound, errNotFound, "job not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -345,10 +381,10 @@ func (h *Handler) jobAction(w http.ResponseWriter, r *http.Request, action func(
 	jobID, err := action(id)
 	if err != nil {
 		if errors.Is(err, queue.ErrNotFound) {
-			apiError(w, http.StatusNotFound, "not_found", "job not found")
+			apiError(w, http.StatusNotFound, errNotFound, "job not found")
 			return
 		}
-		apiError(w, http.StatusConflict, "conflict", err.Error())
+		apiError(w, http.StatusConflict, errConflict, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": jobID})
@@ -393,7 +429,7 @@ func (h *Handler) deleteJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.queue.CancelSeries(id); err != nil {
-		apiError(w, http.StatusNotFound, "not_found", "job not found")
+		apiError(w, http.StatusNotFound, errNotFound, "job not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

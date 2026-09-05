@@ -37,9 +37,17 @@ type PushFields struct {
 	Collection      string
 	CollectionOrder int
 	Commentary      string
-	Original        string
-	ParentURL       string
-	Notes           []NoteBox
+	// CommentaryTranslated is the translation the source published beside
+	// Commentary; empty unless the post carries both bodies.
+	CommentaryTranslated string
+	// The same two bodies in the markup their source published them in,
+	// which monbooru converts on the way in. Danbooru and e621 write DText,
+	// and the plain fields above are the flattening of it.
+	CommentaryDText           string
+	CommentaryTranslatedDText string
+	Original                  string
+	ParentURL                 string
+	Notes                     []NoteBox
 	// What the post says about the file it serves, for monbooru's upgrade
 	// surface. Zero where the site publishes nothing, which is common.
 	PostWidth, PostHeight int
@@ -145,11 +153,8 @@ func (m *Mapper) LookupChain() []LookupSource {
 			entries = append(entries, entry{LookupSource{Name: site.Name}, site.LookupOrder})
 		}
 	}
-	for name, svc := range map[string]config.LookupService{
-		"iqdb":     cfg.Lookup.Iqdb,
-		"saucenao": cfg.Lookup.Saucenao,
-	} {
-		if svc.Order > 0 {
+	for _, name := range config.LookupServices {
+		if svc := cfg.Lookup.Service(name); svc.Order > 0 {
 			entries = append(entries, entry{LookupSource{Name: name, Similarity: true}, svc.Order})
 		}
 	}
@@ -192,13 +197,28 @@ func (m *Mapper) Gallery(category string) string {
 // post-URL hosts and host aliases. Nothing matching keeps the name as-is, so
 // no label lands that the operator did not choose.
 func (m *Mapper) SourceLabel(name string) string {
+	label, _ := m.sourceLabel(name)
+	return label
+}
+
+// SourceClaimed reports whether something chose the label a name resolves to -
+// a [[sites]] label, a profile, a host_labels row, or a profile host alias -
+// rather than it being stamped as the bare name it arrived as.
+func (m *Mapper) SourceClaimed(name string) bool {
+	_, claimed := m.sourceLabel(name)
+	return claimed
+}
+
+// sourceLabel resolves the label and reports whether anything claimed the
+// name; claimed is false only on the fallthrough that stamps it unchanged.
+func (m *Mapper) sourceLabel(name string) (label string, claimed bool) {
 	cfg := m.cfg.Current()
 	if site := cfg.FindSite(name); site != nil && site.Label != "" {
-		return site.Label
+		return site.Label, true
 	}
 	v := m.view()
 	if _, ok := v.profiles[name]; ok {
-		return name
+		return name, true
 	}
 	host := normalizeHost(name)
 	// A self-hosted source almost always carries a port, which is the case host
@@ -208,7 +228,7 @@ func (m *Mapper) SourceLabel(name string) string {
 		for cand := start; cand != ""; cand = parentDomain(cand) {
 			for _, hl := range cfg.HostLabels {
 				if normalizeHost(hl.Host) == cand {
-					return hl.Label
+					return hl.Label, true
 				}
 			}
 		}
@@ -219,11 +239,11 @@ func (m *Mapper) SourceLabel(name string) string {
 	}
 	if ok {
 		if site := cfg.FindSite(category); site != nil && site.Label != "" {
-			return site.Label
+			return site.Label, true
 		}
-		return category
+		return category, true
 	}
-	return name
+	return name, false
 }
 
 // hostWithoutPort drops a trailing :port, leaving a bracketed IPv6 literal and
@@ -333,7 +353,9 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 		pf.CollectionOrder = kwdict.Num(meta)
 	}
 
-	pf.Commentary = commentaryFor(profile.Family, meta)
+	c := commentaryFor(profile.Family, meta)
+	pf.Commentary, pf.CommentaryDText = c.Body, c.BodyDText
+	pf.CommentaryTranslated, pf.CommentaryTranslatedDText = c.Translated, c.TranslatedDText
 	pf.Original = originalFor(meta)
 	if id := parentPostID(meta); id != "" {
 		pf.ParentURL = m.PostURLFor(category, id)
@@ -403,34 +425,45 @@ func originalFor(meta map[string]any) string {
 	return strings.TrimSpace(kwdict.String(meta, "source_url"))
 }
 
-// commentaryFor reduces a post's artist commentary to a single plain-text body.
-// Danbooru carries a nested artist_commentary object (each field translated
-// preferred over its original, so a title-only translation still keeps the
-// original body; title folded in as the first line); e621 a flat description.
-func commentaryFor(family string, meta map[string]any) string {
+// postCommentary is a post's artist commentary in the two forms a push
+// carries: the markup its source published, and the flattening a monbooru too
+// old to read that falls back to.
+type postCommentary struct {
+	Body, BodyDText             string
+	Translated, TranslatedDText string
+}
+
+// commentaryFor reduces a post's artist commentary to those forms and, where
+// the source published one, its translation. Danbooru carries a nested
+// artist_commentary object with both (title folded in as the first line);
+// e621 a flat description. A post translated but missing its original leads
+// with the translation, so the body is never empty while the translation
+// is filled.
+func commentaryFor(family string, meta map[string]any) postCommentary {
+	var c postCommentary
 	switch family {
 	case FamilyDanbooru:
 		ac, ok := meta["artist_commentary"].(map[string]any)
 		if !ok {
-			return ""
+			return c
 		}
-		title := kwdict.String(ac, "translated_title")
-		desc := kwdict.String(ac, "translated_description")
-		if title == "" {
-			title = kwdict.String(ac, "original_title")
+		c.Body, c.BodyDText = joinCommentary(kwdict.String(ac, "original_title"), kwdict.String(ac, "original_description"))
+		c.Translated, c.TranslatedDText = joinCommentary(kwdict.String(ac, "translated_title"), kwdict.String(ac, "translated_description"))
+		if c.Body == "" {
+			return postCommentary{Body: c.Translated, BodyDText: c.TranslatedDText}
 		}
-		if desc == "" {
-			desc = kwdict.String(ac, "original_description")
-		}
-		return joinCommentary(title, desc)
 	case FamilyE621:
-		return plainText(kwdict.String(meta, "description"))
+		desc := kwdict.String(meta, "description")
+		c.Body, c.BodyDText = plainText(desc), rawText(desc)
 	}
-	return ""
+	return c
 }
 
-func joinCommentary(title, desc string) string {
-	title, desc = plainText(title), plainText(desc)
+func joinCommentary(title, desc string) (plain, raw string) {
+	return joinLines(plainText(title), plainText(desc)), joinLines(rawText(title), rawText(desc))
+}
+
+func joinLines(title, desc string) string {
 	switch {
 	case title == "":
 		return desc
@@ -483,12 +516,15 @@ var (
 )
 
 // noteTagRe matches the formatting a note box may keep: the inline tags the
-// feature exists for, an anchor only with an http(s) target (a relative one
-// would resolve against monbooru's own host), and their closers, which carry
-// nothing and are inert alone. The bytes come from a booru's note api -
+// feature exists for, including the translator note, and their closers, which
+// carry nothing and are inert alone. The bytes come from a booru's note api -
 // remote and unreviewed - so everything else the source wrote is dropped
 // rather than forwarded to monbooru, which cannot know where it came from.
-var noteTagRe = regexp.MustCompile(`(?i)^(<a href="https?://[^"<>\s]*">|</?(a|b|i|u|s|em|strong|br)\s*/?>)$`)
+var noteTagRe = regexp.MustCompile(`(?i)^</?(a|b|i|u|s|em|strong|br|tn)\s*/?>$`)
+
+// noteHrefRe pulls the target out of an anchor whatever else it carries, since
+// a booru writes its own tag links relative and styled. Only the href is kept.
+var noteHrefRe = regexp.MustCompile(`(?i)^<a\s[^<>]*\bhref="([^"<>\s]+)"[^<>]*>$`)
 
 // markupHTML returns the source's own body, reduced to those tags, and only
 // when it still carries markup the flattening dropped - a plain note is not
@@ -498,12 +534,32 @@ func markupHTML(raw, plain string) string {
 		if noteTagRe.MatchString(tag) {
 			return tag
 		}
+		if m := noteHrefRe.FindStringSubmatch(tag); m != nil && noteHref(m[1]) {
+			return `<a href="` + m[1] + `">`
+		}
 		return ""
 	})
 	if strings.TrimSpace(safe) == plain {
 		return ""
 	}
 	return safe
+}
+
+// noteHref reports whether an anchor target is worth forwarding. monbooru
+// resolves a relative one against the post url it was pushed, so the site's
+// own links survive; anything that is not a location drops with its anchor.
+func noteHref(href string) bool {
+	low := strings.ToLower(href)
+	return strings.HasPrefix(href, "/") ||
+		strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://")
+}
+
+// rawText is a source's own body with nothing but its line endings settled:
+// what monbooru's converter reads is the markup as the artist wrote it, and
+// DText is not HTML for plainText below to strip.
+func rawText(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.TrimSpace(strings.ReplaceAll(s, "\r", "\n"))
 }
 
 // plainText reduces a booru's HTML note body (or commentary) to plain text:

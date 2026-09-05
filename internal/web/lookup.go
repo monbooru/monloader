@@ -12,7 +12,7 @@ import (
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/mapping"
-	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/similarity"
 )
 
@@ -78,18 +78,19 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 	for i, src := range s.mapper.LookupChain() {
 		row := chainRow{Position: i + 1, Name: src.Name, Similarity: src.Similarity, State: "ready", CSRFToken: csrf}
 		if src.Similarity {
-			if src.Name == "iqdb" {
-				row.Note = "uses the danbooru site credentials"
-				// iqdb has no credentials of its own, so its edit shortcut
-				// opens the danbooru site it authenticates through.
-				edit := s.siteRows([]string{"danbooru"}, csrf)[0]
+			label, missing := s.sim.Missing(src.Name)
+			if site := similarity.CredentialSite(src.Name); site != "" {
+				row.Note = "uses the " + site + " site credentials"
+				// A service with no credentials of its own: its edit shortcut
+				// opens the site it authenticates through.
+				edit := s.siteRows([]string{site}, csrf)[0]
 				row.Site = &edit
-			} else if view.SaucenaoKeySet {
-				row.Note = "api key: set"
-			} else {
+			} else if missing {
 				row.Note = "api key: not set"
+			} else {
+				row.Note = "api key: set"
 			}
-			if label, missing := s.sim.Missing(src.Name); missing {
+			if missing {
 				row.State, row.Warn = "needs "+label, true
 			} else if now.Before(s.sim.LimitedUntil(src.Name)) {
 				row.State, row.Warn = "rate limited", true
@@ -120,7 +121,7 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 	for _, src := range view.DialogOn {
 		inChain[src.Name] = true
 	}
-	for _, name := range []string{"iqdb", "saucenao"} {
+	for _, name := range config.LookupServices {
 		if !inChain[name] {
 			view.DialogOff = append(view.DialogOff, mapping.LookupSource{Name: name, Similarity: true})
 		}
@@ -139,11 +140,11 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 	return view
 }
 
-// siteNeedsCredential reports whether a site's profile requires a credential
-// the config lacks, with its label - the same gate the lookup chain applies.
+// siteNeedsCredential reports whether a site requires a credential the config
+// lacks, with its label - the same gate the lookup chain applies.
 func (s *Server) siteNeedsCredential(site string) (string, bool) {
-	p, _ := s.mapper.Lookup(site)
-	return loginInfo(p.Auth, s.cfg.Current().FindSite(site))
+	v := s.siteView(site)
+	return v.Login, v.NeedsCredential
 }
 
 // saveLookup updates the lookup section's inline settings: the similarity
@@ -160,7 +161,7 @@ func (s *Server) saveLookup(w http.ResponseWriter, r *http.Request) {
 	if r.Form.Has("min_similarity") {
 		n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("min_similarity")))
 		if err != nil || n < 1 || n > 100 {
-			s.redirectFlash(w, r, "err", "min similarity must be a percentage from 1 to 100")
+			s.refuseSave(w, r, "min similarity must be a percentage from 1 to 100")
 			return
 		}
 		minSim = n
@@ -170,7 +171,7 @@ func (s *Server) saveLookup(w http.ResponseWriter, r *http.Request) {
 	if scheduled {
 		n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("scheduled_daily_budget")))
 		if err != nil || n < 0 {
-			s.redirectFlash(w, r, "err", "the daily budget must be zero or more images")
+			s.refuseSave(w, r, "the daily budget must be zero or more images")
 			return
 		}
 		budget = n
@@ -214,7 +215,7 @@ func (s *Server) saveLookupChain(w http.ResponseWriter, r *http.Request) {
 			s.redirectFlash(w, r, "err", name+": "+err.Error())
 			return
 		}
-		if order > 0 && name != "iqdb" && name != "saucenao" && s.mapper.LookupURL(name, "") == "" {
+		if order > 0 && s.cfg.Current().Lookup.Service(name) == nil && s.mapper.LookupURL(name, "") == "" {
 			s.redirectFlash(w, r, "err", "site "+name+" does not support md5 lookup")
 			return
 		}
@@ -222,22 +223,19 @@ func (s *Server) saveLookupChain(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.updateConfig(func(c *config.Config) error {
 		for name, order := range orders {
-			switch name {
-			case "iqdb":
-				c.Lookup.Iqdb.Order = order
-			case "saucenao":
-				c.Lookup.Saucenao.Order = order
-			default:
-				site := c.FindSite(name)
-				if site == nil {
-					if order == 0 {
-						continue // no block and no order: nothing to record
-					}
-					c.Sites = append(c.Sites, config.Site{Name: name})
-					site = &c.Sites[len(c.Sites)-1]
-				}
-				site.LookupOrder = order
+			if svc := c.Lookup.Service(name); svc != nil {
+				svc.Order = order
+				continue
 			}
+			site := c.FindSite(name)
+			if site == nil {
+				if order == 0 {
+					continue // no block and no order: nothing to record
+				}
+				c.Sites = append(c.Sites, config.Site{Name: name})
+				site = &c.Sites[len(c.Sites)-1]
+			}
+			site.LookupOrder = order
 		}
 		return nil
 	})
@@ -256,12 +254,11 @@ func (s *Server) saveLookupChain(w http.ResponseWriter, r *http.Request) {
 // auth path and, for saucenao, the daily quota.
 func (s *Server) testLookupSource(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
-	switch source {
-	case "iqdb", "saucenao":
+	if s.cfg.Current().Lookup.Service(source) != nil {
 		s.testSimilarityService(w, r, source)
-	default:
-		s.testLookupSite(w, r, source)
+		return
 	}
+	s.testLookupSite(w, r, source)
 }
 
 // testLookupSite runs one exact-md5 site search with the probe image's md5.
@@ -284,8 +281,8 @@ func (s *Server) testLookupSite(w http.ResponseWriter, r *http.Request, site str
 	if err != nil {
 		// The probe md5 matching nothing is the expected answer: the search
 		// executed, so the site was reached. Every other error is a failure.
-		var ce *queue.CodedError
-		if !errors.As(err, &ce) || ce.Code != queue.ErrCodeMappingFailed {
+		var ce *outcome.CodedError
+		if !errors.As(err, &ce) || ce.Code != outcome.ErrCodeMappingFailed {
 			probeFailure(w, err)
 			return
 		}
@@ -297,17 +294,17 @@ func (s *Server) testLookupSite(w http.ResponseWriter, r *http.Request, site str
 // probeFailure renders a live probe's error into the site's state cell. An
 // unclassified error falls back to its message.
 func probeFailure(w http.ResponseWriter, err error) {
-	var ce *queue.CodedError
+	var ce *outcome.CodedError
 	if !errors.As(err, &ce) {
 		siteState(w, "err", "failed", err.Error(), time.Time{})
 		return
 	}
 	switch ce.Code {
-	case queue.ErrCodeRateLimited:
+	case outcome.ErrCodeRateLimited:
 		siteState(w, "warn", "rate limited", ce.Msg, time.Time{})
-	case queue.ErrCodeAuthRequired:
+	case outcome.ErrCodeAuthRequired:
 		siteState(w, "warn", "auth rejected", ce.Msg, time.Time{})
-	case queue.ErrCodeBlocked:
+	case outcome.ErrCodeBlocked:
 		siteState(w, "err", "blocked", ce.Msg, time.Time{})
 	default:
 		siteState(w, "err", "failed", ce.Msg, time.Time{})

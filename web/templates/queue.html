@@ -1,6 +1,7 @@
 {{define "queue"}}{{template "doc_head" .}}
 {{template "topbar" .}}
 {{template "monbooru_banner" .}}
+{{template "queue_paused" .}}
 <div class="content-scroll">
 <main id="content" class="content-wide">
   <form class="add-bar" hx-post="/" hx-target="#add-flash" hx-swap="innerHTML"
@@ -31,6 +32,9 @@
   </div>
 </main>
 </div>
+<dialog id="item-debug-dialog">
+  <div id="debug-log-body"></div>
+</dialog>
 <script>
   // The queue tbody polls every 2s and replaces itself; keep the chosen page
   // across polls by reading it from a variable the poll's hx-vals evaluates.

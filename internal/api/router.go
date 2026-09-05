@@ -52,6 +52,18 @@ type PairHandlers struct {
 	Teardown http.HandlerFunc
 }
 
+// Host is what the API needs back from the layer that mounts it. Both pieces
+// belong to that layer - it owns the approval screen and the config file - and
+// naming the seam keeps the next one a field here rather than another
+// constructor parameter. The zero value mounts an API with neither: the
+// pairing routes answer nothing and the writes that need a save are refused.
+type Host struct {
+	Pair PairHandlers
+	// SaveConfig persists a config mutation through the owner's save path
+	// (the web layer's updateConfig); nil in tests that never persist.
+	SaveConfig func(func(*config.Config) error) error
+}
+
 // Handler serves monloader's own /api/v1/ surface.
 type Handler struct {
 	queue     *queue.Queue
@@ -62,31 +74,26 @@ type Handler struct {
 	version   string
 	siteState *sitestate.Tracker
 	ptr       PTRService
-	pair      PairHandlers
-	// saveConfig persists a config mutation through the owner's save
-	// path (the web layer's updateConfig); nil in tests that never
-	// persist.
-	saveConfig func(func(*config.Config) error) error
+	host      Host
 }
 
 // New builds the API handler. catalog is the shared gallery-dl inventory
 // (version, extractors, supportedsites rows), refreshed by the web layer when
 // a managed install changes the binary; version feeds /health; siteState is
 // the shared "last reached" tracker the test probe records into; ptr backs
-// the PTR endpoints (nil when the PTR is not built into the run); pair
-// carries the web layer's pairing handlers.
-func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, catalog *gdl.Catalog, version string, siteState *sitestate.Tracker, ptrSvc PTRService, pair PairHandlers, saveConfig func(func(*config.Config) error) error) *Handler {
+// the PTR endpoints (nil when the PTR is not built into the run); host is
+// what the mounting layer supplies back.
+func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, catalog *gdl.Catalog, version string, siteState *sitestate.Tracker, ptrSvc PTRService, host Host) *Handler {
 	return &Handler{
-		queue:      q,
-		runner:     runner,
-		mapper:     mapper,
-		cfg:        cfg,
-		catalog:    catalog,
-		version:    version,
-		siteState:  siteState,
-		ptr:        ptrSvc,
-		pair:       pair,
-		saveConfig: saveConfig,
+		queue:     q,
+		runner:    runner,
+		mapper:    mapper,
+		cfg:       cfg,
+		catalog:   catalog,
+		version:   version,
+		siteState: siteState,
+		ptr:       ptrSvc,
+		host:      host,
 	}
 }
 
@@ -122,22 +129,22 @@ func (h *Handler) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 		setCORS(w, r)
 		cfg := h.cfg.Current()
 		if len(cfg.Auth.Tokens) == 0 {
-			apiError(w, http.StatusServiceUnavailable, "api_disabled", "API is disabled: generate an API token in Settings to enable it")
+			apiError(w, http.StatusServiceUnavailable, errAPIDisabled, "API is disabled: generate an API token in Settings to enable it")
 			return
 		}
 		const prefix = "Bearer "
 		got := r.Header.Get("Authorization")
 		if !strings.HasPrefix(got, prefix) {
-			apiError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid authorization header")
+			apiError(w, http.StatusUnauthorized, errUnauthorized, "missing or invalid authorization header")
 			return
 		}
 		tok := cfg.FindTokenByHash(config.HashToken(got[len(prefix):]))
 		if tok == nil {
-			apiError(w, http.StatusUnauthorized, "unauthorized", "invalid bearer token")
+			apiError(w, http.StatusUnauthorized, errUnauthorized, "invalid bearer token")
 			return
 		}
 		if !tok.HasScope(scope) {
-			apiError(w, http.StatusForbidden, "insufficient_scope", "token lacks the "+scope+" scope")
+			apiError(w, http.StatusForbidden, errInsufficientScope, "token lacks the "+scope+" scope")
 			return
 		}
 		next(w, r)
@@ -194,7 +201,7 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
 func apiPathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	v, err := strconv.ParseInt(r.PathValue(name), 10, 64)
 	if err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid "+name)
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid "+name)
 		return 0, false
 	}
 	return v, true

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/queue"
 )
 
@@ -15,6 +16,7 @@ import (
 type itemDisplay struct {
 	Subject      string
 	SubjectURL   string // source link for a download; empty otherwise
+	DebugURL     string // what the [?] re-runs, which is not always the link
 	Outcome      string // outcome word, or the error code on failure
 	OutcomeCls   string
 	OutcomeTitle string // the full error on hover
@@ -66,8 +68,17 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 		d.Subject, d.SubjectURL = "source", it.URL
 	}
 
+	// A direct-file send records the page it came from as the item's link, so
+	// re-running that link would log a fetch of a page nothing ever asked for.
+	d.DebugURL = d.SubjectURL
+	if pageURL, _ := ctx["PageURL"].(string); pageURL != "" && pageURL == it.URL {
+		if jobURL, _ := ctx["JobURL"].(string); jobURL != "" {
+			d.DebugURL = jobURL
+		}
+	}
+
 	switch {
-	case it.ErrorCode == queue.ErrCodeCanceled:
+	case it.ErrorCode == outcome.ErrCodeCanceled:
 		d.Outcome, d.OutcomeCls = "canceled", "o-canceled"
 	case it.ErrorCode != "":
 		d.Outcome, d.OutcomeCls, d.OutcomeTitle = it.ErrorCode, "o-failed", it.Error
@@ -87,6 +98,27 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 	d.Note = strings.Join(note, ", ")
 
 	return d
+}
+
+// clientMeta summarises the metadata the submitting client attached, for the
+// queue row's hover. Empty when the submission carried none, which hides the
+// marker: an operator wondering where a tag came from can see it arrived with
+// the job rather than from the post.
+func clientMeta(j *queue.Job) string {
+	var parts []string
+	if len(j.Tags) > 0 {
+		parts = append(parts, strings.Join(j.Tags, " "))
+	}
+	if j.Via != "" {
+		parts = append(parts, "via "+j.Via)
+	}
+	if j.Source != "" {
+		parts = append(parts, "source "+j.Source)
+	}
+	if j.Commentary != "" {
+		parts = append(parts, "commentary")
+	}
+	return strings.Join(parts, ", ")
 }
 
 // enrichImageID is the monbooru image an enrich item touched: the one it landed

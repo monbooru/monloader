@@ -2,13 +2,13 @@
 <div class="item-row">
   <span class="item-subj" title="{{$d.Subject}}">{{if $d.SubjectURL}}<a href="{{$d.SubjectURL}}" target="_blank" rel="noopener">{{$d.Subject}}</a>{{else}}{{$d.Subject}}{{end}}</span>
   <span class="item-out">{{if $d.OutcomeTitle}}<span class="{{$d.OutcomeCls}}" title="{{$d.OutcomeTitle}}">{{$d.Outcome}}</span>{{else}}<span class="{{$d.OutcomeCls}}">{{$d.Outcome}}</span>{{end}}{{if $d.Note}} <span class="o-merge" title="{{$d.Note}}">({{$d.Note}})</span>{{end}}</span>
-  <span class="item-view">{{if $d.ViewURL}}<a href="{{$d.ViewURL}}" target="_blank" rel="noopener">view</a>{{end}}{{if $d.Warnings}} <span class="o-warn" title="{{join $d.Warnings ", "}}">{{len $d.Warnings}} tag warning{{if ne (len $d.Warnings) 1}}s{{end}}</span>{{end}}</span>
+  <span class="item-view">{{if $d.ViewURL}}<a href="{{$d.ViewURL}}" target="_blank" rel="noopener">view</a>{{end}}{{if $d.Warnings}} <span class="o-warn" title="{{join $d.Warnings ", "}}">{{len $d.Warnings}} tag warning{{if ne (len $d.Warnings) 1}}s{{end}}</span>{{end}}{{if $d.SubjectURL}} <button type="button" class="linklike item-debug" data-url="{{$d.DebugURL}}" title="re-run this post with gallery-dl debug logging">[?]</button>{{end}}</span>
 </div>
 {{end}}{{end}}
 
-{{define "queue_items_capped"}}{{$cap := itemCap}}{{if gt (len .Items) $cap}}{{$rest := slice .Items $cap (len .Items)}}{{template "queue_items" (dict "Items" (slice .Items 0 $cap) "MonbooruURL" .MonbooruURL "Site" .Site "ImageID" .ImageID "Kind" .Kind)}}
+{{define "queue_items_capped"}}{{$cap := itemCap}}{{if gt (len .Items) $cap}}{{$rest := slice .Items $cap (len .Items)}}{{template "queue_items" (dict "Items" (slice .Items 0 $cap) "MonbooruURL" .MonbooruURL "Site" .Site "ImageID" .ImageID "Kind" .Kind "JobURL" .JobURL "PageURL" .PageURL)}}
 <details class="more-items">
   <summary>+{{len $rest}} more{{$bd := moreSummary $rest}}{{if $bd}} ({{$bd}}){{end}}</summary>
-  <div class="job-items">{{template "queue_items" (dict "Items" $rest "MonbooruURL" .MonbooruURL "Site" .Site "ImageID" .ImageID "Kind" .Kind)}}</div>
+  <div class="job-items">{{template "queue_items" (dict "Items" $rest "MonbooruURL" .MonbooruURL "Site" .Site "ImageID" .ImageID "Kind" .Kind "JobURL" .JobURL "PageURL" .PageURL)}}</div>
 </details>
 {{else}}{{template "queue_items" .}}{{end}}{{end}}

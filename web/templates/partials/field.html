@@ -1,0 +1,5 @@
+{{define "field"}}<div class="field">
+  <label for="{{.ID}}">{{.Label}}</label>
+  <input id="{{.ID}}" type="{{or .Type "text"}}" name="{{.Name}}" value="{{.Value}}"{{with .Placeholder}} placeholder="{{.}}"{{end}}{{if eq (or .Type "text") "password"}} autocomplete="off"{{end}}>
+  <span class="field-hint">{{.Hint}}</span>
+</div>{{end}}

@@ -3,7 +3,6 @@ package desktop
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -62,23 +61,11 @@ func LaunchCommand() string {
 	if id := os.Getenv("FLATPAK_ID"); id != "" {
 		return "flatpak run " + id + " -desktop"
 	}
-	exe := launchExe()
+	exe := Program()
 	if exe == "" {
 		return ""
 	}
 	return execQuote(exe) + " -desktop"
-}
-
-// launchExe is the binary a launcher entry names, symlinks resolved.
-func launchExe() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		return resolved
-	}
-	return exe
 }
 
 // execQuote wraps a path for a .desktop Exec line, which reserves a handful

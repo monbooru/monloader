@@ -1,14 +1,14 @@
 #!/bin/sh
 # packaging/build-installer.sh <lite|bundled>
 #
-# Builds the Windows installer from the desktop payload build-binaries.sh
-# staged, and writes it to dist/.
+# Builds the Windows installer from the payload build-binaries.sh staged,
+# and writes it to dist/.
 set -eu
 
 shape=${1:?usage: build-installer.sh lite|bundled}
 . ./packaging/release-env.sh
 payload=packaging/windows/payload
-staged="stage/monloader_${VERSION#v}_desktop_${shape}_windows_amd64-setup"
+staged="stage/monloader_${VERSION#v}_portable_${shape}_windows_amd64-setup"
 
 [ -d "$staged" ] || { echo "no staged payload at $staged" >&2; exit 1; }
 rm -rf "$payload"

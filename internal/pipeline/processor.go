@@ -25,6 +25,7 @@ import (
 	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
+	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/queue"
 	"github.com/monbooru/monloader/internal/similarity"
 	"github.com/monbooru/monloader/internal/sitestate"
@@ -85,7 +86,7 @@ func (p *Processor) ReportDropped(ctx context.Context, snap *queue.Job) {
 		return
 	}
 	if err := p.client.ReportFetchOutcome(ctx, snap.ImageID, snap.Gallery,
-		queue.ErrCodeCanceled, "the job was dropped before it ran"); err != nil {
+		outcome.ErrCodeCanceled, "the job was dropped before it ran"); err != nil {
 		logx.Warnf("queue: job %d dropped-state report failed: %v", snap.ID, err)
 	}
 }
@@ -163,8 +164,8 @@ func (p *Processor) processDownload(ctx context.Context, job, snap *queue.Job) e
 			// A pool's pages push one by one, so the window is a real partial
 			// import; a book is one file, and bundling the window would push a
 			// short archive as a complete manga.
-			return abortJob(ctx, job, &queue.CodedError{
-				Code: queue.ErrCodeDownloadFailed,
+			return abortJob(ctx, job, &outcome.CodedError{
+				Code: outcome.ErrCodeDownloadFailed,
 				Msg:  fmt.Sprintf("re-resolving the whole gallery returned %d pages, fewer than the %d already found", len(whole.Items), len(resolved)),
 			})
 		default:
@@ -244,23 +245,11 @@ func (p *Processor) enrichFromMeta(ctx context.Context, job, snap *queue.Job, me
 // found the post (0 for an exact match or a refetch), so monbooru marks the
 // origin as such.
 func (p *Processor) mapEnrichPayload(meta map[string]any, url, md5 string, sim float64) monbooru.EnrichPayload {
-	pf := p.mapper.Map(meta)
 	return monbooru.EnrichPayload{
-		Tags:       pf.Tags,
-		Source:     pf.Source,
-		PostID:     kwdict.ID(meta),
-		URL:        url,
+		PostFields: postFieldsFrom(p.mapper.Map(meta), url, kwdict.ID(meta)),
 		SourceMD5:  md5,
 		Verify:     true,
 		Similarity: sim,
-		Commentary: pf.Commentary,
-		Original:   pf.Original,
-		ParentURL:  pf.ParentURL,
-		Notes:      toNoteBoxes(pf.Notes),
-		PostWidth:  pf.PostWidth,
-		PostHeight: pf.PostHeight,
-		PostSize:   pf.PostSize,
-		PostExt:    pf.PostExt,
 	}
 }
 
@@ -282,7 +271,7 @@ func (p *Processor) markEnriched(job, snap *queue.Job, res *monbooru.Result, url
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemUploaded })
 	job.UpdateItem(0, func(it *queue.Item) {
 		it.Status = queue.ItemDone
-		it.Outcome = queue.OutcomeEnriched
+		it.Outcome = outcome.Enriched
 		it.MonbooruID = snap.ImageID
 		it.MergeNote = note
 		it.TagWarnings = res.TagWarnings
@@ -306,8 +295,8 @@ func labelEnrichPost(job *queue.Job, meta map[string]any) {
 // failEnrichFetch records a fetch that died before enrich ran. A fetch that
 // never reaches enrich leaves monbooru's detail poll with no outcome; the
 // advisory report lets the pill stop instead of spinning. The report carries
-// the bare message - the code already travels in the state field, and
-// monbooru renders the message verbatim.
+// the bare message - the code already travels in the state field, and monbooru
+// shows either its own sentence for that code or this message.
 func (p *Processor) failEnrichFetch(ctx context.Context, job, snap *queue.Job, err error) {
 	// A cancel kills the in-flight call; the worker labels the job and its
 	// pending item canceled, so the kill's error must not be recorded or
@@ -317,7 +306,7 @@ func (p *Processor) failEnrichFetch(ctx context.Context, job, snap *queue.Job, e
 	}
 	code := errorCode(err)
 	msg := err.Error()
-	var ce *queue.CodedError
+	var ce *outcome.CodedError
 	if errors.As(err, &ce) {
 		msg = ce.Msg
 	}
@@ -372,7 +361,7 @@ func (p *Processor) fetch(ctx context.Context, job, snap *queue.Job, resolved []
 
 	workDir := filepath.Join(p.workRoot, fmt.Sprintf("job-%d", snap.ID))
 	if mkErr := os.MkdirAll(workDir, 0o755); mkErr != nil {
-		job.Fail(queue.ErrCodeDownloadFailed, mkErr.Error(), time.Now())
+		job.Fail(outcome.ErrCodeDownloadFailed, mkErr.Error(), time.Now())
 		return mkErr
 	}
 	defer os.RemoveAll(workDir)
@@ -519,7 +508,7 @@ func (p *Processor) rangeFor(snap *queue.Job) (string, int) {
 // each post is mapped and pushed on its own, carrying its collection label and
 // order when it came from a pool.
 func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded []gdl.Downloaded, total int, gallery, submittedURL, pageURL string, dlErr error) {
-	folder := p.folder(job)
+	folder, extras := p.folder(job), p.extras(job)
 	for i := 0; i < total; i++ {
 		if ctx.Err() != nil {
 			return // the worker marks the remaining pending items canceled
@@ -529,18 +518,29 @@ func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded
 			continue
 		}
 		d := downloaded[i]
+		if d.Err != "" {
+			// A file gallery-dl wrote but the wrapper cannot use. Reported as
+			// a failure with its reason, never as an archive skip: that one
+			// reads "already in your library" and carries no error at all.
+			failItem(job, i, outcome.ErrCodeMappingFailed, d.Err)
+			continue
+		}
 		if !gdl.Ingestable(d.Path) {
 			skipUnsupported(job, i)
 			continue
 		}
 		pf := p.mapper.Map(d.Meta)
-		// A directlink sent with its page names the site by the page's host,
-		// not the cdn the file happened to live on.
-		if pageURL != "" && kwdict.String(d.Meta, "category") == mapping.CategoryDirectlink {
+		labelFrom := kwdict.String(d.Meta, "category")
+		if labelFrom == mapping.CategoryDirectlink {
+			labelFrom = kwdict.String(d.Meta, "domain")
+			// A directlink sent with its page names the site by the page's host,
+			// not the cdn the file happened to live on.
 			if h := pageHost(pageURL); h != "" {
+				labelFrom = h
 				pf.Source = p.mapper.SourceLabel(h)
 			}
 		}
+		pf = p.withExtras(pf, extras, labelFrom)
 		// A pool with no num orders by source position.
 		order := pf.CollectionOrder
 		if pf.Collection != "" && order == 0 {
@@ -558,19 +558,30 @@ func (p *Processor) processItems(ctx context.Context, job *queue.Job, downloaded
 // added here reaches a fresh push and an in-place replace by construction.
 func pushMetaFrom(pf mapping.PushFields, path, url, postID string) monbooru.PushMeta {
 	return monbooru.PushMeta{
+		PostFields: postFieldsFrom(pf, url, postID),
 		Filename:   filepath.Base(path),
-		Tags:       pf.Tags,
-		Source:     pf.Source,
-		PostID:     postID,
-		URL:        url,
-		Commentary: pf.Commentary,
-		Original:   pf.Original,
-		ParentURL:  pf.ParentURL,
-		Notes:      toNoteBoxes(pf.Notes),
-		PostWidth:  pf.PostWidth,
-		PostHeight: pf.PostHeight,
-		PostSize:   pf.PostSize,
-		PostExt:    pf.PostExt,
+	}
+}
+
+// postFieldsFrom is the mapped post as both the push and the enrich send it,
+// so a field added to the mapper reaches both by construction.
+func postFieldsFrom(pf mapping.PushFields, url, postID string) monbooru.PostFields {
+	return monbooru.PostFields{
+		Tags:                      pf.Tags,
+		Source:                    pf.Source,
+		PostID:                    postID,
+		URL:                       url,
+		Commentary:                pf.Commentary,
+		CommentaryTranslated:      pf.CommentaryTranslated,
+		CommentaryDText:           pf.CommentaryDText,
+		CommentaryTranslatedDText: pf.CommentaryTranslatedDText,
+		Original:                  pf.Original,
+		ParentURL:                 pf.ParentURL,
+		Notes:                     toNoteBoxes(pf.Notes),
+		PostWidth:                 pf.PostWidth,
+		PostHeight:                pf.PostHeight,
+		PostSize:                  pf.PostSize,
+		PostExt:                   pf.PostExt,
 	}
 }
 
@@ -714,18 +725,18 @@ func (p *Processor) processCBZ(ctx context.Context, job *queue.Job, itemIdx int,
 		return
 	}
 	if len(pages) < total {
-		failItem(job, itemIdx, queue.ErrCodeDownloadFailed, fmt.Sprintf("bundled %d of %d pages", len(pages), total))
+		failItem(job, itemIdx, outcome.ErrCodeDownloadFailed, fmt.Sprintf("bundled %d of %d pages", len(pages), total))
 		return
 	}
 
 	dest := filepath.Join(workDir, "bundle.cbz")
 	if err := buildCBZFile(pages, dest); err != nil {
-		failItem(job, itemIdx, queue.ErrCodeMappingFailed, err.Error())
+		failItem(job, itemIdx, outcome.ErrCodeMappingFailed, err.Error())
 		return
 	}
 	job.UpdateItem(itemIdx, func(it *queue.Item) { it.Status = queue.ItemDownloaded })
 
-	meta := p.aggregatePool(downloaded, sourceURL, bundleName, p.folder(job))
+	meta := p.aggregatePool(downloaded, sourceURL, bundleName, p.folder(job), p.extras(job))
 	job.UpdateItem(itemIdx, func(it *queue.Item) { it.Status = queue.ItemUploaded })
 	res, err := p.client.PushImageFile(ctx, dest, meta, gallery)
 	if err != nil {
@@ -736,14 +747,16 @@ func (p *Processor) processCBZ(ctx context.Context, job *queue.Job, itemIdx int,
 }
 
 // aggregatePool merges the bundle's pages into one push: union of non-rating
-// tags, strictest rating, the bundle name as collection, and the submitted URL.
-func (p *Processor) aggregatePool(downloaded []gdl.Downloaded, poolURL, poolName, folder string) monbooru.PushMeta {
+// tags, strictest rating, the bundle name as the .cbz filename, and the
+// submitted URL.
+func (p *Processor) aggregatePool(downloaded []gdl.Downloaded, poolURL, poolName, folder string, extras mapping.Extras) monbooru.PushMeta {
 	tagSet := map[string]bool{}
 	strictest := ""
-	site := ""
+	site, category := "", ""
 	for _, d := range downloaded {
 		pf := p.mapper.Map(d.Meta)
 		site = pf.Source
+		category = kwdict.String(d.Meta, "category")
 		strictest = mapping.Stricter(strictest, pf.Rating)
 		for _, tag := range pf.Tags {
 			if strings.HasPrefix(tag, "rating:") {
@@ -757,6 +770,7 @@ func (p *Processor) aggregatePool(downloaded []gdl.Downloaded, poolURL, poolName
 		tags = append(tags, "rating:"+strictest)
 	}
 	slices.Sort(tags)
+	bundle := p.withExtras(mapping.PushFields{Tags: tags, Source: site, Via: mapping.Via}, extras, category)
 
 	name := poolName
 	if name == "" {
@@ -766,11 +780,14 @@ func (p *Processor) aggregatePool(downloaded []gdl.Downloaded, poolURL, poolName
 	// so it must not be grouped into a collection (that is the collection
 	// pool-mode's job, where each page is pushed separately).
 	return monbooru.PushMeta{
+		PostFields: monbooru.PostFields{
+			Tags:       bundle.Tags,
+			Source:     bundle.Source,
+			URL:        poolURL,
+			Commentary: bundle.Commentary,
+		},
 		Filename: filepath.Base(name) + ".cbz",
-		Tags:     tags,
-		Source:   site,
-		URL:      poolURL,
-		Via:      mapping.Via,
+		Via:      bundle.Via,
 		Folder:   folder,
 	}
 }
@@ -785,7 +802,7 @@ func (p *Processor) markUndownloaded(job *queue.Job, i int, dlErr error) {
 	}
 	job.UpdateItem(i, func(it *queue.Item) {
 		it.Status = queue.ItemSkipped
-		it.Outcome = queue.OutcomeSkippedArchive
+		it.Outcome = outcome.SkippedArchive
 	})
 }
 
@@ -794,7 +811,7 @@ func (p *Processor) markUndownloaded(job *queue.Job, i int, dlErr error) {
 func skipUnsupported(job *queue.Job, i int) {
 	job.UpdateItem(i, func(it *queue.Item) {
 		it.Status = queue.ItemSkipped
-		it.Outcome = queue.OutcomeSkippedUnsupported
+		it.Outcome = outcome.SkippedUnsupported
 	})
 }
 
@@ -803,6 +820,27 @@ func (p *Processor) folder(job *queue.Job) string {
 		return f
 	}
 	return p.cfg.Current().Downloader.DefaultFolder
+}
+
+// extras is the metadata the submitting client attached to the job.
+func (p *Processor) extras(job *queue.Job) mapping.Extras {
+	snap := job.Snapshot()
+	return mapping.Extras{
+		Tags:       snap.Tags,
+		Commentary: snap.Commentary,
+		Source:     snap.Source,
+		Via:        snap.Via,
+	}
+}
+
+// withExtras folds the client's metadata into a mapped post. The source
+// override applies only where nothing claimed the name the label came from,
+// which is the bare host of a direct link.
+func (p *Processor) withExtras(pf mapping.PushFields, e mapping.Extras, labelFrom string) mapping.PushFields {
+	if e.Empty() {
+		return pf
+	}
+	return mapping.MergeExtras(pf, e, p.mapper.SourceClaimed(labelFrom))
 }
 
 // recordSuccess walks an item to its terminal state from the push result:
@@ -816,7 +854,7 @@ func recordSuccess(job *queue.Job, i int, res *monbooru.Result) {
 		if res.SHA256 != "" {
 			it.SHA256 = res.SHA256
 		}
-		if res.Outcome == queue.OutcomeCreated {
+		if res.Outcome == outcome.Created {
 			it.Status = queue.ItemDone
 		} else {
 			it.Status = queue.ItemSkipped
@@ -839,7 +877,7 @@ func failItem(job *queue.Job, i int, code, msg string) {
 	post := strconv.Itoa(i)
 	job.UpdateItem(i, func(it *queue.Item) {
 		it.Status = queue.ItemFailed
-		it.Outcome = queue.OutcomeFailed
+		it.Outcome = outcome.Failed
 		it.ErrorCode = code
 		it.Error = msg
 		if it.PostID != "" {
@@ -934,9 +972,9 @@ func orderedPages(downloaded []gdl.Downloaded) []string {
 // errorCode pulls the stable error code out of a coded gdl/monbooru error,
 // defaulting to download_failed.
 func errorCode(err error) string {
-	var ce *queue.CodedError
+	var ce *outcome.CodedError
 	if errors.As(err, &ce) {
 		return ce.Code
 	}
-	return queue.ErrCodeDownloadFailed
+	return outcome.ErrCodeDownloadFailed
 }

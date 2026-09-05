@@ -125,10 +125,10 @@ func OpenContribStore(dataPath string) (*ContribStore, error) {
 // Close releases the store handle.
 func (s *ContribStore) Close() error { return s.db.Close() }
 
-// RemoveContribStore deletes the store file, for the confirmed
+// removeContribStore deletes the store file, for the confirmed
 // delete-ptr-data action; pending and historical contributions go with
 // it.
-func RemoveContribStore(dataPath string) error {
+func removeContribStore(dataPath string) error {
 	base := filepath.Join(dataPath, contribFile)
 	for _, p := range []string{base, base + "-wal", base + "-shm"} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {

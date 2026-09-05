@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/queue"
 )
@@ -51,7 +52,7 @@ type contribChunk struct {
 func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) error {
 	sender, ok := p.ptr.(ContribSender)
 	if !ok || sender.Contrib() == nil {
-		job.Fail(queue.ErrCodePTRUnavailable, "the ptr backend is not available", time.Now())
+		job.Fail(outcome.ErrCodePTRUnavailable, "the ptr backend is not available", time.Now())
 		return nil
 	}
 	store := sender.Contrib()
@@ -64,7 +65,7 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 		items, err = store.ClaimIDs(snap.ContribIDs)
 	}
 	if err != nil {
-		job.Fail(queue.ErrCodePTRUnavailable, "claiming staged items: "+err.Error(), time.Now())
+		job.Fail(outcome.ErrCodePTRUnavailable, "claiming staged items: "+err.Error(), time.Now())
 		return nil
 	}
 	if len(items) == 0 {
@@ -84,11 +85,11 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 	}
 
 	if !sender.HasPersonalKey() {
-		failAll(queue.ErrCodePTRAccountRequired, "no personal account key is set")
+		failAll(outcome.ErrCodePTRAccountRequired, "no personal account key is set")
 		return nil
 	}
 	if !sender.CaughtUp() {
-		failAll(queue.ErrCodePTRSyncing, "the ptr index is not fully synced yet")
+		failAll(outcome.ErrCodePTRSyncing, "the ptr index is not fully synced yet")
 		return nil
 	}
 	acc, err := sender.RefreshAccount(ctx)
@@ -99,15 +100,15 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 			failStore("job canceled")
 			return ctx.Err()
 		}
-		failAll(queue.ErrCodePTRAccountRequired, "reading the account: "+err.Error())
+		failAll(outcome.ErrCodePTRAccountRequired, "reading the account: "+err.Error())
 		return nil
 	}
 	if acc.Banned {
-		failAll(queue.ErrCodePTRBanned, "the account is banned: "+acc.BanReason)
+		failAll(outcome.ErrCodePTRBanned, "the account is banned: "+acc.BanReason)
 		return nil
 	}
 	if !acc.Type.CanPetition() {
-		failAll(queue.ErrCodePTRAccountRequired, "the account lacks contribution permissions")
+		failAll(outcome.ErrCodePTRAccountRequired, "the account lacks contribution permissions")
 		return nil
 	}
 	filter, err := sender.RefreshTagFilter(ctx)
@@ -116,13 +117,13 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 			failStore("job canceled")
 			return ctx.Err()
 		}
-		failAll(queue.ErrCodePTRUnavailable, "fetching the tag filter: "+err.Error())
+		failAll(outcome.ErrCodePTRUnavailable, "fetching the tag filter: "+err.Error())
 		return nil
 	}
 
 	survivors, droppedKnown, droppedFiltered, derr := p.reDiffContrib(sender, store, items, filter)
 	if derr != nil {
-		failAll(queue.ErrCodePTRUnavailable, "re-checking against the index: "+derr.Error())
+		failAll(outcome.ErrCodePTRUnavailable, "re-checking against the index: "+derr.Error())
 		return nil
 	}
 
@@ -209,16 +210,16 @@ func (up *contribUpload) run(ctx context.Context) (sent map[string]int, failed i
 			select {
 			case <-time.After(sleep):
 			case <-ctx.Done():
-				failed += up.failRemainder(i, queue.ErrCodeCanceled, "job canceled before sending")
+				failed += up.failRemainder(i, outcome.ErrCodeCanceled, "job canceled before sending")
 				return sent, failed, ctx.Err()
 			}
 		}
 		if perr := up.p.postContribChunk(ctx, up.sender, chunk); perr != nil {
 			if ctx.Err() != nil {
-				failed += up.failRemainder(i, queue.ErrCodeCanceled, "job canceled before sending")
+				failed += up.failRemainder(i, outcome.ErrCodeCanceled, "job canceled before sending")
 				return sent, failed, ctx.Err()
 			}
-			failed += up.failRemainder(i, queue.ErrCodePTRUnavailable, perr.Error())
+			failed += up.failRemainder(i, outcome.ErrCodePTRUnavailable, perr.Error())
 			break
 		}
 		up.commit(i, chunk, sent)
@@ -240,7 +241,7 @@ func (up *contribUpload) commit(i int, chunk contribChunk, sent map[string]int) 
 		up.job.UpdateItem(k, func(it *queue.Item) { it.Status = queue.ItemUploaded })
 		up.job.UpdateItem(k, func(it *queue.Item) {
 			it.Status = queue.ItemDone
-			it.Outcome = queue.OutcomeCreated
+			it.Outcome = outcome.Created
 		})
 	}
 }
@@ -261,7 +262,7 @@ func (up *contribUpload) failRemainder(i int, code, reason string) int {
 	for k := up.spans[i][0]; k < up.total; k++ {
 		up.job.UpdateItem(k, func(it *queue.Item) {
 			it.Status = queue.ItemFailed
-			it.Outcome = queue.OutcomeFailed
+			it.Outcome = outcome.Failed
 			it.ErrorCode = code
 			it.Error = reason
 		})

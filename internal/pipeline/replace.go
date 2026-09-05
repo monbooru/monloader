@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/kwdict"
+	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/queue"
 )
 
@@ -32,21 +33,21 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 	}
 	switch {
 	case len(res.Items) == 0:
-		p.failEnrichFetch(ctx, job, snap, &queue.CodedError{
-			Code: queue.ErrCodeDownloadFailed, Msg: "the post resolved to no downloadable file"})
+		p.failEnrichFetch(ctx, job, snap, &outcome.CodedError{
+			Code: outcome.ErrCodeDownloadFailed, Msg: "the post resolved to no downloadable file"})
 		return nil
 	case len(res.Items) > 1:
 		// A replace targets one image, so a URL that fans out (a pool, a
 		// search) cannot mean anything safe here.
-		p.failEnrichFetch(ctx, job, snap, &queue.CodedError{
-			Code: queue.ErrCodeUnsupportedURL, Msg: "the url names more than one post"})
+		p.failEnrichFetch(ctx, job, snap, &outcome.CodedError{
+			Code: outcome.ErrCodeUnsupportedURL, Msg: "the url names more than one post"})
 		return nil
 	}
 	job.SetSite(res.Items[0].Category)
 
 	workDir := filepath.Join(p.workRoot, fmt.Sprintf("job-%d", snap.ID))
 	if mkErr := os.MkdirAll(workDir, 0o755); mkErr != nil {
-		job.Fail(queue.ErrCodeDownloadFailed, mkErr.Error(), time.Now())
+		job.Fail(outcome.ErrCodeDownloadFailed, mkErr.Error(), time.Now())
 		return mkErr
 	}
 	defer os.RemoveAll(workDir)
@@ -58,7 +59,7 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 	w := firstWritten(downloaded)
 	if w == nil {
 		if dlErr == nil {
-			dlErr = &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: "the post's file did not download"}
+			dlErr = &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: "the post's file did not download"}
 		}
 		p.failEnrichFetch(ctx, job, snap, dlErr)
 		return nil
@@ -70,12 +71,12 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 	if claim := kwdict.String(w.Meta, "md5"); claim != "" {
 		got, hashErr := md5OfFile(w.Path)
 		if hashErr != nil {
-			p.failEnrichFetch(ctx, job, snap, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: hashErr.Error()})
+			p.failEnrichFetch(ctx, job, snap, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: hashErr.Error()})
 			return nil
 		}
 		if !strings.EqualFold(got, claim) {
-			p.failEnrichFetch(ctx, job, snap, &queue.CodedError{
-				Code: queue.ErrCodeHashMismatch,
+			p.failEnrichFetch(ctx, job, snap, &outcome.CodedError{
+				Code: outcome.ErrCodeHashMismatch,
 				Msg:  "the downloaded file does not match the md5 the source claims; nothing was pushed"})
 			return nil
 		}
@@ -89,7 +90,7 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 		// push) already landed on its fetch status with a richer message
 		// than the code; re-reporting would overwrite it.
 		switch errorCode(err) {
-		case queue.ErrCodeAlreadyExists, queue.ErrCodeWrongType, queue.ErrCodeMonbooruRejected:
+		case outcome.ErrCodeAlreadyExists, outcome.ErrCodeWrongType, outcome.ErrCodeMonbooruRejected:
 			failItem(job, 0, errorCode(err), err.Error())
 		default:
 			p.failEnrichFetch(ctx, job, snap, err)
@@ -99,7 +100,7 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemUploaded })
 	job.UpdateItem(0, func(it *queue.Item) {
 		it.Status = queue.ItemDone
-		it.Outcome = queue.OutcomeReplaced
+		it.Outcome = outcome.Replaced
 		it.MonbooruID = snap.ImageID
 		// monbooru re-keys the row to the pushed file, so the digest makes the
 		// item's link a /i/<sha256> permalink; a bare /images/<id> would open

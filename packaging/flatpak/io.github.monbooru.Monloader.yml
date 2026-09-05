@@ -53,10 +53,10 @@ modules:
           exit 1
         }
         RELEASE="<release version=\"${VERSION#v}\" date=\"$RELDATE\"/>"
-        sed -E "s|<release version=\"[^\"]*\" date=\"[^\"]*\"/>|$RELEASE|" \
+        sed "s|<!--RELEASE-->|$RELEASE|" \
           packaging/flatpak/io.github.monbooru.Monloader.metainfo.xml > metainfo.xml
         grep -qF "$RELEASE" metainfo.xml || {
-          echo "no release entry in the metainfo to rewrite" >&2
+          echo "the metainfo has no <!--RELEASE--> marker to fill" >&2
           exit 1
         }
       - install -Dm755 monloader /app/bin/monloader

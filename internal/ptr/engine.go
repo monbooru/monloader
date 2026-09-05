@@ -79,7 +79,7 @@ type Status struct {
 // against it. It is created for every run but does nothing until enabled.
 type Engine struct {
 	cfg    config.PTRConfig
-	client *Client
+	client *client
 
 	// retryBackoff and readyPoll are the wait after a failed pass and the
 	// fallback poll when caught up, entryBytes the budget one manifest entry
@@ -139,7 +139,7 @@ type Engine struct {
 func NewEngine(cfg config.PTRConfig) *Engine {
 	return &Engine{
 		cfg:          cfg,
-		client:       NewClient(cfg),
+		client:       newClient(cfg),
 		retryBackoff: 30 * time.Second,
 		readyPoll:    10 * time.Minute,
 		entryBytes:   maxEntryBytes,
@@ -177,14 +177,8 @@ func (e *Engine) Enable() error {
 	}
 	e.mu.Unlock()
 
-	// The volume is the operator's, not ours to conjure: a missing path is a
-	// container with nothing mounted there, where the index would go with the
-	// container the first time it is recreated.
-	if e.cfg.DataPath == "" {
-		return errors.New("no ptr data path is set")
-	}
-	if fi, err := os.Stat(e.cfg.DataPath); err != nil || !fi.IsDir() {
-		return fmt.Errorf("the ptr data path %s does not exist", e.cfg.DataPath)
+	if err := CheckDataPath(e.cfg.DataPath); err != nil {
+		return err
 	}
 	// The floor only guards the initial build; an existing index (a resume) is
 	// past the big download and may legitimately sit on a fuller disk.
@@ -309,7 +303,7 @@ func (e *Engine) Delete() error {
 			return err
 		}
 	}
-	return RemoveContribStore(e.cfg.DataPath)
+	return removeContribStore(e.cfg.DataPath)
 }
 
 // Pause holds the sync after the slice in flight; Resume lifts it. The nudge
@@ -686,7 +680,7 @@ const (
 // applyEntry fetches one update index's blobs and replays them as one
 // transaction, then advances the progress, the census, and the rate window
 // with what Replay returned.
-func (e *Engine) applyEntry(ctx context.Context, store *Store, entry UpdateEntry) error {
+func (e *Engine) applyEntry(ctx context.Context, store *Store, entry updateEntry) error {
 	if len(entry.Hashes) > maxEntryBlobs {
 		return fmt.Errorf("update %d lists %d blobs, over the %d cap", entry.Index, len(entry.Hashes), maxEntryBlobs)
 	}
@@ -875,6 +869,21 @@ func indexPath(dataPath string) string { return dataPath + "/" + dbFile }
 // IndexExists reports whether an index file is already present, so a caller can
 // tell a resume from a first sync: the ptr page words its disabled state on it,
 // and Enable applies the free-space floor only to a first sync.
+// CheckDataPath reports whether a folder can hold the index. The volume is
+// the operator's, not ours to conjure: a missing path is a container with
+// nothing mounted there, where the index would go with the container the
+// first time it is recreated. Enable refuses on it, and so does a settings
+// save, which the engine cannot answer for once the sync is already up.
+func CheckDataPath(path string) error {
+	if path == "" {
+		return errors.New("no ptr data path is set")
+	}
+	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+		return fmt.Errorf("the ptr data path %s does not exist", path)
+	}
+	return nil
+}
+
 func IndexExists(dataPath string) bool {
 	_, err := os.Stat(indexPath(dataPath))
 	return err == nil

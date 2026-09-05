@@ -39,6 +39,12 @@ type Options struct {
 	// PageURL is the page a direct-file send came from; a directlink item
 	// records it as its source link instead of the bare file URL.
 	PageURL string
+	// Tags, Commentary, Source, and Via are the metadata the submitting client
+	// attached; the mapper folds them into every item the job pushes.
+	Tags       []string
+	Commentary string
+	Source     string
+	Via        string
 	// Offset skips this many leading posts, so a continued capped search fetches
 	// the next window rather than re-resolving from the start.
 	Offset int
@@ -605,10 +611,18 @@ func (q *Queue) continueFrom(id int64, auto bool) (int64, error) {
 		Gallery:  src.Gallery,
 		Folder:   src.Folder,
 		MaxItems: src.Cap,
-		Offset:   q.seriesHighWaterLocked(src.seriesKey()),
-		Root:     src.seriesKey(),
-		Site:     src.Site,
-		Auto:     auto,
+		// What the submission carried belongs to the search, not to one window:
+		// a continuation that dropped it would import the rest untagged and
+		// linked to the bare file rather than the page it was sent from.
+		PageURL:    src.PageURL,
+		Tags:       src.Tags,
+		Commentary: src.Commentary,
+		Source:     src.Source,
+		Via:        src.Via,
+		Offset:     q.seriesHighWaterLocked(src.seriesKey()),
+		Root:       src.seriesKey(),
+		Site:       src.Site,
+		Auto:       auto,
 	})
 	q.mu.Unlock()
 	q.persist(next)

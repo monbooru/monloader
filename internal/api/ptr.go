@@ -11,6 +11,7 @@ import (
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/queue"
 )
@@ -71,11 +72,11 @@ type ptrTagInfo struct {
 // caught-up requirement.
 func (h *Handler) ptrReady(w http.ResponseWriter) bool {
 	if h.ptr == nil || !h.ptr.Enabled() {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr index is not available")
+		apiError(w, http.StatusConflict, errPTRUnavailable, "the ptr index is not available")
 		return false
 	}
 	if !h.ptr.CaughtUp() {
-		apiError(w, http.StatusConflict, "ptr_syncing", "the ptr index is not fully synced yet")
+		apiError(w, http.StatusConflict, errPTRSyncing, "the ptr index is not fully synced yet")
 		return false
 	}
 	return true
@@ -91,15 +92,15 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 	}
 	var body ptrTagsRequest
 	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
 		return
 	}
 	if len(body.Tags) == 0 {
-		apiError(w, http.StatusBadRequest, "invalid_request", "tags must not be empty")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "tags must not be empty")
 		return
 	}
 	if len(body.Tags) > maxTagGraphBatch {
-		apiError(w, http.StatusBadRequest, "invalid_request", "too many tags in one request")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "too many tags in one request")
 		return
 	}
 
@@ -118,7 +119,7 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 			// The caller gave up mid-walk; there is nobody left to answer.
 			return
 		}
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 
@@ -151,26 +152,26 @@ func (h *Handler) ptrTagSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if q == "" {
-		apiError(w, http.StatusBadRequest, "invalid_request", "q must not be empty")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "q must not be empty")
 		return
 	}
 	limit := defaultTagSearchLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 || n > maxTagSearchLimit {
-			apiError(w, http.StatusBadRequest, "invalid_request", "limit must be 1.."+strconv.Itoa(maxTagSearchLimit))
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "limit must be 1.."+strconv.Itoa(maxTagSearchLimit))
 			return
 		}
 		limit = n
 	}
 	mode := r.URL.Query().Get("mode")
 	if mode != "" && mode != "prefix" && mode != "contains" {
-		apiError(w, http.StatusBadRequest, "invalid_request", "mode must be prefix or contains")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "mode must be prefix or contains")
 		return
 	}
 	ranges, ok := tagSearchRanges(q, mode == "contains")
 	if !ok {
-		apiError(w, http.StatusBadRequest, "namespace_required",
+		apiError(w, http.StatusBadRequest, errNamespaceReq,
 			"matching anywhere in the name needs a category: prefix to bound the scan")
 		return
 	}
@@ -180,7 +181,7 @@ func (h *Handler) ptrTagSearch(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 	clusters, more := renderTagClusters(q, matches, limit)
@@ -326,15 +327,15 @@ func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 	}
 	var body ptrLookupRequest
 	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
 		return
 	}
 	if len(body.Images) == 0 {
-		apiError(w, http.StatusBadRequest, "invalid_request", "images must not be empty")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "images must not be empty")
 		return
 	}
 	if len(body.Images) > maxHashLookupBatch {
-		apiError(w, http.StatusBadRequest, "invalid_request", "too many images in one request")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "too many images in one request")
 		return
 	}
 
@@ -347,16 +348,16 @@ func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if img.ImageID <= 0 {
-			apiError(w, http.StatusBadRequest, "invalid_request", "each image_id is required")
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "each image_id is required")
 			return
 		}
 		if !config.IsHexHash(img.SHA256, 64) {
-			apiError(w, http.StatusBadRequest, "invalid_request", "each sha256 must be 64 hex characters")
+			apiError(w, http.StatusBadRequest, errInvalidRequest, "each sha256 must be 64 hex characters")
 			return
 		}
 		raw, ok, err := h.ptr.TagsForHash(strings.ToLower(img.SHA256))
 		if err != nil {
-			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			apiError(w, http.StatusInternalServerError, errInternal, err.Error())
 			return
 		}
 		if !ok {
@@ -367,7 +368,7 @@ func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 		matched = append(matched, queue.Item{
 			PostID:     fmt.Sprintf("%d tag%s", len(tags), plural(len(tags))),
 			Status:     queue.ItemDone,
-			Outcome:    queue.OutcomeMatched,
+			Outcome:    outcome.Matched,
 			MonbooruID: img.ImageID,
 		})
 	}
@@ -448,11 +449,11 @@ func dropTag(tags []string, queried string) []string {
 // message so callers need not special-case a PTR status code.
 func (h *Handler) ptrAccountCreate(w http.ResponseWriter, r *http.Request) {
 	if h.ptr == nil || !h.ptr.Enabled() {
-		apiError(w, http.StatusConflict, "ptr_unavailable", "the ptr backend is not enabled")
+		apiError(w, http.StatusConflict, errPTRUnavailable, "the ptr backend is not enabled")
 		return
 	}
 	if h.ptr.HasPersonalKey() {
-		apiError(w, http.StatusConflict, "account_exists", "a personal account key is already set")
+		apiError(w, http.StatusConflict, errAccountExists, "a personal account key is already set")
 		return
 	}
 	key, err := h.ptr.CreateContribAccount(r.Context())
@@ -460,23 +461,23 @@ func (h *Handler) ptrAccountCreate(w http.ResponseWriter, r *http.Request) {
 		var serr *ptr.ServerError
 		switch {
 		case errors.As(err, &serr) && serr.Status == 400:
-			apiError(w, http.StatusServiceUnavailable, "ptr_velocity",
+			apiError(w, http.StatusServiceUnavailable, errPTRVelocity,
 				"the repository is not taking new accounts right now, try again later")
 		case errors.Is(err, ptr.ErrAccountExists):
-			apiError(w, http.StatusConflict, "account_exists", err.Error())
+			apiError(w, http.StatusConflict, errAccountExists, err.Error())
 		default:
-			apiError(w, http.StatusBadGateway, "ptr_error", err.Error())
+			apiError(w, http.StatusBadGateway, errPTRError, err.Error())
 		}
 		return
 	}
-	if h.saveConfig != nil {
-		if err := h.saveConfig(func(c *config.Config) error {
+	if h.host.SaveConfig != nil {
+		if err := h.host.SaveConfig(func(c *config.Config) error {
 			c.PTR.AccessKey = key
 			return nil
 		}); err != nil {
 			// The redemption is single-use, so the key exists only in memory
 			// now; point at the reveal control the way the web path does.
-			apiError(w, http.StatusInternalServerError, "save_failed",
+			apiError(w, http.StatusInternalServerError, errSaveFailed,
 				"account created but saving the key failed: "+err.Error()+
 					" - reveal and back it up from the ptr page before restarting")
 			return

@@ -32,26 +32,18 @@ type SiteEntry struct {
 	Auth          string   `json:"auth,omitempty"`
 }
 
-// fill completes an entry from the effective profile, the supportedsites
-// data, and the site's configured state.
+// fill completes an entry from the effective site view.
 func (h *Handler) fill(e *SiteEntry) {
-	supported := h.catalog.Supported()
-	e.Name = supported[e.Category].Name
-	if p, ok := h.mapper.Lookup(e.Category); ok {
-		e.Curated = true
-		e.Auth = p.Auth
-		e.Hosts = p.Hosts
-		e.Kind = p.Kind
-		if e.Kind == "" {
-			e.Kind = mapping.KindBooru
-		}
-	} else {
-		e.Auth = mapping.SeedAuthKind(supported[e.Category].Auth)
-		e.Kind = mapping.KindOther
-	}
-	e.CustomProfile = h.mapper.CustomProfile(e.Category)
-	site := h.cfg.Current().FindSite(e.Category)
-	e.Configured = (site != nil && site.HasUserData()) || e.CustomProfile
+	e.Name = h.catalog.Supported()[e.Category].Name
+	v := h.siteView(e.Category)
+	e.Auth, e.Hosts, e.Kind = v.Auth, v.Hosts, v.Kind
+	e.Curated, e.CustomProfile, e.Configured = v.Curated, v.CustomProfile, v.Configured
+}
+
+// siteView assembles what the app knows about a category, seeding the auth
+// kind from the supportedsites data when no profile carries one.
+func (h *Handler) siteView(category string) mapping.SiteView {
+	return h.mapper.SiteView(category, h.catalog.Supported()[category].Auth)
 }
 
 // listSites handles GET /api/v1/sites?q=. The list is the cached
@@ -115,6 +107,16 @@ func boolRank(b bool) int {
 	return 0
 }
 
+// siteProbe is a probe's answer: gallery-dl's verdict, plus the credential the
+// site needs and the config does not carry. A failure with that set is a site
+// nobody has signed in to yet, which is a different fix from one whose
+// credentials were refused - the same distinction the settings test button
+// reports as "needs cookies".
+type siteProbe struct {
+	gdl.ProbeResult
+	MissingCredential string `json:"missing_credential,omitempty"`
+}
+
 // testSite handles POST /api/v1/sites/{name}/test: run a live probe against
 // the site's example URL (or a caller-supplied url) and report ok / auth /
 // failed.
@@ -133,26 +135,29 @@ func (h *Handler) testSite(w http.ResponseWriter, r *http.Request) {
 	if probeURL != "" && !config.IsHTTPURL(probeURL) {
 		// The probe URL becomes a gallery-dl argument, where a leading dash
 		// would read as an option rather than a URL.
-		apiError(w, http.StatusBadRequest, "invalid_request", "url must be an http(s) URL")
+		apiError(w, http.StatusBadRequest, errInvalidRequest, "url must be an http(s) URL")
 		return
 	}
 	if probeURL == "" {
-		probeURL = h.mapper.ExampleURL(h.catalog.Extractors(), name)
+		probeURL = h.mapper.ExampleURL(name, h.catalog.ExampleFor(name))
 	}
 	if probeURL == "" {
-		apiError(w, http.StatusNotFound, "not_found", "no example URL for site "+name+"; supply a url")
+		apiError(w, http.StatusNotFound, errNotFound, "no example URL for site "+name+"; supply a url")
 		return
 	}
 
 	res, err := h.runner.Probe(r.Context(), probeURL)
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
-	// Record the success like the web probe does, so the settings "last ok"
-	// stays fresh whichever surface ran the test.
+	out := siteProbe{ProbeResult: res}
 	if res.Status == gdl.ProbeOK {
+		// Record the success like the web probe does, so the settings "last ok"
+		// stays fresh whichever surface ran the test.
 		h.siteState.Reached(name, time.Now())
+	} else if v := h.siteView(name); v.NeedsCredential {
+		out.MissingCredential = v.Login
 	}
-	writeJSON(w, http.StatusOK, res)
+	writeJSON(w, http.StatusOK, out)
 }

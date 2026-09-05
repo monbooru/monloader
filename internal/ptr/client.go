@@ -18,13 +18,13 @@ import (
 	"github.com/monbooru/monloader/internal/config"
 )
 
-// Client talks the Hydrus repository protocol over HTTP. It reads two content
+// client talks the Hydrus repository protocol over HTTP. It reads two content
 // endpoints - GET /metadata (the manifest) and GET /update (an update blob) -
 // authenticating with the access key header. The PTR serves a self-signed
 // certificate, so chain verification is skipped for this dedicated client; the
 // compensating control is that every update blob is verified against its own
 // sha256 from the manifest before it is parsed.
-type Client struct {
+type client struct {
 	addr string
 	// keyMu guards accessKey: the account-creation flow re-points a live
 	// client at the new personal key with no restart.
@@ -53,9 +53,9 @@ func IsRetryable(err error) bool {
 	return errors.As(err, &s) && s.Retryable()
 }
 
-// NewClient builds a repository client from the PTR config.
-func NewClient(cfg config.PTRConfig) *Client {
-	return &Client{
+// newClient builds a repository client from the PTR config.
+func newClient(cfg config.PTRConfig) *client {
+	return &client{
 		addr:      cfg.Address,
 		accessKey: cfg.EffectiveAccessKey(),
 		sleep:     time.Duration(cfg.FetchSleep * float64(time.Second)),
@@ -71,30 +71,30 @@ func NewClient(cfg config.PTRConfig) *Client {
 }
 
 // Metadata fetches the manifest of updates from index `since` onward.
-func (c *Client) Metadata(ctx context.Context, since uint64) (*MetadataSlice, error) {
+func (c *client) Metadata(ctx context.Context, since uint64) (*metadataSlice, error) {
 	q := url.Values{"since": {strconv.FormatUint(since, 10)}}
 	raw, err := c.get(ctx, "/metadata", q)
 	if err != nil {
 		return nil, err
 	}
-	return ParseMetadata(raw)
+	return parseMetadata(raw)
 }
 
 // Update fetches one update blob by its sha256 (hex), verifies the response
 // bytes hash to that value, and parses it. A mismatch is a hard error: the
 // content-addressed blob was corrupted in transit.
-func (c *Client) Update(ctx context.Context, hashHex string) (*Update, error) {
+func (c *client) Update(ctx context.Context, hashHex string) (*update, error) {
 	raw, err := c.updateRaw(ctx, hashHex)
 	if err != nil {
 		return nil, err
 	}
-	return ParseUpdate(raw)
+	return parseUpdate(raw)
 }
 
 // updateRaw is Update without the parse: the sync buffers an entry's blobs
 // compressed (the replay inflates one at a time), so a many-blob entry costs
 // megabytes, not its parsed rows.
-func (c *Client) updateRaw(ctx context.Context, hashHex string) ([]byte, error) {
+func (c *client) updateRaw(ctx context.Context, hashHex string) ([]byte, error) {
 	if c.sleep > 0 {
 		select {
 		case <-time.After(c.sleep):
@@ -116,7 +116,7 @@ func (c *Client) updateRaw(ctx context.Context, hashHex string) ([]byte, error) 
 
 // get issues one authenticated GET and returns the body, classifying a
 // transient failure as retryable.
-func (c *Client) get(ctx context.Context, path string, q url.Values) ([]byte, error) {
+func (c *client) get(ctx context.Context, path string, q url.Values) ([]byte, error) {
 	u := c.addr + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()

@@ -159,18 +159,16 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Go
-        run: |
-          curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
-          echo "${GO_SHA256_LINUX_AMD64}  /tmp/go.tgz" | sha256sum -c -
-          sudo rm -rf /usr/local/go
-          sudo tar -C /usr/local -xzf /tmp/go.tgz
-          echo /usr/local/go/bin >> "$GITHUB_PATH"
+        run: ./packaging/install-go.sh
 
       - name: Fetch the bundled gallery-dl
         run: ./packaging/fetch-tools.sh
 
       - name: Build
         run: ./packaging/build-binaries.sh
+
+      - name: Build the AppImage
+        run: ./packaging/build-appimage.sh
 
       - name: Upload
         uses: actions/upload-artifact@v7
@@ -190,11 +188,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends zip
-          curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
-          echo "${GO_SHA256_LINUX_AMD64}  /tmp/go.tgz" | sha256sum -c -
-          sudo rm -rf /usr/local/go
-          sudo tar -C /usr/local -xzf /tmp/go.tgz
-          echo /usr/local/go/bin >> "$GITHUB_PATH"
+          ./packaging/install-go.sh
 
       - name: Fetch the bundled gallery-dl
         run: ./packaging/fetch-tools.sh
@@ -229,20 +223,6 @@ jobs:
       - name: Let bwrap open a user namespace
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Check the route to flathub
-        run: |
-          probe=https://dl.flathub.org/repo/config
-          getent hosts dl.flathub.org || true
-          v4=0
-          v6=0
-          curl -4 -fsS --max-time 30 -o /dev/null \
-            -w 'ipv4: %{http_code} in %{time_total}s from %{remote_ip}\n' "$probe" && v4=1 || echo "ipv4: no answer"
-          curl -6 -fsS --max-time 30 -o /dev/null \
-            -w 'ipv6: %{http_code} in %{time_total}s from %{remote_ip}\n' "$probe" && v6=1 || echo "ipv6: no answer"
-          if [ "$v4" = 1 ] && [ "$v6" = 0 ]; then
-            echo "ipv6 is broken here; preferring ipv4"
-            echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf
-          fi
 
       - name: Build the bundle
         run: ./packaging/flatpak-bundle.sh
@@ -252,6 +232,25 @@ jobs:
         with:
           name: binaries-flatpak
           path: dist/*
+          if-no-files-found: error
+
+  aur:
+    name: AUR package files
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build the PKGBUILD and .SRCINFO
+        run: ./packaging/build-aur.sh
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: aur
+          path: dist/aur
           if-no-files-found: error
 
   attach:
@@ -266,6 +265,10 @@ jobs:
           path: dist
           pattern: binaries-*
           merge-multiple: true
+
+      - name: Checksum every artifact
+        working-directory: dist
+        run: sha256sum -- * > ../SHA256SUMS && mv ../SHA256SUMS .
 
       - name: Attach
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2

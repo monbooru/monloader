@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/kwdict"
-	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/outcome"
 )
 
 // gallery-dl's directlink extractor only matches a URL whose path ends in a
@@ -153,11 +153,11 @@ func directlinkDownload(ctx context.Context, rawURL, workDir string, onFile func
 	}
 	path := filepath.Join(workDir, name+"."+ext)
 	if err := writeFile(path, resp.Body); err != nil {
-		code := queue.ErrCodeDownloadFailed
+		code := outcome.ErrCodeDownloadFailed
 		if errors.Is(err, errDirectFetchTooLarge) {
-			code = queue.ErrCodeFileTooLarge
+			code = outcome.ErrCodeFileTooLarge
 		}
-		return nil, true, &queue.CodedError{Code: code, Msg: err.Error()}
+		return nil, true, &outcome.CodedError{Code: code, Msg: err.Error()}
 	}
 
 	d := Downloaded{Path: path, Meta: meta}

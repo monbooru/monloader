@@ -211,8 +211,11 @@ func (s *Server) queueActions() queueActionsView {
 func (s *Server) queueCounts() queueStats {
 	jobs, _ := s.queue.List(queue.ListOptions{OmitItems: true})
 	var st queueStats
-	for _, j := range jobs {
-		switch j.Status {
+	// Counted per row, the way the queue page counts: a continued search is one
+	// row there, so counting its windows here left the two screens reporting
+	// different numbers for the same history.
+	for _, g := range groupJobs(jobs) {
+		switch g.Worst.Status {
 		case queue.JobQueued:
 			st.Queued++
 		case queue.JobRunning:
@@ -249,7 +252,7 @@ func (s *Server) queueRowItems(w http.ResponseWriter, r *http.Request) {
 	for _, g := range groupJobs(jobs) {
 		if g.Root == root {
 			s.fillItems(&g)
-			s.render(w, "queue_items_capped", map[string]any{"Items": g.Items, "MonbooruURL": s.monbooruWebBase(), "Site": g.Lead.Site, "ImageID": g.Lead.ImageID, "Kind": g.Lead.Kind})
+			s.render(w, "queue_items_capped", map[string]any{"Items": g.Items, "MonbooruURL": s.monbooruWebBase(), "Site": g.Lead.Site, "ImageID": g.Lead.ImageID, "Kind": g.Lead.Kind, "JobURL": g.Lead.URL, "PageURL": g.Lead.PageURL})
 			return
 		}
 	}
@@ -641,6 +644,9 @@ func (s *Server) setMonbooruPaused(w http.ResponseWriter, paused bool) {
 }
 
 func (s *Server) renderConnLight(w http.ResponseWriter, status, version string) {
+	// The swapped-in copy carries a resolved state, so it re-arms the 15s beat
+	// alone; re-arming the load trigger too would make the light poll once a
+	// second forever, for a value the cache cannot refresh that often anyway.
 	s.render(w, "conn_light", map[string]any{
 		"Conn":            status,
 		"MonbooruWebURL":  s.monbooruWebLink(),
@@ -675,14 +681,11 @@ type siteRow struct {
 func (s *Server) siteRows(cats []string, csrf string) []siteRow {
 	rows := make([]siteRow, 0, len(cats))
 	for _, cat := range cats {
-		// The effective auth kind: the profile's, or for a profile-less site
-		// the supportedsites seed, so the row and dialog know what it needs.
-		auth := s.effectiveAuth(cat)
+		v := s.siteView(cat)
 		site := s.cfg.Current().FindSite(cat)
-		label, needs := loginInfo(auth, site)
 		row := siteRow{
-			Category: cat, Login: label, Auth: auth, NeedsCred: needs,
-			CustomProfile: s.mapper.CustomProfile(cat), AuthSet: authSet(site),
+			Category: cat, Login: v.Login, Auth: v.Auth, NeedsCred: v.NeedsCredential,
+			CustomProfile: v.CustomProfile, AuthSet: authSet(site),
 			Site: site, CSRFToken: csrf,
 			LastReached: s.siteState.LastReached(cat),
 		}
@@ -732,11 +735,10 @@ func (s *Server) visibleSites() (boorus, manga, other []string) {
 	}
 	cats := slices.Sorted(maps.Keys(names))
 	for _, cat := range cats {
-		p, ok := s.mapper.Lookup(cat)
-		switch {
-		case ok && p.Kind == mapping.KindManga:
+		switch s.siteView(cat).Kind {
+		case mapping.KindManga:
 			manga = append(manga, cat)
-		case !ok || p.Kind == mapping.KindOther:
+		case mapping.KindOther:
 			other = append(other, cat)
 		default:
 			boorus = append(boorus, cat)
@@ -801,6 +803,9 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 	data["MonbooruPairWaiting"] = s.getPairAttempt() != nil
 	data["MonsenderPending"] = s.pairs.listPending()
 	data["MonsenderPaired"] = s.hasPairedToken("monsender")
+	// Empty on every render but a refused save, where the fields read their
+	// value from here first so the operator gets their own text back.
+	data["Draft"] = map[string]string{}
 	return data
 }
 
@@ -930,24 +935,6 @@ func (s *Server) gatherStats() statsData {
 	return st
 }
 
-// loginInfo maps a profile auth kind to a settings label and whether a
-// required credential is missing (per the shared rule the lookup walk also
-// gates on).
-func loginInfo(auth string, site *config.Site) (string, bool) {
-	switch auth {
-	case mapping.AuthAPIOptional:
-		return "api (opt)", false
-	case mapping.AuthAPIRequired, mapping.AuthCookies:
-		return mapping.RequiredCredential(auth, site)
-	case mapping.AuthUsernamePassword:
-		return "user/pass", false
-	case mapping.AuthOAuth:
-		return "oauth", false
-	default:
-		return "none", false
-	}
-}
-
 // redirectFlash sends the operator back to settings with a flash. The section
 // is derived from the form's path so the message renders at the top of that
 // section's box (and the #anchor scrolls to it), not at the top of the page.
@@ -958,6 +945,30 @@ func (s *Server) redirectFlash(w http.ResponseWriter, r *http.Request, kind, msg
 		loc += "#" + section
 	}
 	http.Redirect(w, r, loc, http.StatusSeeOther)
+}
+
+// refuseSave answers a rejected settings form by re-rendering the page with
+// what was typed, rather than redirecting to a fresh copy of the stored
+// values. The refusal names one field; losing the rest of the section to it
+// costs the operator work they got right, and on the site dialog it costs a
+// pasted credential export.
+func (s *Server) refuseSave(w http.ResponseWriter, r *http.Request, msg string) {
+	data := s.settingsData(r)
+	data["Draft"] = draftForm(r)
+	setFlash(data, "err", sectionForPath(r.URL.Path), msg)
+	s.render(w, "settings", data)
+}
+
+// draftForm is the submitted form as the templates read it back, one value
+// per field. The token is dropped so a re-render cannot pin a stale one.
+func draftForm(r *http.Request) map[string]string {
+	draft := map[string]string{}
+	for name, values := range r.Form {
+		if name != "_csrf" && len(values) > 0 {
+			draft[name] = values[0]
+		}
+	}
+	return draft
 }
 
 // sectionForPath maps a settings form's path to its section id.
@@ -999,7 +1010,7 @@ func (s *Server) saveMonbooru(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(bad) > 0 {
-		s.redirectFlash(w, r, "err", strings.Join(bad, "; ")+" - nothing was saved")
+		s.refuseSave(w, r, strings.Join(bad, "; ")+" - nothing was saved")
 		return
 	}
 	err := s.updateConfig(func(c *config.Config) error {
@@ -1009,7 +1020,7 @@ func (s *Server) saveMonbooru(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		s.redirectFlash(w, r, "err", "save failed: "+err.Error())
+		s.refuseSave(w, r, "save failed: "+err.Error())
 		return
 	}
 	s.redirectFlash(w, r, "ok", "monbooru settings saved")
@@ -1094,7 +1105,7 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 		bad = append(bad, "clear succeeded after must not be longer than clear all history after")
 	}
 	if len(bad) > 0 {
-		s.redirectFlash(w, r, "err", strings.Join(bad, "; ")+" - nothing was saved")
+		s.refuseSave(w, r, strings.Join(bad, "; ")+" - nothing was saved")
 		return
 	}
 	err := s.updateConfig(func(c *config.Config) error {
@@ -1119,7 +1130,7 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		s.redirectFlash(w, r, "err", "save failed: "+err.Error())
+		s.refuseSave(w, r, "save failed: "+err.Error())
 		return
 	}
 	s.rewriteGDLConfig()
@@ -1184,7 +1195,7 @@ func (s *Server) resetSite(w http.ResponseWriter, r *http.Request) {
 // state cell.
 func (s *Server) testSite(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	probeURL := s.mapper.ExampleURL(s.catalog.Extractors(), name)
+	probeURL := s.mapper.ExampleURL(name, s.catalog.ExampleFor(name))
 	if probeURL == "" {
 		siteState(w, "err", "no example URL", "", time.Time{})
 		return
@@ -1205,9 +1216,8 @@ func (s *Server) testSite(w http.ResponseWriter, r *http.Request) {
 	// diagnosis: report "needs cookies"/"needs api key" even when a cookies
 	// site's gallery-dl error (a generic "not found") cannot be classified as
 	// auth. Otherwise distinguish a bot-protection wall from a plain failure.
-	p, _ := s.mapper.Lookup(name)
-	if label, needs := loginInfo(p.Auth, s.cfg.Current().FindSite(name)); needs {
-		siteState(w, "warn", "needs "+label, res.Detail, time.Time{})
+	if v := s.siteView(name); v.NeedsCredential {
+		siteState(w, "warn", "needs "+v.Login, res.Detail, time.Time{})
 		return
 	}
 	switch res.Status {
@@ -1247,14 +1257,7 @@ func (s *Server) saveRaw(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := r.FormValue("raw_config")
 	if err := config.ValidateRawConfig(raw); err != nil {
-		// The textarea is the only copy of a hand-written block, so the refusal
-		// re-renders it as typed instead of redirecting to the stored config.
-		data := s.settingsData(r)
-		draft := *s.cfg.Current()
-		draft.GalleryDL.RawConfig = raw
-		data["Cfg"] = &draft
-		setFlash(data, "err", "advanced", err.Error())
-		s.render(w, "settings", data)
+		s.refuseSave(w, r, err.Error())
 		return
 	}
 	if err := s.updateConfig(func(c *config.Config) error { c.GalleryDL.RawConfig = raw; return nil }); err != nil {

@@ -18,29 +18,46 @@ import (
 	"unicode/utf8"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/outcome"
 )
 
-// PushMeta is the mapped metadata sent alongside a file.
+// PostFields is what a mapped post says about itself, which a push and an
+// enrich send alike. Declared once so a field added to the mapper reaches both
+// by construction; the JSON tags are the enrich payload's wire names, and the
+// multipart writer spells the same names for a push.
+type PostFields struct {
+	Tags       []string `json:"tags"`
+	Source     string   `json:"source"`
+	PostID     string   `json:"post_id,omitempty"`
+	URL        string   `json:"url"`
+	Commentary string   `json:"commentary,omitempty"`
+	// CommentaryTranslated is the translation the source published beside
+	// Commentary; empty unless the post carries both bodies.
+	CommentaryTranslated string `json:"commentary_translated,omitempty"`
+	// The same two bodies in the markup their source published them in.
+	// monbooru converts them and prefers them over the plain fields, the way
+	// it already does for a note's BodyHTML.
+	CommentaryDText           string    `json:"commentary_dtext,omitempty"`
+	CommentaryTranslatedDText string    `json:"commentary_translated_dtext,omitempty"`
+	Original                  string    `json:"original,omitempty"`
+	ParentURL                 string    `json:"parent_url,omitempty"`
+	Notes                     []NoteBox `json:"notes,omitempty"`
+	// What the post says about the file it serves; monbooru records it on
+	// the origin row and compares it against the local file.
+	PostWidth  int    `json:"post_width,omitempty"`
+	PostHeight int    `json:"post_height,omitempty"`
+	PostSize   int64  `json:"post_size,omitempty"`
+	PostExt    string `json:"post_ext,omitempty"`
+}
+
+// PushMeta is PostFields plus what only a file upload carries.
 type PushMeta struct {
+	PostFields
 	Filename        string
-	Tags            []string
-	Source          string
-	PostID          string
-	URL             string
 	Collection      string
 	CollectionOrder int
 	Via             string
 	Folder          string
-	Commentary      string
-	Original        string
-	ParentURL       string
-	Notes           []NoteBox
-	// What the post says about the file it serves; monbooru records it on
-	// the origin row and compares it against the local file.
-	PostWidth, PostHeight int
-	PostSize              int64
-	PostExt               string
 }
 
 // NoteBox is one positional note pushed alongside a file; the field names match
@@ -58,7 +75,7 @@ type NoteBox struct {
 
 // Result is a successful push outcome.
 type Result struct {
-	Outcome     queue.Outcome
+	Outcome     outcome.Outcome
 	MonbooruID  int64
 	SHA256      string
 	TagWarnings []string
@@ -156,11 +173,11 @@ func readCappedBody(r io.Reader) ([]byte, error) {
 // in-flight call, which must not read to the future extension like a real
 // connectivity failure; anything else got no HTTP response (connection
 // refused, DNS failure, timeout) and is unreachable.
-func transportError(ctx context.Context, err error) *queue.CodedError {
+func transportError(ctx context.Context, err error) *outcome.CodedError {
 	if ctx.Err() != nil {
-		return &queue.CodedError{Code: queue.ErrCodeCanceled, Msg: ctx.Err().Error()}
+		return &outcome.CodedError{Code: outcome.ErrCodeCanceled, Msg: ctx.Err().Error()}
 	}
-	return &queue.CodedError{Code: queue.ErrCodeMonbooruUnreachable, Msg: err.Error()}
+	return &outcome.CodedError{Code: outcome.ErrCodeMonbooruUnreachable, Msg: err.Error()}
 }
 
 // postMultipart sends a prepared multipart body and returns the response with
@@ -172,7 +189,7 @@ func transportError(ctx context.Context, err error) *queue.CodedError {
 func (c *Client) postMultipart(ctx context.Context, endpoint, contentType string, body io.Reader) (*http.Response, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body)
 	if err != nil {
-		return nil, nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: err.Error()}
+		return nil, nil, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: err.Error()}
 	}
 	req.Header.Set("Content-Type", contentType)
 	c.authHeader(req)
@@ -184,7 +201,7 @@ func (c *Client) postMultipart(ctx context.Context, endpoint, contentType string
 	defer resp.Body.Close()
 	respBody, err := readCappedBody(resp.Body)
 	if err != nil {
-		return nil, nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: err.Error()}
+		return nil, nil, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: err.Error()}
 	}
 	return resp, respBody, nil
 }
@@ -222,7 +239,7 @@ func (c *Client) streamUpload(ctx context.Context, path, endpoint string, meta P
 	// reach the transport as a request error and be coded as a monbooru outage.
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeDownloadFailed, Msg: err.Error()}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	pr, pw := io.Pipe()
 	w := multipart.NewWriter(pw)
@@ -257,17 +274,17 @@ func (c *Client) sendReplace(ctx context.Context, endpoint, contentType string, 
 	switch resp.StatusCode {
 	case http.StatusOK:
 		_, warnings := enrichResult(respBody)
-		return &Result{Outcome: queue.OutcomeReplaced, MonbooruID: imageID, MergeNote: replaceNote(respBody), TagWarnings: warnings}, nil
+		return &Result{Outcome: outcome.Replaced, MonbooruID: imageID, MergeNote: replaceNote(respBody), TagWarnings: warnings}, nil
 	case http.StatusConflict:
 		msg, code := apiErr(respBody, resp.Status)
-		if code != queue.ErrCodeAlreadyExists && code != queue.ErrCodeWrongType {
-			code = queue.ErrCodeMonbooruRejected
+		if code != outcome.ErrCodeAlreadyExists && code != outcome.ErrCodeWrongType {
+			code = outcome.ErrCodeMonbooruRejected
 		}
-		return nil, &queue.CodedError{Code: code, Msg: msg}
+		return nil, &outcome.CodedError{Code: code, Msg: msg}
 	case http.StatusRequestEntityTooLarge:
-		return nil, &queue.CodedError{Code: queue.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}
 	default:
-		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: apiErrMessage(respBody, resp.Status)}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(respBody, resp.Status)}
 	}
 }
 
@@ -298,21 +315,11 @@ func replaceNote(data []byte) string {
 // push with no file, used to fold a refetched source's tags, commentary, and
 // notes into an image monbooru already holds.
 type EnrichPayload struct {
-	Tags       []string  `json:"tags"`
-	Source     string    `json:"source"`
-	PostID     string    `json:"post_id,omitempty"`
-	URL        string    `json:"url"`
-	SourceMD5  string    `json:"source_md5,omitempty"`
-	Verify     bool      `json:"verify"`
-	Similarity float64   `json:"similarity,omitempty"`
-	Commentary string    `json:"commentary,omitempty"`
-	Original   string    `json:"original,omitempty"`
-	ParentURL  string    `json:"parent_url,omitempty"`
-	Notes      []NoteBox `json:"notes,omitempty"`
-	PostWidth  int       `json:"post_width,omitempty"`
-	PostHeight int       `json:"post_height,omitempty"`
-	PostSize   int64     `json:"post_size,omitempty"`
-	PostExt    string    `json:"post_ext,omitempty"`
+	// Embedded, so encoding/json flattens it into the same wire shape.
+	PostFields
+	SourceMD5  string  `json:"source_md5,omitempty"`
+	Verify     bool    `json:"verify"`
+	Similarity float64 `json:"similarity,omitempty"`
 }
 
 // EnrichImage applies fetched metadata to an existing monbooru image via
@@ -324,11 +331,14 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 	payload.PostID = trimToLen(payload.PostID, maxPostIDLen)
 	payload.URL = trimToLen(payload.URL, maxURLLen)
 	payload.Commentary = trimToLen(payload.Commentary, maxCommentaryLen)
+	payload.CommentaryTranslated = trimToLen(payload.CommentaryTranslated, maxCommentaryLen)
+	payload.CommentaryDText = trimToLen(payload.CommentaryDText, maxCommentaryLen)
+	payload.CommentaryTranslatedDText = trimToLen(payload.CommentaryTranslatedDText, maxCommentaryLen)
 	payload.Original = trimToLen(payload.Original, maxOriginalLen)
 	payload.ParentURL = trimToLen(payload.ParentURL, maxURLLen)
 	buf, err := json.Marshal(payload)
 	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeMappingFailed, Msg: err.Error()}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: err.Error()}
 	}
 	resp, respBody, err := c.do(ctx, http.MethodPost, c.imageEndpoint(imageID, "enrich", gallery),
 		"application/json", bytes.NewReader(buf), c.token())
@@ -338,11 +348,11 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 	switch resp.StatusCode {
 	case http.StatusOK:
 		note, warnings := enrichResult(respBody)
-		return &Result{Outcome: queue.OutcomeEnriched, MonbooruID: imageID, MergeNote: note, TagWarnings: warnings}, nil
+		return &Result{Outcome: outcome.Enriched, MonbooruID: imageID, MergeNote: note, TagWarnings: warnings}, nil
 	case http.StatusConflict:
-		return nil, &queue.CodedError{Code: queue.ErrCodeHashMismatch, Msg: apiErrMessage(respBody, resp.Status)}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeHashMismatch, Msg: apiErrMessage(respBody, resp.Status)}
 	default:
-		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: apiErrMessage(respBody, resp.Status)}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(respBody, resp.Status)}
 	}
 }
 
@@ -383,31 +393,34 @@ func (c *Client) ReportFetchOutcome(ctx context.Context, imageID int64, gallery,
 	return nil
 }
 
-// FetchThumbnail downloads an image's static thumbnail - the downscaled query
-// bytes a similarity lookup uploads, so the original never leaves the LAN. A
-// thumbnail is a few KB, comfortably inside do()'s bounded body read.
-func (c *Client) FetchThumbnail(ctx context.Context, imageID int64, gallery string) ([]byte, error) {
-	resp, body, err := c.do(ctx, http.MethodGet, c.imageEndpoint(imageID, "thumbnail", gallery), "", nil, c.token())
+// getOK is the prologue every authenticated read shares: dial, code a
+// transport failure (a cancel included), and turn a non-200 into the
+// monbooru_rejected the callers all return.
+func (c *Client) getOK(ctx context.Context, endpoint string) ([]byte, error) {
+	resp, body, err := c.do(ctx, http.MethodGet, endpoint, "", nil, c.token())
 	if err != nil {
 		return nil, transportError(ctx, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: apiErrMessage(body, resp.Status)}
+		return nil, rejected(body, resp.Status)
 	}
 	return body, nil
+}
+
+// FetchThumbnail downloads an image's static thumbnail - the downscaled query
+// bytes a similarity lookup uploads, so the original never leaves the LAN. A
+// thumbnail is a few KB, comfortably inside do()'s bounded body read.
+func (c *Client) FetchThumbnail(ctx context.Context, imageID int64, gallery string) ([]byte, error) {
+	return c.getOK(ctx, c.imageEndpoint(imageID, "thumbnail", gallery))
 }
 
 // ImageSHA256 reads an image's digest. The queue links an enriched item through
 // monbooru's /i/<sha256> permalink, which resolves in whichever gallery holds
 // the image, where /images/<id> would open the active gallery's image of that id.
 func (c *Client) ImageSHA256(ctx context.Context, imageID int64, gallery string) (string, error) {
-	endpoint := withGallery(c.base()+"/api/v1/images/"+strconv.FormatInt(imageID, 10), gallery)
-	resp, body, err := c.do(ctx, http.MethodGet, endpoint, "", nil, c.token())
+	body, err := c.getOK(ctx, withGallery(c.base()+"/api/v1/images/"+strconv.FormatInt(imageID, 10), gallery))
 	if err != nil {
-		return "", transportError(ctx, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", rejected(body, resp.Status)
+		return "", err
 	}
 	var img struct {
 		SHA256 string `json:"sha256"`
@@ -450,14 +463,14 @@ func (c *Client) sendPush(ctx context.Context, endpoint, contentType string, bod
 	switch resp.StatusCode {
 	case http.StatusCreated:
 		id, warnings, _ := parseImageResult(respBody)
-		return &Result{Outcome: queue.OutcomeCreated, MonbooruID: id, TagWarnings: warnings}, nil
+		return &Result{Outcome: outcome.Created, MonbooruID: id, TagWarnings: warnings}, nil
 	case http.StatusOK:
 		id, warnings, merge := parseImageResult(respBody)
-		return &Result{Outcome: queue.OutcomeDuplicate, MonbooruID: id, TagWarnings: warnings, MergeNote: merge}, nil
+		return &Result{Outcome: outcome.Duplicate, MonbooruID: id, TagWarnings: warnings, MergeNote: merge}, nil
 	case http.StatusRequestEntityTooLarge:
-		return nil, &queue.CodedError{Code: queue.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}
 	default:
-		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: apiErrMessage(respBody, resp.Status)}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(respBody, resp.Status)}
 	}
 }
 
@@ -531,6 +544,9 @@ func writeMetaFields(w *multipart.Writer, meta PushMeta) error {
 	field("post_id", trimToLen(meta.PostID, maxPostIDLen))
 	field("url", trimToLen(meta.URL, maxURLLen))
 	field("commentary", trimToLen(meta.Commentary, maxCommentaryLen))
+	field("commentary_translated", trimToLen(meta.CommentaryTranslated, maxCommentaryLen))
+	field("commentary_dtext", trimToLen(meta.CommentaryDText, maxCommentaryLen))
+	field("commentary_translated_dtext", trimToLen(meta.CommentaryTranslatedDText, maxCommentaryLen))
 	field("original", trimToLen(meta.Original, maxOriginalLen))
 	field("parent_url", trimToLen(meta.ParentURL, maxURLLen))
 	if len(meta.Notes) > 0 {
@@ -612,8 +628,8 @@ func mergeNote(raw json.RawMessage) string {
 }
 
 // rejected classifies a non-OK response as monbooru_rejected.
-func rejected(body []byte, status string) *queue.CodedError {
-	return &queue.CodedError{Code: queue.ErrCodeMonbooruRejected, Msg: apiErrMessage(body, status)}
+func rejected(body []byte, status string) *outcome.CodedError {
+	return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(body, status)}
 }
 
 // apiErr decodes monbooru's {error, code} envelope once: msg falls back to the
@@ -640,12 +656,9 @@ func apiErrMessage(body []byte, status string) string {
 
 // ListGalleries reads GET /api/v1/galleries for the settings dropdown.
 func (c *Client) ListGalleries(ctx context.Context) ([]Gallery, error) {
-	resp, body, err := c.do(ctx, http.MethodGet, c.base()+"/api/v1/galleries", "", nil, c.token())
+	body, err := c.getOK(ctx, c.base()+"/api/v1/galleries")
 	if err != nil {
-		return nil, &queue.CodedError{Code: queue.ErrCodeMonbooruUnreachable, Msg: err.Error()}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, rejected(body, resp.Status)
+		return nil, err
 	}
 	var galleries []Gallery
 	if err := json.Unmarshal(body, &galleries); err != nil {
@@ -659,12 +672,9 @@ func (c *Client) ListGalleries(ctx context.Context) ([]Gallery, error) {
 // monbooru version from the root response, or "" when the response omits it
 // (an older monbooru).
 func (c *Client) TestConnection(ctx context.Context) (string, error) {
-	resp, body, err := c.do(ctx, http.MethodGet, c.base()+"/api/v1/", "", nil, c.token())
+	body, err := c.getOK(ctx, c.base()+"/api/v1/")
 	if err != nil {
-		return "", &queue.CodedError{Code: queue.ErrCodeMonbooruUnreachable, Msg: err.Error()}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", rejected(body, resp.Status)
+		return "", err
 	}
 	var info struct {
 		Version string `json:"version"`

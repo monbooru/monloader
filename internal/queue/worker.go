@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/outcome"
 )
 
 // Start launches the worker goroutines. Call once after New.
@@ -103,7 +104,7 @@ func (q *Queue) runJob(j *Job, ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			logx.Errorf("queue: job %d panicked: %v", j.ID, r)
-			j.Fail(ErrCodeDownloadFailed, fmt.Sprintf("internal error: %v", r), q.now())
+			j.Fail(outcome.ErrCodeDownloadFailed, fmt.Sprintf("internal error: %v", r), q.now())
 		}
 	}()
 
@@ -129,7 +130,7 @@ func (q *Queue) runJob(j *Job, ctx context.Context) {
 		// and set the job's code; Fail no-ops once finalized, so that code wins
 		// over this generic fallback.
 		logx.Warnf("queue: job %d failed: %s", j.ID, err.Error())
-		j.Fail(ErrCodeDownloadFailed, err.Error(), q.now())
+		j.Fail(outcome.ErrCodeDownloadFailed, err.Error(), q.now())
 	default:
 		j.Finalize(q.now())
 	}

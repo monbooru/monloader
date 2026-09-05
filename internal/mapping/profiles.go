@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/gdl"
 )
 
 // Booru families, which decide rating semantics (the `s` overload) and the
@@ -131,6 +130,24 @@ func RequiredCredential(auth string, site *config.Site) (label string, missing b
 	return "", false
 }
 
+// LoginLabel names how a site signs in, for the settings login column and the
+// probe's "needs cookies" diagnosis, and reports whether a credential the
+// kind requires is missing.
+func LoginLabel(auth string, site *config.Site) (label string, missing bool) {
+	switch auth {
+	case AuthAPIOptional:
+		return "api (opt)", false
+	case AuthAPIRequired, AuthCookies:
+		return RequiredCredential(auth, site)
+	case AuthUsernamePassword:
+		return "user/pass", false
+	case AuthOAuth:
+		return "oauth", false
+	default:
+		return "none", false
+	}
+}
+
 // genericProfile is the fallback for any gallery-dl category without a
 // curated entry: per-category tags by name where they match a monbooru
 // category else general, tolerant rating with `s` treated as safe, and no
@@ -164,17 +181,13 @@ func (m *Mapper) BuiltinProfile(category string) (Profile, bool) {
 // ExampleURL returns a representative URL to probe for a site: the curated
 // profile's example first (gallery-dl's --list-extractors blanks the category
 // for the booru base extractors, so its example cannot be found by name there),
-// then the cached extractor list as a fallback.
-func (m *Mapper) ExampleURL(extractors []gdl.Extractor, category string) string {
+// then the caller's fallback - gdl.Catalog.ExampleFor, which owns the
+// extractor list.
+func (m *Mapper) ExampleURL(category, fallback string) string {
 	if p, ok := m.Lookup(category); ok && p.Example != "" {
 		return p.Example
 	}
-	for _, ex := range extractors {
-		if ex.Category == category && ex.Example != "" {
-			return ex.Example
-		}
-	}
-	return ""
+	return fallback
 }
 
 // LookupURL builds a site's md5 search URL, or "" when its profile carries no
