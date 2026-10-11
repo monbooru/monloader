@@ -16,16 +16,13 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/monbooru/monloader/internal/logx"
 )
 
-// Config holds all monloader configuration. The override tables back the
-// per-site tag and rating settings.
 type Config struct {
-	// SetupDone gates the desktop profile's first-run wizard. A file
-	// monloader creates starts at false; one that already exists without the
-	// key loads as true, so an upgrade never shows the wizard to an operator
-	// who configured by hand. Outside the desktop profile the flag changes
-	// nothing.
+	// SetupDone gates the desktop first-run wizard; a file without the
+	// key loads as true, so an upgrade skips it.
 	SetupDone       bool             `toml:"setup_done"`
 	Server          ServerConfig     `toml:"server"`
 	Monbooru        MonbooruConfig   `toml:"monbooru"`
@@ -45,38 +42,21 @@ type Config struct {
 type ServerConfig struct {
 	BindAddress string `toml:"bind_address"`
 	BaseURL     string `toml:"base_url"`
-	// CustomCSS is an optional path to a stylesheet served at /custom.css
-	// and linked after the bundled main.css, so the palette can be retuned
-	// without a rebuild. Same shape as monbooru's knob.
-	CustomCSS string `toml:"custom_css"`
-	// BooruName overrides the brand shown in every page <title>, the topbar
-	// wordmark, and the login heading. Empty resolves to "monloader" at
-	// render time so an existing install upgrades without a config edit.
-	BooruName string `toml:"name"`
-	// BooruLogo is an optional path to a logo / favicon image served at
-	// /custom.logo. When set it replaces both the favicon link and the
-	// topbar logo on every page. Same shape as the custom_css knob.
-	BooruLogo string `toml:"logo"`
+	CustomCSS   string `toml:"custom_css"`
+	BooruName   string `toml:"name"`
+	BooruLogo   string `toml:"logo"`
 }
 
-// MonbooruConfig points at the monbooru instance the downloader pushes to.
 type MonbooruConfig struct {
 	APIURL   string `toml:"api_url"`
 	APIToken string `toml:"api_token"`
-	// WebURL is monbooru's browser-facing base, used to build the links to
-	// pushed images in the queue. Empty falls back to APIURL - set it when
-	// monbooru is reached at an internal address but browsed at a different
-	// public one.
+	// Browser-facing, for links; empty falls back to APIURL.
 	WebURL         string `toml:"web_url"`
 	DefaultGallery string `toml:"default_gallery"`
-	// Paused holds the link from the footer light's kill switch: the
-	// connectivity probe stops and no new download is accepted, while the
-	// pairing stays on disk so resuming needs no re-pair.
+	// Pausing keeps the pairing on disk, so resuming needs no re-pair.
 	Paused bool `toml:"paused,omitempty"`
 }
 
-// WebBase is the browser-facing monbooru base for a link: WebURL when set,
-// else the API URL, right-trimmed of "/".
 func (m MonbooruConfig) WebBase() string {
 	base := m.WebURL
 	if base == "" {
@@ -89,28 +69,22 @@ type DownloaderConfig struct {
 	Concurrency    int    `toml:"concurrency"`
 	MaxItemsPerJob int    `toml:"max_items_per_job"`
 	DefaultFolder  string `toml:"default_folder"`
-	// HistoryRetentionDays drops a finished job from the queue's recent-history
-	// ring once it is this old; 0 keeps it until the ring's bound evicts it.
+	// 0 keeps a job until the ring's bound evicts it.
 	HistoryRetentionDays int `toml:"history_retention_days"`
-	// SuccessRetentionDays drops a finished job that imported everything and has
-	// no window left to fetch once it is this old, so the history keeps only what
-	// still needs looking at; 0 leaves it to HistoryRetentionDays.
+	// For a job that imported everything with no window left to fetch; 0
+	// leaves it to HistoryRetentionDays.
 	SuccessRetentionDays int `toml:"success_retention_days"`
 }
 
-// HistoryRetention is the retention window as a duration, for the queue.
 func (d DownloaderConfig) HistoryRetention() time.Duration {
 	return time.Duration(d.HistoryRetentionDays) * 24 * time.Hour
 }
 
-// SuccessRetention is the shorter window for finished-clean jobs, as a duration.
 func (d DownloaderConfig) SuccessRetention() time.Duration {
 	return time.Duration(d.SuccessRetentionDays) * 24 * time.Hour
 }
 
-// GalleryDLConfig controls the gallery-dl subprocess. ConfigPath is the
-// managed file the app writes (never hand-edited); RawConfig is an
-// optional JSON object merged into it.
+// ConfigPath is rewritten by monloader; hand edits belong in RawConfig.
 type GalleryDLConfig struct {
 	BinaryPath   string  `toml:"binary_path"`
 	ConfigPath   string  `toml:"config_path"`
@@ -118,15 +92,11 @@ type GalleryDLConfig struct {
 	CookiesDir   string  `toml:"cookies_dir"`
 	SleepRequest float64 `toml:"sleep_request"`
 	RawConfig    string  `toml:"raw_config"`
-	// SupportedSitesPath is gallery-dl's docs/supportedsites.md; it seeds
-	// display names and auth kinds for sites without a shipped profile.
-	// Empty - the default - means the copy embedded in the binary at the
-	// pinned version. A path overrides it; missing is fine either way.
+	// gallery-dl's docs/supportedsites.md; empty uses the copy embedded
+	// at the pinned version.
 	SupportedSitesPath string `toml:"supportedsites_path"`
 }
 
-// AuthConfig gates the optional UI password and the downloader's own API
-// bearer token. Both are off by default for LAN trust.
 type AuthConfig struct {
 	EnablePassword      bool    `toml:"enable_password"`
 	PasswordHash        string  `toml:"password_hash"`
@@ -134,19 +104,13 @@ type AuthConfig struct {
 	Tokens              []Token `toml:"tokens,omitempty"`
 }
 
-// API privilege scopes. A token grants any combination; new tokens default
-// to all of them.
 const (
 	ScopeRead  = "read"
 	ScopeWrite = "write"
 )
 
-// AllScopes is every scope a monloader token can hold.
 var AllScopes = []string{ScopeRead, ScopeWrite}
 
-// Token is a named API credential. Only the secret's hash is stored; the
-// plaintext is shown once at creation. Paired is set by the pairing flow and
-// names the peer; it is empty for operator-created tokens.
 type Token struct {
 	ID        string   `toml:"id"`
 	Name      string   `toml:"name"`
@@ -154,25 +118,20 @@ type Token struct {
 	Scopes    []string `toml:"scopes"`
 	CreatedAt string   `toml:"created_at"`
 	Paired    string   `toml:"paired,omitempty"`
-	PeerURL   string   `toml:"peer_url,omitempty"`
 }
 
-// HasScope reports whether the token carries the given scope.
 func (t Token) HasScope(scope string) bool { return slices.Contains(t.Scopes, scope) }
 
-// HashToken returns the hex SHA-256 of a bearer secret.
 func HashToken(secret string) string {
 	sum := sha256.Sum256([]byte(secret))
 	return hex.EncodeToString(sum[:])
 }
 
-// GenerateSecret returns a fresh 32-character hex bearer secret.
 func GenerateSecret() string {
 	return hex.EncodeToString(mustRandom(16))
 }
 
-// mustRandom reads n random bytes or dies: a failed CSPRNG must never
-// degrade into a predictable all-zero secret.
+// A failed CSPRNG must never degrade into a predictable all-zero secret.
 func mustRandom(n int) []byte {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
@@ -181,46 +140,25 @@ func mustRandom(n int) []byte {
 	return buf
 }
 
-// IsHexHash reports whether s is exactly n hex characters (either case). The
-// web add bar and the API share it to recognize md5 and sha256 inputs.
 func IsHexHash(s string, n int) bool {
-	if len(s) != n {
-		return false
-	}
-	for _, c := range s {
-		switch {
-		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
-		default:
-			return false
-		}
-	}
-	return true
+	_, err := hex.DecodeString(s)
+	return len(s) == n && err == nil
 }
 
-// IsHTTPURL reports whether s is an absolute http(s) URL with a host - the
-// boundary check the web add bar and the API apply so a typo or non-URL is
-// rejected at the door instead of failing at resolve.
 func IsHTTPURL(s string) bool {
 	u, err := url.Parse(s)
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
-// IsRelativeFolder reports whether s is safe as a gallery folder: relative,
-// with no ".." segment. Both the settings field and a per-job folder option
-// apply it, so the same value is not refused in one place and downloaded
-// against in the other.
 func IsRelativeFolder(s string) bool {
 	return !strings.HasPrefix(s, "/") && !slices.Contains(strings.Split(s, "/"), "..")
 }
 
-// maxViaLen mirrors monbooru's own cap on the origin label.
+// monbooru refuses a longer origin label.
 const maxViaLen = 200
 
-// IsValidVia reports whether s is usable as monbooru's origin label. monbooru
-// selects the tag-source group with [data-source="<via>"], so whitespace or a
-// quote there yields a malformed selector; refusing it at enqueue means a
-// client learns before the post's bytes are fetched. Empty means "no
-// attribution" and is fine.
+// monbooru selects the tag-source group with [data-source="<via>"], so
+// whitespace or a quote there breaks the selector.
 func IsValidVia(s string) bool {
 	return len(s) <= maxViaLen && !strings.ContainsAny(s, " \t\n\r\"'<>[]\\")
 }
@@ -229,13 +167,11 @@ func newTokenID() string {
 	return hex.EncodeToString(mustRandom(8))
 }
 
-// reservedTokenName matches names the pairing flow owns, so an operator cannot
-// create one that collides with or impersonates a paired token.
+// An operator's token must not pass for one the pairing flow minted.
 func reservedTokenName(name string) bool {
 	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(name)), "(paired)")
 }
 
-// ValidateTokenName rejects empty and pairing-reserved names.
 func ValidateTokenName(name string) error {
 	n := strings.TrimSpace(name)
 	if n == "" {
@@ -247,17 +183,13 @@ func ValidateTokenName(name string) error {
 	return nil
 }
 
-// GenerateToken builds a token from a name and scopes, returning the plaintext
-// secret (available only here). Call it before a replayed updateConfig closure
-// so the id, secret, and timestamp are stable across both applications.
+// GenerateToken belongs outside a replayed config mutation, so the id,
+// secret and timestamp stay stable.
 func GenerateToken(name string, scopes []string) (Token, string) {
 	secret := GenerateSecret()
 	return TokenFromSecret(name, secret, scopes), secret
 }
 
-// TokenFromSecret builds a token whose hash matches a caller-provided secret.
-// Pairing uses this: the initiator generates the secret to hand to the peer and
-// stores the matching token so the peer's calls authenticate.
 func TokenFromSecret(name, secret string, scopes []string) Token {
 	return Token{
 		ID:        newTokenID(),
@@ -268,18 +200,11 @@ func TokenFromSecret(name, secret string, scopes []string) Token {
 	}
 }
 
-// TokenNameExists reports whether a token already uses name (case-insensitive).
 func (cfg *Config) TokenNameExists(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
-	for _, t := range cfg.Auth.Tokens {
-		if strings.ToLower(t.Name) == n {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(cfg.Auth.Tokens, func(t Token) bool { return strings.ToLower(t.Name) == n })
 }
 
-// FindTokenByHash returns the token whose stored hash matches, or nil.
 func (cfg *Config) FindTokenByHash(hash string) *Token {
 	for i := range cfg.Auth.Tokens {
 		if subtle.ConstantTimeCompare([]byte(cfg.Auth.Tokens[i].TokenHash), []byte(hash)) == 1 {
@@ -289,7 +214,6 @@ func (cfg *Config) FindTokenByHash(hash string) *Token {
 	return nil
 }
 
-// RemoveToken drops the token with the given id, reporting whether it existed.
 func (cfg *Config) RemoveToken(id string) bool {
 	i := slices.IndexFunc(cfg.Auth.Tokens, func(t Token) bool { return t.ID == id })
 	if i < 0 {
@@ -299,7 +223,6 @@ func (cfg *Config) RemoveToken(id string) bool {
 	return true
 }
 
-// FindToken returns the token with the given id, or nil.
 func (cfg *Config) FindToken(id string) *Token {
 	for i := range cfg.Auth.Tokens {
 		if cfg.Auth.Tokens[i].ID == id {
@@ -309,7 +232,6 @@ func (cfg *Config) FindToken(id string) *Token {
 	return nil
 }
 
-// SetTokenScopes replaces a token's scopes, reporting whether it existed.
 func (cfg *Config) SetTokenScopes(id string, scopes []string) bool {
 	tok := cfg.FindToken(id)
 	if tok == nil {
@@ -319,48 +241,34 @@ func (cfg *Config) SetTokenScopes(id string, scopes []string) bool {
 	return true
 }
 
-// LogConfig controls log verbosity: "warn" (default), "info", "debug".
 type LogConfig struct {
 	Level string `toml:"level"`
 }
 
-// DesktopConfig holds what the desktop profile keeps in the config file.
-// The applications-menu entry and start-at-login are files the platform
-// reads, so the tray is the only switch with nowhere else to live. Absent
-// from a file written before the key existed, it loads as the default.
+// DesktopConfig holds only the tray switch: start-at-login and the menu
+// entry live where the platform reads them.
 type DesktopConfig struct {
 	Tray bool `toml:"tray"`
 }
 
-// PTRConfig controls the optional Hydrus Public Tag Repository thin client. It
-// is disabled by default and downloads nothing until enabled; once enabled it
-// streams the repository's update history into a local SQLite index on its own
-// volume (never /config) and answers hash -> tags lookups by sha256.
 type PTRConfig struct {
 	Enabled bool `toml:"enabled"`
-	// DataPath is the dedicated volume holding the index; kept off /config so the
-	// tens-of-GB database never bloats the small config volume.
-	DataPath string `toml:"data_path"`
-	Address  string `toml:"address"`
-	// AccessKey authenticates every request; empty uses the PTR's published
-	// public read-only key.
+	Paused  bool `toml:"paused,omitempty"`
+	// Kept off /config: the index runs to tens of GB.
+	DataPath   string  `toml:"data_path"`
+	Address    string  `toml:"address"`
 	AccessKey  string  `toml:"access_key"`
 	FetchSleep float64 `toml:"fetch_sleep"`
-	// MinFreeGB refuses to start the initial sync when the data volume has less
-	// free space, so a multi-tens-of-GB stream cannot fill the disk.
+	// The initial sync refuses to start with less free space than this.
 	MinFreeGB int `toml:"min_free_gb"`
-	// CommitSleep paces contribution uploads: seconds between POSTs,
-	// matching the hydrus client's politeness.
+	// Seconds between contribution uploads.
 	CommitSleep float64 `toml:"commit_sleep"`
 }
 
-// PublicAccessKey is the PTR's published read-only access key (hydrus docs,
-// access_keys.html). It is not a secret; an operator may override it with a
-// personal or private-repository key via [ptr].access_key.
+// The PTR's published read-only key (hydrus docs, access_keys.html); not
+// a secret.
 const PublicAccessKey = "4a285629721ca442541ef2c15ea17d1f7f7578b0c3f4f5f2a05f8f0ab297786f"
 
-// EffectiveAccessKey is the configured access key, or the public key when none
-// is set.
 func (p PTRConfig) EffectiveAccessKey() string {
 	if p.AccessKey != "" {
 		return p.AccessKey
@@ -368,39 +276,26 @@ func (p PTRConfig) EffectiveAccessKey() string {
 	return PublicAccessKey
 }
 
-// LookupConfig parameterizes the hash-lookup chain's similarity stage: the
-// two image-similarity services and the score floor a candidate must clear.
-// A service's chain position shares one number space with the sites'
-// lookup_order, so exact-md5 searches and similarity queries interleave.
 type LookupConfig struct {
-	// MinSimilarity is the percent score below which a similarity candidate
-	// is ignored (1-100).
 	MinSimilarity int           `toml:"min_similarity"`
 	Iqdb          LookupService `toml:"iqdb"`
 	Saucenao      LookupService `toml:"saucenao"`
-	// ScheduledDailyBudget bounds how many images a day the budgeted lookups
-	// monbooru's nightly run sends may cover, 0 refusing them all. It counts
-	// images, not requests: one image walks a chain whose length only
-	// monloader knows.
+	// Images, not requests: only monloader knows how long a chain one
+	// image walks. 0 refuses every scheduled lookup.
 	ScheduledDailyBudget int `toml:"scheduled_daily_budget"`
 }
 
-// LookupService is one similarity service's settings. Order is its chain
-// position (0 or absent = never queried). APIKey is saucenao's key; iqdb
-// authenticates with the danbooru [[sites]] credentials instead.
+// Order shares one number space with the sites' lookup_order; 0 never
+// queries the service. iqdb signs in with the danbooru [[sites]]
+// credentials, not APIKey.
 type LookupService struct {
 	Order  int    `toml:"order"`
 	APIKey string `toml:"api_key,omitempty"`
 }
 
-// LookupServices are the similarity services by config name, in the order the
-// chain dialog offers them. The chain, the settings panel and the chain save
-// each address a service by name, so the field-per-service layout above is
-// spelled out once, here.
+// A new service also needs its LookupConfig field and a Service case.
 var LookupServices = []string{"iqdb", "saucenao"}
 
-// Service returns the named similarity service's settings for reading or
-// writing, nil when the name is not one of them - a site, then.
 func (l *LookupConfig) Service(name string) *LookupService {
 	switch name {
 	case "iqdb":
@@ -411,71 +306,52 @@ func (l *LookupConfig) Service(name string) *LookupService {
 	return nil
 }
 
-// Site is one repeatable [[sites]] block: credentials and a per-source
-// target gallery, written into the managed gallery-dl config. Name is the
-// gallery-dl category (e.g. "gelbooru", "e621").
+// Site's Name is the gallery-dl category, such as "gelbooru".
 type Site struct {
 	Name     string `toml:"name"`
 	Username string `toml:"username"`
-	// Password is the account password for sites gallery-dl signs into with
-	// username+password (twitter-style logins). The danbooru/e621 families
-	// keep authenticating with APIKey, which doubles as their password.
+	// For username+password logins; the danbooru and e621 families sign
+	// in with APIKey instead.
 	Password string `toml:"password,omitempty"`
 	APIKey   string `toml:"api_key"`
 	UserID   string `toml:"user_id"`
 	Gallery  string `toml:"gallery"`
-	// Label is stamped as the source on every push from this site; empty
-	// keeps the gallery-dl category name.
+	// Stamped as the source on this site's pushes; empty keeps the category.
 	Label   string `toml:"label,omitempty"`
 	Cookies string `toml:"cookies"`
-	// Options is a JSON object of extra gallery-dl extractor options merged
-	// under extractor.<name>. The instance-side escape hatch: unlike a
-	// profile's options it may hold secrets and is never shared.
+	// Merged under extractor.<name>. Unlike a profile's options it may
+	// hold secrets, so it is never shared.
 	Options string `toml:"options,omitempty"`
-	// LookupOrder is the site's position in the booru hash-lookup walk
-	// (1 = first); 0 or absent keeps the site out of the walk entirely.
+	// 1 is first; 0 keeps the site out of the hash-lookup walk.
 	LookupOrder int `toml:"lookup_order,omitempty"`
 }
 
-// HasUserData reports whether the block carries anything the operator set -
-// credentials, a cookies file, a target gallery, or options. The settings
-// sites tables show only such sites; a bare or lookup-order-only block (the
-// seeded chain) is not a customization.
+// HasUserData ignores LookupOrder: the seeded chain gives untouched blocks one.
 func (s *Site) HasUserData() bool {
 	return s.Username != "" || s.Password != "" || s.APIKey != "" || s.UserID != "" ||
 		s.Gallery != "" || s.Label != "" || s.Cookies != "" || s.Options != ""
 }
 
-// TagOverride routes a gallery-dl tag-category suffix to a monbooru
-// category for one site, winning over the curated profile.
 type TagOverride struct {
 	Site string `toml:"site"`
 	From string `toml:"from"`
 	To   string `toml:"to"`
 }
 
-// RatingOverride routes a booru rating value to a monbooru rating level
-// for one site, winning over the curated profile.
 type RatingOverride struct {
 	Site string `toml:"site"`
 	From string `toml:"from"`
 	To   string `toml:"to"`
 }
 
-// HostLabel names the source label for pushes whose only identity is a host
-// (a direct file link, a page send): exact host first, parent domains after,
-// winning over a profile's host aliases.
 type HostLabel struct {
 	Host  string `toml:"host"`
 	Label string `toml:"label"`
 }
 
-// Default returns a fully populated config with the built-in defaults.
 func Default() *Config {
 	return &Config{
-		// 8456, the port beside monbooru's 8455: one pair of adjacent
-		// numbers wherever the two run, rather than one set for containers
-		// and another for a desktop.
+		// 8456 beside monbooru's 8455, the same pair in every profile.
 		Server: ServerConfig{
 			BindAddress: "0.0.0.0:8456",
 			BaseURL:     "http://localhost:8456",
@@ -523,21 +399,15 @@ func Default() *Config {
 	}
 }
 
-// defaultMinSimilarity is the similarity floor a candidate must clear: an
-// exact copy scores near 100 and the first wrong candidate far below (the
-// live probe saw 96 vs 20), so 80 separates cleanly.
+// An exact copy scores near 100 and a wrong candidate far below.
 const defaultMinSimilarity = 80
 
-// defaultScheduledDailyBudget is how many images a night's unattended lookup
-// may cover. Small on purpose: the sites are free and polite about a trickle,
-// and a library worth sweeping is swept over weeks either way.
+// Small on purpose: the free sites tolerate a trickle, and a library is
+// swept over weeks anyway.
 const defaultScheduledDailyBudget = 25
 
-// defaultLookupSites is the exact-md5 half of the lookup chain a fresh
-// install gets. danbooru leads (best tags, free anonymous md5 metatag) with
-// the similarity services at 2-3 right behind it; gelbooru and rule34 are the
-// largest coverage but need an api key, so the chain skips them until one is
-// configured; e621, yandere, and konachan add anonymous reach.
+// danbooru leads for its tags and anonymous md5 search; gelbooru and
+// rule34 need an API key, so the chain skips them until one is set.
 var defaultLookupSites = []Site{
 	{Name: "danbooru", LookupOrder: 1},
 	{Name: "gelbooru", LookupOrder: 4},
@@ -547,26 +417,21 @@ var defaultLookupSites = []Site{
 	{Name: "konachan", LookupOrder: 8},
 }
 
-// DefaultChainSite reports whether a site is one the first-run config seeds
-// into the lookup chain. A load re-seeds such a site when it has no block, so
-// dropping the block is not a way to configure anything: it puts the site back
-// at its seeded position on the next read.
+// A load re-seeds a missing default site, so dropping its block cannot
+// remove it.
 func DefaultChainSite(name string) bool {
 	return slices.ContainsFunc(defaultLookupSites, func(s Site) bool { return s.Name == name })
 }
 
-// legacyLookupOrders is the walk seeded before the similarity services
-// existed. A config whose ordered sites all still match it was never
-// customized, so the upgrade seeding may renumber it into the current chain.
+// The walk seeded before the similarity services existed; a config still
+// matching it was never customized.
 var legacyLookupOrders = map[string]int{
 	"danbooru": 1, "gelbooru": 2, "rule34": 3, "e621": 4, "yandere": 5, "konachan": 6,
 }
 
-// The layout a portable install uses in place of Default()'s container
-// volume. Relative on purpose: that is what survives the folder being moved
-// or the stick coming back as another drive letter. The PTR index is left
-// unset, as it is on a desktop - the profile settles it at start, and it is
-// the one folder that rarely fits beside the rest.
+// Relative on purpose: a moved folder or a new drive letter must not
+// break the paths. The PTR folder stays unset for the desktop profile to
+// create at start.
 const portableDataDir = "data"
 
 func portableDefaults(cfg *Config) {
@@ -576,9 +441,8 @@ func portableDefaults(cfg *Config) {
 	cfg.PTR.DataPath = ""
 }
 
-// absent reports whether path holds no config yet. A portable install also
-// counts an empty file, which is the marker the archives ship so that
-// unpacking one is what opts into the layout.
+// An empty file counts only for a portable install: the archives ship one
+// as their marker.
 func absent(path string, portable bool) (bool, error) {
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -590,10 +454,7 @@ func absent(path string, portable bool) (bool, error) {
 	return portable && len(strings.TrimSpace(string(b))) == 0, nil
 }
 
-// resolveIn makes the stored paths absolute against base, so everything
-// downstream sees the same shape it does under every other profile.
-// binary_path is left alone: it names a command to find on PATH as often as
-// a file.
+// binary_path is left alone: it names a command on PATH as often as a file.
 func resolveIn(cfg *Config, base string) {
 	cfg.GalleryDL.ConfigPath = absIn(cfg.GalleryDL.ConfigPath, base)
 	cfg.GalleryDL.ArchivePath = absIn(cfg.GalleryDL.ArchivePath, base)
@@ -609,13 +470,7 @@ func absIn(path, base string) string {
 	return filepath.Join(base, path)
 }
 
-// RelativizeIn folds the paths a portable install stores back under base,
-// the inverse of the resolve a load does. A no-op with no base, which is
-// every other profile.
 func RelativizeIn(cfg *Config, base string) {
-	if base == "" {
-		return
-	}
 	cfg.GalleryDL.ConfigPath = RelativeTo(cfg.GalleryDL.ConfigPath, base)
 	cfg.GalleryDL.ArchivePath = RelativeTo(cfg.GalleryDL.ArchivePath, base)
 	cfg.GalleryDL.CookiesDir = RelativeTo(cfg.GalleryDL.CookiesDir, base)
@@ -623,9 +478,7 @@ func RelativizeIn(cfg *Config, base string) {
 	cfg.PTR.DataPath = RelativeTo(cfg.PTR.DataPath, base)
 }
 
-// RelativeTo is absIn's inverse for what a portable install writes back: a
-// path under the install folder travels with it, one outside is the absolute
-// truth and stays that way.
+// A path outside base stays absolute rather than moving with the folder.
 func RelativeTo(path, base string) string {
 	if path == "" || base == "" {
 		return path
@@ -637,24 +490,14 @@ func RelativeTo(path, base string) string {
 	return filepath.ToSlash(rel)
 }
 
-// LoadWithDefaults reads the config (creating it with defaults when absent),
-// applies MONLOADER_* env overrides, and validates. The result is the
-// effective runtime view; env overrides are applied before the final
-// validation so a MONLOADER_* value is sanity-checked the same way a file
-// value is. seed adjusts the defaults before a missing file is written, and
-// runs only on that path: a config already on disk is loaded as it stands,
-// whatever profile is active, so the container volume layout the shipped
-// image depends on is never rewritten.
+// LoadWithDefaults applies seed only to a config it creates; one already on
+// disk loads as it stands, so a container's volume layout is never rewritten.
 func LoadWithDefaults(path string, seed func(*Config)) (*Config, error) {
 	return load(path, "", seed)
 }
 
-// LoadPortable is LoadWithDefaults for an install that carries its own data:
-// what monloader writes for itself lands beside the binary rather than on
-// the container's volume, and the paths a file names relative resolve
-// against that folder, so it survives being moved or remounted. An empty
-// file is the marker the archives ship, and reads as a config still to be
-// created.
+// LoadPortable resolves the file's relative paths against its folder, so
+// the install can move.
 func LoadPortable(path string, seed func(*Config)) (*Config, error) {
 	return load(path, filepath.Dir(path), seed)
 }
@@ -677,27 +520,21 @@ func load(path, base string, seed func(*Config)) (*Config, error) {
 		}
 	}
 
-	cfg, err := loadFromFileIn(path, base)
+	cfg, err := LoadFromFileIn(path, base)
 	if err != nil {
 		return nil, err
 	}
 	applyEnvOverrides(cfg)
+	// Again, so an env override is checked like a file value.
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-// seedLookupDefaults gives an existing config the same lookup defaults a fresh
-// install gets. A default site is added only when it has no block, so an
-// install that has configured a site (or cleared its order) keeps its choice.
-// A config with no [lookup] section predates the similarity services: when its
-// site orders were never customized they are renumbered into the current
-// chain, otherwise the services are appended after the operator's own order;
-// either way a cleared site stays cleared. A present [lookup] section - even
-// one with the services switched off - is never touched, except for a key the
-// file predates entirely: it takes the fresh-install value, so an upgrade does
-// not silently refuse every scheduled lookup.
+// A file predating scheduled_daily_budget gets the default: 0 refuses
+// every scheduled lookup. One with no [lookup] predates the similarity
+// services, which renumber an untouched walk or follow a custom one.
 func seedLookupDefaults(cfg *Config, md toml.MetaData) {
 	if !md.IsDefined("lookup", "scheduled_daily_budget") {
 		cfg.Lookup.ScheduledDailyBudget = defaultScheduledDailyBudget
@@ -729,41 +566,24 @@ func seedLookupDefaults(cfg *Config, md toml.MetaData) {
 	}
 	highest := 0
 	for _, s := range cfg.Sites {
-		if s.LookupOrder > highest {
-			highest = s.LookupOrder
-		}
+		highest = max(highest, s.LookupOrder)
 	}
 	cfg.Lookup.Iqdb.Order = highest + 1
 	cfg.Lookup.Saucenao.Order = highest + 2
 }
 
-// LoadFromFile decodes the config file (or defaults when absent) and validates
-// it, without applying MONLOADER_* env overrides. This is the persistence
-// view: a settings save writes this layer so an ephemeral env value (e.g. a
-// token passed via the container env) is never baked into monloader.toml.
-func LoadFromFile(path string) (*Config, error) {
-	return loadFromFileIn(path, "")
-}
-
-// LoadFromFileIn is LoadFromFile for an install that was loaded with a base,
-// the persistence half of LoadPortable. A caller that reloads this layer has
-// to pass the same base it ran with, or a key the file omits takes the
-// container default here and a save writes that into the file.
+// LoadFromFileIn skips the MONLOADER_* overrides: a save writes this layer,
+// so an env value never lands in the file. A caller must pass the base it
+// loaded with, or a key the file omits takes the container default and a
+// save writes it into the file.
 func LoadFromFileIn(path, base string) (*Config, error) {
-	return loadFromFileIn(path, base)
-}
-
-// loadFromFileIn is LoadFromFile with base naming the folder a portable
-// install's relative paths belong to; empty leaves every path as written.
-func loadFromFileIn(path, base string) (*Config, error) {
 	cfg := Default()
 	if base != "" {
 		portableDefaults(cfg)
 	}
 	if _, err := os.Stat(path); err == nil {
-		// Null the slices and the lookup section so the file's entries replace
-		// the defaults rather than appending to (or resurrecting) them; the
-		// seeding below restores the defaults a pre-similarity file lacks.
+		// Cleared so the file's entries replace the defaults rather than
+		// merge into them.
 		cfg.Sites = nil
 		cfg.TagOverrides = nil
 		cfg.RatingOverrides = nil
@@ -787,7 +607,6 @@ func loadFromFileIn(path, base string) (*Config, error) {
 	return cfg, nil
 }
 
-// Save marshals cfg to TOML and writes atomically to path.
 func Save(cfg *Config, path string) error {
 	return WriteFileAtomic(path, func(f *os.File) error {
 		if err := toml.NewEncoder(f).Encode(cfg); err != nil {
@@ -797,13 +616,7 @@ func Save(cfg *Config, path string) error {
 	})
 }
 
-// WriteFileAtomic writes a file through a temp-then-rename in its directory, so
-// a crash mid-write can never leave a truncated file a later reader would load
-// broken: the content is on disk before the rename publishes it, so a reader
-// sees either the old file or the whole new one. write streams the content into
-// the temp file; both the config and the managed gallery-dl config go through
-// here, and monloader.toml holds the monbooru token, every site credential and
-// the PTR access key, so a zero-length one costs a full re-pair.
+// Synced before the rename: a zero-length monloader.toml costs a full re-pair.
 func WriteFileAtomic(path string, write func(f *os.File) error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -814,31 +627,35 @@ func WriteFileAtomic(path string, write func(f *os.File) error) error {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpName := tmp.Name()
+	// Both are no-ops once the rename has landed.
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}()
 	if err := write(tmp); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
 		return fmt.Errorf("syncing temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
 		return fmt.Errorf("closing temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
 		return fmt.Errorf("renaming temp file: %w", err)
 	}
 	return nil
 }
 
-// Clone returns a deep copy safe to mutate without affecting the original, so a
-// settings save can build the next snapshot from the current one. Every element
-// but a token's Scopes is a value type, so copying the headers and elements is
-// a full copy; Scopes is the one slice inside one and is cloned with it.
+func WriteFileBytesAtomic(path string, data []byte) error {
+	return WriteFileAtomic(path, func(f *os.File) error {
+		_, err := f.Write(data)
+		return err
+	})
+}
+
+// Every element type is a plain value except Token.Scopes; a new slice or
+// map inside one must be cloned here too.
 func (cfg *Config) Clone() *Config {
 	cp := *cfg
 	cp.Sites = append([]Site(nil), cfg.Sites...)
@@ -852,8 +669,6 @@ func (cfg *Config) Clone() *Config {
 	return &cp
 }
 
-// FindSite returns the per-site block with the given gallery-dl category
-// name, or nil.
 func (cfg *Config) FindSite(name string) *Site {
 	for i := range cfg.Sites {
 		if cfg.Sites[i].Name == name {
@@ -863,21 +678,32 @@ func (cfg *Config) FindSite(name string) *Site {
 	return nil
 }
 
-// Secret is one configured credential paired with the key it came from, so a
-// scrubbed value can say what was removed.
+func (cfg *Config) RenameGallery(from, to string) int {
+	moved := 0
+	if cfg.Monbooru.DefaultGallery == from {
+		cfg.Monbooru.DefaultGallery = to
+		moved++
+	}
+	for i := range cfg.Sites {
+		if cfg.Sites[i].Gallery == from {
+			cfg.Sites[i].Gallery = to
+			moved++
+		}
+	}
+	return moved
+}
+
 type Secret struct {
 	Name  string
 	Value string
 }
 
-// minSecretLen is the shortest value worth replacing. A two-character user id
-// would otherwise blank out every occurrence of those characters in the text,
-// including timestamps and post ids.
+// A shorter value, such as a two-digit user id, would also blank out
+// timestamps and post ids.
 const minSecretLen = 6
 
-// Secrets lists the credentials that must not survive into anything shown to
-// the operator. gallery-dl's debug output carries request URLs verbatim, and
-// the booru families that authenticate by query parameter put their key there.
+// Every credential belongs here: gallery-dl's debug output carries
+// request URLs, query-string keys included.
 func (cfg *Config) Secrets() []Secret {
 	out := make([]Secret, 0, len(cfg.Sites)*3+2)
 	add := func(name, value string) {
@@ -895,27 +721,18 @@ func (cfg *Config) Secrets() []Secret {
 	return out
 }
 
-// RedactSecrets replaces each secret in text with a marker naming its key and
-// reports how many values were removed. Anything shorter than minSecretLen is
-// left alone, since replacing it would mangle unrelated text.
 func RedactSecrets(text string, secrets []Secret) (string, int) {
 	removed := 0
 	for _, s := range secrets {
 		if len(s.Value) < minSecretLen {
 			continue
 		}
-		n := strings.Count(text, s.Value)
-		if n == 0 {
-			continue
-		}
-		removed += n
+		removed += strings.Count(text, s.Value)
 		text = strings.ReplaceAll(text, s.Value, "<redacted:"+s.Name+">")
 	}
 	return text, removed
 }
 
-// validateJSONObject rejects a non-empty value that is not a JSON object; what
-// names it in the refusal.
 func validateJSONObject(s, what string) error {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -928,92 +745,58 @@ func validateJSONObject(s, what string) error {
 	return nil
 }
 
-// ValidateRawConfig rejects a non-empty raw gallery-dl passthrough that is
-// not a JSON object. An empty string is valid (no passthrough). The
-// settings page calls this before Save so invalid JSON is never persisted.
 func ValidateRawConfig(s string) error { return validateJSONObject(s, "raw gallery-dl config") }
 
-// ValidateSiteOptions rejects a non-empty per-site options value that is not
-// a JSON object; empty means no options. Same save-time gate as the raw
-// passthrough.
 func ValidateSiteOptions(s string) error { return validateJSONObject(s, "site options") }
 
-// applyEnvOverrides lets a MONLOADER_* variable override its config field, so
-// a container env can set what the file does not. Adding a variable is one
-// table line; a value that fails to parse is ignored, keeping the file's.
 func applyEnvOverrides(cfg *Config) {
-	for _, o := range []struct {
-		env string
-		dst *string
-	}{
-		{"MONLOADER_SERVER_BIND_ADDRESS", &cfg.Server.BindAddress},
-		{"MONLOADER_SERVER_BASE_URL", &cfg.Server.BaseURL},
-		{"MONLOADER_MONBOORU_API_URL", &cfg.Monbooru.APIURL},
-		{"MONLOADER_MONBOORU_API_TOKEN", &cfg.Monbooru.APIToken},
-		{"MONLOADER_MONBOORU_WEB_URL", &cfg.Monbooru.WebURL},
-		{"MONLOADER_MONBOORU_DEFAULT_GALLERY", &cfg.Monbooru.DefaultGallery},
-		{"MONLOADER_DOWNLOADER_DEFAULT_FOLDER", &cfg.Downloader.DefaultFolder},
-		{"MONLOADER_GALLERYDL_BINARY_PATH", &cfg.GalleryDL.BinaryPath},
-		{"MONLOADER_GALLERYDL_CONFIG_PATH", &cfg.GalleryDL.ConfigPath},
-		{"MONLOADER_GALLERYDL_ARCHIVE_PATH", &cfg.GalleryDL.ArchivePath},
-		{"MONLOADER_GALLERYDL_COOKIES_DIR", &cfg.GalleryDL.CookiesDir},
-		{"MONLOADER_GALLERYDL_SUPPORTEDSITES_PATH", &cfg.GalleryDL.SupportedSitesPath},
-		{"MONLOADER_AUTH_PASSWORD_HASH", &cfg.Auth.PasswordHash},
-		{"MONLOADER_LOG_LEVEL", &cfg.Log.Level},
-		{"MONLOADER_PTR_DATA_PATH", &cfg.PTR.DataPath},
-		{"MONLOADER_PTR_ADDRESS", &cfg.PTR.Address},
-		{"MONLOADER_PTR_ACCESS_KEY", &cfg.PTR.AccessKey},
-		{"MONLOADER_LOOKUP_SAUCENAO_API_KEY", &cfg.Lookup.Saucenao.APIKey},
-	} {
-		if v := os.Getenv(o.env); v != "" {
-			*o.dst = v
-		}
-	}
-	for _, o := range []struct {
-		env string
-		dst *int
-	}{
-		{"MONLOADER_DOWNLOADER_CONCURRENCY", &cfg.Downloader.Concurrency},
-		{"MONLOADER_DOWNLOADER_MAX_ITEMS_PER_JOB", &cfg.Downloader.MaxItemsPerJob},
-		{"MONLOADER_DOWNLOADER_HISTORY_RETENTION_DAYS", &cfg.Downloader.HistoryRetentionDays},
-		{"MONLOADER_DOWNLOADER_SUCCESS_RETENTION_DAYS", &cfg.Downloader.SuccessRetentionDays},
-		{"MONLOADER_PTR_MIN_FREE_GB", &cfg.PTR.MinFreeGB},
-		{"MONLOADER_LOOKUP_MIN_SIMILARITY", &cfg.Lookup.MinSimilarity},
-	} {
-		if v := os.Getenv(o.env); v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				*o.dst = n
-			}
-		}
-	}
-	for _, o := range []struct {
-		env string
-		dst *float64
-	}{
-		{"MONLOADER_GALLERYDL_SLEEP_REQUEST", &cfg.GalleryDL.SleepRequest},
-		{"MONLOADER_PTR_FETCH_SLEEP", &cfg.PTR.FetchSleep},
-		{"MONLOADER_PTR_COMMIT_SLEEP", &cfg.PTR.CommitSleep},
-	} {
-		if v := os.Getenv(o.env); v != "" {
-			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				*o.dst = f
-			}
-		}
-	}
-	for _, o := range []struct {
-		env string
-		dst *bool
-	}{
-		{"MONLOADER_AUTH_ENABLE_PASSWORD", &cfg.Auth.EnablePassword},
-		{"MONLOADER_PTR_ENABLED", &cfg.PTR.Enabled},
-	} {
-		if v := os.Getenv(o.env); v != "" {
-			if b, err := strconv.ParseBool(v); err == nil {
-				*o.dst = b
-			}
-		}
-	}
+	envOverride("MONLOADER_SERVER_BIND_ADDRESS", &cfg.Server.BindAddress, parseString)
+	envOverride("MONLOADER_SERVER_BASE_URL", &cfg.Server.BaseURL, parseString)
+	envOverride("MONLOADER_MONBOORU_API_URL", &cfg.Monbooru.APIURL, parseString)
+	envOverride("MONLOADER_MONBOORU_API_TOKEN", &cfg.Monbooru.APIToken, parseString)
+	envOverride("MONLOADER_MONBOORU_WEB_URL", &cfg.Monbooru.WebURL, parseString)
+	envOverride("MONLOADER_MONBOORU_DEFAULT_GALLERY", &cfg.Monbooru.DefaultGallery, parseString)
+	envOverride("MONLOADER_DOWNLOADER_DEFAULT_FOLDER", &cfg.Downloader.DefaultFolder, parseString)
+	envOverride("MONLOADER_GALLERYDL_BINARY_PATH", &cfg.GalleryDL.BinaryPath, parseString)
+	envOverride("MONLOADER_GALLERYDL_CONFIG_PATH", &cfg.GalleryDL.ConfigPath, parseString)
+	envOverride("MONLOADER_GALLERYDL_ARCHIVE_PATH", &cfg.GalleryDL.ArchivePath, parseString)
+	envOverride("MONLOADER_GALLERYDL_COOKIES_DIR", &cfg.GalleryDL.CookiesDir, parseString)
+	envOverride("MONLOADER_GALLERYDL_SUPPORTEDSITES_PATH", &cfg.GalleryDL.SupportedSitesPath, parseString)
+	envOverride("MONLOADER_AUTH_PASSWORD_HASH", &cfg.Auth.PasswordHash, parseString)
+	envOverride("MONLOADER_LOG_LEVEL", &cfg.Log.Level, parseString)
+	envOverride("MONLOADER_PTR_DATA_PATH", &cfg.PTR.DataPath, parseString)
+	envOverride("MONLOADER_PTR_ADDRESS", &cfg.PTR.Address, parseString)
+	envOverride("MONLOADER_PTR_ACCESS_KEY", &cfg.PTR.AccessKey, parseString)
+	envOverride("MONLOADER_LOOKUP_SAUCENAO_API_KEY", &cfg.Lookup.Saucenao.APIKey, parseString)
+	envOverride("MONLOADER_DOWNLOADER_CONCURRENCY", &cfg.Downloader.Concurrency, strconv.Atoi)
+	envOverride("MONLOADER_DOWNLOADER_MAX_ITEMS_PER_JOB", &cfg.Downloader.MaxItemsPerJob, strconv.Atoi)
+	envOverride("MONLOADER_DOWNLOADER_HISTORY_RETENTION_DAYS", &cfg.Downloader.HistoryRetentionDays, strconv.Atoi)
+	envOverride("MONLOADER_DOWNLOADER_SUCCESS_RETENTION_DAYS", &cfg.Downloader.SuccessRetentionDays, strconv.Atoi)
+	envOverride("MONLOADER_PTR_MIN_FREE_GB", &cfg.PTR.MinFreeGB, strconv.Atoi)
+	envOverride("MONLOADER_LOOKUP_MIN_SIMILARITY", &cfg.Lookup.MinSimilarity, strconv.Atoi)
+	envOverride("MONLOADER_GALLERYDL_SLEEP_REQUEST", &cfg.GalleryDL.SleepRequest, parseFloat)
+	envOverride("MONLOADER_PTR_FETCH_SLEEP", &cfg.PTR.FetchSleep, parseFloat)
+	envOverride("MONLOADER_PTR_COMMIT_SLEEP", &cfg.PTR.CommitSleep, parseFloat)
+	envOverride("MONLOADER_AUTH_ENABLE_PASSWORD", &cfg.Auth.EnablePassword, strconv.ParseBool)
+	envOverride("MONLOADER_PTR_ENABLED", &cfg.PTR.Enabled, strconv.ParseBool)
 }
+
+func envOverride[T any](env string, dst *T, parse func(string) (T, error)) {
+	raw := os.Getenv(env)
+	if raw == "" {
+		return
+	}
+	v, err := parse(raw)
+	if err != nil {
+		logx.Warnf("config: ignoring %s=%q: %v", env, raw, err)
+		return
+	}
+	*dst = v
+}
+
+func parseString(v string) (string, error) { return v, nil }
+
+func parseFloat(v string) (float64, error) { return strconv.ParseFloat(v, 64) }
 
 func validate(cfg *Config) error {
 	if cfg.Server.BindAddress == "" {
@@ -1022,9 +805,8 @@ func validate(cfg *Config) error {
 	if !strings.Contains(cfg.Server.BindAddress, ":") {
 		return fmt.Errorf("server.bind_address %q is not a valid host:port", cfg.Server.BindAddress)
 	}
-	// enable_password=true with an empty hash would let the password-update
-	// handler bypass the current-password check, so refuse it at load with
-	// the same hint monbooru gives.
+	// An empty hash would let the password-update handler skip its
+	// current-password check.
 	if cfg.Auth.EnablePassword && strings.TrimSpace(cfg.Auth.PasswordHash) == "" {
 		return fmt.Errorf("auth.enable_password is true but auth.password_hash is empty - " +
 			"run `monloader -hash-password 'your-password'` and paste the result into monloader.toml")
@@ -1036,14 +818,10 @@ func validate(cfg *Config) error {
 				"run `monloader -hash-password 'your-password'` and paste the result into monloader.toml")
 		}
 	}
-	// A non-positive worker count would stall the queue; snap to one worker
-	// rather than fail a user-fixable typo.
 	cfg.Downloader.Concurrency = max(cfg.Downloader.Concurrency, 1)
 	if cfg.Downloader.MaxItemsPerJob <= 0 {
 		cfg.Downloader.MaxItemsPerJob = 200
 	}
-	// A negative window would expire every job the moment it finished; read it
-	// as "no age limit" rather than fail a user-fixable typo.
 	cfg.Downloader.HistoryRetentionDays = max(cfg.Downloader.HistoryRetentionDays, 0)
 	cfg.Downloader.SuccessRetentionDays = max(cfg.Downloader.SuccessRetentionDays, 0)
 	cfg.GalleryDL.SleepRequest = max(cfg.GalleryDL.SleepRequest, 0)
@@ -1058,9 +836,6 @@ func validate(cfg *Config) error {
 	if cfg.PTR.Enabled && strings.TrimSpace(cfg.PTR.DataPath) == "" {
 		return fmt.Errorf("ptr.enabled is true but ptr.data_path is empty")
 	}
-	// An out-of-range similarity floor would either drop every candidate or
-	// accept garbage; snap a user-fixable typo to the default like the worker
-	// count above.
 	if cfg.Lookup.MinSimilarity < 1 || cfg.Lookup.MinSimilarity > 100 {
 		cfg.Lookup.MinSimilarity = defaultMinSimilarity
 	}

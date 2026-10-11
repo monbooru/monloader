@@ -18,6 +18,7 @@
     <a href="/" id="logo"><img src="{{.BooruLogo}}" alt="" class="topbar-logo"><span>{{.BooruName}}</span></a>
     <nav>
       <a href="/queue" {{if eq .ActiveNav "queue"}}class="active"{{end}}>Queue</a>
+      <a href="/watches" {{if eq .ActiveNav "watches"}}class="active"{{end}}>Watched</a>
       <a href="/ptr" {{if eq .ActiveNav "ptr"}}class="active"{{end}}>PTR</a>
       <a href="/settings" {{if eq .ActiveNav "settings"}}class="active"{{end}}>Settings</a>
     </nav>

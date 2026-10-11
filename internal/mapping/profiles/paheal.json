@@ -3,5 +3,6 @@
   "kind": "booru",
   "post_url_template": "https://rule34.paheal.net/post/view/{id}",
   "auth": "none",
-  "example": "https://rule34.paheal.net/post/view/7335390"
+  "example": "https://rule34.paheal.net/post/view/7335390",
+  "default_rating": "explicit"
 }

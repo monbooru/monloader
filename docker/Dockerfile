@@ -1,19 +1,15 @@
-# Stage 1: build the static Go binary.
-FROM golang:1.27-trixie AS build
+FROM golang:1.27.2-trixie AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN VERSION=$(cat VERSION.md 2>/dev/null | tr -d '[:space:]') && \
-    REPO=$(cat REPOSITORY.md 2>/dev/null | tr -d '[:space:]') && \
-    DOC=$(cat DOC.md 2>/dev/null | tr -d '[:space:]') && \
+RUN . ./packaging/release-env.sh && \
     CGO_ENABLED=0 go build \
-      -ldflags="-s -w -X 'github.com/monbooru/monloader/internal/web.Version=${VERSION}' -X 'github.com/monbooru/monloader/internal/web.RepoURL=${REPO}' -X 'github.com/monbooru/monloader/internal/web.DocURL=${DOC}' -X 'github.com/monbooru/monloader/internal/web.Package=docker'" \
+      -ldflags="-s -w $LDFLAGS -X '$MOD.Package=docker'" \
       -o /monloader ./cmd/monloader
 
-# Stage 2: runtime. Needs Python for the gallery-dl subprocess.
 FROM python:3.13-slim-trixie
-RUN pip install --no-cache-dir gallery-dl==1.32.10
+RUN pip install --no-cache-dir gallery-dl==1.32.15
 
 COPY --from=build /monloader /usr/local/bin/monloader
 

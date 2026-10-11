@@ -2,11 +2,13 @@ package web
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/monbooru/monloader/internal/api"
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/desktop"
 	"github.com/monbooru/monloader/internal/gdl"
 	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/mapping"
@@ -28,23 +31,17 @@ import (
 	webFS "github.com/monbooru/monloader/web"
 )
 
-// Version, RepoURL and DocURL are set at build time via -ldflags (see the
-// Makefile); DocURL comes from DOC.md.
+// Set at build time with -ldflags -X; DocURL is read from DOC.md.
 var (
 	Version = "dev"
 	RepoURL = "https://github.com/monbooru/monloader"
 	DocURL  = "https://monbooru.github.io/mondocs/addons/monloader/index.html"
 )
 
-// Package names whatever produced this artifact ("docker", "tarball", "zip",
-// "installer", "flatpak", "appimage"), injected at build time via -ldflags.
-// With several artifacts in circulation every bug report opens on the
-// question it answers.
-// "source" is a plain go build and renders as nothing.
+// Package names the artifact kind (docker, flatpak, ...), also set with
+// -ldflags -X.
 var Package = "source"
 
-// BuildLabel is the artifact stamp rendered beside the version, empty on a
-// plain source build.
 func BuildLabel() string {
 	if Package == "" || Package == "source" {
 		return ""
@@ -52,30 +49,20 @@ func BuildLabel() string {
 	return Package
 }
 
-// Desktop is what the -desktop profile tells the server: whether it is
-// active, and where it put the log file. The second is not derivable here
-// because the command resolves the layout before the config is loaded.
+// LogDir comes from the command, which resolves the layout before the
+// config loads.
 type Desktop struct {
-	Active bool
-	LogDir string
-	// PortableBase is the install folder when the profile resolved a
-	// portable layout, and empty otherwise. What a settings save writes
-	// under it is stored relative, so the folder still moves.
+	Active       bool
+	LogDir       string
 	PortableBase string
 }
 
-// Server renders the three-screen htmx UI and mounts the JSON API on the same
-// mux.
 type Server struct {
 	cfg        *config.Provider
 	configPath string
-	// stateDir is where monloader keeps what it writes for itself, the managed
-	// gallery-dl install among it. The container puts it beside the config; the
-	// desktop profile splits the two, so deriving it from configPath would have
-	// the panel install where the runner never looks.
+	// Not derived from configPath: the desktop profile keeps state apart
+	// from the config.
 	stateDir string
-	// workRoot is the ephemeral scratch the debug re-run fetches into, the same
-	// root the pipeline gives each job a directory under.
 	workRoot string
 	cfgMu    sync.Mutex
 
@@ -92,15 +79,9 @@ type Server struct {
 	ptr       ptrEngine
 	sim       simService
 
-	// gdlMu guards the managed install a settings request started; it runs on
-	// past that request, and the panel polls it for its progress.
 	gdlMu  sync.Mutex
 	gdlJob *gdlJob
 
-	// statusMu guards the cached footer-light probe result. base() seeds each
-	// page's initial render from it so the light shows its last known state at
-	// once instead of flickering to "checking" (and re-probing monbooru) on
-	// every navigation; the poll refreshes it at most once per monbooruStatusTTL.
 	statusMu          sync.Mutex
 	monbooruConn      string
 	monbooruVersion   string
@@ -111,47 +92,28 @@ type Server struct {
 	tmpl       *template.Template
 	staticFS   fs.FS
 
-	// desktop marks the -desktop profile. It gates the controls that only
-	// make sense on the machine the operator is sitting at: the directory
-	// picker, the folder opener, Quit, and the first-run redirect.
-	desktop bool
-	logDir  string
-	// portableBase is Desktop.PortableBase: empty for every other install.
+	desktop      bool
+	logDir       string
 	portableBase string
-	// quit carries a Quit click to the command's shutdown select, so the
-	// stop path is the same one SIGTERM takes. A Restart click rides the
-	// same path with the flag set, and the command starts a fresh process
-	// once it has drained.
+	// Closed so a UI stop takes the same shutdown path as SIGTERM.
 	quit     chan struct{}
 	quitOnce sync.Once
 	restart  atomic.Bool
 }
 
-// QuitRequested fires when the Quit control asks the process to stop.
 func (s *Server) QuitRequested() <-chan struct{} { return s.quit }
 
-// RequestQuit asks the command to shut down, for the tray's Quit entry and
-// for the settings control once its page has reached the browser.
 func (s *Server) RequestQuit() {
 	s.quitOnce.Do(func() { close(s.quit) })
 }
 
-// RestartRequested reports whether the shutdown under way should be followed
-// by a fresh process. Read by the command once it has drained.
 func (s *Server) RestartRequested() bool { return s.restart.Load() }
 
-// RequestRestart stops the process and asks the command to start it again,
-// for the settings that only take effect at boot.
 func (s *Server) RequestRestart() {
 	s.restart.Store(true)
 	s.RequestQuit()
 }
 
-// NewServer wires the UI server. catalog is the boot-seeded gallery-dl
-// inventory - version, extractors, supportedsites rows - the settings screens
-// and the API read, refreshed when a managed install changes the binary;
-// siteState is the shared "last reached" tracker the settings sites table
-// reads and the test probe writes (the pipeline writes it on a fetch).
 func NewServer(cfg *config.Provider, configPath, stateDir, workRoot string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, catalog *gdl.Catalog, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client, dk Desktop) (*Server, error) {
 	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(webFS.FS, "templates/*.html", "templates/partials/*.html")
 	if err != nil {
@@ -186,15 +148,13 @@ func NewServer(cfg *config.Provider, configPath, stateDir, workRoot string, q *q
 	}, nil
 }
 
-// Handler returns the root HTTP handler: web routes plus the mounted API, with
-// logging, session, and CSRF middleware applied (outermost first).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.staticFS))))
 	mux.HandleFunc("GET /custom.css", s.serveCustomCSS)
 	mux.HandleFunc("GET /custom.logo", s.serveCustomLogo)
-	// Browsers request /favicon.ico unconditionally; redirect to the asset.
+	// Browsers request /favicon.ico whatever the page links.
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, s.booruFaviconURL(), http.StatusMovedPermanently)
 	})
@@ -208,18 +168,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /queue/{id}/cancel", s.cancelJob)
 	mux.HandleFunc("POST /queue/{id}/continue", s.continueJob)
 	mux.HandleFunc("POST /queue/{id}/continue-all", s.continueAllJob)
-	mux.HandleFunc("POST /queue/clear", s.clearQueue)
-	mux.HandleFunc("POST /queue/clear-succeeded", s.clearSucceededQueue)
-	mux.HandleFunc("POST /queue/cancel-pending", s.cancelPendingJobs)
-	mux.HandleFunc("POST /queue/pause", s.pauseDownloads)
-	mux.HandleFunc("POST /queue/resume", s.resumeDownloads)
+	mux.HandleFunc("POST /queue/clear", s.then(s.queue.Clear, s.queueRows))
+	mux.HandleFunc("POST /queue/clear-succeeded", s.then(s.queue.ClearSucceeded, s.queueRows))
+	mux.HandleFunc("POST /queue/cancel-pending", s.then(s.queue.CancelPending, s.queueRows))
+	mux.HandleFunc("POST /queue/pause", s.then(s.queue.Pause, s.renderPauseToggle))
+	mux.HandleFunc("POST /queue/resume", s.then(s.queue.Resume, s.renderPauseToggle))
 	mux.HandleFunc("DELETE /queue/{id}", s.deleteJob)
+	mux.HandleFunc("POST /queue/{id}/watch", s.watchJob)
+	mux.HandleFunc("GET /watches", s.watchesScreen)
+	mux.HandleFunc("GET /internal/watch-rows", s.watchRows)
+	mux.HandleFunc("POST /watches", s.addWatch)
+	mux.HandleFunc("POST /watches/{id}/interval", s.setWatchInterval)
+	mux.HandleFunc("POST /watches/{id}/items", s.setWatchItems)
+	mux.HandleFunc("POST /watches/{id}/check", s.checkWatch)
+	mux.HandleFunc("DELETE /watches/{id}", s.removeWatch)
 	mux.HandleFunc("GET /internal/monbooru-status", s.monbooruStatus)
 	mux.HandleFunc("POST /internal/monbooru/pause", s.monbooruPause)
 	mux.HandleFunc("POST /internal/monbooru/resume", s.monbooruResume)
 	mux.HandleFunc("GET /internal/item-debug", s.itemDebug)
 	mux.HandleFunc("POST /internal/item-debug", s.itemDebug)
-	mux.HandleFunc("GET /internal/queue-pause", s.queuePauseToggle)
+	mux.HandleFunc("GET /internal/queue-pause", s.renderPauseToggle)
 	mux.HandleFunc("GET /internal/queue-actions", s.queueActionsFragment)
 
 	mux.HandleFunc("GET /ptr", s.ptrScreen)
@@ -286,13 +254,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /login", s.loginPost)
 	mux.HandleFunc("POST /logout", s.logoutPost)
 
-	// Catch-all for unmatched GETs; the exact-root "GET /{$}" above takes
-	// precedence for the add screen.
 	mux.HandleFunc("GET /", s.notFound)
 
 	host := api.Host{
 		Pair:       api.PairHandlers{Request: s.extPairRequest, Status: s.extPairStatus, Teardown: s.extPairTeardown},
 		SaveConfig: s.updateConfig,
+		Queryable:  s.lookupQueryable,
 	}
 	api.New(s.queue, s.runner, s.mapper, s.cfg, s.catalog, Version, s.siteState, s.ptr, host).Mount(mux)
 
@@ -300,13 +267,38 @@ func (s *Server) Handler() http.Handler {
 	h = s.CSRFMiddleware(h)
 	h = s.SetupMiddleware(h)
 	h = s.SessionMiddleware(h)
+	h = s.hostMiddleware(h)
 	h = loggingMiddleware(h)
 	return h
 }
 
-// templateFuncs are the helpers the templates use. dict builds an inline map
-// so a partial can be handed a small sub-context (e.g. the auth password
-// block); humanBytes formats a byte count for the stats section.
+// On a loopback bind the only callers are this machine's, and they name it
+// by a loopback address. A page rebound to 127.0.0.1 under its own name
+// sends that name instead, and would otherwise reach every route a session
+// with no password can.
+func (s *Server) hostMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.cfg.Current()
+		if desktop.IsLoopbackAddr(cfg.Server.BindAddress) && !desktop.IsLoopbackAddr(r.Host) && !sameHost(r.Host, cfg.Server.BaseURL) {
+			http.Error(w, "monloader answers only to a loopback address or its base_url host", http.StatusMisdirectedRequest)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func sameHost(host, baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		h = host
+	}
+	return strings.EqualFold(strings.Trim(h, "[]"), u.Hostname())
+}
+
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
 		"dict": func(pairs ...any) map[string]any {
@@ -335,28 +327,22 @@ func templateFuncs() template.FuncMap {
 	}
 }
 
-// browseURL builds one directory picker entry's navigation target. hx-get is
-// not a URL attribute to html/template, so a path is only HTML-escaped there:
-// a folder named "R&D" or "a+b" would arrive at the handler cut in half or
-// with its plus decoded to a space.
+// hx-get is not a URL attribute to html/template, which only HTML-escapes
+// it: "R&D" or "a+b" would reach the handler mangled.
 func browseURL(into, path string) string {
 	return "/internal/browse?" + url.Values{"into": {into}, "path": {path}}.Encode()
 }
 
-// docPage resolves a page (optionally with a fragment) under the documentation
-// root, so a deep link follows a DocURL overridden at build time instead of
-// pinning the shipped host.
+// Derived from DocURL so a build-time override moves the deep links too.
 func docPage(page string) string {
 	return strings.TrimSuffix(DocURL, "index.html") + page
 }
 
-// moreOrder is the order the hidden-item summary reads in, and the whole set
-// of words it can use.
+// Every word moreBucket can return must be listed here, or its count is
+// dropped.
 var moreOrder = []string{"downloading", "created", "duplicate", "enriched",
 	"replaced", "skipped", "failed", "canceled"}
 
-// moreBucket is the word one item counts under. An item not yet at a terminal
-// outcome is still downloading.
 func moreBucket(it queue.Item) string {
 	switch {
 	case it.ErrorCode == outcome.ErrCodeCanceled:
@@ -378,8 +364,6 @@ func moreBucket(it queue.Item) string {
 	}
 }
 
-// moreSummary describes the items hidden behind a "+N more" toggle as a compact
-// "3 downloading, 2 created" by state - only the non-zero parts.
 func moreSummary(items []queue.Item) string {
 	n := map[string]int{}
 	for _, it := range items {
@@ -394,16 +378,10 @@ func moreSummary(items []queue.Item) string {
 	return strings.Join(parts, ", ")
 }
 
-// maxQueueItems caps how many of a job's items render before a "+N more"
-// toggle, so a large pool or search does not fill the screen at once.
 const maxQueueItems = 20
 
-// pageSize is the row count per page for the queue and the contribution log.
 const pageSize = 20
 
-// humanSince formats how long ago t was, compactly, for the narrow sites
-// state column: "just now", "5m ago", "2h ago", "3d ago". A zero time renders
-// empty.
 func humanSince(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -421,15 +399,10 @@ func humanSince(t time.Time) string {
 	}
 }
 
-// stampLocal is the absolute form shown on hover beside the relative time,
-// in the process timezone (time.Local, driven by TZ) so it matches the
-// operator's wall clock. The zone name is part of the format rather than a
-// fixed "UTC", so the stamp still says which clock it is on.
 func stampLocal(t time.Time) string {
 	return t.In(time.Local).Format("2006-01-02 15:04 MST")
 }
 
-// humanBytes formats a byte count with binary units (KiB, MiB, ...).
 func humanBytes(b int64) string {
 	const unit = 1024
 	if b < unit {
@@ -454,39 +427,28 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// base returns the template data common to every page.
 func (s *Server) base(r *http.Request, nav, title string) map[string]any {
 	conn, connVer := s.monbooruStatusSeed()
 	return map[string]any{
-		"Title":            title,
-		"ActiveNav":        nav,
-		"CSRFToken":        s.csrfToken(sessionFromContext(r.Context())),
-		"AuthEnabled":      s.cfg.Current().Auth.EnablePassword,
-		"Version":          Version,
-		"Build":            BuildLabel(),
-		"GalleryDLVersion": s.catalog.Version(),
-		"RepoURL":          RepoURL,
-		"DocURL":           DocURL,
-		"CustomCSS":        s.cfg.Current().Server.CustomCSS != "",
-		"BooruName":        s.booruName(),
-		"BooruLogo":        s.booruLogoURL(),
-		"BooruFavicon":     s.booruFaviconURL(),
-		"Conn":             conn,
-		"MonbooruVersion":  connVer,
-		// Paused backs the topbar pause control, which also polls to reflect a
-		// pause toggled elsewhere (e.g. from monsender).
-		"Paused": s.queue.Paused(),
-		// MonbooruPaired gates the footer "connected to monbooru" light: it
-		// renders (and polls) only while a monbooru pairing exists.
-		"MonbooruPaired": s.hasPairedToken("monbooru"),
-		// Synchronously known reachability: an unset API URL is definitively
-		// unreachable, so the add/queue banner and the blocked submit render
-		// server-side at once. A configured-but-down instance is left to the
-		// async connectivity light to surface.
+		"Title":              title,
+		"ActiveNav":          nav,
+		"CSRFToken":          s.csrfToken(sessionFromContext(r.Context())),
+		"AuthEnabled":        s.cfg.Current().Auth.EnablePassword,
+		"Version":            Version,
+		"Build":              BuildLabel(),
+		"GalleryDLVersion":   s.catalog.Version(),
+		"RepoURL":            RepoURL,
+		"DocURL":             DocURL,
+		"CustomCSS":          s.cfg.Current().Server.CustomCSS != "",
+		"BooruName":          s.booruName(),
+		"BooruLogo":          s.booruLogoURL(),
+		"BooruFavicon":       s.booruFaviconURL(),
+		"Conn":               conn,
+		"MonbooruVersion":    connVer,
+		"Paused":             s.queue.Paused(),
+		"MonbooruPaired":     s.hasPairedToken("monbooru"),
 		"MonbooruConfigured": s.monbooruConfigured(),
-		// Browser-facing monbooru base for the footer "connected to monbooru"
-		// link, or "" when no web_url is set, in which case the word renders plain.
-		"MonbooruWebURL": s.monbooruWebLink(),
+		"MonbooruWebURL":     s.monbooruWebLink(),
 	}
 }
 
@@ -501,8 +463,6 @@ func (s *Server) render(w http.ResponseWriter, name string, data any) {
 	_, _ = buf.WriteTo(w)
 }
 
-// serveConfigured serves an operator-supplied file; an empty config 404s so
-// the layout falls back to the bundled asset.
 func serveConfigured(w http.ResponseWriter, r *http.Request, path string) {
 	if path == "" {
 		http.NotFound(w, r)
@@ -515,33 +475,20 @@ func (s *Server) serveCustomCSS(w http.ResponseWriter, r *http.Request) {
 	serveConfigured(w, r, s.cfg.Current().Server.CustomCSS)
 }
 
-// serveCustomLogo serves the operator-supplied logo/favicon pointed at by
-// server.logo.
 func (s *Server) serveCustomLogo(w http.ResponseWriter, r *http.Request) {
 	serveConfigured(w, r, s.cfg.Current().Server.BooruLogo)
 }
 
-// booruName resolves server.name with a "monloader" fallback so every
-// wordmark callsite reads one source of truth.
 func (s *Server) booruName() string {
-	if name := s.cfg.Current().Server.BooruName; name != "" {
-		return name
-	}
-	return "monloader"
+	return cmp.Or(s.cfg.Current().Server.BooruName, "monloader")
 }
 
-// titleName is booruName for the browser tab: the stock name is capitalized
-// there, while an operator-set server.name is used verbatim.
+// The stock name is capitalized only in the browser tab; a configured
+// name is verbatim.
 func (s *Server) titleName() string {
-	if name := s.cfg.Current().Server.BooruName; name != "" {
-		return name
-	}
-	return "Monloader"
+	return cmp.Or(s.cfg.Current().Server.BooruName, "Monloader")
 }
 
-// configuredAsset points at /custom.logo when a server.logo override is
-// configured, the given bundled asset otherwise. One override backs both the
-// topbar logo and the favicon; only the unset fallback differs.
 func (s *Server) configuredAsset(fallback string) string {
 	if s.cfg.Current().Server.BooruLogo != "" {
 		return "/custom.logo"
@@ -553,14 +500,9 @@ func (s *Server) booruLogoURL() string { return s.configuredAsset("/static/logo.
 
 func (s *Server) booruFaviconURL() string { return s.configuredAsset("/static/favicon.png") }
 
-// updateConfig applies fn to a fresh copy of the running config and, once it is
-// persisted, publishes that copy through the provider. The current snapshot is
-// never mutated in place, so the worker goroutine and request handlers reading
-// the config never observe a half-updated struct. Persistence targets the
-// on-disk file layer (reloaded without MONLOADER_* overrides) so an ephemeral
-// env value, like a token from the container env, is never baked into
-// monloader.toml. fn must be idempotent: it runs against both the runtime copy
-// and the file layer.
+// fn runs twice, on a copy of the runtime config and on the file layer, so it
+// must be idempotent. The file layer is reloaded without MONLOADER_*
+// overrides, so an env value is never baked into monloader.toml.
 func (s *Server) updateConfig(fn func(*config.Config) error) error {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
@@ -575,8 +517,8 @@ func (s *Server) updateConfig(fn func(*config.Config) error) error {
 	if err := fn(persist); err != nil {
 		return err
 	}
-	// The runtime copy keeps absolute paths; the file keeps the ones under
-	// a portable folder relative, so what settings writes travels with it.
+	// The file keeps paths under a portable folder relative, so the
+	// folder can move.
 	config.RelativizeIn(persist, s.portableBase)
 	if err := config.Save(persist, s.configPath); err != nil {
 		return err
@@ -585,27 +527,18 @@ func (s *Server) updateConfig(fn func(*config.Config) error) error {
 	return nil
 }
 
-// rewriteGDLConfig regenerates the managed gallery-dl config after a settings
-// change that affects it (credentials, sleep, raw passthrough).
 func (s *Server) rewriteGDLConfig() {
 	if err := gdl.WriteManagedConfig(s.cfg.Current(), s.mapper.FlatTagSites(), s.mapper.MetadataSites(), s.mapper.NotesSites(), s.mapper.SiteOptions()); err != nil {
 		logx.Warnf("rewriting managed gallery-dl config: %v", err)
 	}
 }
 
-// monbooruConfigured reports whether a monbooru instance is set up to push to.
-// An empty API URL means none is, which the UI treats as unreachable without a
-// connectivity probe - there is no host to dial.
 func (s *Server) monbooruConfigured() bool {
 	return s.cfg.Current().Monbooru.APIURL != ""
 }
 
-// checkMonbooru returns "ok", "unpaired" (no token to authenticate with yet),
-// "rejected" (monbooru answered but refused the token), or "down" (no response)
-// from a short-lived connectivity probe, plus the monbooru version when the
-// probe succeeds ("" otherwise). Separating unpaired and rejected keeps a
-// first-run instance from claiming a token was refused, and rejected from
-// reading as an outage.
+// unpaired and rejected stay apart from each other and from down: a first
+// run must not read as a refused token, nor a refusal as an outage.
 func (s *Server) checkMonbooru(ctx context.Context) (status, version string) {
 	if !s.monbooruConfigured() {
 		return "unconfigured", ""
@@ -626,25 +559,14 @@ func (s *Server) checkMonbooru(ctx context.Context) (status, version string) {
 	return "down", ""
 }
 
-// monbooruStatusTTL bounds how often the footer light re-probes monbooru, so a
-// burst of navigations (each firing the light's load poll) reuses one probe
-// instead of one per page. Kept under the 15s poll cadence so an open page
-// still refreshes on schedule.
+// Under the light's 15s poll, so an open page still refreshes on schedule.
 const monbooruStatusTTL = 10 * time.Second
 
-// monbooruPaused reports whether the operator has held the link from the footer
-// light. Read from config so a paused pairing is told apart from an
-// unconfigured or unreachable one.
 func (s *Server) monbooruPaused() bool {
 	return s.cfg.Current().Monbooru.Paused
 }
 
-// monbooruStatusSeed returns the last cached probe result without probing, for
-// seeding a page's initial light so it shows its last known state rather than
-// re-checking. A cold cache reads "checking".
 func (s *Server) monbooruStatusSeed() (status, version string) {
-	// An address that was never entered is not a monbooru that stopped
-	// answering, and the two want different things from the operator.
 	if !s.monbooruConfigured() {
 		return "unconfigured", ""
 	}
@@ -659,13 +581,9 @@ func (s *Server) monbooruStatusSeed() (status, version string) {
 	return s.monbooruConn, s.monbooruVersion
 }
 
-// monbooruStatusCached probes monbooru at most once per monbooruStatusTTL and
-// serves the cached result otherwise, so the light's per-navigation poll does
-// not re-probe on every page load. The probe runs without the lock held so a
-// slow monbooru never serializes concurrent page renders.
+// The probe runs unlocked so a slow monbooru never serializes page renders.
 func (s *Server) monbooruStatusCached(ctx context.Context) (status, version string) {
-	// A paused link is never probed: the point of the kill switch is that
-	// monloader stops reaching for monbooru until the operator resumes.
+	// A paused link is never probed: that is the kill switch.
 	if s.monbooruPaused() {
 		return "paused", ""
 	}

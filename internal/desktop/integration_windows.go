@@ -2,13 +2,9 @@ package desktop
 
 import "golang.org/x/sys/windows/registry"
 
-// runKey holds the per-user programs the shell starts at login. A registry
-// value rather than a Startup-folder shortcut on purpose: a .lnk means COM
-// and IShellLink, where this is a string.
+// A Run value, not a Startup-folder .lnk, which would need COM and IShellLink.
 const runKey = `Software\Microsoft\Windows\CurrentVersion\Run`
 
-// The installer writes the Start Menu and Desktop shortcuts, so the app
-// writing its own menu entry would only duplicate them.
 func menuSupported() bool { return false }
 
 func autostartSupported() bool { return true }
@@ -38,17 +34,18 @@ func enableAutostart(h Hook) error {
 	return k.SetStringValue(h.App, runValue())
 }
 
-// runValue is the Run entry's command line. The shell splits it with
-// CommandLineToArgvW, which knows plain double quotes and none of the
-// .desktop escaping LaunchCommand applies - a `$` or a backtick in the
-// install path (both legal here) would otherwise name a file that does not
-// exist, and start-at-login would silently stop working.
+// CreateProcess parses this, where a backslash is special only before a
+// quote, so LaunchCommand's .desktop escaping would be wrong here.
 func runValue() string {
-	exe := Program()
+	exe, args := launchTarget()
 	if exe == "" {
 		return ""
 	}
-	return `"` + exe + `" -desktop`
+	out := `"` + exe + `"`
+	for _, a := range args {
+		out += " " + a
+	}
+	return out
 }
 
 func disableAutostart(app string) error {

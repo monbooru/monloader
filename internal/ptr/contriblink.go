@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// ContribItemLabel renders a contribution's identity for a row: the mapping
-// tag with a short hash, or the pair.
 func ContribItemLabel(kind, tag, tag2 string, hash []byte) string {
 	switch kind {
 	case ContribMappingAdd, ContribMappingPetition:
@@ -21,9 +19,6 @@ func ContribItemLabel(kind, tag, tag2 string, hash []byte) string {
 	}
 }
 
-// ContribQueueLabel phrases a contribution for a queue item row, leading with a
-// word that names what it is so the subject reads without a separate kind
-// column. The image the mapping hangs off is the row's link, not its text.
 func ContribQueueLabel(kind, tag, tag2 string) string {
 	switch kind {
 	case ContribMappingAdd:
@@ -42,10 +37,6 @@ func ContribQueueLabel(kind, tag, tag2 string) string {
 	return tag
 }
 
-// ContribItemLink resolves a contribution's monbooru detail URL: the image by
-// hash for mapping kinds, the tag the relation hangs off for pair kinds (the
-// alias or the child, via the tags-page name filter). Empty when nothing
-// resolves.
 func ContribItemLink(base, kind, tag string, hash []byte) string {
 	if base == "" {
 		return ""

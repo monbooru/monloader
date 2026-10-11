@@ -1,0 +1,7 @@
+{
+  "family": "generic",
+  "kind": "booru",
+  "post_url_template": "https://lefty.pictures/post/view/{id}",
+  "auth": "none",
+  "example": "https://lefty.pictures/post/view/100"
+}

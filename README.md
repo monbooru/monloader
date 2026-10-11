@@ -23,6 +23,7 @@ It also runs in reverse: for a file monbooru already holds, monloader looks up i
 - **Any gallery-dl site.** 50+ shipped profiles for the booru families and manga/comic sites, and everything else gallery-dl supports works through a generic fallback.
 - **Update gallery-dl.** When a site fix lands in a gallery-dl release, install it (or roll back) without waiting for a new monloader version.
 - **Queue management.** Each download shows whether it was added, was already in your library, got skipped, or failed so you can see at a glance what happened to every item. 
+- **Watch a search.** Save a tag search or an artist page and monloader checks it again on a schedule, downloading only the posts it has not fetched yet.
 - **Find tags by file hash or image similarity.** Paste an image's md5 to import the matching booru post, or have monbooru fetch tags for a file it already holds; monloader walks the sources you pick in order: exact md5 searches, plus iqdb and SauceNAO similarity lookups that find re-encoded copies from the image's thumbnail. An optional local copy of the Hydrus Public Tag Repository adds offline sha256 lookups.
 
 ---

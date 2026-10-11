@@ -1,9 +1,6 @@
 #!/bin/sh
-# packaging/build-aur.sh
-#
-# Stamps packaging/aur/PKGBUILD with this version and the checksum of the
-# tag's source tarball, and writes it with a generated .SRCINFO into
-# dist/aur/ for pushing to the AUR.
+# Stamps packaging/aur/PKGBUILD with this version and the tag tarball's
+# checksum, and writes it with a generated .SRCINFO into dist/aur/.
 set -eu
 
 . ./packaging/release-env.sh

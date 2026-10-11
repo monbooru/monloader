@@ -10,14 +10,6 @@ import (
 	"net/url"
 )
 
-// The account-management and write requests the contribution feature
-// adds to the client. Unlike the read side's get, these surface the
-// server's JSON error verbatim (a janitor's ban text, the velocity
-// refusal) instead of the bare status line, because the operator is
-// meant to read them.
-
-// SetAccessKey re-points the client at a new key with no restart; the
-// next request (sync included) uses it.
 func (c *client) SetAccessKey(key string) {
 	c.keyMu.Lock()
 	c.accessKey = key
@@ -30,11 +22,22 @@ func (c *client) key() string {
 	return c.accessKey
 }
 
-// doContrib issues one request and returns the body; a non-200 answer
-// parses into a *ServerError (wrapped retryable when transient) so the
-// caller can branch on the server's own status and message.
+func (c *client) setAddress(addr string) {
+	c.keyMu.Lock()
+	c.addr = addr
+	c.keyMu.Unlock()
+}
+
+func (c *client) address() string {
+	c.keyMu.RLock()
+	defer c.keyMu.RUnlock()
+	return c.addr
+}
+
+// Unlike get, doContrib keeps the server's own error text (a ban reason,
+// the velocity refusal) in a *ServerError: the operator reads it.
 func (c *client) doContrib(ctx context.Context, method, path string, q url.Values, body io.Reader) ([]byte, error) {
-	u := c.addr + path
+	u := c.address() + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
@@ -44,8 +47,7 @@ func (c *client) doContrib(ctx context.Context, method, path string, q url.Value
 	}
 	req.Header.Set("Hydrus-Key", c.key())
 	if method == http.MethodPost {
-		// hydrus's documented type for its POST bodies, which are
-		// zlib-compressed JSON; the server inflates regardless.
+		// hydrus documents this type for its zlib-compressed JSON bodies.
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.hc.Do(req)
@@ -53,9 +55,8 @@ func (c *client) doContrib(ctx context.Context, method, path string, q url.Value
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// Go's *url.Error carries the full URL, and the account paths put a
-		// single-use key in the query string; this message is rendered to the
-		// operator, so report the path and the cause only.
+		// *url.Error carries the full URL, and the account paths put a
+		// key in the query string.
 		var uerr *url.Error
 		if errors.As(err, &uerr) {
 			err = uerr.Err
@@ -77,7 +78,6 @@ func (c *client) doContrib(ctx context.Context, method, path string, q url.Value
 	return raw, nil
 }
 
-// AccountTypes fetches the repository's auto-creatable account types.
 func (c *client) AccountTypes(ctx context.Context) ([]AccountType, error) {
 	raw, err := c.doContrib(ctx, http.MethodGet, "/auto_create_account_types", nil, nil)
 	if err != nil {
@@ -86,8 +86,6 @@ func (c *client) AccountTypes(ctx context.Context) ([]AccountType, error) {
 	return parseAccountTypes(raw)
 }
 
-// keyRequest GETs one of the account handshake's key endpoints, which each
-// take a single query parameter and answer a single hex field.
 func (c *client) keyRequest(ctx context.Context, path, param, value, field string) (string, error) {
 	raw, err := c.doContrib(ctx, http.MethodGet, path, url.Values{param: {value}}, nil)
 	if err != nil {
@@ -96,23 +94,18 @@ func (c *client) keyRequest(ctx context.Context, path, param, value, field strin
 	return parseKeyResponse(raw, field)
 }
 
-// RegistrationKey requests a single-use registration key for the given
-// account type. The velocity refusal comes back as a *ServerError with
-// status 400: unavailable-now, not malformed - the request is built
-// from a type the server just served.
+// RegistrationKey gets a 400 at the server's account-creation velocity
+// limit: not now, rather than malformed.
 func (c *client) RegistrationKey(ctx context.Context, accountTypeKey string) (string, error) {
 	return c.keyRequest(ctx, "/auto_create_registration_key", "account_type_key", accountTypeKey, "registration_key")
 }
 
-// RedeemAccessKey trades a registration key for the account's access
-// key. Redemption is single-use server-side; the caller must persist
-// the returned key immediately.
+// RedeemAccessKey is single-use server-side, so the caller must persist
+// the key at once.
 func (c *client) RedeemAccessKey(ctx context.Context, registrationKey string) (string, error) {
 	return c.keyRequest(ctx, "/access_key", "registration_key", registrationKey, "access_key")
 }
 
-// Account fetches the current account's state: type, permissions,
-// creation time, ban and janitor message.
 func (c *client) Account(ctx context.Context) (*Account, error) {
 	raw, err := c.doContrib(ctx, http.MethodGet, "/account", nil, nil)
 	if err != nil {
@@ -121,7 +114,6 @@ func (c *client) Account(ctx context.Context) (*Account, error) {
 	return parseAccountResponse(raw)
 }
 
-// FetchTagFilter fetches the repository's live tag filter.
 func (c *client) FetchTagFilter(ctx context.Context) (*TagFilter, error) {
 	raw, err := c.doContrib(ctx, http.MethodGet, "/tag_filter", nil, nil)
 	if err != nil {
@@ -130,7 +122,6 @@ func (c *client) FetchTagFilter(ctx context.Context) (*TagFilter, error) {
 	return parseTagFilter(raw)
 }
 
-// PostUpdate uploads one encoded ClientToServerUpdate.
 func (c *client) PostUpdate(ctx context.Context, u *C2SUpdate) error {
 	body, err := u.EncodePOSTBody()
 	if err != nil {

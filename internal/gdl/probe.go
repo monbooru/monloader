@@ -7,12 +7,15 @@ import (
 	"github.com/monbooru/monloader/internal/outcome"
 )
 
-// Probe runs a live per-site connectivity check: `gallery-dl -j --range 1-1`
-// against the example/supplied URL with the configured credentials, mapping the
-// result to ok / auth_required / failed. A zero exit alone is not enough:
-// gallery-dl reports auth and extraction errors as a [-1, {error}] message while
-// still exiting 0, so the output is parsed before reporting ok.
+// A zero exit is not enough: gallery-dl reports auth and extraction
+// errors in the output and still exits 0.
 func (t *Tool) Probe(ctx context.Context, exampleURL string) (ProbeResult, error) {
+	res, err := t.probe(ctx, exampleURL)
+	res.Detail = t.redactText(res.Detail)
+	return res, err
+}
+
+func (t *Tool) probe(ctx context.Context, exampleURL string) (ProbeResult, error) {
 	args := t.configArgs()
 	args = append(args, "-j", "--range", "1-1", exampleURL)
 	res, err := t.run(ctx, args...)
@@ -32,7 +35,6 @@ func (t *Tool) Probe(ctx context.Context, exampleURL string) (ProbeResult, error
 	return ProbeResult{Status: ProbeOK}, nil
 }
 
-// probeFromError maps a classified gallery-dl error to a probe status.
 func probeFromError(e *outcome.CodedError) ProbeResult {
 	status := ProbeFailed
 	switch e.Code {

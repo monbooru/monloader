@@ -4,10 +4,8 @@ package ptr
 
 import "golang.org/x/sys/windows"
 
-// freeBytes returns the bytes available to an unprivileged user on the volume
-// holding path. syscall.Statfs is unix-only, so Windows uses
-// GetDiskFreeSpaceEx's FreeBytesAvailableToCaller, which already accounts for
-// per-user quotas. The path may be relative or "." (the current volume).
+// freeBytes reports FreeBytesAvailableToCaller, which honors per-user
+// quotas.
 func freeBytes(path string) (uint64, error) {
 	dir, err := windows.UTF16PtrFromString(path)
 	if err != nil {

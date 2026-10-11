@@ -9,9 +9,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// The tray is in the Windows build rather than behind a tag: it costs no
-// CGo here, and a GUI-subsystem binary otherwise shows no sign of running
-// at all.
+// Not behind the tray tag: no CGo here, and a GUI-subsystem binary
+// otherwise shows no sign of running.
 
 var (
 	user32   = windows.NewLazySystemDLL("user32.dll")
@@ -43,7 +42,6 @@ var (
 const (
 	wmDestroy      = 0x0002
 	wmClose        = 0x0010
-	wmCommand      = 0x0111
 	wmLButtonUp    = 0x0202
 	wmRButtonUp    = 0x0205
 	wmTrayCallback = 0x0400 + 1 // WM_APP + 1
@@ -116,16 +114,13 @@ type notifyIconData struct {
 	HBalloonIcon     windows.Handle
 }
 
-// TrayAvailable reports whether this build has a tray at all, which is what
-// decides whether Settings offers a switch for it.
 func TrayAvailable() bool { return true }
 
-// RunTray serves the tray until ctx is done. It blocks on a message pump,
-// which the Windows API requires to own its thread for the window's whole
-// life, so the goroutine is locked to one.
+// RunTray locks its goroutine to one thread: the message pump must own it
+// for the window's whole life.
 func RunTray(ctx context.Context, m TrayMenu) error {
-	// Call panics when a proc's DLL cannot load - real on a session with no
-	// window station - and a goroutine panic costs the whole process.
+	// Call panics if the DLL cannot load, as on a session with no window
+	// station, and that takes the process down.
 	for _, p := range []*windows.LazyProc{procRegisterClassEx, procShellNotifyIcon} {
 		if err := p.Find(); err != nil {
 			return fmt.Errorf("tray unavailable: %w", err)
@@ -139,8 +134,8 @@ func RunTray(ctx context.Context, m TrayMenu) error {
 	if err != nil {
 		return err
 	}
-	// The shell broadcasts this when the taskbar comes up: a login launch
-	// can add its icon first, and an explorer restart drops every icon.
+	// Broadcast when the taskbar comes up; an explorer restart drops
+	// every icon.
 	taskbarCreatedName, err := windows.UTF16PtrFromString("TaskbarCreated")
 	if err != nil {
 		return err
@@ -162,12 +157,8 @@ func RunTray(ctx context.Context, m TrayMenu) error {
 			}
 			return 0
 		case wmClose:
-			// The tray window is the only one this process owns, so a close
-			// from outside - the installer's restart manager, the shell -
-			// means close the app, not just the icon. Destroying the window
-			// alone would leave the server running with nothing to reach it
-			// by. Idempotent: the app's own shutdown posts this too, and by
-			// then the quit has already fired.
+			// Our only window: an outside close, such as the installer's
+			// restart manager, quits the app, not just the icon.
 			if m.Quit != nil {
 				go m.Quit()
 			}
@@ -195,9 +186,8 @@ func RunTray(ctx context.Context, m TrayMenu) error {
 		return fmt.Errorf("register tray window class: %w", callErr)
 	}
 
-	// A hidden window that only receives the icon's clicks. Top-level on
-	// purpose: an HWND_MESSAGE window never gets the TaskbarCreated
-	// broadcast.
+	// Top-level, not HWND_MESSAGE: a message-only window never gets the
+	// TaskbarCreated broadcast.
 	h, _, callErr := procCreateWindowEx.Call(
 		0, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(className)),
 		0, 0, 0, 0, 0, 0, 0, instance, 0,
@@ -216,13 +206,10 @@ func RunTray(ctx context.Context, m TrayMenu) error {
 	}
 	nid.CbSize = uint32(unsafe.Sizeof(nid))
 	copyUTF16(nid.SzTip[:], m.Title)
-	// A failed add is not fatal: at login the taskbar may not exist yet,
-	// and the TaskbarCreated broadcast re-runs it once it does.
+	// May fail at login before the taskbar exists; TaskbarCreated re-adds it.
 	procShellNotifyIcon.Call(nimAdd, uintptr(unsafe.Pointer(&nid)))          //nolint:errcheck
 	defer procShellNotifyIcon.Call(nimDelete, uintptr(unsafe.Pointer(&nid))) //nolint:errcheck
 
-	// Shutting the app down has to reach the pump, which only wakes on a
-	// message.
 	go func() {
 		<-ctx.Done()
 		procPostMessage.Call(uintptr(hwnd), wmClose, 0, 0) //nolint:errcheck
@@ -239,8 +226,7 @@ func RunTray(ctx context.Context, m TrayMenu) error {
 	}
 }
 
-// showTrayMenu builds the menu fresh on every right-click so the
-// start-at-login tick reflects what is on disk right now.
+// Built per right-click so the start-at-login tick matches the disk.
 func showTrayMenu(hwnd windows.Handle, m TrayMenu) {
 	menu, _, _ := procCreatePopupMenu.Call()
 	if menu == 0 {
@@ -258,8 +244,8 @@ func showTrayMenu(hwnd windows.Handle, m TrayMenu) {
 	}
 	appendItem(menu, mfString, menuQuit, "Quit")
 
-	// Without foreground ownership the menu never closes when the user
-	// clicks elsewhere - a documented quirk of tray menus.
+	// Without foreground ownership the menu does not close on a click
+	// elsewhere.
 	procSetForegroundWin.Call(uintptr(hwnd)) //nolint:errcheck
 	var pt point
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt))) //nolint:errcheck
@@ -289,8 +275,6 @@ func appendItem(menu, flags, id uintptr, text string) {
 	procAppendMenu.Call(menu, flags, id, uintptr(unsafe.Pointer(p))) //nolint:errcheck
 }
 
-// trayIcon loads the .ico shipped beside the executable, falling back to
-// the stock application icon so the tray always has something to draw.
 func trayIcon(path string) windows.Handle {
 	if path != "" {
 		if p, err := windows.UTF16PtrFromString(path); err == nil {
@@ -305,8 +289,6 @@ func trayIcon(path string) windows.Handle {
 	return windows.Handle(h)
 }
 
-// copyUTF16 writes s into a fixed-width UTF-16 field, truncated to fit and
-// always NUL-terminated.
 func copyUTF16(dst []uint16, s string) {
 	encoded := windows.StringToUTF16(s)
 	if len(encoded) > len(dst) {

@@ -1,0 +1,9 @@
+{
+  "family": "generic",
+  "kind": "other",
+  "auth": "cookies",
+  "example": "https://fantia.jp/posts/1166373",
+  "rating_overrides": {
+    "adult": "explicit"
+  }
+}

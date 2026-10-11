@@ -9,9 +9,6 @@ import (
 	"github.com/monbooru/monloader/internal/logx"
 )
 
-// ListExtractors runs `gallery-dl --list-extractors` and parses the blocks into
-// the supported-site list. Instance extractors (danbooru, gelbooru, ...) print a
-// blank category, which is preserved.
 func (t *Tool) ListExtractors(ctx context.Context) ([]Extractor, error) {
 	out, err := t.runOut(ctx, append(t.configArgs(), "--list-extractors")...)
 	if err != nil {
@@ -20,9 +17,8 @@ func (t *Tool) ListExtractors(ctx context.Context) ([]Extractor, error) {
 	return parseExtractors(out), nil
 }
 
-// parseExtractors splits the listing into blocks and pulls Category /
-// Subcategory / Example from each. A block counts once any of those is set, so
-// an instance extractor's blank category is not dropped.
+// Instance extractors (danbooru, gelbooru) print a blank category, so a
+// block counts once any field is set.
 func parseExtractors(data []byte) []Extractor {
 	var out []Extractor
 	var cur Extractor
@@ -42,7 +38,7 @@ func parseExtractors(data []byte) []Extractor {
 		}
 		key, val, ok := splitField(line)
 		if !ok {
-			// A non field line starts a new block (the extractor class name).
+			// A non-field line is the next extractor's class name.
 			flush()
 			continue
 		}
@@ -66,9 +62,8 @@ func parseExtractors(data []byte) []Extractor {
 	return out
 }
 
-// splitCategoryLine parses the value of a "Category:" line. Real gallery-dl
-// prints it as "<category> - Subcategory: <subcategory>" (with an empty
-// category for instance extractors); older output prints the category alone.
+// gallery-dl prints "<category> - Subcategory: <subcategory>"; older
+// releases print the category alone.
 func splitCategoryLine(val string) (category, subcategory string) {
 	if i := strings.Index(strings.ToLower(val), "subcategory:"); i >= 0 {
 		subcategory = strings.TrimSpace(val[i+len("subcategory:"):])
@@ -78,19 +73,16 @@ func splitCategoryLine(val string) (category, subcategory string) {
 	return val, ""
 }
 
-// splitField parses a "Key: value" line, tolerating optional whitespace
-// before the colon ("Example : url"). Returns ok=false when there is no colon.
 func splitField(line string) (key, val string, ok bool) {
-	idx := strings.IndexByte(line, ':')
-	if idx <= 0 {
+	key, val, found := strings.Cut(line, ":")
+	if !found || key == "" {
 		return "", "", false
 	}
-	key = strings.TrimSpace(line[:idx])
-	val = strings.TrimSpace(line[idx+1:])
+	key = strings.TrimSpace(key)
 	if strings.ContainsAny(key, " \t") {
-		// "Key Word: value" is not a recognised field label; treat the whole
-		// line as a block header (e.g. a URL with a scheme colon).
+		// A space in the key means a header line, such as a URL with a
+		// scheme colon.
 		return "", "", false
 	}
-	return key, val, true
+	return key, strings.TrimSpace(val), true
 }

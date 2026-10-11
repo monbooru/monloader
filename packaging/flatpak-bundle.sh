@@ -1,6 +1,4 @@
 #!/bin/sh
-# packaging/flatpak-bundle.sh
-#
 # Installs the runtime and builds the Flatpak bundle into dist/.
 set -eu
 

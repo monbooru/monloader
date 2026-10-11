@@ -1,5 +1,4 @@
 #!/bin/sh
-# packaging/build-binaries.sh
 # Assembles every downloadable archive into dist/.
 set -eu
 

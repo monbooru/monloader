@@ -16,26 +16,19 @@ import (
 	"time"
 )
 
-// Upstream moved to Codeberg; the GitHub releases are mirrors that carry no
-// assets at all, so the standalone builds are only there. A var so a test
-// can point it at a stub, like the PyPI URL in managed.go.
+// The GitHub releases are mirrors with no assets; the standalone builds
+// are only on Codeberg.
 var releaseBase = "https://codeberg.org/mikf/gallery-dl/releases/download/v"
 
-// errNoAsset says this release publishes nothing for this platform, which is
-// the case the venv fallback exists for. A download that starts and then
-// fails is a different thing and is never fallen back from.
+// Only this falls back to the venv; a download that starts and then fails
+// never does.
 var errNoAsset = errors.New("no published build for this platform")
 
-// standaloneClient bounds the binary download. The metadata client's short
-// timeout covers a whole request including its body, which a 25 MB transfer
-// over a slow link would blow through.
+// Not releaseMetaClient: its timeout covers the whole body, which a 25 MB
+// transfer over a slow link would exceed.
 var standaloneClient = &http.Client{Timeout: 10 * time.Minute}
 
-// standaloneAsset is the published one-file build for one platform, and the
-// name it lands under here. The table is upstream's, not ours: read from the
-// v1.32.9 release, which publishes a Linux amd64 binary and two Windows
-// ones. There is no linux/arm64 and no macOS build, so those platforms fall
-// back to the venv (installVenv in managed.go) or to a gallery-dl on PATH.
+// Upstream's asset names; any other platform falls back to the venv.
 type standaloneAsset struct {
 	Remote string
 	Local  string
@@ -47,21 +40,17 @@ var standaloneAssets = map[string]standaloneAsset{
 	"windows/386":   {Remote: "gallery-dl_x86.exe", Local: "gallery-dl.exe"},
 }
 
-// standaloneForHost returns the asset for the running platform, if any.
 func standaloneForHost() (standaloneAsset, bool) {
 	a, ok := standaloneAssets[runtime.GOOS+"/"+runtime.GOARCH]
 	return a, ok
 }
 
-// maxStandaloneBytes caps the download. The real binary is about 25 MB; the
-// cap is what keeps a redirected or replaced URL from filling the volume
-// that also holds the queue and every credential.
+// The real binary is about 25 MB; the cap keeps a replaced URL from
+// filling the volume that holds the queue and every credential.
 const maxStandaloneBytes int64 = 128 << 20
 
-// installStandalone downloads the published one-file build for version into
-// root and returns the path it landed at. The release publishes a
-// SHA256SUMS beside the assets, so the download is checked against it rather
-// than trusted for arriving over HTTPS.
+// Checked against the release's SHA256SUMS rather than trusted for
+// arriving over HTTPS.
 func installStandalone(ctx context.Context, root, version string, asset standaloneAsset, report InstallProgress) (string, error) {
 	want, err := publishedSHA256(ctx, version, asset.Remote)
 	if err != nil {
@@ -84,13 +73,11 @@ func installStandalone(ctx context.Context, root, version string, asset standalo
 	return dst, nil
 }
 
-// publishedSHA256 reads the release's checksum file and returns the digest
-// for one asset.
 func publishedSHA256(ctx context.Context, version, name string) (string, error) {
 	body, err := fetch(ctx, releaseBase+version+"/SHA256SUMS", 1<<20)
 	if err != nil {
-		// A release too old to have been published here has no checksum
-		// file at all, which is the same answer as no build for us.
+		// A release too old for Codeberg has no checksum file, which
+		// means no build for us.
 		if errors.Is(err, errNotFound) {
 			return "", errNoAsset
 		}
@@ -106,9 +93,8 @@ func publishedSHA256(ctx context.Context, version, name string) (string, error) 
 	return "", errNoAsset
 }
 
-// downloadVerified streams url into dst through a temp file, refusing to
-// publish it unless the bytes hash to want. The percentages match what the
-// venv path emitted, so the panel's progress bar behaves the same either way.
+// Its percentages match the venv path's, so the progress bar behaves the
+// same either way.
 func downloadVerified(ctx context.Context, url, dst, want string, report InstallProgress) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -155,9 +141,6 @@ func downloadVerified(ctx context.Context, url, dst, want string, report Install
 	return os.Rename(tmpName, dst)
 }
 
-// progressReader reports how far a download has got, mapped onto the
-// percentage band the caller reserved for it. A response with no
-// Content-Length reports nothing rather than guessing.
 type progressReader struct {
 	r        io.Reader
 	total    int64
@@ -181,11 +164,8 @@ func (p *progressReader) Read(b []byte) (int, error) {
 	return n, err
 }
 
-// errNotFound distinguishes an absent document from a failed request, so a
-// caller can tell "there is nothing here" from "the fetch broke".
 var errNotFound = errors.New("not found")
 
-// fetch reads a small document whole, bounded.
 func fetch(ctx context.Context, url string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

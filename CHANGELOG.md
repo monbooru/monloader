@@ -1,5 +1,39 @@
 # Changelog
 
+## [v1.13.0] - 2026-10-11
+### Added
+- Save search and schedule them in the Watched tab. ([#28](https://github.com/monbooru/monloader/issues/28))
+- Choose result limits for searches and watches.
+- Pause PTR sync across restarts while complete indexes keep answering lookups. ([#32](https://github.com/monbooru/monloader/issues/32))
+- Add profiles for Fantia, Fur Affinity, Newgrounds, Booruvar, and Leftybooru.
+- Download AVIF and JPEG XL files to monbooru. ([monbooru#132](https://github.com/monbooru/monbooru/issues/132))
+- Rename monbooru galleries through the API without losing configured download targets.
+- Reconnect to monbooru without unpairing first.
+
+### Changed
+- Bundled gallery-dl updated to 1.32.15.
+
+### Fixed
+- Pixiv and Civitai imports preserve per-post links, tags, IDs, and image ratings. ([#30](https://github.com/monbooru/monloader/issues/30), [#29](https://github.com/monbooru/monloader/issues/29))
+- CBZ filenames are safe for monbooru's filesystem, including Windows-backed galleries. ([#31](https://github.com/monbooru/monloader/issues/31))
+- Long gallery-dl output no longer leaves downloads stuck.
+- Changing the UI password signs out all other browser sessions.
+- Switching PTR repositories requires deleting and rebuilding the local index.
+- One job's failure no longer marks an unrelated lookup on the same image as failed.
+- Paheal and Rule34.us posts map to explicit ratings.
+- Shutdown settles pending jobs before draining HTTP requests.
+
+### Removed
+- The 3dbooru profile; bundled gallery-dl no longer ships its extractor.
+
+Thanks to @ivabus for the suggestion (https://github.com/monbooru/monloader/issues/28).
+Thanks to @ElectricTea for the suggestion (https://github.com/monbooru/monloader/issues/32).
+Thanks to @drunkenpeleg for the report (https://github.com/monbooru/monloader/issues/29).
+Thanks to @283375 for the report (https://github.com/monbooru/monloader/issues/30).
+Thanks to @abau2002 for the fix (https://github.com/monbooru/monloader/issues/31).
+
+Co-authored-by: abau2002 <147750789+abau2002@users.noreply.github.com>
+
 ## [v1.12.1] - 2026-09-05
 ### Fixed
 - Fix the AUR build CI.

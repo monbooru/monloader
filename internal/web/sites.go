@@ -12,16 +12,11 @@ import (
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/monbooru"
 )
 
-// searchLimit bounds one add-site search fragment; the note under the list
-// says how many more matched so a broad query is not mistaken for complete.
 const searchLimit = 12
 
-// siteSearchRow is one add-site search hit. Configured hits already have a
-// row in the tables, so their add button is disabled; the rest carry the
-// dataset the shared edit dialog opens from. Family names the mapping
-// profile that would apply (generic when none ships).
 type siteSearchRow struct {
 	Category   string
 	Name       string
@@ -30,11 +25,6 @@ type siteSearchRow struct {
 	Configured bool
 }
 
-// searchSites answers the add-site search box (GET /settings/sites/search)
-// with the supported sites matching the query: the cached extractor list plus
-// every profiled category, by category, subcategory, or the supportedsites
-// display name. Adding stores nothing - the button opens the edit dialog and
-// the site materializes when a save writes something.
 func (s *Server) searchSites(w http.ResponseWriter, r *http.Request) {
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -52,10 +42,9 @@ func (s *Server) searchSites(w http.ResponseWriter, r *http.Request) {
 			matches[ex.Category] = true
 		}
 	}
-	// A multi-instance family is listed under one example host, so its other
-	// profiled instances (aibooru, ...) are only findable by profile name; the
-	// supported rows keep the search working when the boot-time extractor
-	// listing failed.
+	// A multi-instance family lists one host, so its other profiled
+	// instances match only by profile name; the supported rows cover a
+	// failed extractor listing.
 	for _, cat := range s.mapper.CuratedCategories() {
 		if mapping.MatchesQuery(q, cat, supported[cat].Name) {
 			matches[cat] = true
@@ -92,18 +81,10 @@ func (s *Server) searchSites(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "site_search", map[string]any{"Rows": rows, "More": total - len(cats)})
 }
 
-// siteView assembles what the app knows about a category, seeding the auth
-// kind from the bundled supportedsites data when no profile carries one. The
-// seed is a starting point the profile editor can correct; nothing is stored
-// until a save.
 func (s *Server) siteView(category string) mapping.SiteView {
 	return s.mapper.SiteView(category, s.catalog.Supported()[category].Auth)
 }
 
-// siteDialog renders the whole edit dialog (GET /settings/sites/{name}/dialog):
-// the [[sites]] block's values and the effective profile, or for a category
-// without one, a form seeded generic/other with the supportedsites auth kind.
-// Nothing is stored until the form is saved.
 func (s *Server) siteDialog(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !mapping.ValidCategoryName(name) {
@@ -113,9 +94,6 @@ func (s *Server) siteDialog(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "site_dialog", s.siteDialogData(r, name))
 }
 
-// siteOptions answers the private options field's reveal. The dialog renders
-// it empty because the auth tab sends gallery-dl's oauth tokens there, so the
-// stored value crosses the wire only when the operator asks to edit it.
 func (s *Server) siteOptions(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	site := s.cfg.Current().FindSite(name)
@@ -126,15 +104,12 @@ func (s *Server) siteOptions(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "site_options", site.Options)
 }
 
-// siteDialogData builds that view. Split from the handler so a refused save
-// can hand the dialog back carrying what was typed.
 func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 	p, ok := s.mapper.Lookup(name)
 	if !ok {
 		p = mapping.Profile{Family: mapping.FamilyGeneric, Kind: mapping.KindOther, Auth: s.siteView(name).Auth}
 	}
-	// The export tab serializes the stored shape, captured before the
-	// display defaults below pad the form's selects.
+	// Before the display defaults below: the export shows the stored shape.
 	exportJSON, exportLines := exportProfileView(s.mapper, name, p)
 	if p.Kind == "" {
 		p.Kind = mapping.KindBooru
@@ -172,8 +147,8 @@ func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 		data["Gallery"] = site.Gallery
 		data["Label"] = site.Label
 		data["Cookies"] = site.Cookies
-		// Withheld like the credentials beside it: the auth tab tells the
-		// operator to keep their gallery-dl oauth tokens in this field.
+		// Withheld like the credentials: this field holds gallery-dl
+		// oauth tokens.
 		data["HasOptions"] = site.Options != ""
 		data["HasPassword"] = site.Password != ""
 		data["HasAPIKey"] = site.APIKey != ""
@@ -184,13 +159,18 @@ func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 	if galleries, ok := s.galleries(r); ok {
 		data["Galleries"] = galleries
 	}
+	markMissingGallery(data)
 	return data
 }
 
-// refuseSiteSave answers a rejected site save with the settings page carrying
-// the dialog as it was submitted, reopened. Everything the operator typed is
-// still in it - including the cookies export, which is not something anyone
-// wants to fetch a second time.
+// Read off the dialog, not the config: a refused save hands back the
+// target it was sent.
+func markMissingGallery(dialog map[string]any) {
+	galleries, _ := dialog["Galleries"].([]monbooru.Gallery)
+	name, _ := dialog["Gallery"].(string)
+	dialog["GalleryMissing"] = galleries != nil && galleryMissing(name, galleries)
+}
+
 func (s *Server) refuseSiteSave(w http.ResponseWriter, r *http.Request, name, msg string) {
 	dialog := s.siteDialogData(r, name)
 	if p, err := profileFromForm(r); err == nil {
@@ -208,32 +188,23 @@ func (s *Server) refuseSiteSave(w http.ResponseWriter, r *http.Request, name, ms
 	if r.FormValue("options_edit") == "1" {
 		dialog["HasOptions"] = false
 	}
+	markMissingGallery(dialog)
 	data := s.settingsData(r)
 	data["SiteDialog"] = dialog
 	setFlash(data, "err", "sites", msg)
 	s.render(w, "settings", data)
 }
 
-// exportLine is one rendered line of the export tab's profile view.
-// Mark selects the color: "" (as shipped), "add" (a line the built-in
-// does not carry), "del" (a built-in line this profile drops or
-// alters - shown struck, absent from the copied file).
+// Mark is "", "add" or "del"; a del line shows struck and is left out of
+// the copied file.
 type exportLine struct {
 	Text string
 	Mark string
 }
 
-// exportProfileView serializes the effective profile as the shareable
-// profiles/<category>.json content plus its display lines. Both sides
-// marshal through the same encoder, so field order matches and a merge
-// walk over the two colors the delta: a line only the profile has reads
-// added, a line only the built-in has reads struck, and where the two
-// diverge on the same field the replacement is followed by the value it
-// displaced - so a changed line always shows its pair, wherever in the
-// object it sits. Lines match on their content without the trailing
-// comma, so a field that only stopped being the object's last one does
-// not read changed. A category with no built-in gets no colors (the
-// whole file is new, marking every line would say nothing).
+// Both sides go through the same encoder, so field order matches and a merge
+// walk marks the delta; a changed field shows its replacement, then the value
+// it displaced. With no built-in every line would be new, so none is marked.
 func exportProfileView(m *mapping.Mapper, category string, p mapping.Profile) (string, []exportLine) {
 	b, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
@@ -266,8 +237,8 @@ func exportProfileView(m *mapping.Mapper, category string, p mapping.Profile) (s
 			lines = append(lines, exportLine{Text: eff[i]})
 			i, k = i+1, k+1
 		case exportLineIndex(builtin[k:], eff[i]) >= 0:
-			// The profile keeps this line further down, so the built-in lines
-			// before it are ones the profile dropped or altered.
+			// The profile has this line further down: the built-in lines
+			// before it were dropped.
 			lines = append(lines, exportLine{Text: builtin[k], Mark: "del"})
 			k++
 		case exportLineIndex(eff[i:], builtin[k]) >= 0:
@@ -282,26 +253,15 @@ func exportProfileView(m *mapping.Mapper, category string, p mapping.Profile) (s
 	return string(b) + "\n", lines
 }
 
-// sameExportLine compares two rendered lines ignoring the trailing comma
-// that only says where in the object the field landed.
+// The trailing comma only says where in the object the field landed.
 func sameExportLine(a, b string) bool {
 	return strings.TrimSuffix(a, ",") == strings.TrimSuffix(b, ",")
 }
 
-// exportLineIndex is the position of line in lines, or -1.
 func exportLineIndex(lines []string, line string) int {
-	for i, l := range lines {
-		if sameExportLine(l, line) {
-			return i
-		}
-	}
-	return -1
+	return slices.IndexFunc(lines, func(l string) bool { return sameExportLine(l, line) })
 }
 
-// profileFromForm builds the profile the dialog's profile, mapping, and
-// advanced tabs describe. A rule row's spelling is folded to the form the
-// mapper compares; an empty replacement suppresses the tag, an emptied rule
-// field drops the row.
 func profileFromForm(r *http.Request) (mapping.Profile, error) {
 	p := mapping.Profile{
 		Family:        r.FormValue("family"),
@@ -321,8 +281,7 @@ func profileFromForm(r *http.Request) (mapping.Profile, error) {
 	}
 	foldKey := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 	p.RatingOverrides = formPairs(r, "rating_from", "rating_to", foldKey, nil)
-	// The category select's "drop" option means "suppress the tag", which the
-	// profile spells as an empty replacement.
+	// The select's "drop" is the profile's empty replacement: suppress the tag.
 	p.CategoryOverrides = formPairs(r, "cat_from", "cat_to", foldKey, func(to string) string {
 		if to == "drop" {
 			return ""
@@ -339,10 +298,7 @@ func profileFromForm(r *http.Request) (mapping.Profile, error) {
 	return p, nil
 }
 
-// formPairs reads one of the mapping tab's row editors: two parallel form
-// arrays, folded to the spelling the mapper compares. A row with an empty key
-// or no partner is dropped, so an emptied field removes the row; nil is
-// returned when nothing survives, which is how a profile spells "no overrides".
+// nil when no row survives: that is how a profile spells "no overrides".
 func formPairs(r *http.Request, fromKey, toKey string, key, val func(string) string) map[string]string {
 	var out map[string]string
 	tos := r.Form[toKey]
@@ -363,11 +319,8 @@ func formPairs(r *http.Request, fromKey, toKey string, key, val func(string) str
 	return out
 }
 
-// saveSite writes the whole edit dialog (POST /settings/sites/{name}): the
-// site's [[sites]] block and, when the form carries the profile fields, its
-// user profile in the same save. The name becomes a gallery-dl extractor key
-// and, on a cookie paste, a file name under the cookies dir, so anything
-// path-shaped is refused.
+// The name becomes a gallery-dl extractor key and a cookies file name, so
+// anything path-shaped is refused.
 func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := r.ParseForm(); err != nil {
@@ -378,10 +331,8 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		s.redirectFlash(w, r, "err", "invalid site name")
 		return
 	}
-	// The dialog is one form with one save button, so everything it can
-	// refuse is checked before any of it is written: the profile half landing
-	// on disk while the [[sites]] half did not is a save the operator was
-	// told had failed still rewriting every later import from the site.
+	// Everything the dialog can refuse is checked before anything is written,
+	// or a failed save could still leave its profile half on disk.
 	var profile *mapping.Profile
 	if r.Form.Has("family") {
 		p, err := profileFromForm(r)
@@ -408,17 +359,10 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// A pasted Netscape export is written under the cookies dir and the site
-	// pointed at it; the paste box is write-only, so its content is only ever
-	// read here.
 	pastedCookies := ""
 	if strings.TrimSpace(paste) != "" {
 		pastedCookies = filepath.Join(s.cfg.Current().GalleryDL.CookiesDir, name+".txt")
-		err := config.WriteFileAtomic(pastedCookies, func(f *os.File) error {
-			_, err := f.WriteString(paste)
-			return err
-		})
-		if err != nil {
+		if err := config.WriteFileBytesAtomic(pastedCookies, []byte(paste)); err != nil {
 			s.refuseSiteSave(w, r, name, "writing the cookies file: "+err.Error())
 			return
 		}
@@ -429,11 +373,9 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 			c.Sites = append(c.Sites, config.Site{Name: name})
 			site = &c.Sites[len(c.Sites)-1]
 		}
-		// The dialog renders username and user id as their stored values, so an
-		// emptied one reads as "remove this" and is honoured like the gallery
-		// and label beside them; a field the form did not post keeps its value.
-		// The two password-type fields render empty with the placeholder that
-		// states the keep-on-blank rule, so blank there means "leave it".
+		// Username and user id render their stored values, so blank
+		// clears them; the password fields render empty, so blank keeps
+		// the stored value.
 		if r.Form.Has("username") {
 			site.Username = strings.TrimSpace(r.FormValue("username"))
 		}
@@ -458,9 +400,9 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		if pastedCookies != "" {
 			site.Cookies = pastedCookies
 		}
-		// Blank keeps, like the password and the api key: the field renders
-		// empty until it is revealed, so an untouched save must not clear it.
-		if r.Form.Has("options") && r.FormValue("options_edit") == "1" {
+		// Until revealed the field renders empty, so a blank one keeps the
+		// stored value; anything typed replaces it, as with the password.
+		if r.Form.Has("options") && (r.FormValue("options_edit") == "1" || options != "") {
 			site.Options = options
 		}
 		return nil
@@ -473,9 +415,6 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 	s.redirectFlash(w, r, "ok", "site "+name+" saved")
 }
 
-// saveHostLabels writes the host labels table (POST /settings/host-labels):
-// the source label a push stamps for a host outside the profiles. The rows
-// replace the table whole, so an emptied row drops its entry.
 func (s *Server) saveHostLabels(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.redirectFlash(w, r, "err", "bad form")
@@ -508,9 +447,6 @@ func (s *Server) saveHostLabels(w http.ResponseWriter, r *http.Request) {
 	s.redirectFlash(w, r, "ok", "host labels saved")
 }
 
-// resetSiteProfile deletes the site's user profile file
-// (POST /settings/sites/{name}/profile/reset) so the shipped or generic
-// profile shows through again.
 func (s *Server) resetSiteProfile(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := s.mapper.DeleteUserProfile(name); err != nil {
@@ -521,9 +457,8 @@ func (s *Server) resetSiteProfile(w http.ResponseWriter, r *http.Request) {
 	s.redirectFlash(w, r, "ok", "profile for "+name+" reset to the shipped mapping")
 }
 
-// cookieLine reports whether a cookies.txt line is a cookie: seven or more
-// tab-separated fields. A browser export prefixes http-only cookies with
-// "#HttpOnly_", which reads as a comment but is a cookie.
+// A browser export marks http-only cookies "#HttpOnly_", which reads as a
+// comment but is a cookie.
 func cookieLine(line string) bool {
 	line = strings.TrimRight(line, "\r")
 	line = strings.TrimPrefix(line, "#HttpOnly_")
@@ -533,21 +468,10 @@ func cookieLine(line string) bool {
 	return len(strings.Split(line, "\t")) >= 7
 }
 
-// looksLikeNetscapeCookies accepts a paste holding at least one cookie line,
-// so a stray copy of something else is refused before it overwrites a
-// working cookies file.
 func looksLikeNetscapeCookies(s string) bool {
-	for _, line := range strings.Split(s, "\n") {
-		if cookieLine(line) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(strings.Split(s, "\n"), cookieLine)
 }
 
-// countCookies counts a cookies file's cookie lines, 0 when unreadable. The
-// count is the only thing the UI shows about the file - its contents are
-// credentials and are never echoed.
 func countCookies(path string) int {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -562,9 +486,8 @@ func countCookies(path string) int {
 	return n
 }
 
-// refreshSiteLists re-derives the gallery-dl-facing site lists after a
-// profile change: the runner's resolve-pass overrides and the managed config
-// both follow the effective profiles.
+// Call after any profile change: the runner's overrides and the managed
+// config follow the effective profiles.
 func (s *Server) refreshSiteLists() {
 	if rl, ok := s.runner.(interface {
 		SetSiteLists(flatTagSites, metadataSites, notesSites []string)

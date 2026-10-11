@@ -9,14 +9,9 @@ import (
 	"github.com/monbooru/monloader/internal/config"
 )
 
-// debugLogTimeout bounds one debug run: a wall or a hung host must not hold the
-// request open. Longer than the per-site probe's, since this one fetches the
-// file rather than just reading the post.
+// Longer than the site probe's: this run fetches the file, not just the post.
 const debugLogTimeout = 60 * time.Second
 
-// itemDebug backs the queue item's [?]: a GET offers the re-run, a POST makes
-// it and swaps the log in. gallery-dl's error text asks the reporter to re-run
-// with --verbose, which is otherwise only possible from inside the container.
 func (s *Server) itemDebug(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{"CSRFToken": s.csrfToken(sessionFromContext(r.Context()))}
 	url := strings.TrimSpace(r.FormValue("url"))
@@ -40,16 +35,15 @@ func (s *Server) itemDebug(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data["NoExtractor"] = noExtractor
-	// gallery-dl logs request URLs verbatim and the query-parameter booru
-	// families put their key there, so nothing is shown before it is scrubbed.
+	// gallery-dl logs request URLs verbatim, and some boorus take the API
+	// key as a query parameter.
 	text, redacted := config.RedactSecrets(log, s.cfg.Current().Secrets())
 	data["Log"] = debugHeader(url, s.catalog.Version()) + text
 	data["Redacted"] = redacted
 	s.render(w, "item_debug", data)
 }
 
-// debugHeader names the versions and the post a log belongs to. gallery-dl
-// writes its own banner before the log file exists, so this stands in for it.
+// gallery-dl writes its banner before the log file exists, so the log lacks it.
 func debugHeader(url, gdlVersion string) string {
 	return "monloader " + Version + " - gallery-dl " + gdlVersion + "\n" +
 		"url: " + url + "\n" +

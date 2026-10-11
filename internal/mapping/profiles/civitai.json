@@ -1,0 +1,21 @@
+{
+  "family": "generic",
+  "kind": "other",
+  "post_url_template": "https://civitai.red/images/{id}",
+  "auth": "api_optional",
+  "example": "https://civitai.red/images/9173928",
+  "hosts": ["civitai.com", "image.civitai.com", "image-b2.civitai.com"],
+  "rating_overrides": {
+    "1": "general",
+    "2": "sensitive",
+    "4": "questionable",
+    "8": "explicit",
+    "16": "explicit",
+    "32": "explicit",
+    "none": "general",
+    "soft": "sensitive",
+    "mature": "questionable",
+    "x": "explicit"
+  },
+  "options": {"metadata": ["tags"]}
+}

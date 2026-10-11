@@ -46,16 +46,26 @@
   <p>update {{.Status.Progress.UpdateIndex}}{{if .Status.Progress.UpdateCount}} / {{.Status.Progress.UpdateCount}}{{end}} &middot; {{humanBytes .Status.Progress.DownloadedBytes}} downloaded this session{{if .Status.Progress.DownloadRate}} &middot; {{humanBytes .Status.Progress.DownloadRate}}/s network{{end}}{{if .Status.Progress.ProcessRate}} &middot; {{.Status.Progress.ProcessRate}} rows/s{{end}}{{if .Status.Progress.LastAppliedAt}} &middot; last update applied {{humanAgo .Status.Progress.LastAppliedAt}}{{end}}</p>
   <div class="ptr-progress">
     <div class="ptr-bar"><div class="ptr-bar-fill" style="width:{{.Percent}}%"></div></div>
-    <form method="POST" action="/ptr/pause"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><button type="submit">pause</button></form>
+    {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "pause"}}
   </div>
   {{else if eq .Status.State "paused"}}
-  <p>sync paused at update {{.Status.Progress.UpdateIndex}}.</p>
-  <form method="POST" action="/ptr/resume"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><button type="submit">resume</button></form>
+  <div class="ptr-line">
+    <p>sync paused at update {{.Status.Progress.UpdateIndex}}.</p>
+    {{template "postbtn" dict "Action" "/ptr/resume" "CSRF" .CSRFToken "Label" "resume"}}
+  </div>
   {{else if eq .Status.State "error"}}
-  <p class="flash-err" title="{{.Status.Error}}">{{.Status.Error}}</p>
-  <form method="POST" action="/ptr/retry"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><button type="submit">retry</button></form>
+  <div class="ptr-line">
+    <p class="flash-err" title="{{.Status.Error}}">{{.Status.Error}}</p>
+    <div class="actions">
+      {{template "postbtn" dict "Action" "/ptr/retry" "CSRF" .CSRFToken "Label" "retry"}}
+      {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "pause"}}
+    </div>
+  </div>
   {{else}}
-  <p>caught up{{if .Status.NextUpdateDue}} &middot; next update {{humanDue .Status.NextUpdateDue}}{{end}}.</p>
+  <div class="ptr-line">
+    <p>caught up{{if .Status.NextUpdateDue}} &middot; next update {{humanDue .Status.NextUpdateDue}}{{end}}.</p>
+    {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "pause"}}
+  </div>
   {{end}}
   <table class="stats-table">
     <tbody>

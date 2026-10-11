@@ -12,15 +12,10 @@ import (
 	"github.com/monbooru/monloader/internal/logx"
 )
 
-// monbooruProbeTimeout bounds the "is monbooru there?" question. It is a
-// loopback request to a process that either answers or is not there.
+// A loopback probe: the process answers at once or is not there.
 const monbooruProbeTimeout = 800 * time.Millisecond
 
-// setupData drives the wizard. Everything the operator can change is echoed
-// back when a submit has to be shown again.
 type setupData struct {
-	// BooruName is the lowercase name the body copy uses; TitleName is the
-	// capitalized one, for the browser tab alone.
 	BooruName    string
 	TitleName    string
 	CSRFToken    string
@@ -37,29 +32,18 @@ type setupData struct {
 	Integration  desktopIntegration
 }
 
-// setupPending reports whether the first-run wizard still owes the operator
-// a pass. Only the desktop profile has one: a container or a server install
-// was configured by whoever deployed it.
 func (s *Server) setupPending() bool {
 	return s.desktop && !s.cfg.Current().SetupDone
 }
 
-// SetupMiddleware sends every page to the wizard until it has been through
-// once. The exemptions are what the wizard itself needs plus the health
-// probe, which the single-instance check and the container healthcheck both
-// depend on answering at all times, and the login pages: the session gate
-// exempts /login from its own redirect, so leaving it behind this one would
-// bounce every request between the two and lock the operator out entirely.
-// Everything under /api/ is refused in JSON instead of redirected.
 func (s *Server) SetupMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.setupPending() || setupExempt(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// The API is a client's contract, not a browser's: an extension firing
-		// "connect to monloader" at a fresh install has to read why it was
-		// refused, and a 303 to an HTML wizard says nothing it can show.
+		// API clients get a JSON refusal they can show; a 303 to the
+		// wizard tells them nothing.
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
@@ -77,8 +61,9 @@ func (s *Server) SetupMiddleware(next http.Handler) http.Handler {
 
 func setupExempt(path string) bool {
 	switch path {
-	// The API reference stays readable: a client refused by the gate needs
-	// somewhere to look up what it was refused with.
+	// /health must always answer (single-instance check, container
+	// healthcheck), /login would bounce against the session gate, and a
+	// refused client needs the API reference.
 	case "/health", "/setup", "/login", "/logout", "/api/v1/openapi.json", "/api/v1/docs":
 		return true
 	}
@@ -86,20 +71,15 @@ func setupExempt(path string) bool {
 }
 
 func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
-	if !s.desktop {
-		// A stale link or bookmark reaches this on a container install; give it
-		// the styled page with a way back, like every other unknown path.
+	if !s.setupPending() {
 		s.notFound(w, r)
 		return
 	}
 	cfg := s.cfg.Current()
 	s.renderSetup(w, r, setupData{
-		APIURL: cfg.Monbooru.APIURL,
-		Pair:   true,
-		LAN:    !desktop.IsLoopbackAddr(cfg.Server.BindAddress),
-		// The menu entry is the offer worth making by default; the queue's
-		// retries and daily budget only run while monloader does, so start at
-		// login is too.
+		APIURL:    cfg.Monbooru.APIURL,
+		Pair:      true,
+		LAN:       !desktop.IsLoopbackAddr(cfg.Server.BindAddress),
 		Menu:      true,
 		Autostart: true,
 	})
@@ -116,8 +96,6 @@ func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, d setupData
 	d.CSRFToken = s.csrfToken(sessionFromContext(r.Context()))
 	d.Paired = s.hasPairedToken("monbooru")
 	d.Integration = s.desktopIntegration()
-	// The page leads with whatever is actually listening, so the common case
-	// is one button rather than a typed address.
 	if d.APIURL != "" {
 		if inst, found := desktop.Probe(desktop.LoopbackAddr(hostPort(d.APIURL)), monbooruProbeTimeout); found && inst.App == "monbooru" {
 			d.Found = true
@@ -127,29 +105,25 @@ func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, d setupData
 	s.render(w, "setup", d)
 }
 
-// hostPort reduces a base URL to the host:port a probe dials, defaulting
-// the port the way a browser would.
 func hostPort(raw string) string {
-	trimmed := strings.TrimPrefix(strings.TrimPrefix(raw, "http://"), "https://")
-	trimmed = strings.TrimSuffix(strings.SplitN(trimmed, "/", 2)[0], "/")
-	if trimmed == "" {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
 		return ""
 	}
-	if _, _, err := net.SplitHostPort(trimmed); err != nil {
-		if strings.HasPrefix(raw, "https://") {
-			return net.JoinHostPort(trimmed, "443")
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
 		}
-		return net.JoinHostPort(trimmed, "80")
 	}
-	return trimmed
+	return net.JoinHostPort(u.Hostname(), port)
 }
 
-// setupPost is the wizard's only submit. Every input is checked before
-// anything is written, so a refused page has changed nothing and can simply
-// be shown again with what was entered. Past that check the setup is done and
-// the wizard is over, whatever the optional pairing does.
+// Every input is checked before anything is written, so a refused page
+// has changed nothing.
 func (s *Server) setupPost(w http.ResponseWriter, r *http.Request) {
-	if !s.desktop {
+	if !s.setupPending() || !s.desktopLocal(r) {
 		s.notFound(w, r)
 		return
 	}
@@ -201,13 +175,9 @@ func (s *Server) setupPost(w http.ResponseWriter, r *http.Request) {
 			logx.Warnf("setup: could not write start at login: %v", err)
 		}
 	}
-	// The approval still happens in monbooru, which is the point of the
-	// design; the offer is only shown when the probe found it, so a failure
-	// here is a race rather than the ordinary case. The setup is finished
-	// either way, so the failure reports from Settings, beside the control
-	// that re-offers the handshake - re-rendering the wizard would call
-	// a completed setup a refusal and leave the operator pressing a button
-	// with nothing left to do.
+	// The setup is done either way, so a failed pairing request reports
+	// from Settings, beside the control that re-offers it; re-rendering
+	// the wizard would call a finished setup a refusal.
 	done := "/"
 	if form.Pair && form.APIURL != "" && !s.hasPairedToken("monbooru") {
 		if err := s.startMonbooruPairing(r.Context()); err != nil {

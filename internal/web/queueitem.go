@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"fmt"
 	"strconv"
 	"strings"
@@ -9,25 +10,18 @@ import (
 	"github.com/monbooru/monloader/internal/queue"
 )
 
-// itemDisplay is one queue item shaped for its row: a plain-language subject
-// that names what it is, the outcome (or the error code on failure) with its
-// detail note, and a single monbooru link. Building it in Go keeps the three
-// job kinds - download, enrich, contribution - reading identically in the row.
 type itemDisplay struct {
 	Subject      string
-	SubjectURL   string // source link for a download; empty otherwise
-	DebugURL     string // what the [?] re-runs, which is not always the link
-	Outcome      string // outcome word, or the error code on failure
+	SubjectURL   string
+	DebugURL     string
+	Outcome      string
 	OutcomeCls   string
-	OutcomeTitle string // the full error on hover
-	Note         string // parenthesised detail (matched source, merged tags)
-	ViewURL      string // the monbooru link, or empty
+	OutcomeTitle string
+	Note         string
+	ViewURL      string
 	Warnings     []string
 }
 
-// itemView derives the row display for one item. ctx carries the job-level
-// fields the template threads in (Kind, MonbooruURL, ImageID, Site); missing
-// keys default, so a bare render still works.
 func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 	kind, _ := ctx["Kind"].(queue.JobKind)
 	base, _ := ctx["MonbooruURL"].(string)
@@ -53,7 +47,7 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 		// Pre-phrased by the pipeline: "tag solo", "alias a -> b".
 		d.Subject = it.PostID
 	case enrich:
-		if id := enrichImageID(it, imageID); id != 0 {
+		if id := cmp.Or(it.MonbooruID, imageID); id != 0 {
 			d.Subject = "image #" + strconv.FormatInt(id, 10)
 		} else {
 			d.Subject = "image"
@@ -68,8 +62,7 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 		d.Subject, d.SubjectURL = "source", it.URL
 	}
 
-	// A direct-file send records the page it came from as the item's link, so
-	// re-running that link would log a fetch of a page nothing ever asked for.
+	// A direct-file send's item links its page, which nothing fetched.
 	d.DebugURL = d.SubjectURL
 	if pageURL, _ := ctx["PageURL"].(string); pageURL != "" && pageURL == it.URL {
 		if jobURL, _ := ctx["JobURL"].(string); jobURL != "" {
@@ -100,10 +93,6 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 	return d
 }
 
-// clientMeta summarises the metadata the submitting client attached, for the
-// queue row's hover. Empty when the submission carried none, which hides the
-// marker: an operator wondering where a tag came from can see it arrived with
-// the job rather than from the post.
 func clientMeta(j *queue.Job) string {
 	var parts []string
 	if len(j.Tags) > 0 {
@@ -119,13 +108,4 @@ func clientMeta(j *queue.Job) string {
 		parts = append(parts, "commentary")
 	}
 	return strings.Join(parts, ", ")
-}
-
-// enrichImageID is the monbooru image an enrich item touched: the one it landed
-// on, or the job's target when it did not land (a miss still links home).
-func enrichImageID(it queue.Item, jobImageID int64) int64 {
-	if it.MonbooruID != 0 {
-		return it.MonbooruID
-	}
-	return jobImageID
 }

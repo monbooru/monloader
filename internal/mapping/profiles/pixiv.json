@@ -1,0 +1,11 @@
+{
+  "family": "generic",
+  "kind": "other",
+  "post_url_template": "https://www.pixiv.net/artworks/{id}",
+  "auth": "oauth",
+  "example": "https://www.pixiv.net/artworks/93122368",
+  "rating_overrides": {
+    "r-18": "explicit",
+    "r-18g": "explicit"
+  }
+}

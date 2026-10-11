@@ -11,20 +11,13 @@ import (
 	"github.com/monbooru/monloader/internal/outcome"
 )
 
-// maxDebugLog bounds what one run hands back. The head carries the extractor
-// gallery-dl chose and the tail carries the traceback, so a log past the bound
-// keeps both ends and drops the middle.
+// The head names the extractor gallery-dl chose and the tail holds the
+// traceback, so both ends survive the cut.
 const maxDebugLog = 256 << 10
 
-// DebugLog re-runs one post with gallery-dl's debug logging on and returns what
-// it wrote, for pasting into a bug report. It runs the download pass rather
-// than a metadata resolve: most of what fails happens while fetching the file,
-// and a bare media URL makes no request at all until then. The bytes land in a
-// scratch directory under workRoot and are deleted with it; nothing is pushed.
-//
-// noExtractor reports that gallery-dl matched no extractor for the URL, which
-// is the one case where the log contradicts the item beside it: monloader
-// fetched that file itself, so the refusal below is not what happened.
+// The download pass, not a resolve: most failures happen fetching the
+// file. noExtractor means gallery-dl matched no extractor, so monloader
+// fetched that file itself and the log's refusal is not what happened.
 func (t *Tool) DebugLog(ctx context.Context, url, workRoot string) (log string, noExtractor bool, err error) {
 	if err := os.MkdirAll(workRoot, 0o755); err != nil {
 		return "", false, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
@@ -36,9 +29,8 @@ func (t *Tool) DebugLog(ctx context.Context, url, workRoot string) (log string, 
 	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "debug.log")
 
-	// The archive is bypassed so the post is fetched rather than skipped: a run
-	// that already succeeded is recorded there, and skipping it is exactly the
-	// case with nothing to show.
+	// archive= so an already-recorded post is fetched, not skipped with
+	// nothing to show.
 	args := append(t.configArgs(), "-o", logfileOption(path), "-o", "archive=",
 		"-D", dir, "--range", "1-1", url)
 	res, runErr := t.run(ctx, args...)
@@ -54,9 +46,8 @@ func (t *Tool) DebugLog(ctx context.Context, url, workRoot string) (log string, 
 	}
 	noExtractor = res.exitCode != 0 &&
 		classifyError(res.exitCode, res.stderr).Code == outcome.ErrCodeUnsupportedURL
-	// An error can reach stderr alone while the process still exits 0, so the
-	// file would end on a clean note without it. At this level it usually lands
-	// in both; append only what is missing.
+	// An error can reach stderr alone with a zero exit; it usually lands
+	// in the file too, so only a missing one is appended.
 	out := string(data)
 	if res.stderr != "" && !strings.Contains(out, res.stderr) {
 		out += "\n" + res.stderr
@@ -64,19 +55,15 @@ func (t *Tool) DebugLog(ctx context.Context, url, workRoot string) (log string, 
 	return boundLog(out), noExtractor, nil
 }
 
-// logfileOption asks gallery-dl for a debug log file. The level rides the file
-// handler, not the console, so stderr keeps the level classifyError reads and
-// turning this on cannot change how a failure is coded. gallery-dl's startup
-// banner predates the handler and never reaches the file.
+// Debug on the file handler, not the console, so stderr stays at the
+// level classifyError reads.
 func logfileOption(path string) string {
 	v, _ := json.Marshal(map[string]string{"path": path, "level": "debug", "mode": "w"})
 	return "output.logfile=" + string(v)
 }
 
-// boundLog trims the middle out of an oversized log, keeping both ends. Both
-// cuts walk to a rune boundary: gallery-dl logs urls and file paths, and half
-// a rune renders as a replacement character in whatever gets pasted into a
-// bug report.
+// Both cuts walk to a rune boundary: half a rune in a logged URL or path
+// pastes as a replacement character.
 func boundLog(s string) string {
 	if len(s) <= maxDebugLog {
 		return s

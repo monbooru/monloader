@@ -7,15 +7,17 @@ import (
 	"unicode"
 )
 
-// parseTagField reads a tag field that gallery-dl emits as either a list or a
-// string, returning the names in order. A string field is split on whitespace
-// and commas: most boorus space-join their tags, but some (realbooru) join with
-// ", ", which would otherwise leave a comma stuck to every tag.
+// Commas split too: realbooru joins with ", ", which would otherwise
+// leave a comma stuck to every tag.
 func parseTagField(v any) []string {
 	switch t := v.(type) {
 	case []any:
 		out := make([]string, 0, len(t))
 		for _, e := range t {
+			// civitai sends each tag as an object carrying its name.
+			if obj, ok := e.(map[string]any); ok {
+				e = obj["name"]
+			}
 			if s, ok := e.(string); ok && s != "" {
 				out = append(out, s)
 			}
@@ -30,11 +32,8 @@ func parseTagField(v any) []string {
 	}
 }
 
-// parseNameField reads a manga credit field (author, group, parody, ...) that
-// gallery-dl emits as either a list or a string. Unlike parseTagField it never
-// splits on whitespace: a string credit is one name ("Nakatani Nio"), or
-// several joined with commas, and splitting on spaces would fragment a
-// multi-word name into per-word tags.
+// Never split on spaces: a string credit is one name ("Nakatani Nio") or
+// several joined with commas.
 func parseNameField(v any) []string {
 	if s, ok := v.(string); ok {
 		var out []string
@@ -48,10 +47,6 @@ func parseNameField(v any) []string {
 	return parseTagField(v)
 }
 
-// tagSuffixes returns the per-category suffixes present in meta as
-// `tags_<suffix>` keys, sorted for deterministic output. The combined `tags`
-// key and the `tag_string_*` variants are not per-category fields and are
-// ignored here.
 func tagSuffixes(meta map[string]any) []string {
 	var out []string
 	for k := range meta {
@@ -63,10 +58,8 @@ func tagSuffixes(meta map[string]any) []string {
 	return out
 }
 
-// mangaTagFields maps the separate list-typed metadata fields that gallery-dl's
-// manga/comic gallery extractors emit (nhentai, hitomi, mangadex, ...) onto
-// monbooru categories. Unlike boorus, these sites do not expose tags_<category>
-// keys, so the categorized tags would otherwise be dropped.
+// Manga extractors (nhentai, hitomi, mangadex, ...) publish categorized
+// tags in these fields rather than tags_<category> keys.
 var mangaTagFields = []struct {
 	field, category string
 }{
@@ -85,16 +78,14 @@ var mangaTagFields = []struct {
 	{"type", "meta"},
 }
 
-// baseCategories maps a gallery-dl tag suffix to a monbooru category per the
-// universal table. An empty category drops the suffix entirely (invalid and
-// deprecated are not real tags).
+// An empty category drops the tag: invalid and deprecated are not real tags.
 var baseCategories = map[string]string{
 	"general":     "general",
 	"artist":      "artist",
 	"character":   "character",
 	"copyright":   "copyright",
 	"meta":        "meta",
-	"metadata":    "meta", // gelbooru's spelling
+	"metadata":    "meta",
 	"species":     "species",
 	"lore":        "meta",
 	"contributor": "artist",
@@ -109,29 +100,23 @@ var baseCategories = map[string]string{
 	"deprecated":  "",
 }
 
-// baseCategory looks a suffix up in the universal table. keep=false drops the
-// tag; an unknown suffix falls back to general.
 func baseCategory(suffix string) (category string, keep bool) {
 	cat, ok := baseCategories[suffix]
 	if !ok {
-		return "general", true // best-effort fallback
+		return "general", true
 	}
 	return cat, cat != ""
 }
 
-// splitNamespace recognizes a `namespace:name` flat tag (zerochan, philomena
-// boorus, ...) and maps the namespace to a monbooru category. ok is false when
-// the prefix is not a recognized namespace, so the tag is kept verbatim as a
-// general tag rather than being split on an incidental colon.
+// An unrecognized prefix is an incidental colon: the tag stays whole, as
+// general.
 func splitNamespace(tag string) (category, name string, ok bool) {
 	ns, rest, found := strings.Cut(tag, ":")
 	if !found || rest == "" {
 		return "", "", false
 	}
 	switch strings.ToLower(ns) {
-	case "artist", "mangaka", "creator":
-		return "artist", rest, true
-	case "group", "circle":
+	case "artist", "mangaka", "creator", "group", "circle":
 		return "artist", rest, true
 	case "character":
 		return "character", rest, true
@@ -145,12 +130,9 @@ func splitNamespace(tag string) (category, name string, ok bool) {
 	return "", "", false
 }
 
-// normalizeTag rewrites a tag into the form monbooru stores: lowercased, control
-// runes dropped, surrounding whitespace trimmed and internal whitespace runs
-// folded to `_`, and the grammar-reserved `"` and `*` folded to `_`. Every other
-// rune - accents, CJK, the full ASCII punctuation - is kept, so a PTR or booru
-// spelling round-trips instead of being dropped or mangled. Mirrors monbooru's
-// tags.NormalizeName byte for byte.
+// Must match monbooru's tags.NormalizeName byte for byte. Beyond lowercasing,
+// only whitespace, control runes, " and * change, so a PTR spelling
+// round-trips instead of minting a folded duplicate when contributed back.
 func normalizeTag(tag string) string {
 	tag = strings.ToLower(tag)
 	var b strings.Builder
@@ -176,26 +158,22 @@ func normalizeTag(tag string) string {
 	return tag
 }
 
-// legacyDisallowedTagChars is the pre-widening charset rule, kept so tags
-// monbooru stored before the punctuation widening (and never bulk-rewrote)
-// can still be recognized against their raw PTR spelling.
+// The pre-widening charset: tags monbooru stored before the punctuation
+// widening were never rewritten and must still match their raw PTR spelling.
 var (
 	legacyDisallowedTagChars = regexp.MustCompile(`[^a-z0-9_()!@#$.~+:?<>=^-]+`)
 	underscoreRuns           = regexp.MustCompile(`_+`)
 )
 
-// LegacyFoldTag returns the pre-widening projection of a monbooru-form tag:
-// the spelling an old pull would have stored for the same raw tag. Underscore
-// runs collapse because the old fold merged an admitted character and its
-// neighbouring spaces into one run ("girls' frontline" -> "girls_frontline").
+// LegacyFoldTag returns the spelling an old pull stored for a raw tag: the
+// old fold merged a disallowed character and its neighbouring spaces into
+// one underscore run ("girls' frontline" -> "girls_frontline").
 func LegacyFoldTag(tag string) string {
 	tag = legacyDisallowedTagChars.ReplaceAllString(tag, "_")
 	tag = underscoreRuns.ReplaceAllString(tag, "_")
 	return strings.Trim(tag, "_")
 }
 
-// formatTag renders a (category, name) pair as monbooru expects: bare for
-// general, `category:name` otherwise.
 func formatTag(category, name string) string {
 	if category == "" || name == "" {
 		return ""
@@ -206,15 +184,10 @@ func formatTag(category, name string) string {
 	return category + ":" + name
 }
 
-// NormalizeTag exposes the tag normalization so the settings profile editor
-// can fold a hand-typed rule spelling into the form the mapper compares.
 func NormalizeTag(tag string) string { return normalizeTag(tag) }
 
-// applyTagRule corrects one normalized, category-prefixed tag through a
-// profile's tag rules: "" suppresses it, a bare replacement renames it in its
-// mapped category, a "category:name" replacement retargets it. A rule may key
-// the full prefixed form (more specific, tried first) or the bare name, so a
-// general tag that itself contains a colon is still addressable.
+// The full form is tried before the bare name, and a general tag
+// containing a colon matches by its full form.
 func applyTagRule(rules map[string]string, tag string) string {
 	if len(rules) == 0 {
 		return tag

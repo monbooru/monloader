@@ -16,24 +16,20 @@ import (
 	"github.com/monbooru/monloader/internal/queue"
 )
 
-// maxTagGraphBatch caps a single tag-graph query so a sweep pages its tag list
-// rather than asking for everything at once.
 const maxTagGraphBatch = 500
 
-// maxHashLookupBatch caps a single batch hash lookup. Lower than the tag
-// batch: one hit answers a whole tag list rather than one tag's edges.
+// Lower than the tag batch: one hit answers a whole tag list, not one
+// tag's edges.
 const maxHashLookupBatch = 100
 
-// Spelling-search bounds. The scan cap is per range and bounds the rows a range
-// answers with - a substring query still walks its namespace to find them - and
-// the limit bounds what a dropdown has to render.
+// The scan cap is per range and caps the rows it answers with, not the
+// walk: a substring query still scans its namespace.
 const (
 	defaultTagSearchLimit = 20
 	maxTagSearchLimit     = 50
 	tagSearchScanCap      = 200
 )
 
-// plural is the "s" a count needs.
 func plural(n int) string {
 	if n == 1 {
 		return ""
@@ -41,9 +37,7 @@ func plural(n int) string {
 	return "s"
 }
 
-// ptrStatus handles GET /api/v1/ptr/status. It always answers, so monbooru's
-// capability check is one unconditional GET; a run without the PTR built in
-// reports disabled.
+// No ptrReady gate: monbooru's capability check needs an answer in every state.
 func (h *Handler) ptrStatus(w http.ResponseWriter, r *http.Request) {
 	if h.ptr == nil {
 		writeJSON(w, http.StatusOK, ptr.Status{State: ptr.StateDisabled})
@@ -56,7 +50,6 @@ type ptrTagsRequest struct {
 	Tags []string `json:"tags"`
 }
 
-// ptrTagInfo is one tag's answer in monbooru's own tag vocabulary.
 type ptrTagInfo struct {
 	Known        bool     `json:"known"`
 	Ideal        string   `json:"ideal,omitempty"`
@@ -65,11 +58,8 @@ type ptrTagInfo struct {
 	ImpliedBy    []string `json:"implied_by,omitempty"`
 }
 
-// ptrReady refuses the endpoints that read the index: one that is off cannot
-// answer, and a half-built one would hand over a partial tag set the caller
-// mirrors as the repository's whole answer. ok=false means a response was
-// already written. ptrAccountCreate keeps its own wording and its lack of a
-// caught-up requirement.
+// Not caught up is refused too: a half-built index would hand over a
+// partial tag set the caller mirrors as the whole answer.
 func (h *Handler) ptrReady(w http.ResponseWriter) bool {
 	if h.ptr == nil || !h.ptr.Enabled() {
 		apiError(w, http.StatusConflict, errPTRUnavailable, "the ptr index is not available")
@@ -82,10 +72,6 @@ func (h *Handler) ptrReady(w http.ResponseWriter) bool {
 	return true
 }
 
-// ptrTags handles POST /api/v1/ptr/tags: for each monbooru-form tag it returns
-// the PTR's ideal spelling, aliases, and implications, mapped back to monbooru
-// form. monbooru sweeps its tag list through this to propose aliases and
-// implications.
 func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 	if !h.ptrReady(w) {
 		return
@@ -104,8 +90,6 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Each monbooru tag maps to the hydrus spellings it could have come from; the
-	// union is queried once, then each tag reads back its own candidates.
 	candidates := map[string][]string{}
 	var all []string
 	for _, t := range body.Tags {
@@ -116,7 +100,6 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 	graph, err := h.ptr.TagGraph(r.Context(), all)
 	if err != nil {
 		if r.Context().Err() != nil {
-			// The caller gave up mid-walk; there is nobody left to answer.
 			return
 		}
 		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
@@ -130,9 +113,6 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
-// ptrTagCluster is one sibling cluster a spelling search found, in monbooru
-// form. The counts describe the cluster's graph so a caller can rank and label
-// the list without a query per row.
 type ptrTagCluster struct {
 	Ideal        string   `json:"ideal"`
 	Matched      []string `json:"matched"`
@@ -141,11 +121,6 @@ type ptrTagCluster struct {
 	ImpliedBy    int      `json:"implied_by"`
 }
 
-// ptrTagSearch handles GET /api/v1/ptr/tags/search: the spellings the index
-// holds under a monbooru-form prefix, folded to one row per sibling cluster.
-// The graph query answers about a name the caller already knows; this one is
-// how the caller finds out what to ask about, which is otherwise a guess at
-// the repository's exact spelling.
 func (h *Handler) ptrTagSearch(w http.ResponseWriter, r *http.Request) {
 	if !h.ptrReady(w) {
 		return
@@ -188,11 +163,8 @@ func (h *Handler) ptrTagSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"clusters": clusters, "truncated": truncated || more})
 }
 
-// tagSearchRanges renders a monbooru-form query into the index ranges to scan:
-// one per candidate hydrus spelling for a prefix search, one per namespace for
-// a substring search. A bare (general) query has no namespace to bound a
-// substring scan, and the whole tag table is far too big to walk, so that one
-// shape is refused rather than served slowly.
+// A substring query with no namespace is refused: the whole tag table is
+// too big to walk.
 func tagSearchRanges(q string, contains bool) ([]ptr.TagRange, bool) {
 	spellings := mapping.PTRSpellingsFor(q)
 	if !contains {
@@ -219,11 +191,8 @@ func tagSearchRanges(q string, contains bool) ([]ptr.TagRange, bool) {
 	return ranges, len(ranges) > 0
 }
 
-// renderTagClusters maps the raw matches into monbooru form, drops the ones
-// whose ideal lands in a namespace the router does not carry, and orders them:
-// the exact query first, then clusters that carry relations, then the shortest
-// ideal, then by name. Ranking on the counts is what floats the real cluster
-// above the near-misses sharing its stem.
+// Clusters that carry relations rank first: that floats the real cluster
+// above near-misses sharing its stem.
 func renderTagClusters(queried string, matches []ptr.TagMatch, limit int) (rows []ptrTagCluster, more bool) {
 	out := make([]ptrTagCluster, 0, len(matches))
 	at := map[string]int{}
@@ -232,10 +201,9 @@ func renderTagClusters(queried string, matches []ptr.TagMatch, limit int) (rows 
 		if !ok {
 			continue
 		}
-		// Two clusters whose raw ideals differ only by the underscore-space
-		// fold project to one monbooru name. The caller picks a name, so a
-		// second row under it is a row it cannot tell apart; fold them and
-		// let the graph query sort the spellings out on the way back.
+		// Raw ideals differing only by the underscore-space fold project
+		// to one monbooru name, and the caller could not tell two rows
+		// under it apart.
 		if i, seen := at[c.Ideal]; seen {
 			out[i] = mergeTagCluster(out[i], c)
 			continue
@@ -256,21 +224,13 @@ func renderTagClusters(queried string, matches []ptr.TagMatch, limit int) (rows 
 	return out, false
 }
 
-// relations is a cluster's total graph size, the second ranking key.
 func relations(c ptrTagCluster) int {
 	return c.Aliases + c.Implications + c.ImpliedBy
 }
 
-// mergeTagCluster folds a second cluster onto the row already holding its
-// monbooru name, keeping every matched spelling and the larger of each count.
 func mergeTagCluster(into, from ptrTagCluster) ptrTagCluster {
-	seen := make(map[string]bool, len(into.Matched))
-	for _, n := range into.Matched {
-		seen[n] = true
-	}
 	for _, n := range from.Matched {
-		if !seen[n] {
-			seen[n] = true
+		if !slices.Contains(into.Matched, n) {
 			into.Matched = append(into.Matched, n)
 		}
 	}
@@ -280,23 +240,16 @@ func mergeTagCluster(into, from ptrTagCluster) ptrTagCluster {
 	return into
 }
 
-// renderTagCluster maps one match into monbooru form. A cluster whose ideal
-// projects to nothing is not offerable - the caller could not hold the name -
-// and a matched spelling that projects away simply drops off the row.
 func renderTagCluster(m ptr.TagMatch) (ptrTagCluster, bool) {
 	ideal := mapping.MapPTRTag(m.Ideal)
 	if ideal == "" {
 		return ptrTagCluster{}, false
 	}
 	c := ptrTagCluster{Ideal: ideal, Matched: []string{}, Aliases: m.Aliases, Implications: m.Implications, ImpliedBy: m.ImpliedBy}
-	seen := map[string]bool{}
 	for _, raw := range m.Matched {
-		name := mapping.MapPTRTag(raw)
-		if name == "" || seen[name] {
-			continue
+		if name := mapping.MapPTRTag(raw); name != "" && !slices.Contains(c.Matched, name) {
+			c.Matched = append(c.Matched, name)
 		}
-		seen[name] = true
-		c.Matched = append(c.Matched, name)
 	}
 	return c, true
 }
@@ -312,15 +265,6 @@ type ptrLookupRequest struct {
 	Scheduled bool             `json:"scheduled"`
 }
 
-// ptrLookup handles POST /api/v1/ptr/lookup: the tags the index holds for a
-// batch of files, mapped into monbooru form and keyed by sha256. A
-// whole-library sweep costs one call per hundred images here instead of a
-// queue job per image, and the answer is the outcome - no enrich callback to
-// lose. Misses are absent from the results rather than present as empty
-// lists. index is the applied-update cursor at answer time, so the caller can
-// tell "the index has not moved since I last asked" from "it has, ask again".
-// Each image carries its monbooru id so the history row can name what it
-// matched.
 func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 	if !h.ptrReady(w) {
 		return
@@ -343,8 +287,6 @@ func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 	var matched []queue.Item
 	for _, img := range body.Images {
 		if r.Context().Err() != nil {
-			// A caller that gave up should not leave the rest of its batch
-			// walking the index behind it.
 			return
 		}
 		if img.ImageID <= 0 {
@@ -379,14 +321,9 @@ func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// resolveTagInfo picks the candidate spelling for a monbooru tag whose graph
-// answer carries relations and renders it back into monbooru form. A verbatim
-// spelling can sit in the index as an orphan while the space-joined form
-// carries the cluster, so a connected candidate wins over an earlier bare
-// hit; a tag only known as an orphan still answers known. The queried tag and
-// any unrepresentable spelling are dropped from its relation lists, so a tag
-// never reads as its own alias or implication and no empty entry slips
-// through.
+// A verbatim spelling can sit in the index as an orphan while the
+// space-joined form carries the cluster, so a connected candidate beats
+// an earlier bare hit.
 func resolveTagInfo(queried string, candidates []string, graph map[string]ptr.TagInfo) ptrTagInfo {
 	var fallback *ptrTagInfo
 	for _, c := range candidates {
@@ -411,15 +348,12 @@ func resolveTagInfo(queried string, candidates []string, graph map[string]ptr.Ta
 	return ptrTagInfo{Known: false}
 }
 
-// empty reports an answer that projects to nothing monbooru can hold: the
-// spelling's ideal and every relation sit in namespaces the router drops
-// (title:, booru:, ...). Answering known for one promises a graph the caller
-// then finds nothing in, so it counts as no answer.
+// An answer that projects to nothing counts as unknown: known would
+// promise a graph the caller then finds empty.
 func (t ptrTagInfo) empty() bool {
 	return t.Ideal == "" && len(t.Aliases)+len(t.Implications)+len(t.ImpliedBy) == 0
 }
 
-// renderTagInfo maps one raw graph answer into monbooru form.
 func renderTagInfo(queried string, info ptr.TagInfo) ptrTagInfo {
 	return ptrTagInfo{
 		Known:        true,
@@ -430,23 +364,12 @@ func renderTagInfo(queried string, info ptr.TagInfo) ptrTagInfo {
 	}
 }
 
-// dropTag removes empty entries and the queried tag from a projected list, so
-// a tag never reads as its own alias or implication.
 func dropTag(tags []string, queried string) []string {
-	out := make([]string, 0, len(tags))
-	for _, t := range tags {
-		if t == "" || t == queried {
-			continue
-		}
-		out = append(out, t)
-	}
-	return out
+	return slices.DeleteFunc(tags, func(t string) bool { return t == queried })
 }
 
-// ptrAccountCreate handles POST /api/v1/ptr/account: the one-time
-// auto-creation of the personal contribution account. The velocity
-// refusal (the repository's 400) re-maps to 503 with a retry-later
-// message so callers need not special-case a PTR status code.
+// The repository's 400 here is its account-creation velocity limit, not a
+// malformed request.
 func (h *Handler) ptrAccountCreate(w http.ResponseWriter, r *http.Request) {
 	if h.ptr == nil || !h.ptr.Enabled() {
 		apiError(w, http.StatusConflict, errPTRUnavailable, "the ptr backend is not enabled")
@@ -454,6 +377,10 @@ func (h *Handler) ptrAccountCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.ptr.HasPersonalKey() {
 		apiError(w, http.StatusConflict, errAccountExists, "a personal account key is already set")
+		return
+	}
+	if h.host.SaveConfig == nil {
+		apiError(w, http.StatusInternalServerError, errSaveFailed, "settings cannot be saved here")
 		return
 	}
 	key, err := h.ptr.CreateContribAccount(r.Context())
@@ -470,18 +397,16 @@ func (h *Handler) ptrAccountCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if h.host.SaveConfig != nil {
-		if err := h.host.SaveConfig(func(c *config.Config) error {
-			c.PTR.AccessKey = key
-			return nil
-		}); err != nil {
-			// The redemption is single-use, so the key exists only in memory
-			// now; point at the reveal control the way the web path does.
-			apiError(w, http.StatusInternalServerError, errSaveFailed,
-				"account created but saving the key failed: "+err.Error()+
-					" - reveal and back it up from the ptr page before restarting")
-			return
-		}
+	if err := h.host.SaveConfig(func(c *config.Config) error {
+		c.PTR.AccessKey = key
+		return nil
+	}); err != nil {
+		// The redemption is single-use, so the key now exists only in
+		// memory.
+		apiError(w, http.StatusInternalServerError, errSaveFailed,
+			"account created but saving the key failed: "+err.Error()+
+				" - reveal and back it up from the ptr page before restarting")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"created": true})
 }

@@ -1,10 +1,5 @@
 name: Release
 
-# Builds the Docker image for amd64 and arm64 to GHCR and creates a GitHub release
-#
-# It also builds every downloadable artifact: the plain binaries, the bundled
-# ones carrying gallery-dl, the Flatpak and the Windows installer. 
-
 on:
   push:
     tags:
@@ -16,11 +11,11 @@ permissions:
   packages: write
 
 env:
-  GO_VERSION: '1.27.0'
-  GO_SHA256_LINUX_AMD64: 675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685
-  GDL_VERSION: '1.32.10'
-  GDL_SHA256_LINUX_AMD64: ac077cbff1b048916d61d7bcd8f43cf56b1e6a6b0698bd5c55bb436649e5748d
-  GDL_SHA256_WINDOWS_AMD64: 1e4febe66444cf87e0b6d1de6fdf3004522f5d91a9c15b720db43ec34a1b73c9
+  GO_VERSION: '1.27.2'
+  GO_SHA256_LINUX_AMD64: ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
+  GDL_VERSION: '1.32.15'
+  GDL_SHA256_LINUX_AMD64: 8c586d0bd6e4814e14b2b05278dc19ed636cf9a0b7b089cb1f18a722179c714f
+  GDL_SHA256_WINDOWS_AMD64: d6c8ac8ffdc9194e90787225e70d0a7c9eeed23dd41c9574e235632b6f9593a4
 
 jobs:
   docker:
@@ -108,8 +103,11 @@ jobs:
       - name: Tag the manifest
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create \
-            --tag ghcr.io/${{ steps.img.outputs.NAME }}:latest \
+          latest=""
+          if [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
+            latest="--tag ghcr.io/${{ steps.img.outputs.NAME }}:latest"
+          fi
+          docker buildx imagetools create $latest \
             --tag ghcr.io/${{ steps.img.outputs.NAME }}:${{ github.ref_name }} \
             $(printf 'ghcr.io/${{ steps.img.outputs.NAME }}@sha256:%s ' *)
 
@@ -124,13 +122,17 @@ jobs:
       - name: Push to legacy namespace
         continue-on-error: true
         run: |
-          docker buildx imagetools create \
-            --tag ghcr.io/leqwin/monloader:latest \
+          latest=""
+          if [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
+            latest="--tag ghcr.io/leqwin/monloader:latest"
+          fi
+          docker buildx imagetools create $latest \
             --tag ghcr.io/leqwin/monloader:${{ github.ref_name }} \
             ghcr.io/${{ steps.img.outputs.NAME }}:${{ github.ref_name }}
 
   release:
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
     needs: manifest
     steps:
       - name: Checkout

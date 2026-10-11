@@ -1,0 +1,21 @@
+{{define "watch_rows"}}
+{{if not .Watches}}<tr><td colspan="7" class="hint">no watches - paste a search URL above, or use watch on a queue row</td></tr>{{end}}
+{{$intervals := .Intervals}}
+{{range .Watches}}
+<tr>
+  <td><span class="{{.ResultClass}}"{{with .ResultTitle}} title="{{.}}"{{end}}>{{.Result}}</span>{{if .Last.CheckedAt.IsZero}}{{else}}<span class="job-time" title="{{stampLocal .Last.CheckedAt}}">{{humanSince .Last.CheckedAt}}</span>{{end}}</td>
+  <td class="queue-url">{{.URL}} <a class="queue-view" href="{{.URL}}" target="_blank" rel="noopener" title="open the search in a new tab">view</a></td>
+  <td class="queue-site" title="{{.Last.Site}}">{{.Last.Site}}</td>
+  <td><select name="items" aria-label="items to fetch" hx-post="/watches/{{.ID}}/items" hx-trigger="change">{{template "items_options" .Items}}</select></td>
+  <td>{{$hours := .IntervalHours}}<select name="interval_hours" aria-label="check every" hx-post="/watches/{{.ID}}/interval" hx-trigger="change">{{range $intervals}}<option value="{{.Hours}}"{{if eq .Hours $hours}} selected{{end}}>{{.Label}}</option>{{end}}</select></td>
+  <td class="hint">{{.Next}}</td>
+  <td>
+    <span class="actions">
+      {{if .Live}}<button disabled>check now</button>{{else}}<button class="needs-monbooru" hx-post="/watches/{{.ID}}/check">check now</button>{{end}}
+      <button hx-delete="/watches/{{.ID}}" hx-confirm="stop watching this search?"
+              data-confirm-ok="remove" data-confirm-danger="its downloads stay.">remove</button>
+    </span>
+  </td>
+</tr>
+{{end}}
+{{end}}

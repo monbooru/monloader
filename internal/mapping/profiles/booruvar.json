@@ -1,0 +1,8 @@
+{
+  "family": "danbooru",
+  "kind": "booru",
+  "post_url_template": "https://booru.borvar.art/posts/{id}",
+  "md5_search_template": "https://booru.borvar.art/posts?tags=md5:{md5}",
+  "auth": "api_optional",
+  "example": "https://booru.borvar.art/posts/1487"
+}

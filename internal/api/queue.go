@@ -12,12 +12,10 @@ import (
 	"github.com/monbooru/monloader/internal/queue"
 )
 
-// maxWaitSeconds caps the synchronous enqueue wait so a caller can never pin a
-// worker indefinitely.
 const maxWaitSeconds = 60
 
-// Caps on the metadata a client may attach, matching monbooru's own limits so
-// a value is refused at enqueue rather than after the post's bytes are fetched.
+// monbooru's own limits, so a value is refused here rather than after the
+// post's bytes are fetched.
 const (
 	maxOptionTags       = 64
 	maxOptionCommentary = 10000
@@ -38,10 +36,6 @@ type enqueueRequest struct {
 	} `json:"options"`
 }
 
-// monbooruReady refuses work whose push step could only fail: with no monbooru
-// configured there is nothing to push to, and a held link is the operator's own
-// hold. The web add bar refuses on both counts; the extension sends through
-// here, so this refuses too.
 func (h *Handler) monbooruReady(w http.ResponseWriter) bool {
 	cfg := h.cfg.Current()
 	if cfg.Monbooru.APIURL == "" {
@@ -57,9 +51,6 @@ func (h *Handler) monbooruReady(w http.ResponseWriter) bool {
 	return true
 }
 
-// enqueue handles POST /api/v1/queue. Downloads are asynchronous, so it
-// returns 202 with a job id; with ?wait=N it blocks up to N seconds and
-// returns the resolved job inline if it finished in time.
 func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 	if !h.monbooruReady(w) {
 		return
@@ -69,17 +60,11 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
 		return
 	}
-	// A URL copied out of a browser or a chat client routinely arrives padded,
-	// which the add bar trims and this refused as not an http(s) URL.
 	body.URL = strings.TrimSpace(body.URL)
 	if body.URL == "" {
 		apiError(w, http.StatusBadRequest, errInvalidRequest, "url is required")
 		return
 	}
-	// "md5:<hash>" imports the post carrying that hash via the lookup walk.
-	// The prefix is required on the API so a bare hash is never mistaken for a
-	// malformed URL; the web add bar accepts both forms. Case is forgiven on
-	// both, since a pasted hash carries whatever the source rendered.
 	md5, isHash := strings.CutPrefix(strings.ToLower(body.URL), "md5:")
 	if isHash && !config.IsHexHash(md5, 32) {
 		apiError(w, http.StatusBadRequest, errInvalidRequest, "md5: must carry a 32-hex hash")
@@ -93,15 +78,12 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 	opts := queue.Options{}
 	if body.Options != nil {
 		opts.Gallery = body.Options.Gallery
-		// The same rule the settings field applies: refuse it here rather than
-		// fetch the post's bytes first and have monbooru refuse the push.
 		if !config.IsRelativeFolder(body.Options.Folder) {
 			apiError(w, http.StatusBadRequest, errInvalidRequest, "folder must be a relative path with no .. segment")
 			return
 		}
 		opts.Folder = body.Options.Folder
-		// A zero max_items is indistinguishable from omitted, so it means "no
-		// override"; a negative value is a mistake.
+		// Zero is indistinguishable from omitted, so it means no override.
 		if body.Options.MaxItems < 0 {
 			apiError(w, http.StatusBadRequest, errInvalidRequest, "max_items must not be negative")
 			return
@@ -140,10 +122,9 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 
 	wait := waitSeconds(r)
 	if wait > 0 {
-		// A wait request jumps ahead of bulk jobs so it stays responsive under one
-		// worker. A job's size is not known until it resolves, so any wait takes
-		// the priority lane, not only the extension's single-image case; a bulk
-		// wait shares it but usually exceeds the timeout and falls back to polling.
+		// A wait jumps ahead of bulk jobs to stay responsive under one
+		// worker. Size is unknown until the job resolves, so every wait
+		// takes the lane.
 		opts.Priority = true
 	}
 
@@ -161,21 +142,16 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, job)
 			return
 		}
-		// Timed out: fall through to the async response so the caller polls.
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id})
 }
 
-// imageJobRequest is the body both source-refetch endpoints take: an image
-// monbooru already holds and the post URL to read it from.
 type imageJobRequest struct {
 	ImageID int64  `json:"image_id"`
 	Gallery string `json:"gallery"`
 	URL     string `json:"url"`
 }
 
-// enqueueImageJob validates one image-and-url body and queues it through
-// enqueue, answering 202 with the job id.
 func (h *Handler) enqueueImageJob(w http.ResponseWriter, r *http.Request, enqueue func(imageID int64, gallery, url string) int64) {
 	var body imageJobRequest
 	if err := decodeBody(w, r, &body); err != nil {
@@ -193,37 +169,24 @@ func (h *Handler) enqueueImageJob(w http.ResponseWriter, r *http.Request, enqueu
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": enqueue(body.ImageID, body.Gallery, body.URL)})
 }
 
-// metadata handles POST /api/v1/metadata: monbooru asks monloader to re-read a
-// post URL for its tags / commentary / notes (metadata only, no download) and
-// enrich the monbooru image it names. Returns 202 with the queued job id.
 func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
 	h.enqueueImageJob(w, r, h.queue.EnqueueMetadata)
 }
 
-// replace handles POST /api/v1/replace: monbooru asks monloader to download
-// the file a post URL serves and push it back into the monbooru image it
-// names, replacing its bytes in place. Returns 202 with the queued job id.
 func (h *Handler) replace(w http.ResponseWriter, r *http.Request) {
 	h.enqueueImageJob(w, r, h.queue.EnqueueReplace)
 }
 
 type lookupRequest struct {
-	ImageID int64  `json:"image_id"`
-	Backend string `json:"backend"`
-	MD5     string `json:"md5"`
-	SHA256  string `json:"sha256"`
-	Gallery string `json:"gallery"`
-	// Background waits behind anything a person is watching; Budgeted also
-	// spends a slot of the daily budget and can be refused. Both default
-	// false, so a caller that knows neither field keeps today's behaviour.
-	Background bool `json:"background"`
-	Budgeted   bool `json:"budgeted"`
+	ImageID    int64  `json:"image_id"`
+	Backend    string `json:"backend"`
+	MD5        string `json:"md5"`
+	SHA256     string `json:"sha256"`
+	Gallery    string `json:"gallery"`
+	Background bool   `json:"background"`
+	Budgeted   bool   `json:"budgeted"`
 }
 
-// lookup handles POST /api/v1/lookup: monbooru asks monloader to find tags for
-// an image by file hash - the booru backend walks the opted-in sites' md5
-// search, the ptr backend queries the local PTR index by sha256 - and enrich
-// the image with what it finds. Returns 202 with the queued job id.
 func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 	var body lookupRequest
 	if err := decodeBody(w, r, &body); err != nil {
@@ -246,21 +209,16 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if h.ptr == nil || !h.ptr.Enabled() {
-			// Refuse rather than queue a job doomed to fail, so monbooru's button
-			// can degrade in place if its capability check was stale.
 			apiError(w, http.StatusConflict, errPTRUnavailable, "the ptr lookup backend is disabled")
 			return
 		}
 		if !h.ptr.CaughtUp() {
-			// A half-built index answers with a partial tag set that reads like
-			// the whole truth, so it answers nothing until it is current.
 			apiError(w, http.StatusConflict, errPTRSyncing, "the ptr index is not fully synced yet")
 			return
 		}
 	case queue.BackendAll:
-		// "all" means "whatever is enabled": a disabled PTR is not a conflict
-		// here, the job just runs the booru walk alone, so the sha256 is only
-		// demanded while the PTR could use it.
+		// A disabled PTR is no conflict here: the job runs the booru walk
+		// alone.
 		if !config.IsHexHash(body.MD5, 32) {
 			apiError(w, http.StatusBadRequest, errInvalidRequest, "the all backend needs a 32-hex md5")
 			return
@@ -278,8 +236,8 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Budgeted && !h.queue.TakeLookupBudget() {
-		// Authoritative: monbooru does not keep its own count, it stops its
-		// nightly walk for the day on this answer.
+		// Authoritative: monbooru keeps no count of its own and stops its
+		// nightly walk on this answer.
 		apiError(w, http.StatusTooManyRequests, errBudgetExhausted,
 			"today's scheduled-lookup budget is spent")
 		return
@@ -289,16 +247,14 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id})
 }
 
-// lookupStatus handles GET /api/v1/lookup/status: what an unattended caller
-// needs to know before it starts a nightly walk - how much of today's budget
-// is left, and whether any source is configured to walk. The refusal on the enqueue stays
-// authoritative; this is a readout, so a caller must not keep its own count.
 func (h *Handler) lookupStatus(w http.ResponseWriter, r *http.Request) {
 	limit, left, resets := h.queue.LookupBudget()
 	sources := h.mapper.LookupChain()
 	chain := make([]string, 0, len(sources))
 	for _, src := range sources {
-		chain = append(chain, src.Name)
+		if h.host.Queryable == nil || h.host.Queryable(src) {
+			chain = append(chain, src.Name)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"daily_budget": limit,
@@ -308,7 +264,6 @@ func (h *Handler) lookupStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// waitSeconds reads and clamps the ?wait= parameter.
 func waitSeconds(r *http.Request) int {
 	v := r.URL.Query().Get("wait")
 	if v == "" {
@@ -321,8 +276,6 @@ func waitSeconds(r *http.Request) int {
 	return min(n, maxWaitSeconds)
 }
 
-// listJobs handles GET /api/v1/queue with optional status filter and
-// pagination.
 func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
 	page, limit := parsePage(r, 50, 200)
 	status := queue.JobStatus(r.URL.Query().Get("status"))
@@ -344,19 +297,16 @@ func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// pauseQueue handles POST /api/v1/queue/pause: hold new downloads globally.
 func (h *Handler) pauseQueue(w http.ResponseWriter, r *http.Request) {
 	h.queue.Pause()
 	writeJSON(w, http.StatusOK, map[string]any{"paused": true})
 }
 
-// resumeQueue handles POST /api/v1/queue/resume: let held downloads run.
 func (h *Handler) resumeQueue(w http.ResponseWriter, r *http.Request) {
 	h.queue.Resume()
 	writeJSON(w, http.StatusOK, map[string]any{"paused": false})
 }
 
-// getJob handles GET /api/v1/queue/{id}.
 func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
 	id, ok := apiPathInt64(w, r, "id")
 	if !ok {
@@ -370,10 +320,12 @@ func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
-// jobAction runs one queue action addressed by the {id} path segment and
-// answers 202 with the resulting job id, mapping ErrNotFound to 404 and any
-// other queue refusal to 409.
+// Every action queues work, so each is held while monbooru is not ready;
+// the gate goes ahead of the id parse.
 func (h *Handler) jobAction(w http.ResponseWriter, r *http.Request, action func(id int64) (int64, error)) {
+	if !h.monbooruReady(w) {
+		return
+	}
 	id, ok := apiPathInt64(w, r, "id")
 	if !ok {
 		return
@@ -390,39 +342,22 @@ func (h *Handler) jobAction(w http.ResponseWriter, r *http.Request, action func(
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": jobID})
 }
 
-// retryJob handles POST /api/v1/queue/{id}/retry. With ?force=1 the re-run
-// bypasses the download-archive so already-fetched posts are downloaded again.
 func (h *Handler) retryJob(w http.ResponseWriter, r *http.Request) {
-	if !h.monbooruReady(w) {
-		return
-	}
 	h.jobAction(w, r, func(id int64) (int64, error) {
 		return id, h.queue.Retry(id, r.URL.Query().Get("force") == "1")
 	})
 }
 
-// continueJob handles POST /api/v1/queue/{id}/continue. It enqueues a follow-up
-// job for the window after a capped job's, returning the new job id.
 func (h *Handler) continueJob(w http.ResponseWriter, r *http.Request) {
-	if !h.monbooruReady(w) {
-		return
-	}
 	h.jobAction(w, r, h.queue.Continue)
 }
 
-// continueAllJob handles POST /api/v1/queue/{id}/continue-all. It queues the
-// next window and keeps fetching each following one until the capped search
-// runs short, returning the first follow-up job's id.
 func (h *Handler) continueAllJob(w http.ResponseWriter, r *http.Request) {
-	if !h.monbooruReady(w) {
-		return
-	}
 	h.jobAction(w, r, h.queue.ContinueAll)
 }
 
-// deleteJob handles DELETE /api/v1/queue/{id}: cancels a running job, else
-// removes it. It acts on the whole continue-series like the web route, so a
-// caller clearing a collapsed row drops every window, not just the one named.
+// The whole continue-series goes, so clearing a collapsed row drops every
+// window.
 func (h *Handler) deleteJob(w http.ResponseWriter, r *http.Request) {
 	id, ok := apiPathInt64(w, r, "id")
 	if !ok {

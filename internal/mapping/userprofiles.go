@@ -15,38 +15,23 @@ import (
 	"github.com/monbooru/monloader/internal/logx"
 )
 
-// categoryNameRE bounds a gallery-dl category as it is used in profile file
-// names and managed-config keys, so a crafted name cannot escape the profiles
-// directory or smuggle config structure.
+// The name becomes a profile file name and a managed-config key: a
+// crafted one must not escape the directory or smuggle config structure.
 var categoryNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
-// ValidCategoryName reports whether a site name is safe to use as a profile
-// file name and a gallery-dl extractor key.
 func ValidCategoryName(name string) bool { return categoryNameRE.MatchString(name) }
 
-// MatchesQuery reports whether the lower-cased query is a substring of any
-// field. It sits beside the site data it filters because the settings add-site
-// box and GET /api/v1/sites answer the same question and have to answer it the
-// same way.
+// MatchesQuery expects q already lower-cased.
 func MatchesQuery(q string, fields ...string) bool {
-	for _, f := range fields {
-		if strings.Contains(strings.ToLower(f), q) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(fields, func(f string) bool { return strings.Contains(strings.ToLower(f), q) })
 }
 
-// The value lists the settings profile editor renders; the validation sets
-// derive from them so the form and the file loader cannot drift apart.
 var (
 	ProfileFamilies = []string{FamilyGeneric, FamilyDanbooru, FamilyE621, FamilyMoebooru, FamilyGelbooruV02, FamilyPhilomena}
 	ProfileKinds    = []string{KindBooru, KindManga, KindOther}
 	ProfileAuths    = []string{AuthNone, AuthAPIOptional, AuthAPIRequired, AuthUsernamePassword, AuthCookies, AuthOAuth}
 	RatingLevels    = []string{RatingGeneral, RatingSensitive, RatingQuestionable, RatingExplicit}
-	// TagCategories are the monbooru categories a profile may route tags to;
-	// in an override map, "" drops the tag.
-	TagCategories = []string{"general", "artist", "character", "copyright", "meta", "species", "person", "medium", "year"}
+	TagCategories   = []string{"general", "artist", "character", "copyright", "meta", "species", "person", "medium", "year"}
 )
 
 func setOf(vals []string, extra ...string) map[string]bool {
@@ -65,10 +50,8 @@ var (
 	validTagCategories = setOf(TagCategories, "")
 )
 
-// SeedAuthKind maps supportedsites.md's Authentication column to the profile
-// auth vocabulary. "Supported" and "Required" are both account logins - the
-// column does not say whether the login is optional, so neither seeds a
-// required credential.
+// "Supported" and "Required" are both account logins; the column does not
+// say whether one is optional, so neither seeds a required credential.
 func SeedAuthKind(label string) string {
 	switch label {
 	case "Supported", "Required":
@@ -83,8 +66,6 @@ func SeedAuthKind(label string) string {
 	return AuthNone
 }
 
-// ValidateProfile checks a profile the way the settings save refuses and the
-// file loader skips, so a hand-edited file and a form submit meet one rule.
 func ValidateProfile(p Profile) error {
 	if !validFamilies[p.Family] {
 		return fmt.Errorf("unknown family %q", p.Family)
@@ -133,10 +114,8 @@ func ValidateProfile(p Profile) error {
 	return nil
 }
 
-// loadUserProfiles reads the user profile files in dir, one <category>.json
-// per site. A missing directory is fine; a file that fails to parse or
-// validate is skipped with a warning, never a boot failure - the built-in or
-// generic profile applies for that category until the file is fixed.
+// A bad file is skipped with a warning, never a boot failure: the
+// built-in or generic profile applies until it is fixed.
 func loadUserProfiles(dir string) map[string]Profile {
 	if dir == "" {
 		return nil
@@ -177,21 +156,14 @@ func loadUserProfiles(dir string) map[string]Profile {
 	return out
 }
 
-// CustomProfile reports whether a user profile file overrides the shipped
-// profile (or adds one) for a category.
 func (m *Mapper) CustomProfile(category string) bool { return m.view().custom[category] }
 
-// CustomCategories returns the categories whose user profile differs from the
-// shipped one, sorted. The settings sites tables surface these even without a
-// [[sites]] block.
 func (m *Mapper) CustomCategories() []string {
 	return slices.Sorted(maps.Keys(m.view().custom))
 }
 
-// SaveUserProfile validates and writes a category's user profile file, then
-// reloads the merged view so the change applies at once. A profile equal to
-// the shipped one deletes the file instead of writing it, so "differs from
-// the built-in" needs no separate bookkeeping.
+// Saving the shipped profile deletes the file, so "differs from the
+// built-in" needs no bookkeeping.
 func (m *Mapper) SaveUserProfile(category string, p Profile) error {
 	if m.userDir == "" {
 		return fmt.Errorf("no profiles directory configured")
@@ -217,19 +189,13 @@ func (m *Mapper) SaveUserProfile(category string, p Profile) error {
 	if err != nil {
 		return fmt.Errorf("encoding profile: %w", err)
 	}
-	err = config.WriteFileAtomic(filepath.Join(m.userDir, category+".json"), func(f *os.File) error {
-		_, err := f.Write(append(data, '\n'))
-		return err
-	})
-	if err != nil {
+	if err := config.WriteFileBytesAtomic(filepath.Join(m.userDir, category+".json"), append(data, '\n')); err != nil {
 		return err
 	}
 	m.reload()
 	return nil
 }
 
-// DeleteUserProfile removes a category's user profile file (absent is fine)
-// and reloads, so the shipped or generic profile shows through again.
 func (m *Mapper) DeleteUserProfile(category string) error {
 	if m.userDir == "" {
 		return fmt.Errorf("no profiles directory configured")
@@ -237,8 +203,7 @@ func (m *Mapper) DeleteUserProfile(category string) error {
 	if !ValidCategoryName(category) {
 		return fmt.Errorf("invalid site name %q", category)
 	}
-	// Reverting can drop a user-supplied md5 template the lookup chain relies
-	// on; refuse the same way a template-dropping save is refused.
+	// Reverting can drop a user md5 template the lookup chain relies on.
 	if site := m.cfg.Current().FindSite(category); site != nil && site.LookupOrder > 0 {
 		if b, ok := m.builtin[category]; !ok || b.MD5Search == "" {
 			return fmt.Errorf("site %s is in the lookup chain; remove it there (settings, lookup section) before resetting its profile", category)

@@ -1,4 +1,3 @@
-// Focus the command bar on the add screen so a pasted URL needs no click.
 document.addEventListener("DOMContentLoaded", function () {
   var bar = document.getElementById("add-input");
   if (bar) {
@@ -6,12 +5,37 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 });
 
-// A job's items render expanded. The 2s poll and an in-place add swap the whole
-// rows body, re-emitting each job open and its active "+N more" sub-list closed,
-// so remember which jobs the operator collapsed and which "+N more" lists they
-// expanded (toggle does not bubble, so capture it) and re-apply both after a
-// swap. The collapsed set rides in sessionStorage so a full page refresh, which
-// reloads the rows from scratch, keeps the operator's collapsed rows collapsed.
+// A form reset after an add puts the server's default back, so the stored
+// pick is re-applied once the reset is done.
+function restoreItemsPick() {
+  var pick;
+  try {
+    pick = localStorage.getItem("monloaderItemsPick");
+  } catch (e) {
+    return;
+  }
+  if (pick === null) {
+    return;
+  }
+  document.querySelectorAll(".add-row select[name=items]").forEach(function (sel) {
+    if (Array.from(sel.options).some(function (o) { return o.value === pick; })) {
+      sel.value = pick;
+    }
+  });
+}
+document.addEventListener("DOMContentLoaded", restoreItemsPick);
+document.addEventListener("reset", function () { setTimeout(restoreItemsPick, 0); }, true);
+document.addEventListener("change", function (e) {
+  if (e.target.matches(".add-row select[name=items]")) {
+    try {
+      localStorage.setItem("monloaderItemsPick", e.target.value);
+    } catch (err) {}
+  }
+});
+
+// A rows swap re-renders each job open and its "+N more" closed, so the
+// operator's toggles are re-applied after it. toggle does not bubble, hence
+// the capture; sessionStorage keeps collapsed rows across a reload.
 function loadClosedJobs() {
   try {
     return new Set(JSON.parse(sessionStorage.getItem("monloaderClosedJobs") || "[]"));
@@ -67,13 +91,8 @@ document.body.addEventListener("htmx:afterSwap", function (e) {
   }
 });
 
-// Reflect monbooru connectivity into the add forms. The footer light polls
-// /internal/monbooru-status and swaps its live state onto data-conn; when
-// monbooru is unreachable, unpaired, rejecting the token, or the operator has
-// paused the link from the light, reveal the top banner and block URL
-// submission (a queued download could only fail at the push step). The
-// transient "checking" state leaves the server-rendered state in place so the
-// banner does not flash.
+// A state outside this list, "checking" included, keeps the server-rendered
+// banner, so it does not flash.
 function applyMonbooruState(conn) {
   if (conn !== "down" && conn !== "ok" && conn !== "rejected" && conn !== "unpaired" &&
       conn !== "paused" && conn !== "unconfigured") {
@@ -91,8 +110,8 @@ function applyMonbooruState(conn) {
         : conn === "paused" ? "the monbooru link is paused - downloads are disabled until you resume it from the footer light"
         : "monbooru is unreachable";
     }
-    // A paused link is the operator's own doing, so it points back at the
-    // light rather than at the connection settings.
+    // A pause is the operator's own doing, so the banner points at the
+    // light, not the settings.
     var fix = document.getElementById("monbooru-banner-fix");
     if (fix) {
       fix.hidden = conn === "paused";
@@ -109,9 +128,6 @@ document.body.addEventListener("htmx:afterSwap", function () {
   }
 });
 
-// The pause control is a glyph in a corner, so the page itself has to say why
-// a job just added is sitting at queued. The toggle polls, so a pause set from
-// another tab (or from monsender) reaches the banner too.
 function applyPauseState() {
   var banner = document.getElementById("queue-paused-banner");
   var btn = document.querySelector("#pause-toggle .pause-btn");
@@ -122,9 +138,7 @@ function applyPauseState() {
 document.addEventListener("DOMContentLoaded", applyPauseState);
 document.body.addEventListener("htmx:afterSwap", applyPauseState);
 
-// Delegated clicks: the queue rows, the site dialog and the mapping editors are
-// all swapped in by htmx, so every handler binds once on the body and matches
-// the closest element instead of re-binding after each swap.
+// Bound once on the body: htmx swaps the targets in and out.
 function onClick(selector, fn) {
   document.body.addEventListener("click", function (e) {
     var el = e.target.closest && e.target.closest(selector);
@@ -134,18 +148,13 @@ function onClick(selector, fn) {
   });
 }
 
-// Per-site settings edit: the dialog's whole body is one server-rendered
-// fragment (credentials as set/unset placeholders, the effective profile),
-// loaded fresh each time it opens so a row, a search hit, and a lookup
-// shortcut all share one entry point that needs only the site name.
 onClick(".edit-site", function (btn) {
   htmx.ajax("GET", "/settings/sites/" + encodeURIComponent(btn.dataset.site) + "/dialog", "#site-dialog-body").then(function () {
     document.getElementById("site-edit-dialog").showModal();
   });
 });
 
-// A refused save renders the dialog with the page rather than fetching it, so
-// it has to be reopened on the operator's typed values instead of a fresh one.
+// A refused save renders the dialog with the page; reopen it on what was typed.
 document.addEventListener("DOMContentLoaded", function () {
   var body = document.getElementById("site-dialog-body");
   if (body && body.firstElementChild) {
@@ -154,9 +163,8 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 });
 
-// A refusal re-renders in place, so there is no #section anchor to land on and
-// its flash can sit thousands of pixels below the fold - the save then reads
-// as one that worked. A redirect brings its own anchor and is left alone.
+// A refusal re-renders without a #section anchor, leaving its flash below
+// the fold; a redirect brings its own.
 document.addEventListener("DOMContentLoaded", function () {
   if (location.hash) {
     return;
@@ -167,18 +175,15 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 });
 
-// The dialog's tab strip switches its panels; hidden panels' fields still
-// submit, so the one save button writes every tab.
+// Hidden panels still submit, so one save writes every tab.
 onClick(".dialog-tab", function (tab) {
   var dlg = tab.closest("dialog");
   dlg.querySelectorAll(".dialog-tab").forEach(function (t) { t.classList.toggle("active", t === tab); });
   dlg.querySelectorAll(".dialog-panel").forEach(function (p) { p.hidden = p.id !== tab.dataset.panel; });
 });
 
-// The export tab copies from a hidden textarea, the debug pop-in from the
-// block it already renders, so the source is read either way rather than
-// carrying a second copy of a long log. The execCommand fallback covers
-// contexts without the clipboard API (plain-http LAN origins).
+// execCommand covers origins without the clipboard API: a plain-http LAN
+// page is not a secure context.
 onClick("[data-copy-from]", function (btn, e) {
   e.preventDefault();
   var src = document.querySelector(btn.dataset.copyFrom);
@@ -206,17 +211,12 @@ function fallbackCopy(text, done) {
   done();
 }
 
-// A queue item's [?]: gallery-dl's error text asks for a --verbose re-run, so
-// the pop-in offers one for that post and shows what it logged.
 onClick(".item-debug", function (btn) {
   htmx.ajax("GET", "/internal/item-debug?url=" + encodeURIComponent(btn.dataset.url), "#debug-log-body").then(function () {
     document.getElementById("item-debug-dialog").showModal();
   });
 });
 
-// The auth tab shows only the credentials the selected login type uses;
-// changing the type retargets the fields at once. Without JS every field
-// stays visible, which still saves correctly.
 function applyAuthFields(kind) {
   var show = {
     "auth-none": kind === "none",
@@ -247,8 +247,6 @@ document.body.addEventListener("htmx:afterSwap", function (e) {
   }
 });
 
-// The mapping tab's editors grow from their row template and shrink with
-// each row's remove button.
 onClick(".add-maprow", function (add) {
   var rows = document.getElementById(add.dataset.rows);
   rows.appendChild(rows.querySelector("template").content.cloneNode(true));
@@ -257,11 +255,7 @@ onClick(".maprow-del", function (del) {
   del.closest(".maprow").remove();
 });
 
-// The directory picker: a browser cannot hand the server a filesystem path,
-// so the choice is made against a server-rendered listing. The Browse button
-// only opens the dialog - htmx has already been told to fetch the listing
-// into it - and "Use this folder" writes the result back into the input the
-// button named.
+// Browse only opens the dialog: the button's own hx-get fetches the listing.
 document.addEventListener("click", function (e) {
   if (e.target.closest(".dir-picker-open")) {
     var dlg = document.getElementById("dir-picker-dialog");
@@ -279,13 +273,9 @@ document.addEventListener("click", function (e) {
   if (open) open.close();
 });
 
-// Route hx-confirm prompts through an in-page pop-in instead of the browser's
-// native confirm(). A destructive action carries data-confirm-danger, which
-// reddens the OK button and lands focus on cancel so an accidental Enter does
-// not commit it.
-// The queue poll's trigger filter reads this: swapping #queue-rows while the
-// pop-in is open would detach the button whose confirmed request is pending,
-// and htmx silently drops a request from a detached element.
+// The polls' trigger filters read this: a swap under the open pop-in
+// detaches the button whose request is pending, and htmx drops a request
+// from a detached element.
 function confirmOpen() {
   var dlg = document.getElementById("confirm-dialog");
   return !!(dlg && dlg.open);
@@ -334,10 +324,8 @@ document.body.addEventListener("htmx:confirm", function (e) {
   showConfirm(e.detail.question, function () { e.detail.issueRequest(true); }, okLabel, danger, detail);
 });
 
-// htmx raises htmx:confirm only for requests it issues itself, so an hx-confirm
-// on a plain form (the ptr delete) would be inert; intercept the native submit
-// and route it through the same pop-in. form.submit() re-fires no submit event,
-// so a confirmed form posts without looping back here.
+// htmx:confirm only fires for htmx requests, so hx-confirm on a plain form is
+// handled here; form.submit() fires no submit event, so it cannot loop.
 document.body.addEventListener("submit", function (e) {
   var form = e.target;
   if (!form || !form.hasAttribute || !form.hasAttribute("hx-confirm")) {
@@ -353,8 +341,6 @@ document.body.addEventListener("submit", function (e) {
     form.getAttribute("data-confirm-danger"));
 });
 
-// The per-token privileges dialog closes itself on a successful save; the
-// scopes cell and the parent flash arrive as OOB swaps.
 document.body.addEventListener("token-saved", function (e) {
   var id = e.detail && e.detail.dialog;
   if (!id) return;
@@ -362,10 +348,6 @@ document.body.addEventListener("token-saved", function (e) {
   if (dlg && dlg.open) dlg.close();
 });
 
-// Lookup-chain dialog: drag a source between or within the two columns; on
-// save the queried column's top-to-bottom order becomes the chain order, so
-// the form serializes the lists into the order-<name> fields the handler
-// already reads.
 var chainDragging = null;
 document.body.addEventListener("dragstart", function (e) {
   var li = e.target.closest && e.target.closest("#chain-dialog li");
@@ -400,9 +382,8 @@ document.body.addEventListener("dragend", function () {
   chainDragging = null;
 });
 
-// HTML5 drag fires from neither the keyboard nor a touch screen, so each row
-// carries the same moves as buttons: the chain is the only settings control
-// with no other way to reach it.
+// HTML5 drag works from neither keyboard nor touch, so each row carries
+// its moves as buttons too.
 onClick(".chain-move", function (btn) {
   var li = btn.closest("li");
   var move = btn.dataset.move;
@@ -426,9 +407,8 @@ document.addEventListener("DOMContentLoaded", function () {
   if (!form) {
     return;
   }
-  // The dialog is rendered once with the page and reordered in place, so
-  // closing it has to put the lists back where the server had them: an
-  // abandoned drag would otherwise sit there until the next save committed it.
+  // The lists are reordered in place, so closing restores them, or an
+  // abandoned drag would ride the next save.
   var lists = ["chain-on", "chain-off"].map(function (id) { return document.getElementById(id); });
   var saved = lists.map(function (list) { return Array.prototype.slice.call(list.children); });
   document.getElementById("chain-dialog").addEventListener("close", function () {

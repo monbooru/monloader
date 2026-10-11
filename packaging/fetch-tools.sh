@@ -1,8 +1,6 @@
 #!/bin/sh
-# packaging/fetch-tools.sh
-#
 # Downloads the pinned one-file gallery-dl builds into tools/, where
-# build-binaries.sh expects them. 
+# build-binaries.sh expects them.
 set -eu
 
 base="https://codeberg.org/mikf/gallery-dl/releases/download/v${GDL_VERSION}"

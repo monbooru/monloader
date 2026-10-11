@@ -18,32 +18,22 @@ import (
 	"github.com/monbooru/monloader/internal/config"
 )
 
-// client talks the Hydrus repository protocol over HTTP. It reads two content
-// endpoints - GET /metadata (the manifest) and GET /update (an update blob) -
-// authenticating with the access key header. The PTR serves a self-signed
-// certificate, so chain verification is skipped for this dedicated client; the
-// compensating control is that every update blob is verified against its own
-// sha256 from the manifest before it is parsed.
 type client struct {
-	addr string
-	// keyMu guards accessKey: the account-creation flow re-points a live
-	// client at the new personal key with no restart.
+	// keyMu guards addr and accessKey: SetAccessKey swaps the key under a
+	// running sync, and the address moves while the sync is off.
 	keyMu     sync.RWMutex
+	addr      string
 	accessKey string
 	hc        *http.Client
-	// sleep paces consecutive update fetches, keeping the initial stream polite
-	// to the donated repository server.
+	// Paces update fetches to stay polite to the donated repository server.
 	sleep time.Duration
 }
 
-// retryable marks an HTTP status or transport failure the caller may retry.
 type retryable struct{ err error }
 
 func (r *retryable) Error() string { return r.err.Error() }
 func (r *retryable) Unwrap() error { return r.err }
 
-// IsRetryable reports whether err is a transient fetch failure (a 429, a 5xx,
-// a bandwidth refusal, or a transport error) rather than a permanent one.
 func IsRetryable(err error) bool {
 	var r *retryable
 	if errors.As(err, &r) {
@@ -53,7 +43,6 @@ func IsRetryable(err error) bool {
 	return errors.As(err, &s) && s.Retryable()
 }
 
-// newClient builds a repository client from the PTR config.
 func newClient(cfg config.PTRConfig) *client {
 	return &client{
 		addr:      cfg.Address,
@@ -62,15 +51,14 @@ func newClient(cfg config.PTRConfig) *client {
 		hc: &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
-				// The PTR uses a self-signed certificate; blob sha256 verification
-				// (see Update) is the integrity control instead of the chain.
+				// The PTR's certificate is self-signed; each update blob's
+				// sha256 check is the integrity control instead of the chain.
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // documented in the threat model
 			},
 		},
 	}
 }
 
-// Metadata fetches the manifest of updates from index `since` onward.
 func (c *client) Metadata(ctx context.Context, since uint64) (*metadataSlice, error) {
 	q := url.Values{"since": {strconv.FormatUint(since, 10)}}
 	raw, err := c.get(ctx, "/metadata", q)
@@ -80,9 +68,6 @@ func (c *client) Metadata(ctx context.Context, since uint64) (*metadataSlice, er
 	return parseMetadata(raw)
 }
 
-// Update fetches one update blob by its sha256 (hex), verifies the response
-// bytes hash to that value, and parses it. A mismatch is a hard error: the
-// content-addressed blob was corrupted in transit.
 func (c *client) Update(ctx context.Context, hashHex string) (*update, error) {
 	raw, err := c.updateRaw(ctx, hashHex)
 	if err != nil {
@@ -91,9 +76,8 @@ func (c *client) Update(ctx context.Context, hashHex string) (*update, error) {
 	return parseUpdate(raw)
 }
 
-// updateRaw is Update without the parse: the sync buffers an entry's blobs
-// compressed (the replay inflates one at a time), so a many-blob entry costs
-// megabytes, not its parsed rows.
+// updateRaw skips the parse: the sync holds an entry's blobs compressed
+// and inflates one at a time.
 func (c *client) updateRaw(ctx context.Context, hashHex string) ([]byte, error) {
 	if c.sleep > 0 {
 		select {
@@ -114,10 +98,8 @@ func (c *client) updateRaw(ctx context.Context, hashHex string) ([]byte, error) 
 	return raw, nil
 }
 
-// get issues one authenticated GET and returns the body, classifying a
-// transient failure as retryable.
 func (c *client) get(ctx context.Context, path string, q url.Values) ([]byte, error) {
-	u := c.addr + path
+	u := c.address() + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
@@ -134,9 +116,8 @@ func (c *client) get(ctx context.Context, path string, q url.Values) ([]byte, er
 		return nil, &retryable{err: fmt.Errorf("reaching the repository: %w", err)}
 	}
 	defer resp.Body.Close()
-	// A 429 or a 5xx (hydrus's 509 bandwidth limit among them) is transient;
-	// the caller backs off and retries. Other 4xx are permanent (bad key,
-	// unknown hash).
+	// hydrus answers 509 over its bandwidth limit; other 4xx (bad key,
+	// unknown hash) are permanent.
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 		return nil, &retryable{err: fmt.Errorf("repository returned %s", resp.Status)}
 	}

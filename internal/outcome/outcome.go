@@ -1,19 +1,15 @@
-// Package outcome holds the item vocabulary: what happened to a post, and
-// why it failed when it did. It is a leaf on purpose - the gallery-dl
-// wrapper, the monbooru client and the similarity client all classify their
-// failures into it, and none of them touches a queue, so the words live apart
-// from the engine that carries them.
+// Package outcome holds the item outcomes and error codes; API clients
+// branch on these strings.
 package outcome
 
-// Outcome is the terminal result the UI and API branch on.
 type Outcome string
 
 const (
 	Created   Outcome = "created"
 	Duplicate Outcome = "duplicate"
 	Enriched  Outcome = "enriched"
-	// Matched is a batch hash lookup answering with an image's tags.
-	// Distinct from enriched: nothing was written, the caller applies them.
+	// Matched is a hash lookup that found tags; unlike Enriched nothing
+	// was written, the caller applies them.
 	Matched            Outcome = "matched"
 	Replaced           Outcome = "replaced"
 	SkippedArchive     Outcome = "skipped_archive"
@@ -21,9 +17,6 @@ const (
 	Failed             Outcome = "failed"
 )
 
-// Error-code vocabulary. Stable strings the future browser
-// extension can branch on; the gallery-dl wrapper, the monbooru client, and
-// the pipeline all classify failures into these.
 const (
 	ErrCodeDownloadFailed      = "download_failed"
 	ErrCodeUnsupportedURL      = "unsupported_url"
@@ -35,8 +28,9 @@ const (
 	ErrCodeMonbooruUnreachable = "monbooru_unreachable"
 	ErrCodeMonbooruRejected    = "monbooru_rejected"
 	ErrCodeHashMismatch        = "hash_mismatch"
-	// Replace refusals monbooru answers with a 409: the downloaded original
-	// already exists as another image, or the target row is an archive/video.
+	// ErrCodeAlreadyExists and ErrCodeWrongType are monbooru's 409 replace
+	// refusals: the original already exists as another image, or the
+	// target or the new file is not an image.
 	ErrCodeAlreadyExists      = "already_exists"
 	ErrCodeWrongType          = "wrong_type"
 	ErrCodeMappingFailed      = "mapping_failed"
@@ -48,9 +42,6 @@ const (
 	ErrCodePTRSyncing         = "ptr_syncing"
 )
 
-// CodedError pairs a failure message with a stable code from the vocabulary
-// above. The gallery-dl wrapper and the monbooru client both return it; the
-// pipeline pulls the code with errors.As to set the item/job outcome.
 type CodedError struct {
 	Code string
 	Msg  string

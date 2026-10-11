@@ -11,6 +11,7 @@
         <input id="add-input" type="text" name="url" autocomplete="off" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}}
                placeholder="paste a booru URL or an md5 hash - post, pool, tag search, artist...">
       </div>
+      <select name="items" aria-label="items to fetch" title="how many posts to fetch">{{template "items_options" .ItemChoices}}</select>
       <button type="submit" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}}>download</button>
     </div>
   </form>
@@ -19,6 +20,7 @@
   <div id="add-flash" class="hint"></div>
   <div class="links">
     <a href="/queue">[ queue ]</a>
+    <a href="/watches">[ watched ]</a>
     <a href="/ptr">[ ptr ]</a>
     <a href="/settings">[ settings ]</a>
     {{if .MonbooruWebURL}}<a href="{{.MonbooruWebURL}}">[ go to monbooru ]</a>{{end}}

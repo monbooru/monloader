@@ -19,13 +19,11 @@ type contextKey int
 
 const sessionContextKey contextKey = 1
 
-// Session is one logged-in browser session.
 type Session struct {
 	ID        string
 	ExpiresAt time.Time
 }
 
-// SessionStore is an in-memory session set (copied from monbooru).
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]Session
@@ -53,8 +51,7 @@ func (s *SessionStore) Get(id string) (Session, bool) {
 		return Session{}, false
 	}
 	if time.Now().After(sess.ExpiresAt) {
-		// Drop it here: nothing else sweeps the map, so a closed tab or an
-		// expired week-old cookie would otherwise leave a permanent entry.
+		// Nothing else sweeps the map.
 		s.Delete(id)
 		return Session{}, false
 	}
@@ -67,11 +64,15 @@ func (s *SessionStore) Delete(id string) {
 	s.mu.Unlock()
 }
 
-// Clear drops every session, used after the password is removed so nobody is
-// left locked out of the now-open instance.
-func (s *SessionStore) Clear() {
+func (s *SessionStore) Clear() { s.ClearExcept("") }
+
+func (s *SessionStore) ClearExcept(keep string) {
 	s.mu.Lock()
-	s.sessions = map[string]Session{}
+	for id := range s.sessions {
+		if id != keep {
+			delete(s.sessions, id)
+		}
+	}
 	s.mu.Unlock()
 }
 
@@ -82,9 +83,6 @@ func sessionFromContext(ctx context.Context) string {
 
 func isHTMXRequest(r *http.Request) bool { return r.Header.Get("HX-Request") == "true" }
 
-// SessionMiddleware injects a session id for CSRF and, when a UI password is
-// configured, redirects unauthenticated requests to /login. The API and
-// static assets bypass it.
 func (s *Server) SessionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if bypassAuth(r.URL.Path) || !s.cfg.Current().Auth.EnablePassword {
@@ -107,9 +105,7 @@ func (s *Server) SessionMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// bypassAuth lists the paths that never see the login redirect: the API (its
-// own bearer gate), the health probe, the static assets, and the login page
-// itself, which would otherwise redirect to itself.
+// The API has its own bearer-token gate.
 func bypassAuth(p string) bool {
 	return strings.HasPrefix(p, "/api/v1/") || p == "/health" ||
 		strings.HasPrefix(p, "/static/") || p == "/login" ||
@@ -132,8 +128,6 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "login", s.loginData(""))
 }
 
-// loginData is the login page's template data; errMsg is set only on a failed
-// attempt.
 func (s *Server) loginData(errMsg string) map[string]any {
 	data := map[string]any{
 		"Title":        "Login - " + s.titleName(),
@@ -159,8 +153,7 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	}
 	password := r.FormValue("password")
 	if bcrypt.CompareHashAndPassword([]byte(s.cfg.Current().Auth.PasswordHash), []byte(password)) != nil {
-		// The content-type must land before the status: headers set after
-		// WriteHeader are dropped.
+		// render sets this too, but after WriteHeader, which drops it.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
 		s.render(w, "login", s.loginData("incorrect password"))
@@ -188,9 +181,6 @@ func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// settingsPasswordPost sets or changes the optional UI password from the
-// authentication settings section. Setting a password also turns auth on. An
-// existing password must be confirmed before it changes.
 func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		flashFragment(w, "err", "bad form")
@@ -201,7 +191,7 @@ func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", "new password required")
 		return
 	}
-	if s.cfg.Current().Auth.EnablePassword && s.cfg.Current().Auth.PasswordHash != "" {
+	if s.cfg.Current().Auth.PasswordHash != "" {
 		if bcrypt.CompareHashAndPassword([]byte(s.cfg.Current().Auth.PasswordHash), []byte(r.FormValue("current_password"))) != nil {
 			flashFragment(w, "err", "current password is incorrect")
 			return
@@ -220,13 +210,15 @@ func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", "could not save: "+err.Error())
 		return
 	}
+	// A password is often changed because the old one leaked: every other
+	// browser signs in again.
+	s.sessions.ClearExcept(sessionFromContext(r.Context()))
 	flashFragment(w, "ok", "password updated")
 	s.renderAuthPasswordOOB(w, r)
 }
 
-// settingsRemovePasswordPost disables the UI password. The current password is
-// required whenever a hash is set, even if the TOML flag was flipped off, so
-// the disable path cannot be bypassed.
+// Gated on the hash, not EnablePassword: a TOML flag flipped off must not
+// skip the check.
 func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		flashFragment(w, "err", "bad form")
@@ -251,10 +243,8 @@ func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Reque
 	s.renderAuthPasswordOOB(w, r)
 }
 
-// settingsTokenCreate mints a named API bearer token with all scopes. The
-// secret is generated before updateConfig (whose closure runs twice) so both
-// the runtime and file layers store the same value; it is shown once in the
-// response and never echoed by the settings page again.
+// The secret is minted outside updateConfig, whose closure runs twice, so
+// both layers store the same one.
 func (s *Server) settingsTokenCreate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		flashFragment(w, "err", "bad form data")
@@ -282,14 +272,12 @@ func (s *Server) settingsTokenCreate(w http.ResponseWriter, r *http.Request) {
 	s.renderAuthTokensOOB(w, r)
 }
 
-// hasPairingTeardown reports whether a token's peer has its own remove-pairing
-// control. Only these two do, so a token minted under any other app name would
-// have no way out at all if the list refused it as well.
+// Only these two peers have a remove-pairing control, so a token paired
+// under any other name stays revocable from the list.
 func hasPairingTeardown(peer string) bool {
 	return peer == "monbooru" || peer == "monsender"
 }
 
-// settingsTokenRevoke drops a named API token by id.
 func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tok := s.cfg.Current().FindToken(id)
@@ -312,8 +300,6 @@ func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	s.renderAuthTokensOOB(w, r)
 }
 
-// renderAuthTokensOOB re-renders the token list out of band so it reflects the
-// latest set after a create or revoke without a full page reload.
 func (s *Server) renderAuthTokensOOB(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "auth_tokens", map[string]any{
 		"Tokens":    slices.Clone(s.cfg.Current().Auth.Tokens),
@@ -382,8 +368,6 @@ func (s *Server) settingsTokenPrivilegesPost(w http.ResponseWriter, r *http.Requ
 		id, strings.Join(scopes, " "))
 }
 
-// filterScopes keeps only recognized scopes, in canonical order, dropping
-// anything a tampered form might submit.
 func filterScopes(in []string) []string {
 	var out []string
 	for _, sc := range config.AllScopes {
@@ -394,11 +378,6 @@ func filterScopes(in []string) []string {
 	return out
 }
 
-// grantedScopes is what approving a request actually mints: the implemented
-// scopes it asked for, or read alone when it asked for none. The approval
-// table renders this rather than the raw ask, so the operator approves what
-// they were shown - a request naming "admin" would otherwise read as one that
-// gets it.
 func grantedScopes(requested []string) []string {
 	if sc := filterScopes(requested); len(sc) > 0 {
 		return sc
@@ -406,11 +385,10 @@ func grantedScopes(requested []string) []string {
 	return []string{config.ScopeRead}
 }
 
-// renderAuthPasswordOOB re-renders the password sub-section out of band so its
-// enabled/disabled line updates after a change without a full page reload.
 func (s *Server) renderAuthPasswordOOB(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "auth_password_section", map[string]any{
 		"AuthEnabled": s.cfg.Current().Auth.EnablePassword,
+		"HasPassword": s.cfg.Current().Auth.PasswordHash != "",
 		"CSRFToken":   s.csrfToken(sessionFromContext(r.Context())),
 		"OOB":         true,
 	})

@@ -1,8 +1,5 @@
-// Package logx is a thin level gate over the stdlib log package.
-//
-// Three levels: "warn" (default), "info", "debug". Warnings, errors, and
-// fatals always fire; only Infof and Debugf respect the gate. Copied from
-// monbooru so the companion logs the same way.
+// Package logx gates the stdlib logger by level. It copies monbooru's and
+// is kept in step by hand, so a fix here belongs there too.
 package logx
 
 import (
@@ -11,9 +8,6 @@ import (
 	"sync/atomic"
 )
 
-// Level orders verbosity low-to-high (smaller = more verbose) to match
-// the slog / syslog convention; Enabled fires only when the message's
-// level is at or above the configured threshold.
 type Level int32
 
 const (
@@ -24,8 +18,6 @@ const (
 
 var level atomic.Int32
 
-// Set parses a name ("warn", "info", "debug"; anything else becomes "warn")
-// and installs it as the current threshold.
 func Set(name string) {
 	var l Level
 	switch strings.ToLower(strings.TrimSpace(name)) {
@@ -39,7 +31,17 @@ func Set(name string) {
 	level.Store(int32(l))
 }
 
-// Enabled reports whether messages at l clear the configured threshold.
+// Get returns the level's name in the form Set takes.
+func Get() string {
+	switch Level(level.Load()) {
+	case LevelDebug:
+		return "debug"
+	case LevelInfo:
+		return "info"
+	}
+	return "warn"
+}
+
 func Enabled(l Level) bool { return l >= Level(level.Load()) }
 
 func Debugf(format string, a ...any) {

@@ -6,27 +6,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 )
 
-// The write half of the hydrus wire format. The read side (wire.go)
-// only decodes server-built update blobs; contributing means building
-// the client-to-server shapes ourselves: a ClientToServerUpdate (type
-// 40) of Content entries (type 23) posted as a SerialisableDictionary
-// (type 21) body, plus parsers for the account-management responses,
-// which arrive as zlib(JSON [21, 2, entries]) dictionaries whose values
-// are meta-tuples: [0, plain], [1, hex-encoded bytes], or
-// [2, [type, version, payload]].
-
-// Serialisable type codes and C2S actions used by the write path.
 const (
 	typeContent     = 23
 	typeList        = 26
 	typeC2SUpdate   = 40
 	typeTagFilter   = 44
 	typeAccountType = 102
-	// ActionPend and ActionPetition are the two C2S actions clients use:
-	// pend adds, petition removals. Exported for the commit engine.
+	// ActionPend proposes an addition, ActionPetition a removal.
 	ActionPend       = 2
 	ActionPetition   = 4
 	metaPlain        = 0
@@ -35,7 +25,6 @@ const (
 	permissionCreate = 1
 )
 
-// deflateJSON is the encoder mirror of inflate: zlib(JSON(v)).
 func deflateJSON(v any) ([]byte, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -55,16 +44,14 @@ func deflateJSON(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// c2sEntry is one content+reason pair under an action.
 type c2sEntry struct {
 	action  int
-	content []any // [23, 1, [content_type, data]]
+	content []any
 	reason  string
 }
 
-// C2SUpdate accumulates contribution entries. Encode preserves the
-// order actions were first added in (petitions before pends is the
-// caller's job) and, within an action, insertion order.
+// C2SUpdate encodes actions in the order first added; adding petitions
+// before pends, as hydrus does, is the caller's job.
 type C2SUpdate struct {
 	entries []c2sEntry
 }
@@ -73,7 +60,6 @@ func content(contentType int, data any) []any {
 	return []any{typeContent, 1, []any{contentType, data}}
 }
 
-// AddMappings adds a mapping pend or petition: one tag onto hashes.
 func (u *C2SUpdate) AddMappings(action int, tag string, hashes [][]byte, reason string) {
 	hexes := make([]any, len(hashes))
 	for i, h := range hashes {
@@ -82,25 +68,18 @@ func (u *C2SUpdate) AddMappings(action int, tag string, hashes [][]byte, reason 
 	u.entries = append(u.entries, c2sEntry{action, content(contentTypeMappings, []any{tag, hexes}), reason})
 }
 
-// AddSibling adds a sibling (alias) pend or petition: bad -> good.
 func (u *C2SUpdate) AddSibling(action int, bad, good, reason string) {
 	u.entries = append(u.entries, c2sEntry{action, content(contentTypeSiblings, []any{bad, good}), reason})
 }
 
-// AddParent adds a parent (implication) pend or petition: child -> parent.
 func (u *C2SUpdate) AddParent(action int, child, parent, reason string) {
 	u.entries = append(u.entries, c2sEntry{action, content(contentTypeParents, []any{child, parent}), reason})
 }
 
-// Empty reports whether nothing has been added.
 func (u *C2SUpdate) Empty() bool { return len(u.entries) == 0 }
 
-// Len is the number of content entries added.
 func (u *C2SUpdate) Len() int { return len(u.entries) }
 
-// EncodePOSTBody renders the update as the POST /update body:
-// zlib(JSON [21, 2, [[[0, "client_to_server_update"], [2, C2S]]]])
-// with C2S = [40, 1, [[action, [[content, reason], ...]], ...]].
 func (u *C2SUpdate) EncodePOSTBody() ([]byte, error) {
 	var actionOrder []int
 	grouped := map[int][]any{}
@@ -121,10 +100,6 @@ func (u *C2SUpdate) EncodePOSTBody() ([]byte, error) {
 	return deflateJSON(body)
 }
 
-// ServerError is a hydrus JSON error body with its HTTP status. 400 on
-// the registration endpoint means "no accounts available right now"
-// (retry later); 401/403 are auth or permission refusals; 509 is a
-// bandwidth refusal, retryable like the read side's.
 type ServerError struct {
 	Status        int
 	Message       string
@@ -132,36 +107,42 @@ type ServerError struct {
 }
 
 func (e *ServerError) Error() string {
-	// An address that is not a hydrus repository answers plain text rather
-	// than the JSON envelope, so there is no exception type to name.
+	// A non-hydrus address answers plain text, with no exception type.
 	if e.ExceptionType == "" {
 		return fmt.Sprintf("server answered %d: %s", e.Status, e.Message)
 	}
 	return fmt.Sprintf("server answered %d (%s): %s", e.Status, e.ExceptionType, e.Message)
 }
 
-// Retryable reports whether the refusal is temporary.
 func (e *ServerError) Retryable() bool {
 	return e.Status == 429 || e.Status >= 500
 }
 
-// parseServerError decodes a non-200 hydrus response body (plain JSON,
-// not zlib). A body that does not parse still yields a usable error.
+// Error bodies are plain JSON, not zlib like the success bodies.
 func parseServerError(status int, body []byte) *ServerError {
 	var raw struct {
 		Error         string `json:"error"`
 		ExceptionType string `json:"exception_type"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil || raw.Error == "" {
-		return &ServerError{Status: status, Message: string(body)}
+		return &ServerError{Status: status, Message: clip(string(body))}
 	}
 	return &ServerError{Status: status, Message: raw.Error, ExceptionType: raw.ExceptionType}
 }
 
-// parseResponseDict inflates a zlib(JSON [21, 2, entries]) response and
-// returns its top-level keys with meta-tuples resolved one level: plain
-// values as-is, hex-bytes as the hex string, serialisables as their
-// undecoded [type, version, payload] tuple.
+// A proxy's or captive portal's error page would otherwise land whole in
+// every claimed item's error.
+const maxServerMessage = 300
+
+func clip(msg string) string {
+	if len(msg) <= maxServerMessage {
+		return msg
+	}
+	return strings.ToValidUTF8(msg[:maxServerMessage], "") + "..."
+}
+
+// parseResponseDict resolves meta-tuples one level: bytes stay hex
+// strings and serialisables stay [type, version, payload] tuples.
 func parseResponseDict(data []byte) (map[string]any, error) {
 	raw, err := inflate(data)
 	if err != nil {
@@ -204,8 +185,6 @@ func parseResponseDict(data []byte) (map[string]any, error) {
 	return out, nil
 }
 
-// envelopePayload checks a [type, version, payload] tuple's type and
-// returns its payload.
 func envelopePayload(tuple []any, wantType int) (any, error) {
 	if len(tuple) != 3 {
 		return nil, fmt.Errorf("envelope has %d elements, want 3", len(tuple))
@@ -220,7 +199,6 @@ func envelopePayload(tuple []any, wantType int) (any, error) {
 	return tuple[2], nil
 }
 
-// metaValue resolves one meta-tuple [metatype, value].
 func metaValue(v any) (any, error) {
 	pair, ok := v.([]any)
 	if !ok || len(pair) != 2 {
@@ -253,9 +231,8 @@ func asInt64(v any) (int64, error) {
 	return 0, fmt.Errorf("not a number: %T", v)
 }
 
-// AccountType is one row of /auto_create_account_types: tuple
-// [102, 2, [key_hex, title, [[content_type, action], ...],
-// bandwidth_rules, [num_per_period, period_s], history]].
+// AccountType's wire payload is [key_hex, title, permissions,
+// bandwidth_rules, velocity, history].
 type AccountType struct {
 	Key         string
 	Title       string
@@ -264,14 +241,12 @@ type AccountType struct {
 	VelocitySec int
 }
 
-// CanCreateMappings reports the create permission on mappings - the
-// one POST /update needs for a tag add to apply.
 func (a AccountType) CanCreateMappings() bool {
 	return a.Permissions[contentTypeMappings] >= permissionCreate
 }
 
-// CanPetition reports whether any content type carries at least
-// petition permission, the gate POST /update checks.
+// CanPetition needs no level check: petition is the lowest permission (0),
+// so any listed content type grants it.
 func (a AccountType) CanPetition() bool {
 	return len(a.Permissions) > 0
 }
@@ -326,23 +301,32 @@ func parseAccountTypeTuple(v any) (AccountType, error) {
 	return at, nil
 }
 
-// parseAccountTypes decodes GET /auto_create_account_types.
-func parseAccountTypes(body []byte) ([]AccountType, error) {
+// responseList unwraps a response dict's key from its serialisable
+// envelope into the list it carries.
+func responseList(body []byte, key string, wantType int) ([]any, error) {
 	dict, err := parseResponseDict(body)
 	if err != nil {
 		return nil, err
 	}
-	listTuple, ok := dict["account_types"].([]any)
+	tuple, ok := dict[key].([]any)
 	if !ok {
-		return nil, fmt.Errorf("response carries no account_types")
+		return nil, fmt.Errorf("response carries no %s", key)
 	}
-	payload, err := envelopePayload(listTuple, typeList)
+	payload, err := envelopePayload(tuple, wantType)
 	if err != nil {
 		return nil, err
 	}
-	metas, ok := payload.([]any)
+	list, ok := payload.([]any)
 	if !ok {
-		return nil, fmt.Errorf("account_types payload is not a list")
+		return nil, fmt.Errorf("%s payload is not a list", key)
+	}
+	return list, nil
+}
+
+func parseAccountTypes(body []byte) ([]AccountType, error) {
+	metas, err := responseList(body, "account_types", typeList)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]AccountType, 0, len(metas))
 	for _, m := range metas {
@@ -359,8 +343,6 @@ func parseAccountTypes(body []byte) ([]AccountType, error) {
 	return out, nil
 }
 
-// parseKeyResponse extracts a hex key field (registration_key,
-// access_key) from a response dictionary.
 func parseKeyResponse(body []byte, field string) (string, error) {
 	dict, err := parseResponseDict(body)
 	if err != nil {
@@ -376,24 +358,18 @@ func parseKeyResponse(body []byte, field string) (string, error) {
 	return key, nil
 }
 
-// Account is the GET /account view: the account's key and type, its
-// creation time, and the janitor-set state.
 type Account struct {
-	Key     string
-	Type    AccountType
-	Created int64
-	Expires int64 // 0 = never
-	Banned  bool
-	// BanReason is the janitor's text, verbatim, when Banned.
+	Key       string
+	Type      AccountType
+	Created   int64
+	Expires   int64 // 0 = never
+	Banned    bool
 	BanReason string
-	// Message is a janitor-set note shown to the account holder.
-	Message string
+	Message   string
 }
 
-// parseAccountResponse decodes GET /account. The account tuple is
-// [key_hex, account_type_tuple, created, expires, dictionary_string]
-// where dictionary_string is an embedded JSON [21, 2, entries] carrying
-// banned_info (null or [reason, created, expires]) and message.
+// The account tuple's fifth field is a JSON string holding a second
+// dictionary, with banned_info and message.
 func parseAccountResponse(body []byte) (*Account, error) {
 	dict, err := parseResponseDict(body)
 	if err != nil {
@@ -459,43 +435,21 @@ func parseAccountResponse(body []byte) (*Account, error) {
 	return acc, nil
 }
 
-// TagFilter is the repository's server-side filter over pended
-// mappings, fetched from GET /tag_filter: rules keyed by tag slice - an
-// exact tag, a namespace ("booru:"), "" (every unnamespaced tag), or
-// ":" (every namespaced tag) - with 1 = blocked, 0 = allowed. The
-// server applies it silently; the commit engine applies it client-side
-// first and reports the drops.
+// TagFilter is applied before a send because the server drops blocked
+// pends silently.
 type TagFilter struct {
 	rules map[string]int
 }
 
-// NewTagFilter builds a filter from a rule set; this export exists for tests,
-// which hold rules outside the wire form.
+// NewTagFilter builds a filter from explicit rules rather than a wire body.
 func NewTagFilter(rules map[string]int) *TagFilter {
-	f := &TagFilter{rules: map[string]int{}}
-	for k, v := range rules {
-		f.rules[k] = v
-	}
-	return f
+	return &TagFilter{rules: maps.Clone(rules)}
 }
 
-// parseTagFilter decodes GET /tag_filter.
 func parseTagFilter(body []byte) (*TagFilter, error) {
-	dict, err := parseResponseDict(body)
+	entries, err := responseList(body, "tag_filter", typeTagFilter)
 	if err != nil {
 		return nil, err
-	}
-	tuple, ok := dict["tag_filter"].([]any)
-	if !ok {
-		return nil, fmt.Errorf("response carries no tag_filter")
-	}
-	payload, err := envelopePayload(tuple, typeTagFilter)
-	if err != nil {
-		return nil, err
-	}
-	entries, ok := payload.([]any)
-	if !ok {
-		return nil, fmt.Errorf("tag_filter payload is not a list")
 	}
 	f := &TagFilter{rules: map[string]int{}}
 	for _, e := range entries {
@@ -516,9 +470,6 @@ func parseTagFilter(body []byte) (*TagFilter, error) {
 	return f, nil
 }
 
-// Blocks reports whether the filter would drop tag, and the rule slice
-// that decides it. Specificity wins: an exact-tag rule beats the tag's
-// namespace slice, which beats the global "" / ":" slices.
 func (f *TagFilter) Blocks(tag string) (bool, string) {
 	if f == nil || len(f.rules) == 0 {
 		return false, ""
@@ -542,44 +493,27 @@ func (f *TagFilter) Blocks(tag string) (bool, string) {
 	return false, ""
 }
 
-// DecodedUpdate is a POST /update body decoded back into its actions
-// and entries - what a server-side processor sees. The fake repository
-// and the commit-engine tests assert on it; the local-hydrus smoke can
-// use it to eyeball an outgoing payload.
+// DecodedUpdate and DecodeC2SUpdate read an encoded update back the way the
+// server would.
 type DecodedUpdate struct {
 	Actions []decodedAction
 }
 
-// decodedAction groups one action's content entries.
 type decodedAction struct {
 	Action  int
 	Entries []decodedEntry
 }
 
-// decodedEntry is one content+reason pair.
 type decodedEntry struct {
 	ContentType int
 	Data        any
 	Reason      string
 }
 
-// DecodeC2SUpdate decodes an encoded POST /update body.
 func DecodeC2SUpdate(body []byte) (DecodedUpdate, error) {
-	dict, err := parseResponseDict(body)
+	actions, err := responseList(body, "client_to_server_update", typeC2SUpdate)
 	if err != nil {
 		return DecodedUpdate{}, err
-	}
-	tuple, ok := dict["client_to_server_update"].([]any)
-	if !ok {
-		return DecodedUpdate{}, fmt.Errorf("no client_to_server_update entry")
-	}
-	payload, err := envelopePayload(tuple, typeC2SUpdate)
-	if err != nil {
-		return DecodedUpdate{}, err
-	}
-	actions, ok := payload.([]any)
-	if !ok {
-		return DecodedUpdate{}, fmt.Errorf("c2s payload is not a list")
 	}
 	var out DecodedUpdate
 	for _, a := range actions {
@@ -625,9 +559,4 @@ func DecodeC2SUpdate(body []byte) (DecodedUpdate, error) {
 	return out, nil
 }
 
-// Content type codes of the decoded entries, matching the wire values.
-const (
-	ContentTypeMappings = contentTypeMappings
-	ContentTypeSiblings = contentTypeSiblings
-	ContentTypeParents  = contentTypeParents
-)
+const ContentTypeMappings = contentTypeMappings

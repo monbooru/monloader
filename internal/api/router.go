@@ -15,9 +15,7 @@ import (
 	"github.com/monbooru/monloader/internal/sitestate"
 )
 
-// PTRService is the PTR surface the API exposes: capability + progress for the
-// status endpoint, the tag-graph query, and the hash lookup. A nil service
-// means the PTR is not built into the run (status reports disabled).
+// PTRService is nil when the PTR is not built into the run.
 type PTRService interface {
 	Status() ptr.Status
 	TagGraph(ctx context.Context, names []string) (map[string]ptr.TagInfo, error)
@@ -42,29 +40,21 @@ type PTRService interface {
 	RefreshAccount(ctx context.Context) (*ptr.Account, error)
 }
 
-// PairHandlers are the extension pairing handshake's three handlers. They live
-// in the web layer, which owns the pending-request store and the operator's
-// approval screen, but they are declared and mounted here with everything else
-// so the handshake a client must speak first is in the reference too.
 type PairHandlers struct {
 	Request  http.HandlerFunc
 	Status   http.HandlerFunc
 	Teardown http.HandlerFunc
 }
 
-// Host is what the API needs back from the layer that mounts it. Both pieces
-// belong to that layer - it owns the approval screen and the config file - and
-// naming the seam keeps the next one a field here rather than another
-// constructor parameter. The zero value mounts an API with neither: the
-// pairing routes answer nothing and the writes that need a save are refused.
 type Host struct {
 	Pair PairHandlers
-	// SaveConfig persists a config mutation through the owner's save path
-	// (the web layer's updateConfig); nil in tests that never persist.
+	// May be nil; a handler that saves refuses rather than calling it.
 	SaveConfig func(func(*config.Config) error) error
+	// Whether a lookup walk would query the source rather than skip it for
+	// a missing credential; nil counts every source.
+	Queryable func(mapping.LookupSource) bool
 }
 
-// Handler serves monloader's own /api/v1/ surface.
 type Handler struct {
 	queue     *queue.Queue
 	runner    gdl.Runner
@@ -77,12 +67,6 @@ type Handler struct {
 	host      Host
 }
 
-// New builds the API handler. catalog is the shared gallery-dl inventory
-// (version, extractors, supportedsites rows), refreshed by the web layer when
-// a managed install changes the binary; version feeds /health; siteState is
-// the shared "last reached" tracker the test probe records into; ptr backs
-// the PTR endpoints (nil when the PTR is not built into the run); host is
-// what the mounting layer supplies back.
 func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.Provider, catalog *gdl.Catalog, version string, siteState *sitestate.Tracker, ptrSvc PTRService, host Host) *Handler {
 	return &Handler{
 		queue:     q,
@@ -97,10 +81,8 @@ func New(q *queue.Queue, runner gdl.Runner, mapper *mapping.Mapper, cfg *config.
 	}
 }
 
-// Mount registers every API route on mux, straight from the endpoint
-// declarations that also build the OpenAPI document, so a route cannot be
-// mounted without documenting it. NoAuth endpoints (/health and the self-doc
-// pair) skip the bearer gate; the rest go through it.
+// Mounting from endpoints(), which also builds the OpenAPI document,
+// keeps every route documented.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	for _, e := range h.endpoints() {
 		fn := e.Handler
@@ -114,16 +96,13 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		mux.HandleFunc(e.Method+" "+e.Path, fn)
 	}
 
-	// CORS preflight for the future browser extension.
 	mux.HandleFunc("OPTIONS /api/v1/", func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w, r)
 		w.WriteHeader(http.StatusNoContent)
 	})
 }
 
-// auth gates a handler behind a bearer token and per-token scope. With no
-// tokens configured the API is disabled (503). CORS headers are set on every
-// API response so the extension's origin can call from a browser.
+// CORS goes on before the checks so the extension can read a refusal.
 func (h *Handler) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w, r)
@@ -151,8 +130,6 @@ func (h *Handler) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// scopeForMethod maps an HTTP method to the privilege a token must hold: writes
-// for POST and the DELETE job-cancel, reads for the rest.
 func scopeForMethod(method string) string {
 	if method == http.MethodPost || method == http.MethodDelete {
 		return config.ScopeWrite
@@ -160,9 +137,7 @@ func scopeForMethod(method string) string {
 	return config.ScopeRead
 }
 
-// setCORS reflects the request Origin so the browser extension (a distinct
-// origin) can call the API. On a LAN this permissiveness is acceptable; the
-// bearer token, when set, is the real gate.
+// Any Origin is reflected: the bearer token, not CORS, is the gate.
 func setCORS(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -186,18 +161,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// maxRequestBody caps a JSON request body, like the pairing endpoint's
-// 64 KiB but roomy enough for the largest legitimate payload (a bulk
-// contribution confirm's tag lists).
+// Sized for the largest legitimate body, a bulk contribution confirm's
+// tag lists.
 const maxRequestBody = 1 << 20
 
-// decodeBody decodes a size-capped JSON request body so an authenticated
-// client cannot stream an unbounded body into memory.
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
 	return json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(v)
 }
 
-// apiPathInt64 parses a numeric path segment.
 func apiPathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	v, err := strconv.ParseInt(r.PathValue(name), 10, 64)
 	if err != nil {
@@ -207,7 +178,6 @@ func apiPathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, b
 	return v, true
 }
 
-// parsePage reads page + limit, clamping limit to maxLimit.
 func parsePage(r *http.Request, defaultLimit, maxLimit int) (page, limit int) {
 	page, limit = 1, defaultLimit
 	q := r.URL.Query()

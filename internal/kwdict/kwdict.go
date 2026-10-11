@@ -1,13 +1,9 @@
-// Package kwdict coerces values out of a gallery-dl metadata kwdict, whose
-// field types vary across sites and gallery-dl releases: a post id arrives as a
-// number or a string, page numbers as either. The gdl, mapping, and pipeline
-// packages share these so the coercion rules cannot drift apart.
+// Package kwdict coerces gallery-dl kwdict fields, whose types vary
+// across sites and releases.
 package kwdict
 
 import "strconv"
 
-// String returns m[key] as a string, formatting a numeric value, or "" when the
-// key is absent or carries another type.
 func String(m map[string]any, key string) string {
 	switch v := m[key].(type) {
 	case string:
@@ -19,18 +15,19 @@ func String(m map[string]any, key string) string {
 	}
 }
 
-// ID returns the post id. gallery-dl emits it as a number or a string;
-// manga/comic gallery extractors (nhentai, hitomi, ...) key the post by
-// gallery_id instead, so fall back to it for a stable bundle id.
+// ID falls back to gallery_id, which manga extractors such as nhentai and
+// hitomi key a post by, then to file.id, where civitai nests it.
 func ID(m map[string]any) string {
 	if s := String(m, "id"); s != "" {
 		return s
 	}
-	return String(m, "gallery_id")
+	if s := String(m, "gallery_id"); s != "" {
+		return s
+	}
+	file, _ := m["file"].(map[string]any)
+	return String(file, "id")
 }
 
-// Num is the per-file ordinal that tells a post's files apart: `num`, falling
-// back to `no` when num is empty.
 func Num(m map[string]any) int {
 	if n := Int(m, "num"); n != 0 {
 		return n
@@ -38,7 +35,6 @@ func Num(m map[string]any) int {
 	return Int(m, "no")
 }
 
-// Int returns m[key] as an int, parsing a string form, or 0.
 func Int(m map[string]any, key string) int {
 	switch v := m[key].(type) {
 	case float64:

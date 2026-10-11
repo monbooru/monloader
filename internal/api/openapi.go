@@ -1,28 +1,22 @@
 package api
 
 import (
+	"cmp"
 	"encoding/json"
 	"html/template"
 	"net/http"
 	"strings"
 )
 
-// The API surface is declared once as typed values: the endpoint table feeds
-// the mux registration (Mount), the OpenAPI document (/api/v1/openapi.json),
-// and the docs page (/api/v1/docs), so a mounted route cannot go undocumented.
-
-// endpoint is one API operation.
 type endpoint struct {
-	Method      string // upper-case HTTP verb, as the mux pattern wants it
-	Path        string // OpenAPI-style path; {id} segments match the mux syntax
+	Method      string
+	Path        string
 	Summary     string
 	OperationID string
 	Description string
-	// NoAuth marks the endpoints outside the bearer gate (/health and the two
-	// self-doc routes), which set their own CORS.
+	// NoAuth handlers skip the bearer gate, so they must set CORS themselves.
 	NoAuth bool
-	// ReadScope marks a POST that only reads (the contribution preview),
-	// so a read-scoped token suffices despite the method.
+	// ReadScope lets a read token call a POST that writes nothing.
 	ReadScope bool
 	Params    []param
 	Request   *reqBody
@@ -30,58 +24,76 @@ type endpoint struct {
 	Handler   http.HandlerFunc
 }
 
-// MethodLower backs the docs page's method CSS class and anchors.
 func (e endpoint) MethodLower() string { return strings.ToLower(e.Method) }
 
-// Anchor is the endpoint's stable fragment id on the docs page.
 func (e endpoint) Anchor() string { return e.MethodLower() + "-" + anchorize(e.Path) }
 
 type param struct {
 	Name, In, Description string
 	Required              bool
+	// Empty is a string.
+	Type string
 }
 
-// reqBody is a JSON request body: an object with required fields and
-// properties.
 type reqBody struct {
 	Required []string
 	Props    []prop
+	Optional bool
 }
 
-// response is one declared status. Ref names a component schema; Props declare
-// an inline object schema instead; neither means no body.
+func (r reqBody) Fields() []prop { return flatten("", r.Props) }
+
 type response struct {
 	Status, Description string
 	Ref                 string
 	Props               []prop
 }
 
-// RefAnchor links the docs response row to its schema section.
 func (r response) RefAnchor() string { return anchorize(r.Ref) }
 
-// prop is one schema property. Ref points at a component schema; Items types
-// an array's elements; Props nest an object's children.
+func (r response) Fields() []prop { return flatten("", r.Props) }
+
 type prop struct {
 	Name, Type, Description string
 	Format                  string
-	Minimum                 int
 	Ref                     string
 	Items                   *prop
 	Props                   []prop
 	Required                []string
 }
 
-// apiSchema is one named component schema.
 type apiSchema struct {
 	Name  string
 	Props []prop
 }
 
-// Anchor is the schema's fragment id on the docs page.
 func (s apiSchema) Anchor() string { return anchorize(s.Name) }
 
-// endpoints declares every operation the API serves, in the order the docs
-// page lists them.
+func (s apiSchema) Fields() []prop { return flatten("", s.Props) }
+
+// The HTML reference lists nested fields as dotted rows, an array's
+// element fields under name[].
+func flatten(prefix string, props []prop) []prop {
+	var out []prop
+	for _, p := range props {
+		name := prefix + p.Name
+		row := p
+		row.Name = name
+		if p.Ref != "" {
+			row.Type = p.Ref
+		}
+		if p.Items != nil {
+			row.Type = "array of " + cmp.Or(p.Items.Ref, p.Items.Type)
+		}
+		out = append(out, row)
+		out = append(out, flatten(name+".", p.Props)...)
+		if p.Items != nil {
+			out = append(out, flatten(name+"[].", p.Items.Props)...)
+		}
+	}
+	return out
+}
+
 func (h *Handler) endpoints() []endpoint {
 	return []endpoint{
 		{
@@ -96,7 +108,7 @@ func (h *Handler) endpoints() []endpoint {
 			Method: "POST", Path: "/api/v1/queue",
 			Summary: "Enqueue a URL", OperationID: "enqueue",
 			Params: []param{
-				{Name: "wait", In: "query", Description: "Block up to N seconds (capped at 60) for the job to resolve and return it inline; otherwise 202 with a job id"},
+				{Name: "wait", In: "query", Type: "integer", Description: "Block up to N seconds (capped at 60) for the job to resolve and return it inline; otherwise 202 with a job id"},
 			},
 			Request: &reqBody{
 				Required: []string{"url"},
@@ -105,7 +117,7 @@ func (h *Handler) endpoints() []endpoint {
 					{Name: "options", Type: "object", Props: []prop{
 						{Name: "gallery", Type: "string", Description: "Target monbooru gallery; overrides the per-source default"},
 						{Name: "folder", Type: "string", Description: "Destination subfolder under the gallery; relative, no .. segment"},
-						{Name: "max_items", Type: "integer", Minimum: 1, Description: "Cap on posts fetched this run (--range 1-N); only lowers the cap, never above the server's max_items_per_job. A pool is exempt and always fetched whole"},
+						{Name: "max_items", Type: "integer", Description: "Cap on posts fetched this run (--range 1-N); only lowers the cap, never above the server's max_items_per_job, and 0 keeps it. A pool is exempt and always fetched whole"},
 						{Name: "page_url", Type: "string", Description: "The page a direct-file send came from; a directlink job records it as the item's source link instead of the bare file URL"},
 						{Name: "tags", Type: "array", Items: &prop{Type: "string"}, Description: "Tags to add to every item this job pushes, on top of the ones mapped from the post. Normalized like any other tag (a category prefix is kept); duplicates are dropped. Max 64"},
 						{Name: "commentary", Type: "string", Description: "Commentary for every item this job pushes, used only where the post itself carries none - a direct file link, typically. Max 10000 characters"},
@@ -127,8 +139,8 @@ func (h *Handler) endpoints() []endpoint {
 			Summary: "List jobs", OperationID: "listJobs",
 			Params: []param{
 				{Name: "status", In: "query", Description: "Filter by job status"},
-				{Name: "page", In: "query", Description: "Page number (1-based)"},
-				{Name: "limit", In: "query", Description: "Results per page (max 200)"},
+				{Name: "page", In: "query", Type: "integer", Description: "Page number (1-based)"},
+				{Name: "limit", In: "query", Type: "integer", Description: "Results per page (max 200)"},
 			},
 			Responses: []response{
 				{Status: "200", Description: "Paginated job list", Ref: "PaginatedJobs"},
@@ -180,7 +192,7 @@ func (h *Handler) endpoints() []endpoint {
 			Summary: "Retry a finished job", OperationID: "retryJob",
 			Params: []param{
 				{Name: "id", In: "path", Required: true, Description: "Job id"},
-				{Name: "force", In: "query", Description: "Set to 1 to re-run with the gallery-dl archive bypassed, re-downloading already-fetched posts"},
+				{Name: "force", In: "query", Type: "integer", Description: "Set to 1 to re-run with the gallery-dl archive bypassed, re-downloading already-fetched posts"},
 			},
 			Responses: []response{
 				{Status: "202", Description: "Re-queued", Ref: "EnqueueResponse"},
@@ -332,7 +344,7 @@ func (h *Handler) endpoints() []endpoint {
 				"about when the operator's own spelling is not the repository's.",
 			Params: []param{
 				{Name: "q", In: "query", Required: true, Description: "monbooru-form prefix, `category:name` or bare for general"},
-				{Name: "limit", In: "query", Description: "Clusters to return, 1..50 (default 20)"},
+				{Name: "limit", In: "query", Type: "integer", Description: "Clusters to return, 1..50 (default 20)"},
 				{Name: "mode", In: "query", Description: "`prefix` (default) seeks the range; `contains` walks the namespace instead and needs a category-qualified q, since a bare one has nothing to bound the scan. Anything else is refused"},
 			},
 			Responses: []response{
@@ -371,8 +383,12 @@ func (h *Handler) endpoints() []endpoint {
 				"personal key is already set; replacing an account is a deliberate manual step " +
 				"(clear the key in settings first).",
 			Responses: []response{
-				{Status: "200", Description: "Account created and key stored"},
+				{Status: "200", Description: "Account created and key stored", Props: []prop{
+					{Name: "created", Type: "boolean"},
+				}},
 				{Status: "409", Description: "PTR disabled, or a personal key already exists", Ref: "Error"},
+				{Status: "500", Description: "The key could not be saved (save_failed); the account exists, so back the key up from the ptr page", Ref: "Error"},
+				{Status: "502", Description: "The repository answered an error (ptr_error)", Ref: "Error"},
 				{Status: "503", Description: "The repository is not taking new accounts right now", Ref: "Error"},
 			},
 			Handler: h.ptrAccountCreate,
@@ -516,6 +532,27 @@ func (h *Handler) endpoints() []endpoint {
 			Handler: h.ptrContribLogRescind,
 		},
 		{
+			Method: "POST", Path: "/api/v1/galleries/rename",
+			Summary: "Follow a monbooru gallery rename", OperationID: "galleryRename",
+			Description: "Called by monbooru when one of its galleries is renamed: the default gallery " +
+				"and every site target naming the old name move to the new one. Downloads resolve " +
+				"their target when they start, so the ones still waiting follow too.",
+			Request: &reqBody{
+				Required: []string{"from", "to"},
+				Props: []prop{
+					{Name: "from", Type: "string", Description: "The gallery's old name"},
+					{Name: "to", Type: "string", Description: "Its new name"},
+				},
+			},
+			Responses: []response{
+				{Status: "200", Description: "Settings moved to the new name", Props: []prop{
+					{Name: "changed", Type: "integer", Description: "How many settings named the old gallery"},
+				}},
+				{Status: "400", Description: "A name is missing", Ref: "Error"},
+			},
+			Handler: h.galleryRename,
+		},
+		{
 			Method: "GET", Path: "/api/v1/sites",
 			Summary: "List supported sites", OperationID: "listSites",
 			Params: []param{{Name: "q", In: "query", Description: "Substring filter on category/subcategory"}},
@@ -534,6 +571,9 @@ func (h *Handler) endpoints() []endpoint {
 				{Name: "name", In: "path", Required: true, Description: "gallery-dl category"},
 				{Name: "url", In: "query", Description: "URL to probe; defaults to the site's example URL"},
 			},
+			Request: &reqBody{Optional: true, Props: []prop{
+				{Name: "url", Type: "string", Description: "URL to probe, when the query carries none"},
+			}},
 			Responses: []response{
 				{Status: "200", Description: "Probe result", Ref: "ProbeResult"},
 				{Status: "400", Description: "The supplied url is not http(s)", Ref: "Error"},
@@ -615,8 +655,6 @@ func (h *Handler) endpoints() []endpoint {
 	}
 }
 
-// apiSchemas declares the component schemas, in the order the docs page lists
-// them.
 var apiSchemas = []apiSchema{
 	{Name: "Error", Props: []prop{
 		{Name: "error", Type: "string"},
@@ -706,6 +744,7 @@ var apiSchemas = []apiSchema{
 		{Name: "missing_credential", Type: "string", Description: "The credential the site requires and the config lacks (\"cookies\", \"api key\"); absent when nothing is missing"},
 	}},
 	{Name: "Health", Props: []prop{
+		{Name: "app", Type: "string", Description: "Always monloader, so a second launch can tell its own instance from another program on the port"},
 		{Name: "status", Type: "string"},
 		{Name: "version", Type: "string"},
 		{Name: "gallerydl_version", Type: "string"},
@@ -736,6 +775,7 @@ var apiSchemas = []apiSchema{
 		{Name: "disk_bytes", Type: "integer"},
 		{Name: "next_update_due", Type: "integer", Description: "unix time the next update is expected"},
 		{Name: "covered_through", Type: "integer", Description: "unix time the synced data reaches; absent until an update has been applied"},
+		{Name: "queryable", Type: "boolean", Description: "the lookup, tag and contribution reads answer: the index finished a full sync and is not replaying a backlog (holds while paused)"},
 		{Name: "error", Type: "string"},
 		{Name: "contrib", Type: "object", Description: "contribution gate; absent while the PTR is off", Props: []prop{
 			{Name: "account", Type: "boolean", Description: "a personal (non-public) access key is set; every contribution surface gates on this"},
@@ -761,7 +801,7 @@ var apiSchemas = []apiSchema{
 		{Name: "daily_budget", Type: "integer", Description: "images per day a scheduled lookup may cover; 0 refuses them all"},
 		{Name: "left_today", Type: "integer", Description: "budgeted lookups still acceptable before the next rollover"},
 		{Name: "resets_at", Type: "integer", Description: "unix time of the next local-midnight rollover"},
-		{Name: "chain", Type: "array", Items: &prop{Type: "string"}, Description: "the sources the booru walk would query, in order; empty means nothing is configured"},
+		{Name: "chain", Type: "array", Items: &prop{Type: "string"}, Description: "the sources the booru walk would query, in order, leaving out any it would skip for a missing credential; empty means nothing is configured"},
 	}},
 	{Name: "PTRLookupResults", Props: []prop{
 		{Name: "index", Type: "integer", Description: "the index's applied-update cursor at answer time"},
@@ -784,9 +824,7 @@ var apiSchemas = []apiSchema{
 	}},
 }
 
-// buildSpec folds the endpoint and schema declarations into the OpenAPI 3
-// document shape. The server is the root base URL so /health (root) and the
-// /api/v1/* endpoints share one document.
+// The server URL is the root, not /api/v1, so /health shares the document.
 func buildSpec(baseURL, version string, eps []endpoint) map[string]any {
 	paths := map[string]any{}
 	for _, e := range eps {
@@ -845,14 +883,14 @@ func operationJSON(e endpoint) map[string]any {
 		for i, p := range e.Params {
 			params[i] = map[string]any{
 				"name": p.Name, "in": p.In, "required": p.Required,
-				"description": p.Description, "schema": map[string]any{"type": "string"},
+				"description": p.Description, "schema": map[string]any{"type": cmp.Or(p.Type, "string")},
 			}
 		}
 		op["parameters"] = params
 	}
 	if e.Request != nil {
 		op["requestBody"] = map[string]any{
-			"required": true,
+			"required": !e.Request.Optional,
 			"content":  map[string]any{"application/json": map[string]any{"schema": objectJSON(e.Request.Required, e.Request.Props)}},
 		}
 	}
@@ -894,9 +932,6 @@ func propJSON(p prop) map[string]any {
 	if p.Format != "" {
 		m["format"] = p.Format
 	}
-	if p.Minimum > 0 {
-		m["minimum"] = p.Minimum
-	}
 	if p.Items != nil {
 		m["items"] = propJSON(*p.Items)
 	}
@@ -924,16 +959,12 @@ func anchorize(s string) string {
 	return r
 }
 
-// openAPIJSON serves the raw spec (no auth, so it sets CORS itself for the
-// browser extension that fetches it cross-origin).
 func (h *Handler) openAPIJSON(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(buildSpec(h.cfg.Current().Server.BaseURL, h.version, h.endpoints()))
 }
 
-// docsView is the docs template's context: the endpoint and schema
-// declarations rendered as-is.
 type docsView struct {
 	Title        string
 	Version      string
@@ -943,8 +974,6 @@ type docsView struct {
 	Schemas      []apiSchema
 }
 
-// openAPIDocs renders the declarations as a self-contained HTML reference (no
-// auth, no external assets, so it sets CORS itself like openAPIJSON).
 func (h *Handler) openAPIDocs(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r)
 	view := docsView{
@@ -961,8 +990,6 @@ func (h *Handler) openAPIDocs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// docsTemplate renders the API reference with inline CSS in the indigo
-// downloader palette.
 var docsTemplate = template.Must(template.New("api-docs").Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1012,6 +1039,7 @@ var docsTemplate = template.Must(template.New("api-docs").Parse(`<!DOCTYPE html>
  <div class="endpoint">
   <h2 id="{{.Anchor}}"><span class="method method-{{.MethodLower}}">{{.Method}}</span><span class="path">{{.Path}}</span></h2>
   {{if .Summary}}<p>{{.Summary}}</p>{{end}}
+  {{if .Description}}<p class="muted">{{.Description}}</p>{{end}}
   {{if .Params}}
   <h3>Parameters</h3>
   <table><thead><tr><th>Name</th><th>In</th><th>Required</th><th>Description</th></tr></thead><tbody>
@@ -1022,14 +1050,15 @@ var docsTemplate = template.Must(template.New("api-docs").Parse(`<!DOCTYPE html>
   <h3>Request body</h3>
    <p class="muted">Content-Type: <code>application/json</code></p>
    {{if .Request.Required}}<p class="muted">Required: {{range .Request.Required}}<code>{{.}}</code> {{end}}</p>{{end}}
+   {{if .Request.Optional}}<p class="muted">The body is optional.</p>{{end}}
    {{if .Request.Props}}<table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
-   {{range .Request.Props}}<tr><td><code>{{.Name}}</code></td><td>{{.Type}}</td><td>{{.Description}}</td></tr>{{end}}
+   {{range .Request.Fields}}<tr><td><code>{{.Name}}</code></td><td>{{.Type}}</td><td>{{.Description}}</td></tr>{{end}}
    </tbody></table>{{end}}
   {{end}}
   {{if .Responses}}
   <h3>Responses</h3>
   <table><thead><tr><th>Status</th><th>Description</th><th>Schema</th></tr></thead><tbody>
-  {{range .Responses}}<tr><td><code>{{.Status}}</code></td><td>{{.Description}}</td><td>{{if .Ref}}<a href="#schema-{{.RefAnchor}}"><code>{{.Ref}}</code></a>{{end}}</td></tr>{{end}}
+  {{range .Responses}}<tr><td><code>{{.Status}}</code></td><td>{{.Description}}</td><td>{{if .Ref}}<a href="#schema-{{.RefAnchor}}"><code>{{.Ref}}</code></a>{{else}}{{range .Fields}}<code>{{.Name}}</code> {{.Type}}{{with .Description}} - {{.}}{{end}}<br>{{end}}{{end}}</td></tr>{{end}}
   </tbody></table>
   {{end}}
  </div>
@@ -1039,7 +1068,7 @@ var docsTemplate = template.Must(template.New("api-docs").Parse(`<!DOCTYPE html>
  {{range .Schemas}}
   <h3 id="schema-{{.Anchor}}" style="color:#c8c8c8;font-size:14px;text-transform:none;letter-spacing:0;margin-top:14px">{{.Name}}</h3>
   {{if .Props}}<table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
-  {{range .Props}}<tr><td><code>{{.Name}}</code></td><td>{{.Type}}</td><td>{{.Description}}</td></tr>{{end}}
+  {{range .Fields}}<tr><td><code>{{.Name}}</code></td><td>{{.Type}}</td><td>{{.Description}}</td></tr>{{end}}
   </tbody></table>{{else}}<p class="muted">(no fields)</p>{{end}}
  {{end}}
 </body>

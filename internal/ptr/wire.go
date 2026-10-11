@@ -1,13 +1,7 @@
-// Package ptr implements a thin client for a Hydrus tag repository (the public
-// PTR): it streams the repository's update history, replays it into a local
-// SQLite index, and answers hash -> tags and tag alias / implication queries.
-// This file decodes the repository wire format.
-//
-// Every hydrus network object is UTF-8 JSON wrapped as a positional array and
-// zlib-compressed: zlib(JSON [type, version, payload]). The type codes and
-// payload shapes below are the repository protocol as read from the hydrus
-// source (hydrus/core/networking/HydrusNetwork.py and HydrusConstants.py); they
-// have been stable at serialisable version 1 since the protocol's inception.
+// Package ptr syncs a Hydrus tag repository (the public PTR) into a local
+// SQLite index and answers tag queries from it. The wire format is read
+// from the hydrus source: hydrus/core/networking/HydrusNetwork.py and
+// HydrusConstants.py.
 package ptr
 
 import (
@@ -20,23 +14,18 @@ import (
 	"strings"
 )
 
-// Serialisable type codes carried in an object's leading position.
 const (
 	typeContentUpdate     = 34
 	typeDefinitionsUpdate = 36
 	typeMetadata          = 37
-	typeDictionary        = 21 // response envelope for /metadata
+	typeDictionary        = 21
 )
 
-// Definition block kinds inside a DefinitionsUpdate.
 const (
 	defTypeHashes = 0
 	defTypeTags   = 1
 )
 
-// Content block kinds inside a ContentUpdate. A tag repository carries only
-// mappings, siblings, and parents; a files block (3) belongs to a file
-// repository and is tolerated but ignored.
 const (
 	contentTypeMappings = 0
 	contentTypeSiblings = 1
@@ -44,29 +33,21 @@ const (
 	contentTypeFiles    = 3
 )
 
-// Content actions. Server-generated updates carry only add and delete.
+// Server-generated updates carry only add and delete.
 const (
 	actionAdd    = 0
 	actionDelete = 1
 )
 
-// maxUpdateBytes caps an inflated update. The server's generator bounds an
-// update to 50k definition or 250k content rows, so a real update is a few MB
-// at most; the cap guards against a hostile or corrupt blob inflating without
-// bound. The replay inflates one blob at a time (an entry's blobs are
-// buffered compressed), so the cap bounds transient memory, not a whole
-// entry.
+// The server caps an update at 50k definition or 250k content rows, a few
+// MB; the cap bounds a hostile or corrupt blob.
 const maxUpdateBytes = 64 << 20
 
-// metadataSlice is the manifest returned by GET /metadata: the update files
-// available from a given index onward, and when the next update is due.
 type metadataSlice struct {
 	Updates       []updateEntry
 	NextUpdateDue int64
 }
 
-// updateEntry is one update index: the sha256 hashes (hex) of the compressed
-// update files that make it up, and the server-side time window they cover.
 type updateEntry struct {
 	Index  uint64
 	Hashes []string
@@ -74,14 +55,11 @@ type updateEntry struct {
 	End    int64
 }
 
-// definitions maps the service's integer ids to their meaning: hash_id to a
-// file sha256 (hex), tag_id to a tag string.
 type definitions struct {
 	Hashes map[uint64]string
 	Tags   map[uint64]string
 }
 
-// mapping is one mappings row: a tag applied to a block of files.
 type mapping struct {
 	TagID   uint64
 	HashIDs []uint64
@@ -93,7 +71,6 @@ type pair struct {
 	B uint64
 }
 
-// contentRows is one ContentUpdate's rows, split by kind and action.
 type contentRows struct {
 	MappingsAdd []mapping
 	MappingsDel []mapping
@@ -103,15 +80,11 @@ type contentRows struct {
 	ParentsDel  []pair
 }
 
-// update is one parsed update file: exactly one of Definitions or Content is
-// set, per the leading type code.
 type update struct {
 	Definitions *definitions
 	Content     *contentRows
 }
 
-// Rows counts the rows an update carries - definitions, mapping cells, and
-// relation pairs - the unit the sync's processing rate is reported in.
 func (u *update) Rows() int64 {
 	var n int64
 	if u.Definitions != nil {
@@ -130,9 +103,8 @@ func (u *update) Rows() int64 {
 	return n
 }
 
-// updateKind reads the leading type code of a compressed update without
-// inflating the whole blob, so the replay's two passes (definitions before
-// content) can skip the other kind's full parse.
+// updateKind peeks at the type code so each replay pass skips the other
+// kind without a full parse.
 func updateKind(raw []byte) (int, error) {
 	zr, err := zlib.NewReader(bytes.NewReader(raw))
 	if err != nil {
@@ -159,7 +131,6 @@ func updateKind(raw []byte) (int, error) {
 	return strconv.Atoi(head[:i])
 }
 
-// inflate zlib-decompresses raw with the size cap applied.
 func inflate(raw []byte) ([]byte, error) {
 	zr, err := zlib.NewReader(bytes.NewReader(raw))
 	if err != nil {
@@ -176,8 +147,6 @@ func inflate(raw []byte) ([]byte, error) {
 	return out, nil
 }
 
-// envelope decodes the [type, version, payload] wrapper, checking the type is
-// wanted and the version is not newer than known.
 func envelope(data []byte, wantType, knownVersion int) (json.RawMessage, error) {
 	var outer []json.RawMessage
 	if err := json.Unmarshal(data, &outer); err != nil {
@@ -202,10 +171,6 @@ func envelope(data []byte, wantType, knownVersion int) (json.RawMessage, error) 
 	return outer[2], nil
 }
 
-// parseMetadata decodes a GET /metadata response. The body is a
-// SerialisableDictionary (type 21) wrapping one entry, "metadata_slice", whose
-// value is a nested Metadata object (type 37). Each dictionary side is a
-// [meta-type, value] tuple; meta-type 2 marks a nested serialisable.
 func parseMetadata(raw []byte) (*metadataSlice, error) {
 	data, err := inflate(raw)
 	if err != nil {
@@ -236,8 +201,6 @@ func parseMetadata(raw []byte) (*metadataSlice, error) {
 	return nil, fmt.Errorf("metadata response has no metadata_slice entry")
 }
 
-// dictString reads a [meta-type, value] tuple that holds a plain-JSON string
-// (meta-type 0).
 func dictString(raw json.RawMessage) (string, error) {
 	var tuple []json.RawMessage
 	if err := json.Unmarshal(raw, &tuple); err != nil || len(tuple) != 2 {
@@ -250,8 +213,6 @@ func dictString(raw json.RawMessage) (string, error) {
 	return s, nil
 }
 
-// dictNested reads a [meta-type, value] tuple that holds a nested serialisable
-// object (meta-type 2), returning the inner [type, version, payload] bytes.
 func dictNested(raw json.RawMessage) (json.RawMessage, error) {
 	var tuple []json.RawMessage
 	if err := json.Unmarshal(raw, &tuple); err != nil || len(tuple) != 2 {
@@ -267,8 +228,6 @@ func dictNested(raw json.RawMessage) (json.RawMessage, error) {
 	return tuple[1], nil
 }
 
-// parseMetadataObject decodes the Metadata object's [type, version, payload].
-// The payload is [ [[index, [hex hashes], begin, end], ...], next_update_due ].
 func parseMetadataObject(obj json.RawMessage) (*metadataSlice, error) {
 	payload, err := envelope(obj, typeMetadata, 1)
 	if err != nil {
@@ -308,8 +267,6 @@ func parseMetadataObject(obj json.RawMessage) (*metadataSlice, error) {
 	return slice, nil
 }
 
-// parseUpdate decodes a GET /update response into either a Definitions or a
-// Content update, dispatching on its leading type code.
 func parseUpdate(raw []byte) (*update, error) {
 	data, err := inflate(raw)
 	if err != nil {
@@ -344,8 +301,6 @@ func parseUpdate(raw []byte) (*update, error) {
 	}
 }
 
-// parseDefinitions decodes a DefinitionsUpdate. The payload is a list of
-// [def-type, [[id, value], ...]] blocks; a block is present only when non-empty.
 func parseDefinitions(data []byte) (*definitions, error) {
 	payload, err := envelope(data, typeDefinitionsUpdate, 1)
 	if err != nil {
@@ -392,8 +347,6 @@ func parseDefinitions(data []byte) (*definitions, error) {
 	return defs, nil
 }
 
-// parseContent decodes a ContentUpdate. The payload is a list of
-// [content-type, [[action, [row, ...]], ...]] blocks.
 func parseContent(data []byte) (*contentRows, error) {
 	payload, err := envelope(data, typeContentUpdate, 1)
 	if err != nil {
@@ -432,8 +385,7 @@ func parseContent(data []byte) (*contentRows, error) {
 	return c, nil
 }
 
-// addRows appends one action block's rows to the right slice by content type
-// and action. An unknown content type or action is skipped, not fatal.
+// An unknown content type or action is skipped, not fatal.
 func (c *contentRows) addRows(contentType, action int, rows json.RawMessage) error {
 	switch contentType {
 	case contentTypeMappings:
@@ -458,7 +410,6 @@ func (c *contentRows) addRows(contentType, action int, rows json.RawMessage) err
 	return nil
 }
 
-// appendByAction routes a block's rows to the add or the delete slice.
 func appendByAction[T any](action int, add, del *[]T, rows []T) {
 	switch action {
 	case actionAdd:
@@ -468,7 +419,6 @@ func appendByAction[T any](action int, add, del *[]T, rows []T) {
 	}
 }
 
-// parseMappings decodes mappings rows: [tag_id, [hash_id, ...]].
 func parseMappings(rows json.RawMessage) ([]mapping, error) {
 	var raw []json.RawMessage
 	if err := json.Unmarshal(rows, &raw); err != nil {
@@ -492,7 +442,6 @@ func parseMappings(rows json.RawMessage) ([]mapping, error) {
 	return out, nil
 }
 
-// parsePairs decodes sibling / parent rows: [a_id, b_id].
 func parsePairs(rows json.RawMessage) ([]pair, error) {
 	var raw [][]uint64
 	if err := json.Unmarshal(rows, &raw); err != nil {

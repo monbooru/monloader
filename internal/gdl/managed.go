@@ -22,60 +22,35 @@ import (
 	"github.com/monbooru/monloader/internal/logx"
 )
 
-// A managed install lets the operator run a newer or older gallery-dl than
-// what ships with the app: a file under the config directory, so it survives
-// an update. It only ever shadows the bundled binary, which stays the
-// fallback a revert returns to.
-//
-// What it fetches depends on the platform. Where upstream publishes a
-// one-file build, that is what lands - no Python anywhere, which is the
-// whole point of the desktop bundle. Elsewhere it is still a pip venv, so an
-// architecture upstream does not build for is not left without a way to
-// upgrade; an existing venv keeps working either way.
+// A managed install only shadows the bundled binary, the fallback a revert
+// returns to. It is upstream's one-file build where one exists and a pip venv
+// elsewhere, so an architecture upstream skips can still upgrade.
 
 const managedDirName = "gallery-dl"
 
-// The defaults matter to resolution: a value the operator changed away from
-// the default always wins over the managed install.
 var defaultGDL = config.Default().GalleryDL
 
-// managedVersionRE admits only a plain release number. The string is handed to
-// pip and spliced into a download URL, so anything looser is rejected before
-// it reaches either.
+// The version reaches pip and a download URL, so only a plain release
+// number passes.
 var managedVersionRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}$`)
 
-// ValidVersion reports whether v is a release number the managed install
-// accepts, so a caller can refuse one before starting anything.
 func ValidVersion(v string) bool { return managedVersionRE.MatchString(v) }
 
-// InstallProgress reports an install's current phase and how far through it
-// is, for a caller drawing a progress bar. Every call marks a step that
-// actually completed; nil reports nothing.
 type InstallProgress func(step string, percent int)
 
-// pypiJSONURL answers the latest-release query; swapped in tests.
 var pypiJSONURL = "https://pypi.org/pypi/gallery-dl/json"
 
-// releaseMetaClient bounds the two release-metadata fetches. Both run inside
-// the settings install request, and the server sets no WriteTimeout (a wait=N
-// enqueue and a large push both need it), so an unanswered connection would
-// hang that POST until the operator gave up on the tab.
+// The fetches run inside the settings request, and the server sets no
+// WriteTimeout, so an unanswered connection would hang that POST.
 var releaseMetaClient = &http.Client{Timeout: 30 * time.Second}
 
-// ManagedRoot is the managed install's directory under the state dir.
 func ManagedRoot(stateDir string) string {
 	return filepath.Join(stateDir, managedDirName)
 }
 
-// ManagedBinary returns the managed install's gallery-dl path, or "" when no
-// managed install exists or it cannot run. The standalone comes first and the
-// venv is the legacy rung: an install made before this app shipped one-file
-// builds keeps working instead of silently reverting to the bundled version.
-//
-// A venv is bound to the interpreter that built it - bin/python3 is a symlink
-// to it - so a base image moving to a new python minor leaves the console
-// script in place but unstartable; the bundled pin has to answer then, rather
-// than every download failing until someone notices.
+// A venv from before the one-file builds still counts, unless a python
+// upgrade removed the interpreter it links to: then the bundled pin must
+// answer.
 func ManagedBinary(root string) string {
 	if root == "" {
 		return ""
@@ -94,7 +69,6 @@ func ManagedBinary(root string) string {
 	return p
 }
 
-// standaloneName is what a downloaded one-file build is stored as here.
 func standaloneName() string {
 	if runtime.GOOS == "windows" {
 		return "gallery-dl.exe"
@@ -102,9 +76,6 @@ func standaloneName() string {
 	return "gallery-dl"
 }
 
-// venvExe locates one of a venv's executables. Windows puts them in
-// Scripts/ with an .exe suffix and names the interpreter python; every
-// other platform uses bin/ and the bare name.
 func venvExe(venv, name string) string {
 	if runtime.GOOS == "windows" {
 		if name == "python3" {
@@ -115,11 +86,8 @@ func venvExe(venv, name string) string {
 	return filepath.Join(venv, "bin", name)
 }
 
-// ManagedInstalled reports whether a managed install exists on disk at all,
-// runnable or in use or not. The settings panel gates its revert on this
-// rather than on ManagedActive, so an install an explicit binary_path outranks
-// - or one a python upgrade broke - can still be removed from the panel that
-// wrote it.
+// ManagedInstalled counts a broken or outranked install too, so the panel
+// can still revert it.
 func ManagedInstalled(root string) bool {
 	if root == "" {
 		return false
@@ -131,22 +99,13 @@ func ManagedInstalled(root string) bool {
 	return err == nil
 }
 
-// ManagedActive reports whether runs use the managed install: the operator
-// left binary_path at its default and a managed binary exists.
 func ManagedActive(cfg *config.Config, root string) bool {
 	return cfg.GalleryDL.BinaryPath == defaultGDL.BinaryPath && ManagedBinary(root) != ""
 }
 
-// EffectiveBinary resolves the binary a run uses. An explicit non-default
-// binary_path always wins - the operator asked for that exact binary - and
-// otherwise a managed install, when present, shadows the bundled default.
-//
-// The bare default resolves at exec time rather than being rewritten in the
-// config: ManagedActive and EffectiveSupportedSitesPath both decide whether
-// the operator has taken over by comparing binary_path against the default
-// string, so changing that string would quietly reclassify every existing
-// config. The config keeps saying "gallery-dl"; a copy shipped beside the
-// executable is simply where that name is found first.
+// The default binary_path is resolved here, never rewritten in the
+// config: ManagedActive compares against the default string, so a rewrite
+// would reclassify every config.
 func EffectiveBinary(cfg *config.Config, root string) string {
 	if cfg.GalleryDL.BinaryPath != defaultGDL.BinaryPath {
 		return cfg.GalleryDL.BinaryPath
@@ -160,8 +119,6 @@ func EffectiveBinary(cfg *config.Config, root string) string {
 	return cfg.GalleryDL.BinaryPath
 }
 
-// bundledBinary is the copy a download ships beside the executable, which is
-// not on PATH and would otherwise never be found. Empty when there is none.
 func bundledBinary() string {
 	dir := fsx.ExeDir()
 	if dir == "" {
@@ -182,11 +139,6 @@ func bundledBinary() string {
 	return p
 }
 
-// EffectiveSupportedSitesPath resolves the supportedsites.md the app parses:
-// the copy fetched beside the managed install while that install is active
-// (so site names and auth kinds match the running binary), else the operator's
-// own path. An empty result means the embedded copy, which is the default and
-// what every install without a managed one reads.
 func EffectiveSupportedSitesPath(cfg *config.Config, root string) string {
 	if cfg.GalleryDL.SupportedSitesPath == defaultGDL.SupportedSitesPath && ManagedActive(cfg, root) {
 		p := filepath.Join(root, "supportedsites.md")
@@ -197,9 +149,6 @@ func EffectiveSupportedSitesPath(cfg *config.Config, root string) string {
 	return cfg.GalleryDL.SupportedSitesPath
 }
 
-// BinaryVersion runs `<path> --version`, returning "" when the binary cannot
-// be run. Unlike Tool.Version it names an explicit binary, so the bundled
-// version stays readable while a managed install shadows it.
 func BinaryVersion(ctx context.Context, path string) string {
 	cmd := exec.CommandContext(ctx, path, "--version")
 	hideConsole(cmd)
@@ -210,7 +159,6 @@ func BinaryVersion(ctx context.Context, path string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// LatestVersion asks PyPI for the newest gallery-dl release.
 func LatestVersion(ctx context.Context) (string, error) {
 	body, err := fetch(ctx, pypiJSONURL, 1<<20)
 	if err != nil {
@@ -230,11 +178,8 @@ func LatestVersion(ctx context.Context) (string, error) {
 	return doc.Info.Version, nil
 }
 
-// InstallManaged puts gallery-dl==version under the managed root, taking the
-// published one-file build where upstream has one and a pip venv where it
-// does not. An install that leaves no runnable binary is removed entirely: a
-// failure may fall back to the bundled binary but never shadow it with a
-// broken one.
+// An install that leaves no runnable binary is removed: a failure may
+// fall back to the bundled binary but never shadow it with a broken one.
 func InstallManaged(ctx context.Context, stateDir, version string, progress InstallProgress) error {
 	if !ValidVersion(version) {
 		return fmt.Errorf("%q is not a release number like 1.32.9", version)
@@ -245,9 +190,8 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 		}
 	}
 	root := ManagedRoot(stateDir)
-	// A bundled archive ships its gallery-dl as <install>/gallery-dl, which is
-	// this exact path when the state dir is the install dir - the shape a
-	// bundled archive run with -desktop=false takes.
+	// A bundled archive run with -desktop=false keeps its own gallery-dl
+	// binary at this path.
 	if fi, err := os.Stat(root); err == nil && !fi.IsDir() {
 		return fmt.Errorf("%s is the bundled gallery-dl, not a directory; set gallerydl.binary_path to install elsewhere", root)
 	}
@@ -261,12 +205,8 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 		case err == nil:
 			installed = path
 		case errors.Is(err, errNoAsset):
-			// This release published nothing for us - an old version, or a
-			// platform upstream dropped - so the venv answers instead.
 			ok = false
 		default:
-			// Nothing partial survives: the temp file is gone and an
-			// unverifiable download never reached its name.
 			removeIfUnrunnable(ctx, root)
 			return fmt.Errorf("could not install gallery-dl %s: %s", version, err)
 		}
@@ -288,9 +228,7 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 	return nil
 }
 
-// hostPython is the interpreter that can build a venv. Windows installs
-// commonly ship python without the python3 alias, so both names are tried
-// before giving up. Empty when neither is on PATH.
+// Windows installs often lack the python3 alias.
 func hostPython() string {
 	for _, name := range []string{"python3", "python"} {
 		if p, err := exec.LookPath(name); err == nil {
@@ -300,9 +238,6 @@ func hostPython() string {
 	return ""
 }
 
-// installVenv is the fallback for a platform upstream publishes no one-file
-// build for. Without a python interpreter it refuses by name rather than
-// handing back a pip error the operator has to interpret.
 func installVenv(ctx context.Context, root, version string, report InstallProgress) (string, error) {
 	python := hostPython()
 	if python == "" {
@@ -324,8 +259,8 @@ func installVenv(ctx context.Context, root, version string, report InstallProgre
 		}
 	}
 	if err := runPip(ctx, venv, version, report); err != nil {
-		// A failed upgrade usually leaves the previous install intact; only a
-		// venv with no runnable gallery-dl is torn down.
+		// A failed upgrade usually leaves the previous install working;
+		// only an unrunnable venv goes.
 		if BinaryVersion(ctx, binary) == "" {
 			os.RemoveAll(root)
 		}
@@ -334,8 +269,6 @@ func installVenv(ctx context.Context, root, version string, report InstallProgre
 	return binary, nil
 }
 
-// removeIfUnrunnable drops the whole managed root when nothing in it runs,
-// so a failed install can never shadow the bundled binary.
 func removeIfUnrunnable(ctx context.Context, root string) {
 	if p := ManagedBinary(root); p != "" && BinaryVersion(ctx, p) != "" {
 		return
@@ -343,10 +276,8 @@ func removeIfUnrunnable(ctx context.Context, root string) {
 	os.RemoveAll(root)
 }
 
-// runPip installs the release wheels-only - an sdist would run its build
-// script during the install, and gallery-dl and its dependencies all publish
-// wheels - reporting each wheel as it lands. The error is pip's own last
-// line, which is what names the reason.
+// Wheels only: an sdist would run its build script during the install,
+// and gallery-dl and its dependencies all publish wheels.
 func runPip(ctx context.Context, venv, version string, report InstallProgress) error {
 	cmd := exec.CommandContext(ctx, venvExe(venv, "pip"),
 		"install", "--no-cache-dir", "--only-binary", ":all:", "gallery-dl=="+version)
@@ -387,21 +318,16 @@ func runPip(ctx context.Context, venv, version string, report InstallProgress) e
 	return nil
 }
 
-// RevertManaged removes the managed install; runs fall back to the bundled
-// binary on their next invocation.
 func RevertManaged(stateDir string) error {
 	return os.RemoveAll(ManagedRoot(stateDir))
 }
 
-// maxSupportedSitesBytes caps what the site-list fetch will write into
-// /config, which is the small volume also holding the config file, the cookies
-// and the download archive. The real file is a few hundred KB.
+// The real file is a few hundred KB; the cap protects the state volume it
+// lands on.
 const maxSupportedSitesBytes int64 = 4 << 20
 
-// fetchManagedSupportedSites fetches the supportedsites.md matching the
-// installed release. Best-effort: on failure a previous managed copy is
-// removed rather than left describing another version, and parsing falls
-// back to the bundled copy.
+// On failure an older copy is removed rather than left describing another
+// release.
 func fetchManagedSupportedSites(ctx context.Context, root, version string) {
 	dst := filepath.Join(root, "supportedsites.md")
 	url := "https://raw.githubusercontent.com/mikf/gallery-dl/v" + version + "/docs/supportedsites.md"
@@ -418,18 +344,13 @@ func fetchManagedSupportedSites(ctx context.Context, root, version string) {
 		fail("the site list is larger than expected")
 		return
 	}
-	err = config.WriteFileAtomic(dst, func(f *os.File) error {
-		_, err := f.Write(body)
-		return err
-	})
-	if err != nil {
+	if err := config.WriteFileBytesAtomic(dst, body); err != nil {
 		fail(err.Error())
 	}
 }
 
-// outputTail reduces a subprocess's combined output to its last non-empty
-// line - with pip that is the actual error - bounded for a flash message.
-// The cut walks back to a rune boundary: pip's errors carry paths.
+// The last line is pip's actual error; the cut walks back to a rune
+// boundary since pip's errors carry paths.
 func outputTail(out []byte) string {
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {

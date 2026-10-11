@@ -12,17 +12,11 @@ import (
 	"github.com/monbooru/monloader/internal/desktop"
 )
 
-// runHealthcheck is the `monloader healthcheck` subcommand: it GETs the local
-// /health endpoint and exits 0 on a 2xx, non-zero otherwise, so the container
-// HEALTHCHECK needs no shell or curl.
 func runHealthcheck(argv []string) {
 	fs := flag.NewFlagSet("healthcheck", flag.ExitOnError)
 	configPath := fs.String("config", "", "optional monloader.toml to read server.bind_address from")
 	timeout := fs.Duration("timeout", 3*time.Second, "probe timeout")
-	if err := fs.Parse(argv); err != nil {
-		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
-		os.Exit(2)
-	}
+	_ = fs.Parse(argv)
 
 	url := "http://" + resolveHealthAddr(*configPath) + "/health"
 	resp, err := (&http.Client{Timeout: *timeout}).Get(url)
@@ -37,9 +31,7 @@ func runHealthcheck(argv []string) {
 	}
 }
 
-// resolveHealthAddr resolves the probe address without config.Load's side
-// effect of rewriting the TOML: env, then -config, then the default. A
-// wildcard host is rewritten to loopback so the probe can dial it.
+// Not config.LoadWithDefaults, which writes a default config where none exists.
 func resolveHealthAddr(configPath string) string {
 	addr := os.Getenv("MONLOADER_SERVER_BIND_ADDRESS")
 	if addr == "" && configPath != "" {

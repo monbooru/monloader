@@ -8,19 +8,15 @@ import (
 	"time"
 )
 
-// Instance is what answered on /health. App is empty when something
-// replied that is not one of ours, which is the case a second launch has
-// to report rather than retry.
 type Instance struct {
 	App     string `json:"app"`
 	Version string `json:"version"`
 }
 
-// maxHealthBody bounds what Probe reads off a stranger on the port.
 const maxHealthBody = 4 << 10
 
-// Probe asks addr's /health who is listening. found is false only when
-// nothing answered, which is the one case where binding is safe.
+// Probe reports found false only when nothing answered, the one case where
+// binding is safe.
 func Probe(addr string, timeout time.Duration) (inst Instance, found bool) {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get("http://" + addr + "/health")
@@ -39,9 +35,6 @@ func Probe(addr string, timeout time.Duration) (inst Instance, found bool) {
 	return inst, true
 }
 
-// LoopbackAddr rewrites a wildcard bind address to the loopback interface,
-// so a probe or a browser open reaches the instance rather than a host
-// that does not resolve.
 func LoopbackAddr(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -54,9 +47,6 @@ func LoopbackAddr(addr string) string {
 	return net.JoinHostPort(host, port)
 }
 
-// IsLoopbackAddr reports whether a bind address serves the local machine
-// only. The setup wizard reads it to preselect the reach choice for the
-// bind the config carries.
 func IsLoopbackAddr(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

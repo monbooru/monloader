@@ -7,15 +7,11 @@ import (
 	"path/filepath"
 )
 
-// maxLogBytes is the size at which the log rotates. Rotating at open
-// rather than during the run keeps one Stat on the startup path and no
-// size accounting on every write; one generation carries the previous
-// session plus the current one, which is what a bug report needs.
+// Rotated only at open: one Stat at startup instead of size accounting on
+// every write.
 const maxLogBytes = 8 << 20
 
-// OpenLog adds <dir>/<app>.log to the stdlib logger's output, so a
-// GUI-launched process still leaves a record where stderr goes nowhere.
-// The caller closes the returned file at shutdown.
+// OpenLog adds <dir>/<app>.log to the stdlib logger's output.
 func OpenLog(dir, app string) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -28,8 +24,8 @@ func OpenLog(dir, app string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The file goes first: a GUI launch has a dead stderr and MultiWriter
-	// stops at the first failed writer, which would cost the file every line.
+	// File first: MultiWriter stops at the first failing writer, and a
+	// GUI launch's stderr fails.
 	log.SetOutput(io.MultiWriter(f, os.Stderr))
 	return f, nil
 }

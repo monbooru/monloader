@@ -27,9 +27,8 @@ const (
 	pairDenied   pairState = "denied"
 )
 
-// pairReq is one in-flight extension pairing, held in memory until claimed or
-// aged out. Nothing is issued until the claim, so an approval the extension
-// never collects mints no token.
+// Nothing is minted until the claim, so an approval never collected
+// issues no token.
 type pairReq struct {
 	ID        string
 	App       string
@@ -73,11 +72,8 @@ func (ps *pairStore) create(app, source string, scopes []string) (string, bool) 
 		if r.State != pairPending {
 			continue
 		}
-		// One extension, one pairing: a repeat offer from an app already
-		// waiting is the same request, not a second one. Two rows the operator
-		// cannot tell apart would approve into two live tokens under one name,
-		// neither individually revocable. The newest offer's terms win and its
-		// click restarts the clock.
+		// A repeat offer updates the waiting one: two identical rows would
+		// approve into two tokens under one name, neither revocable alone.
 		if strings.EqualFold(r.App, app) {
 			r.Source, r.Scopes, r.CreatedAt = source, scopes, time.Now()
 			return r.ID, true
@@ -142,8 +138,8 @@ func (ps *pairStore) remove(id string) {
 	delete(ps.m, id)
 }
 
-// setPairCORS lets the browser extension (a distinct origin) reach the pairing
-// endpoints; the operator approval in monloader is the real gate.
+// Any origin is allowed, the extension's included: the operator's approval
+// is the real gate.
 func setPairCORS(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -161,14 +157,10 @@ func pairJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// pairError writes the {code, error} shape every pairing refusal shares.
 func pairError(w http.ResponseWriter, status int, code, msg string) {
 	pairJSON(w, status, map[string]string{"code": code, "error": msg})
 }
 
-// removePairingLocal drops the token issued to a peer and, for the monbooru
-// pairing, the credential used to push back. It removes only locally - callers
-// that want the far end gone too notify the peer separately.
 func (s *Server) removePairingLocal(peer string) error {
 	return s.updateConfig(func(c *config.Config) error {
 		c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t config.Token) bool { return t.Paired == peer })
@@ -179,9 +171,7 @@ func (s *Server) removePairingLocal(peer string) error {
 	})
 }
 
-// extPairTeardown lets a paired peer drop the pairing on this side too, so one
-// "remove pairing" tears down both ends. It authenticates with the peer's token
-// and removes only locally - it never calls back, which would loop.
+// Removes only locally: calling the peer back would loop.
 func (s *Server) extPairTeardown(w http.ResponseWriter, r *http.Request) {
 	setPairCORS(w, r)
 	const prefix = "Bearer "
@@ -200,8 +190,6 @@ func (s *Server) extPairTeardown(w http.ResponseWriter, r *http.Request) {
 	pairJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
-// extPairRequest receives a pairing offer from the extension. It issues nothing;
-// the operator approves in settings, after which the extension claims its token.
 func (s *Server) extPairRequest(w http.ResponseWriter, r *http.Request) {
 	setPairCORS(w, r)
 	var body struct {
@@ -212,9 +200,8 @@ func (s *Server) extPairRequest(w http.ResponseWriter, r *http.Request) {
 		pairError(w, http.StatusBadRequest, "invalid_request", "app and a JSON body are required")
 		return
 	}
-	// The monbooru peer name is minted only by the dedicated pairing flow; an
-	// extension request approved under it would flip the monbooru panel to a
-	// phantom "connected" state.
+	// monbooru's pairing has its own flow; an extension approved under
+	// the name would show a phantom connection.
 	if strings.EqualFold(body.App, "monbooru") {
 		pairError(w, http.StatusBadRequest, "invalid_request", "app name \"monbooru\" is reserved")
 		return
@@ -232,8 +219,6 @@ func (s *Server) extPairRequest(w http.ResponseWriter, r *http.Request) {
 	pairJSON(w, http.StatusOK, map[string]string{"request_id": id, "status": "pending"})
 }
 
-// extPairStatus reports a request's state; on the first poll after approval it
-// mints the extension's token and returns the secret once.
 func (s *Server) extPairStatus(w http.ResponseWriter, r *http.Request) {
 	setPairCORS(w, r)
 	req, ok := s.pairs.get(r.URL.Query().Get("id"))
@@ -276,8 +261,8 @@ func (s *Server) mintExtToken(req pairReq) (string, error) {
 func (s *Server) extPairData(r *http.Request) map[string]any {
 	pending := s.pairs.listPending()
 	for i := range pending {
-		// The scopes column is the only basis the operator approves against,
-		// so it names the grant rather than whatever the client asked for.
+		// The operator approves what this column shows, so it names the
+		// grant, not the ask.
 		pending[i].Scopes = grantedScopes(pending[i].Scopes)
 	}
 	return map[string]any{
@@ -291,8 +276,8 @@ func (s *Server) monsenderPairingFragment(w http.ResponseWriter, r *http.Request
 	data := s.extPairData(r)
 	paired, _ := data["Paired"].(bool)
 	s.render(w, "monsender_pairing", data)
-	// The poll carries the browser's last-rendered paired state; when it flips
-	// (the extension claimed, or the pairing was removed) refresh the token list too.
+	// The poll sends the paired state it last rendered; a flip refreshes
+	// the token list too.
 	if was := r.URL.Query().Get("paired"); was != "" && (was == "true") != paired {
 		s.renderAuthTokensOOB(w, r)
 	}

@@ -1,0 +1,11 @@
+{
+  "family": "generic",
+  "kind": "other",
+  "post_url_template": "https://www.furaffinity.net/view/{id}/",
+  "auth": "cookies",
+  "example": "https://www.furaffinity.net/view/21835115/",
+  "rating_overrides": {
+    "mature": "questionable",
+    "adult": "explicit"
+  }
+}

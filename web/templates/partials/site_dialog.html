@@ -16,6 +16,7 @@
       {{if .Galleries}}
       <select name="gallery">
         <option value="">(default gallery)</option>
+        {{if .GalleryMissing}}<option value="{{.Gallery}}" selected>{{.Gallery}} (not in monbooru)</option>{{end}}
         {{range .Galleries}}<option value="{{.Name}}"{{if eq .Name $.Gallery}} selected{{end}}>{{.Name}}</option>{{end}}
       </select>
       {{else}}

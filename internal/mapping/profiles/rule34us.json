@@ -3,5 +3,6 @@
   "kind": "booru",
   "post_url_template": "https://rule34.us/index.php?r=posts/view&id={id}",
   "auth": "none",
-  "example": "https://rule34.us/index.php?r=posts/view&id=12921013"
+  "example": "https://rule34.us/index.php?r=posts/view&id=12921013",
+  "default_rating": "explicit"
 }

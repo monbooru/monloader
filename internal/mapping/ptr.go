@@ -7,34 +7,23 @@ import (
 	"github.com/monbooru/monloader/internal/ptr"
 )
 
-// MapPTRTags maps raw Hydrus PTR tags onto monbooru's form: category-prefixed,
-// normalized, deduplicated, with a rating tag lifted from a `rating:` namespace.
-// Hydrus tags are `namespace:subtag` or bare; the namespace routing extends the
-// booru table with hydrus vocabulary (person, species, medium). Only the routed
-// namespaces survive: the PTR carries thousands of bookkeeping namespaces
-// (`title:`, `pixiv work:`, `booru:`, ...) whose subtags are ids or prose, so
-// an unrecognized namespace drops the whole tag rather than leak an opaque
-// subtag into general. A bare tag is general.
 func MapPTRTags(tags []string) []string {
-	seen := map[string]bool{}
 	var out []string
 	for _, tag := range tags {
-		s := MapPTRTag(tag)
-		if s != "" && !seen[s] {
-			seen[s] = true
+		if s := MapPTRTag(tag); s != "" {
 			out = append(out, s)
 		}
 	}
 	slices.Sort(out)
-	return out
+	return slices.Compact(out)
 }
 
-// MapPTRTag maps one raw hydrus tag to its monbooru form, or "" when its
-// namespace is not routed or it folds away entirely.
+// MapPTRTag returns "" when the namespace is not routed or the tag folds
+// away entirely.
 func MapPTRTag(tag string) string {
 	ns, sub, hasNS := strings.Cut(tag, ":")
 	if !hasNS || sub == "" {
-		return normalizeTag(tag) // bare tag: general
+		return normalizeTag(tag)
 	}
 	cat, keep, rating := ptrNamespace(strings.ToLower(ns))
 	switch {
@@ -44,18 +33,15 @@ func MapPTRTag(tag string) string {
 		}
 		return ""
 	case !keep:
-		return "" // an unrouted namespace: drop the tag
+		return ""
 	default:
 		return normalizeTag(formatTag(cat, sub))
 	}
 }
 
-// ptrNamespaceTable routes the content namespaces both ways: ptrNamespace maps
-// hydrus -> monbooru through it, and PTRNamespacesFor derives the inverse from
-// the same rows, so the two directions cannot drift apart. Order matters: the
-// inverse tries a category's namespaces in row order (creator before artist).
-// The dropped or lifted namespaces stay out of the table - they have no
-// monbooru category to invert from.
+// Row order matters: a category's first row is the namespace a
+// contribution sends, and the inverse tries rows in order. Lifted or
+// dropped namespaces stay out.
 var ptrNamespaceTable = []struct{ ns, category string }{
 	{"creator", "artist"},
 	{"artist", "artist"},
@@ -70,27 +56,20 @@ var ptrNamespaceTable = []struct{ ns, category string }{
 	{"year", "year"},
 }
 
-// ptrNamespace routes a hydrus namespace. keep=false drops the tag;
-// rating=true lifts it to the rating tag. Anything outside the table is
-// dropped: the PTR's namespace population is unbounded and mostly
-// bookkeeping, so only the routed rows carry monbooru meaning.
+// Anything outside the table is dropped: the PTR's other namespaces are
+// bookkeeping (title:, pixiv work:, booru:, ...) whose subtags are ids or
+// prose.
 func ptrNamespace(ns string) (category string, keep, rating bool) {
 	for _, row := range ptrNamespaceTable {
 		if row.ns == ns {
 			return row.category, true, false
 		}
 	}
-	if ns == "rating" {
-		return "", false, true
-	}
-	return "", false, false
+	return "", false, ns == "rating"
 }
 
-// PTRNamespacesFor returns the hydrus namespaces whose tags a monbooru-form tag
-// name could have come from, so the tag-graph query can look a monbooru tag up
-// in the PTR's vocabulary. A bare name (general) matches an unnamespaced hydrus
-// tag; a `category:name` name matches every namespace that routes to that
-// category. Underscores also try the hydrus spellings that fold back to them.
+// PTRNamespacesFor lists every hydrus spelling a monbooru-form tag could have
+// come from: each namespace routing to its category, in each separator form.
 func PTRNamespacesFor(monbooruTag string) []string {
 	parts := PTRSpellingsFor(monbooruTag)
 	out := make([]string, len(parts))
@@ -100,18 +79,13 @@ func PTRNamespacesFor(monbooruTag string) []string {
 	return out
 }
 
-// PTRSpelling is one hydrus form a monbooru-form name could have come from,
-// kept split so a caller can bound a scan to the namespace. Namespace carries
-// its trailing colon and is empty for a bare tag.
+// Namespace keeps its trailing colon and is empty for a bare tag.
 type PTRSpelling struct {
 	Full      string
 	Namespace string
 	Subtag    string
 }
 
-// PTRSpellingsFor is PTRNamespacesFor with the split kept: a spelling search
-// range-scans Full for a prefix query and Namespace for a substring one, which
-// a bare tag has nothing to bound.
 func PTRSpellingsFor(monbooruTag string) []PTRSpelling {
 	cat, name, hasCat := strings.Cut(monbooruTag, ":")
 	if !hasCat {
@@ -129,12 +103,10 @@ func PTRSpellingsFor(monbooruTag string) []PTRSpelling {
 	return out
 }
 
-// maxSubtagForms bounds the separator enumeration below. The forms double per
-// underscore, and a name long enough to pass the bound is past what a booru
-// spelling mixes anyway.
+// The forms double per underscore; a name long enough to pass the bound
+// is past what a booru spelling mixes anyway.
 const maxSubtagForms = 8
 
-// spellings renders a namespace + name into the hydrus spellings to try.
 func spellings(ns, name string) []PTRSpelling {
 	forms := subtagForms(name)
 	out := make([]PTRSpelling, 0, len(forms))
@@ -148,12 +120,9 @@ func spellings(ns, name string) []PTRSpelling {
 	return out
 }
 
-// subtagForms lists the hydrus spellings a monbooru name could have been stored
-// as, verbatim first and the space-joined form second - the two hydrus
-// commonly holds. Every mix of the two follows, because the projection back to
-// monbooru form folds spaces to underscores: a booru-imported tag that kept one
-// underscore and separated the rest with spaces ("kagamine_rin cosplay") reads
-// as the same name and is otherwise unreachable from it.
+// Verbatim first, then space-joined, the two hydrus commonly holds. The
+// mixes follow because the projection folds spaces to underscores:
+// "kagamine_rin cosplay" is otherwise unreachable.
 func subtagForms(name string) []string {
 	at := []int{}
 	for i, r := range name {
@@ -169,8 +138,8 @@ func subtagForms(name string) []string {
 	if 1<<len(at) > maxSubtagForms {
 		return forms
 	}
-	// Bit i of mask spaces the i-th underscore; the all-set and all-clear masks
-	// are the two forms above.
+	// Bit i spaces the i-th underscore; all-clear and all-set are the two
+	// forms above.
 	b := []byte(name)
 	for mask := 1; mask < 1<<len(at)-1; mask++ {
 		for i, pos := range at {
@@ -185,54 +154,35 @@ func subtagForms(name string) []string {
 	return forms
 }
 
-// ptrSupportedNamespaces is the PTR's documented supported-namespace
-// list (the PTR guide's "Namespaces" section). Contribution may only
-// ever emit a namespace on it: unlisted namespaces get siblinged out,
-// removed, or mocked, so the outbound codomain is this closed set plus
-// the bare form, never "whatever the category table can spell".
+// The PTR guide's supported namespaces. Contributions may only emit these
+// or the bare form: anything else gets siblinged out, removed or mocked.
 var ptrSupportedNamespaces = map[string]bool{
 	"creator": true, "character": true, "person": true, "series": true,
 	"photoset": true, "studio": true, "species": true, "title": true,
 	"medium": true, "meta": true,
 }
 
-// contribDeniedCategories are refused outright before the namespace
-// table is consulted: rating conventions are local opinion, and year:
-// is not on the PTR's supported list even though the inbound table can
-// spell it.
+// Rating conventions are local opinion, and year: is off the PTR's
+// supported list though the inbound table routes it.
 var contribDeniedCategories = map[string]bool{
 	"rating": true,
 	"year":   true,
 }
 
-// ContribDenied reports whether a monbooru-form tag's category is one the
-// contribution mapper refuses outright, so the removal-petition side can stay
-// symmetric with the add side rather than offering to petition a mapping the
-// operator could never have contributed.
 func ContribDenied(monbooruTag string) bool {
 	cat, _, hasCat := strings.Cut(monbooruTag, ":")
 	return hasCat && contribDeniedCategories[cat]
 }
 
-// ContribTag is the outbound verdict for one monbooru-form tag: the
-// exact PTR spelling to send, or an empty PTR form with the reason it
-// is ineligible. A tag is never silently adjusted into something the
-// operator did not write.
 type ContribTag struct {
 	PTR  string
 	Note string
 }
 
-// Eligible reports whether the tag maps to a sendable PTR form.
 func (c ContribTag) Eligible() bool { return c.PTR != "" }
 
-// ContribTagFor maps one monbooru-form tag to the PTR spelling a
-// contribution would send. The category routes through the shared
-// namespace table's primary row (creator before artist, series before
-// copyright); a user-created category qualifies only when its name is
-// itself a supported PTR namespace. Underscores become the spaces
-// hydrus stores, then the result must survive the server's cleaning
-// unchanged or the tag is refused with a note.
+// ContribTagFor never adjusts a tag: one the server's cleaning would
+// change is refused with a note.
 func ContribTagFor(monbooruTag string) ContribTag {
 	cat, name, hasCat := strings.Cut(monbooruTag, ":")
 	if !hasCat {
@@ -252,10 +202,8 @@ func ContribTagFor(monbooruTag string) ContribTag {
 			}
 		}
 		if !found {
-			// The carve-out: an operator who deliberately mirrors a
-			// supported hydrus namespace as a category name gets the
-			// round trip; any other user category would mint a namespace
-			// the PTR does not want.
+			// A user category passes only when it is itself a supported
+			// namespace; any other would mint one the PTR does not want.
 			if !ptrSupportedNamespaces[cat] {
 				return ContribTag{Note: "unmapped category"}
 			}

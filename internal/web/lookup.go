@@ -16,51 +16,36 @@ import (
 	"github.com/monbooru/monloader/internal/similarity"
 )
 
-// simService is the similarity surface the web layer drives: credential state
-// for the lookup panel, the live query behind its test button, and the active
-// rate-limit cooldown. *similarity.Client satisfies it; tests inject a stub.
 type simService interface {
 	Missing(service string) (label string, missing bool)
 	Search(ctx context.Context, service string, image []byte) (similarity.Result, error)
 	LimitedUntil(service string) time.Time
 }
 
-// chainRow is one lookup-chain entry as the settings panel shows it. A site
-// row carries its sites-table row too, so the edit-site shortcut opens the
-// shared dialog with the site's data; Position 0 marks a source holding an
-// order the walk skips (no md5 template).
+// Position 0 marks a site whose order the walk skips (no md5 template).
 type chainRow struct {
 	Position   int
 	Name       string
 	Similarity bool
-	// Note is the muted sub-label (where a service's credential lives); State
-	// is the readiness word, red-flagged by Warn.
-	Note      string
-	State     string
-	Warn      bool
-	CSRFToken string
-	Site      *siteRow
+	Note       string
+	State      string
+	Warn       bool
+	CSRFToken  string
+	Site       *siteRow
 }
 
-// lookupPanelView backs the settings lookup section. DialogOn and DialogOff
-// are the edit-order dialog's two drag columns: the chain in its order, and
-// every other chain-capable source.
 type lookupPanelView struct {
-	Chain          []chainRow
-	DialogOn       []mapping.LookupSource
-	DialogOff      []mapping.LookupSource
-	MinSimilarity  int
-	SaucenaoKeySet bool
-	// The scheduled-lookup budget, what is left of it today, and the
-	// saucenao cooldown the similarity client already tracks. The two
-	// stamps are unix seconds for humanDue, zero when nothing is pending.
+	Chain           []chainRow
+	DialogOn        []mapping.LookupSource
+	DialogOff       []mapping.LookupSource
+	MinSimilarity   int
+	SaucenaoKeySet  bool
 	ScheduledBudget int
 	ScheduledLeft   int
 	ScheduledResets int64
 	SaucenaoLimited int64
 }
 
-// lookupPanel snapshots the effective chain and the dialog's source list.
 func (s *Server) lookupPanel(csrf string) lookupPanelView {
 	cfg := s.cfg.Current()
 	now := time.Now()
@@ -81,8 +66,6 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 			label, missing := s.sim.Missing(src.Name)
 			if site := similarity.CredentialSite(src.Name); site != "" {
 				row.Note = "uses the " + site + " site credentials"
-				// A service with no credentials of its own: its edit shortcut
-				// opens the site it authenticates through.
 				edit := s.siteRows([]string{site}, csrf)[0]
 				row.Site = &edit
 			} else if missing {
@@ -104,9 +87,8 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 		}
 		view.Chain = append(view.Chain, row)
 	}
-	// An order on a site whose effective profile carries no md5 template is
-	// skipped by the walk (a profile edit can take the template away);
-	// surface the skip instead of silently hiding the site.
+	// The walk skips an order on a site whose profile lost its md5
+	// template; list it rather than hide it.
 	for _, site := range cfg.Sites {
 		if site.LookupOrder > 0 && s.mapper.LookupURL(site.Name, "") == "" {
 			edit := s.siteRows([]string{site.Name}, csrf)[0]
@@ -140,18 +122,13 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 	return view
 }
 
-// siteNeedsCredential reports whether a site requires a credential the config
-// lacks, with its label - the same gate the lookup chain applies.
 func (s *Server) siteNeedsCredential(site string) (string, bool) {
 	v := s.siteView(site)
 	return v.Login, v.NeedsCredential
 }
 
-// saveLookup updates the lookup section's inline settings: the similarity
-// floor and the scheduled-lookup budget from the section's own row, and the
-// saucenao api key from its dialog. Each sub-form is recognised by a field
-// only it posts. The key is a secret with the site-credential semantics:
-// blank keeps the stored value.
+// The section's row and the saucenao key dialog both post here, so a
+// field applies only when sent; a blank key keeps the stored one.
 func (s *Server) saveLookup(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.redirectFlash(w, r, "err", "bad form")
@@ -196,9 +173,6 @@ func (s *Server) saveLookup(w http.ResponseWriter, r *http.Request) {
 	s.redirectFlash(w, r, "ok", "lookup settings saved")
 }
 
-// saveLookupChain writes the edit-order dialog: one nullable position per
-// source, blank leaving it out of the chain. Both number spaces - the sites'
-// lookup_order and the services' order - are saved in one pass.
 func (s *Server) saveLookupChain(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.redirectFlash(w, r, "err", "bad form")
@@ -230,7 +204,7 @@ func (s *Server) saveLookupChain(w http.ResponseWriter, r *http.Request) {
 			site := c.FindSite(name)
 			if site == nil {
 				if order == 0 {
-					continue // no block and no order: nothing to record
+					continue
 				}
 				c.Sites = append(c.Sites, config.Site{Name: name})
 				site = &c.Sites[len(c.Sites)-1]
@@ -246,12 +220,6 @@ func (s *Server) saveLookupChain(w http.ResponseWriter, r *http.Request) {
 	s.redirectFlash(w, r, "ok", "lookup chain saved")
 }
 
-// testLookupSource probes one lookup source live and renders the outcome into
-// the source's own state cell. A similarity service runs one real query with
-// the built-in probe image; an exact-md5 site runs its search with the
-// probe's md5. A clean "no match" is a successful round trip either way - the
-// probe is a generated gradient no booru holds - so what this reports is the
-// auth path and, for saucenao, the daily quota.
 func (s *Server) testLookupSource(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
 	if s.cfg.Current().Lookup.Service(source) != nil {
@@ -261,9 +229,6 @@ func (s *Server) testLookupSource(w http.ResponseWriter, r *http.Request) {
 	s.testLookupSite(w, r, source)
 }
 
-// testLookupSite runs one exact-md5 site search with the probe image's md5.
-// The search matching nothing is the expected success; what can fail is the
-// route, the auth, or a rate limit.
 func (s *Server) testLookupSite(w http.ResponseWriter, r *http.Request, site string) {
 	sum := md5.Sum(similarity.ProbeImage())
 	searchURL := s.mapper.LookupURL(site, hex.EncodeToString(sum[:]))
@@ -279,8 +244,7 @@ func (s *Server) testLookupSite(w http.ResponseWriter, r *http.Request, site str
 	defer cancel()
 	_, err := s.runner.FetchMeta(ctx, searchURL)
 	if err != nil {
-		// The probe md5 matching nothing is the expected answer: the search
-		// executed, so the site was reached. Every other error is a failure.
+		// A miss is expected: the search ran, so the site was reached.
 		var ce *outcome.CodedError
 		if !errors.As(err, &ce) || ce.Code != outcome.ErrCodeMappingFailed {
 			probeFailure(w, err)
@@ -291,8 +255,6 @@ func (s *Server) testLookupSite(w http.ResponseWriter, r *http.Request, site str
 	siteState(w, "ok", "ok", "", time.Time{})
 }
 
-// probeFailure renders a live probe's error into the site's state cell. An
-// unclassified error falls back to its message.
 func probeFailure(w http.ResponseWriter, err error) {
 	var ce *outcome.CodedError
 	if !errors.As(err, &ce) {

@@ -11,9 +11,6 @@ import (
 	"strings"
 )
 
-// mustRandBytes returns n cryptographically-random bytes, terminating the
-// process if the system RNG is unavailable (the CSRF secret is computed once
-// at startup).
 func mustRandBytes(n int) []byte {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -22,7 +19,6 @@ func mustRandBytes(n int) []byte {
 	return b
 }
 
-// csrfToken is an HMAC of the session id under the per-instance secret.
 func (s *Server) csrfToken(sessionID string) string {
 	mac := hmac.New(sha256.New, s.csrfSecret)
 	mac.Write([]byte(sessionID))
@@ -34,8 +30,8 @@ func (s *Server) validateCSRF(sessionID, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
 }
 
-// CSRFMiddleware validates the token on state-changing requests. The
-// /api/v1/ routes are exempt (bearer auth is their mitigation).
+const maxFormBytes = 8 << 20
+
 func (s *Server) CSRFMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
@@ -46,6 +42,9 @@ func (s *Server) CSRFMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// The form parse below reads the body before the token is checked,
+		// and /login reaches it signed out; no browser form here is large.
+		r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 		sessID := sessionFromContext(r.Context())
 		token := r.Header.Get("X-CSRF-Token")
 		if token == "" {

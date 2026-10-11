@@ -5,14 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
-	// Embed the zoneinfo database so TZ resolves to a real location even
-	// on a base image that ships no tzdata files.
 	_ "time/tzdata"
 
 	"github.com/monbooru/monloader/internal/config"
@@ -31,8 +30,7 @@ import (
 )
 
 func main() {
-	// Before anything prints: the Windows artifacts are linked for the GUI
-	// subsystem, which is handed no console at all.
+	// Before anything prints: a Windows GUI build starts with no console.
 	desktop.AttachConsole()
 
 	if len(os.Args) >= 2 && os.Args[1] == "healthcheck" {
@@ -61,9 +59,8 @@ func main() {
 		return
 	}
 
-	// Registered before every other defer, so a Restart's fresh process
-	// starts only once this one has released the port, the queue store, the
-	// index and the log file.
+	// Registered first so it runs last: the new process must find the
+	// port, the queue store and the log file released.
 	restartOnExit := false
 	defer func() {
 		if restartOnExit {
@@ -74,10 +71,8 @@ func main() {
 	var seed func(*config.Config)
 	var profile internalweb.Desktop
 	var layout desktop.Layout
-	// stateDir is where what monloader writes for itself lives - the queue
-	// store and the managed gallery-dl install. The container keeps them
-	// beside the config on its one volume; the desktop profile follows the
-	// OS split, so the config directory holds only what the operator wrote.
+	// Outside the desktop profile, state sits beside the config: the
+	// container has one volume.
 	stateDir := ""
 	if *desktopMode {
 		dialogOnFatal = true
@@ -121,15 +116,26 @@ func main() {
 		fatalf("loading config: %v", err)
 	}
 	logx.Set(cfg.Log.Level)
-	if *desktopMode {
-		if !claimPort(cfg.Server.BindAddress, !*noBrowser) {
+	if *desktopMode && !claimPort(cfg.Server.BindAddress, !*noBrowser) {
+		return
+	}
+	// Bound before the work root, the queue store or the ptr index is
+	// touched: a launch that loses the race must leave the winner's alone.
+	ln, err := net.Listen("tcp", cfg.Server.BindAddress)
+	if err != nil {
+		if *desktopMode && awaitWinner(cfg.Server.BindAddress, !*noBrowser) {
 			return
 		}
+		if freshConfig && !*desktopMode {
+			log.Printf("monloader wrote %s with default settings meant for the docker image.", *configPath)
+			log.Printf("edit server.bind_address (and monbooru.api_url once monbooru runs), then run it again. docs: %s", internalweb.DocURL)
+		}
+		fatalf("HTTP server: %v", err)
+	}
+	if *desktopMode {
 		ptrFolder(cfg, layout, *configPath, stateDir)
 	}
 
-	// One provider shared by every component that reads UI-mutable config, so a
-	// settings save publishes a new snapshot all of them observe without a race.
 	provider := config.NewProvider(cfg)
 
 	mapper, err := mapping.New(provider, filepath.Join(filepath.Dir(*configPath), "profiles"))
@@ -140,20 +146,18 @@ func main() {
 	runner := gdl.New(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites())
 	managedRoot := gdl.ManagedRoot(stateDir)
 	runner.SetManagedRoot(managedRoot)
+	runner.SetSecrets(func() []config.Secret { return provider.Current().Secrets() })
 	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites(), mapper.SiteOptions()); err != nil {
 		logx.Warnf("could not write the managed gallery-dl config: %v", err)
 	}
 
-	// Probe gallery-dl once at boot. A missing binary is not fatal: the UI and
-	// API still run; downloads surface a clear error when attempted.
 	bootCtx, bootCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	catalog := gdl.ProbeCatalog(bootCtx, runner, cfg, managedRoot)
 	bootCancel()
 	switch {
 	case catalog.Version() == "":
-		// The binary that was actually run, which is the managed install when
-		// one shadows the default - naming the bundled path there would point
-		// at the one binary that is fine.
+		// The binary actually run: a broken managed install shadows a
+		// bundled one that works.
 		logx.Warnf("gallery-dl not available at %q; downloads will fail until it is installed", gdl.EffectiveBinary(cfg, managedRoot))
 	case catalog.Managed():
 		logx.Infof("gallery-dl %s (managed install, bundled %s), %d extractors", catalog.Version(), catalog.BundledVersion(), len(catalog.Extractors()))
@@ -164,12 +168,8 @@ func main() {
 	client := monbooru.New(provider)
 	workRoot := resolveWorkRoot(*desktopMode)
 	clearWorkRoot(workRoot)
-	// One tracker shared by the pipeline and the web server: both record a reach
-	// (on a fetch and on a test probe), and the settings sites table reads it.
 	siteState := sitestate.New()
 
-	// The PTR thin client runs only when enabled; its context lives for the app
-	// so the sync goroutine stops within the shutdown drain.
 	ptrCtx, ptrCancel := context.WithCancel(context.Background())
 	defer ptrCancel()
 	ptrEngine := ptr.NewEngine(cfg.PTR)
@@ -189,6 +189,12 @@ func main() {
 		defer func() { _ = qs.Close() }()
 	}
 	q.Start()
+	watchCtx, stopWatches := context.WithCancel(context.Background())
+	defer stopWatches()
+	go q.RunWatches(watchCtx, func() bool {
+		m := provider.Current().Monbooru
+		return m.APIURL == "" || m.Paused
+	})
 
 	srv, err := internalweb.NewServer(provider, *configPath, stateDir, workRoot, q, client, runner, mapper, catalog, siteState, ptrEngine, sim, profile)
 	if err != nil {
@@ -199,8 +205,8 @@ func main() {
 		Addr:        cfg.Server.BindAddress,
 		Handler:     srv.Handler(),
 		ReadTimeout: 30 * time.Second,
-		// WriteTimeout is intentionally unset: a wait=N enqueue and a large
-		// multipart push to monbooru can each run for many seconds.
+		// No WriteTimeout: a ?wait=N enqueue or a push to monbooru runs
+		// for many seconds.
 		IdleTimeout: 120 * time.Second,
 	}
 
@@ -209,16 +215,7 @@ func main() {
 
 	go func() {
 		logx.Infof("monloader listening on %s (work dir %s)", cfg.Server.BindAddress, workRoot)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			if freshConfig && !*desktopMode {
-				log.Printf("monloader wrote %s with default settings meant for the docker image.", *configPath)
-				log.Printf("edit server.bind_address (and monbooru.api_url once monbooru runs), then run it again. docs: %s", internalweb.DocURL)
-			}
-			if *desktopMode {
-				// Closes the race between two launches that both probed an
-				// empty port: whoever lost the bind asks again.
-				claimPort(cfg.Server.BindAddress, !*noBrowser)
-			}
+		if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			fatalf("HTTP server: %v", err)
 		}
 	}()
@@ -239,40 +236,38 @@ func main() {
 	case <-srv.QuitRequested():
 	}
 	logx.Infof("shutting down...")
+	// Before the drain: a ?wait parked on a queued job would hold it for
+	// the whole grace, and a container stop kills at about that much.
+	stopWatches()
+	q.Stop()
 	_ = drainHTTP(httpSrv, shutdownDrain)
-	q.Close()           // cancels the in-flight job and waits for workers to exit
-	ptrEngine.Disable() // stops the sync goroutine and closes the index
+	q.Close()
+	ptrEngine.Disable()
 	restartOnExit = srv.RestartRequested()
 }
 
-// shutdownDrain bounds how long a stop waits on requests already in flight.
 const shutdownDrain = 10 * time.Second
 
-// drainHTTP closes the listener and lets requests already in flight finish, up
-// to timeout: a `?wait=N` enqueue or a large push to monbooru runs for many
-// seconds, and cutting one off mid-response would report a failure for work
-// that landed. Past the timeout the remaining connections are dropped.
+// Cutting off a request mid-response would report a failure for work that
+// landed.
 func drainHTTP(srv *http.Server, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return srv.Shutdown(ctx)
 }
 
-// workMount is the container convention for the scratch directory; a var so
-// a test can probe somewhere other than the filesystem root.
 var workMount = "/work"
 
-// resolveWorkRoot picks the scratch directory for gallery-dl output: the
-// conventional /work mount when it is there and writable, else a temp dir for
-// non container runs. The mount is probed, never created: a run outside the
-// container as root would otherwise put scratch downloads in a directory it
-// just made at the filesystem root. The directory must never be a host bind in
-// production; that is a deployment concern, not enforced here.
+// Probed, never created: a root run outside the container would otherwise
+// make /work at the filesystem root.
 func resolveWorkRoot(desktopMode bool) string {
-	// On a desktop the scratch belongs in the OS temp directory: /work is a
-	// container convention, and a writable one on a workstation would be
-	// somebody else's directory.
+	// /work is a container convention; on a workstation it would be
+	// somebody else's directory. So is a fixed name under a shared /tmp,
+	// which another local user could pre-create and read or swap files in.
 	if desktopMode {
+		if dir, err := os.UserCacheDir(); err == nil {
+			return filepath.Join(dir, "monloader", "work")
+		}
 		return filepath.Join(os.TempDir(), "monloader-work")
 	}
 	if fi, err := os.Stat(workMount); err == nil && fi.IsDir() {
@@ -286,11 +281,9 @@ func resolveWorkRoot(desktopMode bool) string {
 	return filepath.Join(os.TempDir(), "monloader-work")
 }
 
-// clearWorkRoot empties the scratch directory at startup. A crashed run's job
-// dir is stale whatever happens to it (its deferred cleanup never ran), and
-// when the queue store is unavailable ids restart at 1, so a later job can walk
-// straight into one and bundle or push its files. Contents are removed, not the
-// directory itself, so a /work tmpfs mount stays intact.
+// Without the queue store job ids restart at 1, so a crashed run's
+// leftover job dir would be bundled into a new job. The contents go, not
+// the directory: /work may be a tmpfs mount.
 func clearWorkRoot(root string) {
 	entries, err := os.ReadDir(root)
 	if err != nil {

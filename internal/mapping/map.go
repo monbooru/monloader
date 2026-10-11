@@ -16,73 +16,55 @@ import (
 	"github.com/monbooru/monloader/internal/logx"
 )
 
-// Via is the origin label stamped on every pushed image and its initial tags.
-// It lands on monbooru's images.origin and each tag's
-// tagger_name.
+// Via lands in monbooru's images.origin and each pushed tag's tagger_name.
 const Via = "monloader"
 
-// CategoryDirectlink is gallery-dl's pseudo-extractor for a bare media URL with
-// no booru behind it. It carries no post id or template, so its source and url
-// come from the file's host and the file URL itself.
+// CategoryDirectlink is gallery-dl's pseudo-extractor for a bare media
+// URL with no booru behind it.
 const CategoryDirectlink = "directlink"
 
-// PushFields is the monbooru-shaped result of mapping one gallery-dl item.
-// Tags already carry their category prefixes and include the rating tag;
-// Rating is also exposed bare for the cbz strictest-wins bundle rule.
+// PushFields carries the rating twice: in Tags, and bare in Rating for
+// the cbz strictest-wins rule.
 type PushFields struct {
-	Tags            []string
-	Rating          string
-	Source          string
-	Via             string
-	Collection      string
-	CollectionOrder int
-	Commentary      string
-	// CommentaryTranslated is the translation the source published beside
-	// Commentary; empty unless the post carries both bodies.
+	Tags                 []string
+	Rating               string
+	Source               string
+	Via                  string
+	Collection           string
+	CollectionOrder      int
+	Commentary           string
 	CommentaryTranslated string
-	// The same two bodies in the markup their source published them in,
-	// which monbooru converts on the way in. Danbooru and e621 write DText,
-	// and the plain fields above are the flattening of it.
+	// The DText the source published, which monbooru converts; an older
+	// monbooru reads the plain fields above.
 	CommentaryDText           string
 	CommentaryTranslatedDText string
 	Original                  string
 	ParentURL                 string
 	Notes                     []NoteBox
-	// What the post says about the file it serves, for monbooru's upgrade
-	// surface. Zero where the site publishes nothing, which is common.
-	PostWidth, PostHeight int
-	PostSize              int64
-	PostExt               string
+	PostWidth, PostHeight     int
+	PostSize                  int64
+	PostExt                   string
 }
 
-// NoteBox is one positional note overlaid on an image, in original-image pixel
-// coordinates (Danbooru "notes"). BodyHTML keeps the source's own markup beside
-// the flattened body; monbooru converts it and falls back to Body.
+// NoteBox coordinates are original-image pixels. monbooru converts
+// BodyHTML and falls back to Body.
 type NoteBox struct {
 	X, Y, W, H int
 	Body       string
 	BodyHTML   string
 }
 
-// Mapper turns gallery-dl metadata into monbooru push fields using the
-// built-in profiles, the user profile files layered over them, and the user
-// override tables in config. The override tables and per-site galleries are
-// read from the config provider on each map, so a settings save takes effect
-// without racing the worker goroutine.
+// Mapper reads the config provider on every call, so a settings save
+// lands without racing the worker goroutine.
 type Mapper struct {
 	builtin map[string]Profile
 	userDir string
 	cfg     *config.Provider
-	// ps is the merged profile view, swapped whole on a profile save so a
-	// reader never observes a half-rebuilt map.
+	// Swapped whole on a profile save, so a reader never sees a
+	// half-rebuilt map.
 	ps atomic.Pointer[profileSet]
 }
 
-// profileSet is one immutable snapshot of the merged profiles. hostSite
-// indexes each templated profile's post-URL host so a similarity service's
-// result URL can be recognized and rebuilt canonically; aliasSite indexes the
-// declared host aliases, which only name a site for source labeling; custom
-// marks the categories whose user profile differs from the shipped one.
 type profileSet struct {
 	profiles  map[string]Profile
 	hostSite  map[string]string
@@ -90,11 +72,9 @@ type profileSet struct {
 	custom    map[string]bool
 }
 
-// New builds a Mapper from the embedded profiles, the user profile files in
-// profilesDir (missing or empty is fine), and the config provider. A lookup
-// order on a site whose profile has no md5 template only warns: profiles are
-// runtime-editable files, so a stale order must degrade the chain, not fail
-// the boot.
+// A lookup order on a site with no md5 template only warns: profiles are
+// editable at runtime, so a stale order degrades the chain rather than
+// failing the boot.
 func New(cfg *config.Provider, profilesDir string) (*Mapper, error) {
 	builtin, err := loadProfiles()
 	if err != nil {
@@ -102,6 +82,16 @@ func New(cfg *config.Provider, profilesDir string) (*Mapper, error) {
 	}
 	m := &Mapper{builtin: builtin, userDir: profilesDir, cfg: cfg}
 	m.reload()
+	for _, o := range cfg.Current().RatingOverrides {
+		if !validRatings[o.To] {
+			logx.Warnf("rating override %s %q -> %q names no rating level (%s); it is skipped", o.Site, o.From, o.To, strings.Join(RatingLevels, ", "))
+		}
+	}
+	for _, o := range cfg.Current().TagOverrides {
+		if o.To != "" && !validTagCategories[o.To] {
+			logx.Warnf("tag override %s %q -> %q names no tag category (%s); it is skipped", o.Site, o.From, o.To, strings.Join(TagCategories, ", "))
+		}
+	}
 	for _, site := range cfg.Current().Sites {
 		if site.LookupOrder > 0 && m.LookupURL(site.Name, "") == "" {
 			logx.Warnf("site %q has lookup_order set but no md5 lookup support; the lookup chain skips it", site.Name)
@@ -110,13 +100,8 @@ func New(cfg *config.Provider, profilesDir string) (*Mapper, error) {
 	return m, nil
 }
 
-// view returns the current profile snapshot.
 func (m *Mapper) view() *profileSet { return m.ps.Load() }
 
-// reload rebuilds the merged view from the built-ins and the user profile
-// files. A user profile identical to the shipped one is not a customization,
-// so it is ignored (and the settings save deletes such a file instead of
-// writing it).
 func (m *Mapper) reload() {
 	profiles := maps.Clone(m.builtin)
 	custom := map[string]bool{}
@@ -130,17 +115,13 @@ func (m *Mapper) reload() {
 	m.ps.Store(&profileSet{profiles: profiles, hostSite: hostIndex(profiles), aliasSite: aliasIndex(profiles), custom: custom})
 }
 
-// LookupSource is one entry of the unified lookup chain: a site's exact-md5
-// search, or an image-similarity service when Similarity is set.
 type LookupSource struct {
 	Name       string
 	Similarity bool
 }
 
-// LookupChain is the unified lookup walk: the sites whose [[sites]] block
-// carries a lookup order and the similarity services with one, merged on the
-// shared number space, ascending (ties by name). A source without an order is
-// never queried, so opting in is as explicit as configuring a credential.
+// A source without an order is never queried: opting in is as explicit as
+// configuring a credential.
 func (m *Mapper) LookupChain() []LookupSource {
 	type entry struct {
 		src   LookupSource
@@ -168,9 +149,6 @@ func (m *Mapper) LookupChain() []LookupSource {
 	return out
 }
 
-// LookupSites is the chain's exact-md5 half: the site sources in chain order.
-// A hash import walks only these - a pasted hash carries no image bytes for a
-// similarity query - and they rank the candidates a similarity hit offers.
 func (m *Mapper) LookupSites() []string {
 	var out []string
 	for _, src := range m.LookupChain() {
@@ -181,8 +159,6 @@ func (m *Mapper) LookupSites() []string {
 	return out
 }
 
-// Gallery resolves the target monbooru gallery for a site: the per-source
-// setting when set, else the configured default.
 func (m *Mapper) Gallery(category string) string {
 	if site := m.cfg.Current().FindSite(category); site != nil && site.Gallery != "" {
 		return site.Gallery
@@ -190,27 +166,18 @@ func (m *Mapper) Gallery(category string) string {
 	return m.cfg.Current().Monbooru.DefaultGallery
 }
 
-// SourceLabel resolves what a push stamps as its source for a site name or a
-// bare host: the [[sites]] label when set, a known category unchanged, and a
-// host through the config host_labels rows (exact host first, parent domains
-// after, winning over profiles as the override tables do) then the profiles'
-// post-URL hosts and host aliases. Nothing matching keeps the name as-is, so
-// no label lands that the operator did not choose.
+// SourceLabel keeps an unmatched name as-is, so no label lands that the
+// operator did not choose.
 func (m *Mapper) SourceLabel(name string) string {
 	label, _ := m.sourceLabel(name)
 	return label
 }
 
-// SourceClaimed reports whether something chose the label a name resolves to -
-// a [[sites]] label, a profile, a host_labels row, or a profile host alias -
-// rather than it being stamped as the bare name it arrived as.
 func (m *Mapper) SourceClaimed(name string) bool {
 	_, claimed := m.sourceLabel(name)
 	return claimed
 }
 
-// sourceLabel resolves the label and reports whether anything claimed the
-// name; claimed is false only on the fallthrough that stamps it unchanged.
 func (m *Mapper) sourceLabel(name string) (label string, claimed bool) {
 	cfg := m.cfg.Current()
 	if site := cfg.FindSite(name); site != nil && site.Label != "" {
@@ -221,9 +188,8 @@ func (m *Mapper) sourceLabel(name string) (label string, claimed bool) {
 		return name, true
 	}
 	host := normalizeHost(name)
-	// A self-hosted source almost always carries a port, which is the case host
-	// labels exist for; an exact host:port row still wins, and the bare host the
-	// field's hint describes matches it too.
+	// Self-hosted sources usually carry a port: an exact host:port row
+	// wins, then the bare host's row.
 	for _, start := range []string{host, hostWithoutPort(host)} {
 		for cand := start; cand != ""; cand = parentDomain(cand) {
 			for _, hl := range cfg.HostLabels {
@@ -246,9 +212,6 @@ func (m *Mapper) sourceLabel(name string) (label string, claimed bool) {
 	return name, false
 }
 
-// hostWithoutPort drops a trailing :port, leaving a bracketed IPv6 literal and
-// a bare host alone. Returns host unchanged when there is nothing to drop, so
-// the caller's second pass is a no-op rather than a special case.
 func hostWithoutPort(host string) string {
 	i := strings.LastIndex(host, ":")
 	if i < 0 || strings.Contains(host[i+1:], "]") {
@@ -262,8 +225,6 @@ func hostWithoutPort(host string) string {
 	return host[:i]
 }
 
-// parentDomain strips a host's leftmost segment ("" past the registrable
-// part), so img.website.com walks to website.com and stops.
 func parentDomain(host string) string {
 	i := strings.Index(host, ".")
 	if i < 0 || !strings.Contains(host[i+1:], ".") {
@@ -272,7 +233,6 @@ func parentDomain(host string) string {
 	return host[i+1:]
 }
 
-// Map turns one gallery-dl item's metadata into monbooru push fields.
 func (m *Mapper) Map(meta map[string]any) PushFields {
 	category := kwdict.String(meta, "category")
 	profile := m.profileFor(category)
@@ -282,22 +242,23 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 		Via:    Via,
 	}
 	if category == CategoryDirectlink {
-		// A bare media URL has no booru behind it, so its host is the closest
-		// thing to a site label.
 		pf.Source = m.SourceLabel(kwdict.String(meta, "domain"))
 	}
 
-	seen := map[string]bool{}
 	var tags []string
 	add := func(s string) {
-		s = applyTagRule(profile.TagRules, normalizeTag(s))
-		if s != "" && !seen[s] {
-			seen[s] = true
+		if s = applyTagRule(profile.TagRules, normalizeTag(s)); s != "" {
 			tags = append(tags, s)
 		}
 	}
 
-	if suffixes := tagSuffixes(meta); len(suffixes) > 0 {
+	suffixes := tagSuffixes(meta)
+	// An opt-in extra such as pixiv's tags_bookmark is no category split:
+	// the post's own flat list stays its tags.
+	if meta["tags"] != nil && !m.anyCategorySuffix(category, profile, suffixes) {
+		suffixes = nil
+	}
+	if len(suffixes) > 0 {
 		for _, suffix := range suffixes {
 			cat, keep := m.categoryFor(category, profile, suffix)
 			if !keep {
@@ -308,11 +269,9 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 			}
 		}
 	} else {
-		// No per-category tags (a flat-tag site without tags:true, or an
-		// unmapped source): the combined list lands as general, except entries
-		// carrying a recognized namespace prefix (zerochan's "Character:name",
-		// philomena boorus), which route by it.
-		for _, name := range parseTagField(meta["tags"]) {
+		// A flat tag list lands as general, except entries with a recognized
+		// namespace prefix (zerochan's "Character:name", philomena boorus).
+		for _, name := range parseTagField(flatTags(meta)) {
 			if profile.Family == FamilyPhilomena && philomenaRatingTag(name) {
 				continue // lifted to the rating field below, not a content tag
 			}
@@ -324,9 +283,6 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 		}
 	}
 
-	// Manga and comic gallery extractors expose their categorized tags as
-	// separate list fields (artist, parody, characters, ...) rather than
-	// tags_<category> keys; fold those in for manga-kind sources.
 	if profile.Kind == KindManga {
 		for _, f := range mangaTagFields {
 			for _, name := range parseNameField(meta[f.field]) {
@@ -340,13 +296,19 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	if raw == "" && profile.Family == FamilyPhilomena {
 		raw = philomenaRating(meta)
 	}
+	if raw == "" {
+		// civitai's numeric nsfwLevel means nothing until a profile's
+		// rating overrides name each level.
+		file, _ := meta["file"].(map[string]any)
+		raw = kwdict.String(file, "nsfwLevel")
+	}
 	pf.Rating = m.ratingFor(category, profile, raw)
 	if pf.Rating != "" {
 		add("rating:" + pf.Rating)
 	}
 
 	slices.Sort(tags)
-	pf.Tags = tags
+	pf.Tags = slices.Compact(tags)
 
 	if kwdict.String(meta, "subcategory") == "pool" {
 		pf.Collection = PoolName(meta)
@@ -366,10 +328,16 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	return pf
 }
 
-// postFileFor reads what the post says its file is. gallery-dl normalizes
-// width / height across the boorus; the size and extension keys vary, so
-// each falls back through the spellings the supported sites use. Anything
-// missing stays zero: monbooru keeps whatever it already had.
+// civitai nests an image's tags under file when it comes from a post.
+func flatTags(meta map[string]any) any {
+	if v := meta["tags"]; v != nil {
+		return v
+	}
+	file, _ := meta["file"].(map[string]any)
+	return file["tags"]
+}
+
+// Anything missing stays zero, and monbooru keeps what it already had.
 func postFileFor(meta map[string]any) (w, h int, size int64, ext string) {
 	w, h = kwdict.Int(meta, "width"), kwdict.Int(meta, "height")
 	for _, key := range []string{"file_size", "filesize", "size"} {
@@ -381,9 +349,8 @@ func postFileFor(meta map[string]any) (w, h int, size int64, ext string) {
 	return w, h, size, strings.ToLower(strings.TrimPrefix(kwdict.String(meta, "extension"), "."))
 }
 
-// parentPostID returns the id of the post's declared parent, "" when none.
-// Boorus emit parent_id at the top level (0, null, or absent for none); the
-// e621 family nests it under relationships.
+// Boorus emit parent_id at the top level (0 or null for none); e621 nests
+// it under relationships.
 func parentPostID(meta map[string]any) string {
 	if id := kwdict.String(meta, "parent_id"); id != "" && id != "0" {
 		return id
@@ -396,11 +363,8 @@ func parentPostID(meta map[string]any) string {
 	return ""
 }
 
-// originalFor reads the booru post's own source field - the upstream artist
-// URL (pixiv, twitter), sometimes a dead host or free text. Most families
-// carry a single `source` string; e621 a `sources` list, philomena a
-// `source_url` string plus a `source_urls` list. Several entries join with
-// newlines, matching monbooru's one-per-line render.
+// e621 carries a sources list and philomena source_url plus source_urls;
+// several entries join with newlines for monbooru's one-per-line render.
 func originalFor(meta map[string]any) string {
 	if s := strings.TrimSpace(kwdict.String(meta, "source")); s != "" {
 		return s
@@ -425,20 +389,13 @@ func originalFor(meta map[string]any) string {
 	return strings.TrimSpace(kwdict.String(meta, "source_url"))
 }
 
-// postCommentary is a post's artist commentary in the two forms a push
-// carries: the markup its source published, and the flattening a monbooru too
-// old to read that falls back to.
 type postCommentary struct {
 	Body, BodyDText             string
 	Translated, TranslatedDText string
 }
 
-// commentaryFor reduces a post's artist commentary to those forms and, where
-// the source published one, its translation. Danbooru carries a nested
-// artist_commentary object with both (title folded in as the first line);
-// e621 a flat description. A post translated but missing its original leads
-// with the translation, so the body is never empty while the translation
-// is filled.
+// A translation with no original leads: monbooru shows the translation
+// under the commentary, so an empty commentary would hide it.
 func commentaryFor(family string, meta map[string]any) postCommentary {
 	var c postCommentary
 	switch family {
@@ -474,10 +431,8 @@ func joinLines(title, desc string) string {
 	}
 }
 
-// notesFor extracts the active positional note boxes (Danbooru "notes"). Every
-// note-carrying source shares the danbooru field names: danbooru and e621 flag
-// each note is_active, the gelbooru/moebooru pages and the sankaku notes API
-// carry only active ones. Other sources carry none.
+// Note sources share danbooru's field names; only danbooru and e621 send
+// is_active, the others send active notes only.
 func notesFor(profile Profile, meta map[string]any) []NoteBox {
 	if profile.Family != FamilyDanbooru && profile.Family != FamilyE621 &&
 		!needsNotesFamily(profile.Family) && !profile.HasNotes {
@@ -515,20 +470,14 @@ var (
 	tagRe = regexp.MustCompile(`<[^>]*>`)
 )
 
-// noteTagRe matches the formatting a note box may keep: the inline tags the
-// feature exists for, including the translator note, and their closers, which
-// carry nothing and are inert alone. The bytes come from a booru's note api -
-// remote and unreviewed - so everything else the source wrote is dropped
-// rather than forwarded to monbooru, which cannot know where it came from.
+// Only these inline tags (tn is the translator note) survive: note markup
+// comes from a remote, unreviewed api and monbooru cannot know where it
+// came from.
 var noteTagRe = regexp.MustCompile(`(?i)^</?(a|b|i|u|s|em|strong|br|tn)\s*/?>$`)
 
-// noteHrefRe pulls the target out of an anchor whatever else it carries, since
-// a booru writes its own tag links relative and styled. Only the href is kept.
+// A booru writes its tag links relative and styled, so only the href is kept.
 var noteHrefRe = regexp.MustCompile(`(?i)^<a\s[^<>]*\bhref="([^"<>\s]+)"[^<>]*>$`)
 
-// markupHTML returns the source's own body, reduced to those tags, and only
-// when it still carries markup the flattening dropped - a plain note is not
-// pushed twice.
 func markupHTML(raw, plain string) string {
 	safe := tagRe.ReplaceAllStringFunc(raw, func(tag string) string {
 		if noteTagRe.MatchString(tag) {
@@ -545,43 +494,32 @@ func markupHTML(raw, plain string) string {
 	return safe
 }
 
-// noteHref reports whether an anchor target is worth forwarding. monbooru
-// resolves a relative one against the post url it was pushed, so the site's
-// own links survive; anything that is not a location drops with its anchor.
+// monbooru resolves a relative target against the post url, so only paths
+// and http(s) URLs pass; anything else drops with its anchor.
 func noteHref(href string) bool {
 	low := strings.ToLower(href)
 	return strings.HasPrefix(href, "/") ||
 		strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://")
 }
 
-// rawText is a source's own body with nothing but its line endings settled:
-// what monbooru's converter reads is the markup as the artist wrote it, and
-// DText is not HTML for plainText below to strip.
+// monbooru's converter reads the markup as written, and DText is not HTML
+// to strip.
 func rawText(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	return strings.TrimSpace(strings.ReplaceAll(s, "\r", "\n"))
 }
 
-// plainText reduces a booru's HTML note body (or commentary) to plain text:
-// entities are decoded first so entity-encoded markup is stripped like literal
-// markup instead of being reintroduced after the strip, then <br> and CRLF
-// become newlines and the remaining tags are dropped. DText markup, which is
-// not HTML, is left as readable text. Notes also travel in their original form
-// (NoteBox.BodyHTML); a monbooru that cannot read that falls back to this body.
+// Entities decode before the strip, so entity-encoded markup is stripped
+// like literal markup rather than reintroduced.
 func plainText(s string) string {
 	if s == "" {
 		return ""
 	}
 	s = html.UnescapeString(s)
 	s = brRe.ReplaceAllString(s, "\n")
-	s = tagRe.ReplaceAllString(s, "")
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	s = strings.ReplaceAll(s, "\r", "\n")
-	return strings.TrimSpace(s)
+	return rawText(tagRe.ReplaceAllString(s, ""))
 }
 
-// PoolName resolves a pool's name. `pool` is either a map carrying the name or
-// a bare id; fall back to "pool <id>" for the bare form. Empty when absent.
 func PoolName(meta map[string]any) string {
 	if pool, ok := meta["pool"].(map[string]any); ok {
 		if name := kwdict.String(pool, "name"); name != "" {
@@ -594,12 +532,8 @@ func PoolName(meta map[string]any) string {
 	return ""
 }
 
-// PostURL builds the canonical source post page from the site profile's
-// template. A directlink (a bare media URL) has no template, so its canonical
-// link is the file URL itself, rebuilt from the metadata. A source with no
-// template (the generic fallback) still gets a page URL when the extractor
-// exposes one as permalink metadata, so a bulk job's items link to their own
-// posts rather than all inheriting the submitted listing URL.
+// Without a template the permalink metadata is used, so a bulk job's
+// items link to their own posts rather than the submitted listing.
 func (m *Mapper) PostURL(meta map[string]any) string {
 	category := kwdict.String(meta, "category")
 	if category == CategoryDirectlink {
@@ -612,9 +546,7 @@ func (m *Mapper) PostURL(meta map[string]any) string {
 	return strings.ReplaceAll(profile.PostURL, "{id}", kwdict.ID(meta))
 }
 
-// permalinkURL reads gallery-dl's permalink key, taken only when it is an
-// absolute http(s) URL: some extractors emit site-relative paths or free text
-// there, which would make a broken source link.
+// Some extractors put a site-relative path or free text in permalink.
 func permalinkURL(meta map[string]any) string {
 	raw := strings.TrimSpace(kwdict.String(meta, "permalink"))
 	u, err := url.Parse(raw)
@@ -624,11 +556,9 @@ func permalinkURL(meta map[string]any) string {
 	return raw
 }
 
-// categoryFor resolves a tag suffix to a monbooru category, with user config
-// overrides winning over the profile, which wins over the universal table.
 func (m *Mapper) categoryFor(site string, profile Profile, suffix string) (string, bool) {
 	for _, o := range m.cfg.Current().TagOverrides {
-		if o.Site == site && o.From == suffix && o.To != "" {
+		if o.Site == site && o.From == suffix && o.To != "" && validTagCategories[o.To] {
 			return o.To, true
 		}
 	}
@@ -638,11 +568,24 @@ func (m *Mapper) categoryFor(site string, profile Profile, suffix string) (strin
 	return baseCategory(suffix)
 }
 
-// ratingFor resolves a booru rating value to a monbooru level, with user
-// config overrides winning over the profile, which wins over the family rule.
+func (m *Mapper) anyCategorySuffix(site string, profile Profile, suffixes []string) bool {
+	for _, suffix := range suffixes {
+		if _, ok := baseCategories[suffix]; ok {
+			return true
+		}
+		if _, ok := profile.CategoryOverrides[suffix]; ok {
+			return true
+		}
+		if slices.ContainsFunc(m.cfg.Current().TagOverrides, func(o config.TagOverride) bool { return o.Site == site && o.From == suffix }) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Mapper) ratingFor(site string, profile Profile, raw string) string {
 	for _, o := range m.cfg.Current().RatingOverrides {
-		if o.Site == site && strings.EqualFold(o.From, strings.TrimSpace(raw)) {
+		if o.Site == site && strings.EqualFold(o.From, strings.TrimSpace(raw)) && validRatings[o.To] {
 			return o.To
 		}
 	}
@@ -654,17 +597,12 @@ func (m *Mapper) ratingFor(site string, profile Profile, raw string) string {
 	if r := mapRating(profile.Family, raw); r != "" {
 		return r
 	}
-	// Adult-only sites with no per-post rating fall back to their profile
-	// default so the push is not exposed under a safe ceiling.
 	return profile.DefaultRating
 }
 
-// SuspectFlattenedTags reports whether a site that should carry per-category
-// tags_<x> fields returned an item with none of them. Every categorizing family
-// must carry them, so none present is the fingerprint of a gallery-dl bump
-// renaming or dropping those fields, after which the mapper would silently
-// flatten every tag into general. The pipeline logs it so the regression
-// surfaces instead of quietly corrupting the destination library.
+// SuspectFlattenedTags flags a categorizing site's item with no tags_<x>
+// fields: the fingerprint of a gallery-dl bump that would flatten every
+// tag into general.
 func (m *Mapper) SuspectFlattenedTags(meta map[string]any) bool {
 	p := m.profileFor(kwdict.String(meta, "category"))
 	categorized := p.Family == FamilyDanbooru || p.Family == FamilyE621 ||
@@ -672,10 +610,7 @@ func (m *Mapper) SuspectFlattenedTags(meta map[string]any) bool {
 	return categorized && len(tagSuffixes(meta)) == 0
 }
 
-// directlinkURL rebuilds the file URL gallery-dl's directlink pseudo-extractor
-// matched from the split parts it exposes. The scheme is not among them; these
-// links are https in practice, so https is assumed. An empty path is skipped so
-// a root-level file does not gain a double slash.
+// The scheme is not among the parts gallery-dl exposes, so https is assumed.
 func directlinkURL(meta map[string]any) string {
 	domain := kwdict.String(meta, "domain")
 	if domain == "" {

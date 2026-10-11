@@ -9,24 +9,15 @@ import (
 	"github.com/monbooru/monloader/internal/gdl"
 )
 
-// gdlInstallTimeout bounds one managed install: a venv creation plus a pip
-// wheel download, seconds normally, minutes on a slow line.
+// A venv plus a pip download: seconds normally, minutes on a slow line.
 const gdlInstallTimeout = 3 * time.Minute
 
-// gdlProbeTimeout bounds a re-probe of the active binary: two short subprocess
-// runs (--version and --list-extractors).
 const gdlProbeTimeout = 30 * time.Second
 
-// installManaged runs the install; swapped in tests, like gdl's pypiJSONURL.
 var installManaged = gdl.InstallManaged
 
-// gdlBusyReason answers every switch refused because one is already running.
 const gdlBusyReason = "an install is running - wait for it to finish"
 
-// gdlJob is a managed install in flight. It outlives the request that started
-// it - the settings panel polls its progress instead of holding a connection
-// open for the whole install - and keeps its outcome for the tick that
-// reports it.
 type gdlJob struct {
 	version string
 	step    string
@@ -36,14 +27,12 @@ type gdlJob struct {
 	msg     string
 }
 
-// gdlPanel feeds the settings gallery-dl block and its poll.
 type gdlPanel struct {
 	ActiveVersion  string
 	BundledVersion string
 	Managed        bool
-	// Installed marks an install present on disk whether or not runs use it,
-	// so the panel that wrote one can always remove it; Inactive says why one
-	// is there and not answering.
+	// Installed is on disk whether or not runs use it, so the panel can
+	// always remove it.
 	Installed bool
 	Inactive  string
 	CSRFToken string
@@ -76,20 +65,16 @@ func (s *Server) gdlPanel(ctx context.Context, csrf string) gdlPanel {
 	p.Running, p.Version, p.Step, p.Percent = s.gdlJob.running, s.gdlJob.version, s.gdlJob.step, s.gdlJob.percent
 	p.MsgKind, p.Msg = s.gdlJob.kind, s.gdlJob.msg
 	if !p.Running {
-		// The outcome shows on the tick that reports it; a later reload reads
-		// the version line rather than a stale message.
+		// Cleared once reported, so a later reload shows the version
+		// line, not a stale message.
 		s.gdlJob = nil
 	}
 	return p
 }
 
-// reconcileGDLCatalog re-probes when the cached inventory was built against a
-// different binary than the one that would run now. The cache is filled at
-// boot and after a switch, so a managed install that stopped answering since -
-// its venv bound to a python the image no longer ships - would leave this
-// panel and /health naming a binary that cannot start. Resolution is a stat,
-// so noticing costs nothing and the probe only runs on the state change; it
-// must not run against a directory an install is still writing.
+// The cached inventory can outlive its binary, e.g. a venv whose python
+// is gone. ManagedActive is only a stat, so checking costs nothing; never
+// probe while an install writes the directory.
 func (s *Server) reconcileGDLCatalog(ctx context.Context, root string) {
 	if s.gdlRunning() || s.catalog.Managed() == gdl.ManagedActive(s.cfg.Current(), root) {
 		return
@@ -99,9 +84,6 @@ func (s *Server) reconcileGDLCatalog(ctx context.Context, root string) {
 	s.refreshGDLCatalog(probeCtx)
 }
 
-// gdlInactiveReason says why an install under the state directory is not the
-// binary answering: an explicit binary_path outranks it, or it no longer runs
-// (a legacy venv whose interpreter moved is the usual way).
 func gdlInactiveReason(root string) string {
 	if gdl.ManagedBinary(root) == "" {
 		return "the installed gallery-dl no longer runs - revert to remove it"
@@ -109,7 +91,6 @@ func gdlInactiveReason(root string) string {
 	return "the installed gallery-dl is not in use - binary_path names another one"
 }
 
-// gdlClaim takes the install slot, refusing a second install while one runs.
 func (s *Server) gdlClaim(version string) bool {
 	s.gdlMu.Lock()
 	defer s.gdlMu.Unlock()
@@ -142,18 +123,15 @@ func (s *Server) gdlDone(kind, msg string) {
 	}
 }
 
-// gdlSwitchGuard refuses a binary switch while a job runs - one job must
-// never resolve with one gallery-dl and download with another - or while
-// another switch is mid-flight, since a revert deleting the directory an
-// install is writing leaves neither. It holds the queue for the switch
-// itself; done restores it unless the operator had paused it themselves, and
-// a non-empty reason means the switch cannot happen.
+// A job must not resolve with one gallery-dl and download with another,
+// and a revert must not delete a directory an install is writing. done
+// resumes the queue unless the operator had paused it.
 func (s *Server) gdlSwitchGuard() (done func(), reason string) {
 	if s.gdlRunning() {
 		return nil, gdlBusyReason
 	}
-	// The pause comes first: a worker parked in nextJob and woken by an enqueue
-	// between the two would start a job the count had already ruled out.
+	// Pause before counting, or an enqueue in between wakes a parked
+	// worker into a job the count ruled out.
 	wasPaused := s.queue.Paused()
 	s.queue.Pause()
 	done = func() {
@@ -168,9 +146,6 @@ func (s *Server) gdlSwitchGuard() (done func(), reason string) {
 	return done, ""
 }
 
-// gdlInstall (POST /settings/gallerydl/install) starts a managed install of a
-// gallery-dl release under the state directory and answers the panel. A blank
-// version means the newest PyPI release.
 func (s *Server) gdlInstall(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.renderGDLPanel(w, r, "err", "bad form")
@@ -204,16 +179,13 @@ func (s *Server) gdlInstall(w http.ResponseWriter, r *http.Request) {
 	s.renderGDLPanel(w, r, "", "")
 }
 
-// runGDLInstall installs the claimed release. It runs on past the request
-// that started it, so it carries its own context; the queue stays held until
-// the catalog knows which binary answers now.
+// The queue stays held until the catalog knows which binary answers.
 func (s *Server) runGDLInstall(version string, done func()) {
 	defer done()
 	ctx, cancel := context.WithTimeout(context.Background(), gdlInstallTimeout)
 	defer cancel()
 	if err := installManaged(ctx, s.stateDir, version, s.gdlStep); err != nil {
-		// A failed upgrade may have torn the managed install down; re-probe
-		// so the panel and /health report what is actually active.
+		// A failed upgrade may have torn the old install down.
 		s.refreshGDLCatalog(ctx)
 		s.gdlDone("err", "install failed: "+err.Error())
 		return
@@ -221,22 +193,16 @@ func (s *Server) runGDLInstall(version string, done func()) {
 	s.gdlStep("re-reading the extractor list", 92)
 	s.refreshGDLCatalog(ctx)
 	if !s.catalog.Managed() {
-		// The version readout right above this message would contradict an
-		// "active" the resolution does not back.
 		s.gdlDone("warn", "gallery-dl "+version+" installed, but binary_path still names the binary in use")
 		return
 	}
 	s.gdlDone("ok", "gallery-dl "+version+" installed and active")
 }
 
-// gdlStatusFragment is the htmx-polled panel while an install runs, so the
-// progress bar advances without a reload.
 func (s *Server) gdlStatusFragment(w http.ResponseWriter, r *http.Request) {
 	s.renderGDLPanel(w, r, "", "")
 }
 
-// renderGDLPanel answers the panel. A message given here is one this request
-// refuses with; the outcome of an install comes from the job itself.
 func (s *Server) renderGDLPanel(w http.ResponseWriter, r *http.Request, kind, msg string) {
 	panel := s.gdlPanel(r.Context(), s.csrfToken(sessionFromContext(r.Context())))
 	if msg != "" {
@@ -245,8 +211,6 @@ func (s *Server) renderGDLPanel(w http.ResponseWriter, r *http.Request, kind, ms
 	s.render(w, "gallerydl_panel", panel)
 }
 
-// gdlRevert (POST /settings/gallerydl/revert) removes the managed install;
-// the bundled binary answers again from the next invocation.
 func (s *Server) gdlRevert(w http.ResponseWriter, r *http.Request) {
 	if !gdl.ManagedInstalled(gdl.ManagedRoot(s.stateDir)) {
 		s.redirectFlash(w, r, "err", "already running the bundled gallery-dl")
@@ -268,8 +232,6 @@ func (s *Server) gdlRevert(w http.ResponseWriter, r *http.Request) {
 	s.redirectFlash(w, r, "ok", "reverted to the bundled gallery-dl "+s.catalog.Version())
 }
 
-// refreshGDLCatalog re-probes the active binary and swaps the cached
-// inventory wholesale.
 func (s *Server) refreshGDLCatalog(ctx context.Context) {
 	s.catalog.Refresh(ctx, s.runner, s.cfg.Current(), gdl.ManagedRoot(s.stateDir))
 }

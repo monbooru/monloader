@@ -15,11 +15,8 @@ func menuSupported() bool { return !Sandboxed() && !underSystemPrefix() }
 
 func autostartSupported() bool { return true }
 
-// shareRoot is the XDG data root the applications and icons directories
-// hang off; dataHome with no app name resolves exactly that.
 func shareRoot() (string, error) { return dataHome("") }
 
-// menuEntryPath is where an unpackaged install puts its own launcher entry.
 func menuEntryPath(app string) (string, error) {
 	dir, err := shareRoot()
 	if err != nil {
@@ -28,9 +25,8 @@ func menuEntryPath(app string) (string, error) {
 	return filepath.Join(dir, "applications", app+".desktop"), nil
 }
 
-// autostartPath is the XDG autostart entry. Under Flatpak it is written to
-// the real ~/.config, not to XDG_CONFIG_HOME, which the sandbox redirects
-// into its own directory where no session manager looks.
+// The sandbox redirects XDG_CONFIG_HOME to where no session manager
+// looks, so Flatpak writes the real ~/.config.
 func autostartPath(app string) (string, error) {
 	if Sandboxed() {
 		home, err := os.UserHomeDir()
@@ -93,8 +89,8 @@ func disableAutostart(app string) error {
 	return removeFile(path)
 }
 
-// desktopEntry renders a .desktop file. autostart adds the key GNOME reads
-// to decide whether a user disabled the entry from its own settings.
+// GNOME reads X-GNOME-Autostart-enabled to tell whether its own settings
+// disabled the entry.
 func desktopEntry(h Hook, icon string, autostart bool) string {
 	body := "[Desktop Entry]\nType=Application\n" +
 		"Name=" + h.Name + "\n"
@@ -112,8 +108,7 @@ func desktopEntry(h Hook, icon string, autostart bool) string {
 	return body
 }
 
-// installIcon drops the PNG into the hicolor theme under the size it
-// actually is, which is what the icon lookup keys on.
+// Under its real size: the icon lookup keys on the hicolor size directory.
 func installIcon(h Hook) error {
 	if len(h.Icon) == 0 {
 		return fmt.Errorf("no icon")
@@ -134,8 +129,6 @@ func installIcon(h Hook) error {
 	return os.WriteFile(path, h.Icon, 0o644)
 }
 
-// underSystemPrefix reports whether the executable was installed by a
-// package manager, which then owns the menu entry.
 func underSystemPrefix() bool {
 	dir := fsx.ExeDir()
 	if dir == "" {
@@ -149,7 +142,6 @@ func underSystemPrefix() bool {
 	return false
 }
 
-// writeFile writes body to path, creating the directory.
 func writeFile(path, body string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -157,7 +149,6 @@ func writeFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o644)
 }
 
-// removeFile drops path, treating an already-absent file as success.
 func removeFile(path string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err

@@ -119,7 +119,7 @@
     <h2>monloader authentication</h2>
     <div id="flash-auth"></div>
     <div class="settings-cols">
-      {{template "auth_password_section" (dict "AuthEnabled" .Cfg.Auth.EnablePassword "CSRFToken" .CSRFToken)}}
+      {{template "auth_password_section" (dict "AuthEnabled" .Cfg.Auth.EnablePassword "HasPassword" (ne .Cfg.Auth.PasswordHash "") "CSRFToken" .CSRFToken)}}
       <div class="settings-sub settings-sub-wide">
         <h4>api keys</h4>
         <p class="field-hint">bearer tokens for the JSON API. the secret is shown once, at creation.</p>
@@ -148,7 +148,7 @@
           "Hint" (printf "delay between requests (default %v)" .Defaults.GalleryDL.SleepRequest))}}
         {{template "field" (dict "ID" "dl-max-items" "Label" "max items / job" "Name" "max_items_per_job"
           "Value" (or (index .Draft "max_items_per_job") .Cfg.Downloader.MaxItemsPerJob)
-          "Hint" (printf "cap on posts per URL (default %v)" .Defaults.Downloader.MaxItemsPerJob))}}
+          "Hint" (printf "cap on posts per search; a pool or a manga gallery is fetched whole (default %v)" .Defaults.Downloader.MaxItemsPerJob))}}
         {{template "field" (dict "ID" "dl-folder" "Label" "default folder" "Name" "default_folder"
           "Value" (or (index .Draft "default_folder") .Cfg.Downloader.DefaultFolder)
           "Hint" (printf "monbooru subfolder for pushes (default %v)" .Defaults.Downloader.DefaultFolder))}}
@@ -333,7 +333,7 @@
         </div>
         {{template "field" (dict "ID" "ptr-address" "Label" "address" "Name" "address"
           "Value" (or (index .Draft "address") .Cfg.PTR.Address)
-          "Hint" (printf "repository to sync from; applies on restart (default %v)" .Defaults.PTR.Address))}}
+          "Hint" (printf "repository to sync from; a running sync takes it on restart (default %v)" .Defaults.PTR.Address))}}
         {{template "field" (dict "ID" "ptr-access-key" "Label" "access key" "Name" "access_key" "Type" "password" "Value" ""
           "Placeholder" (or (and .Cfg.PTR.AccessKey "(set - leave blank to keep)") "(unset - uses the public read-only key)")
           "Hint" "a private repository key or the personal contribution account")}}

@@ -1,20 +1,24 @@
 {{define "monbooru_pair"}}
 <div id="monbooru-pair"{{if .Waiting}} hx-post="/settings/monbooru/pair/poll" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
   {{$csrf := .CSRFToken}}
-  {{if .Paired}}
+  {{if .Waiting}}
+  <p class="field-hint">waiting for approval in monbooru... approve the request there to complete the pairing.
+    <form hx-post="/settings/monbooru/pair/cancel" hx-target="#monbooru-pair" hx-swap="outerHTML" style="display:inline">
+      <input type="hidden" name="_csrf" value="{{$csrf}}">
+      <button type="submit">cancel</button>
+    </form>
+  </p>
+  {{else if .Paired}}
   <p class="field-hint">connected to monbooru.
+    <form hx-post="/settings/monbooru/pair/connect" hx-target="#monbooru-pair" hx-swap="outerHTML" style="display:inline">
+      <input type="hidden" name="_csrf" value="{{$csrf}}">
+      <button type="submit">reconnect</button>
+    </form>
     <form hx-post="/settings/monbooru/pair/remove" hx-target="#monbooru-pair" hx-swap="outerHTML"
           hx-confirm="remove the monbooru pairing?" data-confirm-ok="remove"
           data-confirm-danger="you will need to re-pair before monloader can push again." style="display:inline">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <button type="submit" class="btn-danger">remove pairing</button>
-    </form>
-  </p>
-  {{else if .Waiting}}
-  <p class="field-hint">waiting for approval in monbooru... approve the request there to complete the pairing.
-    <form hx-post="/settings/monbooru/pair/cancel" hx-target="#monbooru-pair" hx-swap="outerHTML" style="display:inline">
-      <input type="hidden" name="_csrf" value="{{$csrf}}">
-      <button type="submit">cancel</button>
     </form>
   </p>
   {{else}}
@@ -23,7 +27,7 @@
     <input type="hidden" name="_csrf" value="{{$csrf}}">
     <button type="submit">connect to monbooru</button>
   </form>
-  {{if .Message}} <span class="hint">{{.Message}}</span>{{end}}
   {{end}}
+  {{if .Message}} <span class="hint">{{.Message}}</span>{{end}}
 </div>
 {{end}}

@@ -12,9 +12,6 @@ import (
 	"github.com/monbooru/monloader/internal/queue"
 )
 
-// ContribSender is the engine surface a contribution send drives. The
-// live *ptr.Engine satisfies it; the plain PTRService stays narrow for
-// the runs without contributions.
 type ContribSender interface {
 	HasPersonalKey() bool
 	CaughtUp() bool
@@ -28,27 +25,19 @@ type ContribSender interface {
 	ParentCurrent(child, parent string) (bool, error)
 }
 
-// contribChunkWeight caps mapping-row-equivalents per POST, matching
-// the hydrus client's upload cadence; a pair counts as one row.
+// Rows per POST, matching the hydrus client's upload cadence; a pair
+// counts as one row.
 const contribChunkWeight = 100
 
-// contribPostRetries bounds per-chunk retries on a transient refusal
-// before the remainder is kept for a manual retry; the backoff is a var
-// so tests can shorten it.
 const contribPostRetries = 3
 
 var contribRetryBackoff = 2 * time.Second
 
-// contribChunk is one POST: the update and the store rows it commits.
 type contribChunk struct {
 	update *ptr.C2SUpdate
 	items  []ptr.ContribItem
 }
 
-// processContrib runs one contribution send: claim, account and filter
-// checks, re-diff, package, and the chunked upload. Chunks the server
-// accepted stay committed whatever happens later, so the ledger
-// reflects exactly what the server took.
 func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) error {
 	sender, ok := p.ptr.(ContribSender)
 	if !ok || sender.Contrib() == nil {
@@ -94,8 +83,8 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 	}
 	acc, err := sender.RefreshAccount(ctx)
 	if err != nil {
-		// A cancel mid-call must read as canceled, not as the call's error;
-		// the claimed rows are still released so none strand in 'sending'.
+		// A cancel reads as canceled, but the claimed rows are still
+		// released so none strand in 'sending'.
 		if ctx.Err() != nil {
 			failStore("job canceled")
 			return ctx.Err()
@@ -136,9 +125,8 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 	return nil
 }
 
-// reDiffContrib re-runs the staging checks against the now-current index:
-// items the world already resolved drop as local no-ops, and the server's
-// silent tag filter is applied loudly here instead of swallowing the send.
+// The server's tag filter drops silently, so it is applied here where the
+// drop is counted.
 func (p *Processor) reDiffContrib(sender ContribSender, store *ptr.ContribStore, items []ptr.ContribItem, filter *ptr.TagFilter) (survivors []ptr.ContribItem, droppedKnown, droppedFiltered int, err error) {
 	for _, it := range items {
 		resolved, derr := p.contribResolved(sender, it)
@@ -163,22 +151,17 @@ func (p *Processor) reDiffContrib(sender ContribSender, store *ptr.ContribStore,
 	return survivors, droppedKnown, droppedFiltered, nil
 }
 
-// contribUpload is one send's upload pass: the packed chunks, the queue items
-// each chunk owns, and the stores its outcomes are recorded in.
 type contribUpload struct {
 	p      *Processor
 	job    *queue.Job
 	sender ContribSender
 	store  *ptr.ContribStore
 	chunks []contribChunk
-	// spans[ci] is the [start, end) range of queue items chunk ci owns, so a
-	// chunk outcome marks exactly its own.
+	// spans[ci] is the [start, end) range of queue items chunk ci owns.
 	spans [][2]int
 	total int
 }
 
-// newContribUpload installs one queue item per contribution, linked to the
-// monbooru image (mapping) or tag (pair).
 func (p *Processor) newContribUpload(job *queue.Job, sender ContribSender, store *ptr.ContribStore, chunks []contribChunk) *contribUpload {
 	up := &contribUpload{p: p, job: job, sender: sender, store: store, chunks: chunks, spans: make([][2]int, len(chunks))}
 	base := p.cfg.Current().Monbooru.WebBase()
@@ -199,9 +182,8 @@ func (p *Processor) newContribUpload(job *queue.Job, sender ContribSender, store
 	return up
 }
 
-// run posts each chunk in turn, pacing between them. Chunks the server
-// accepted stay committed whatever happens later, so the ledger reflects
-// exactly what the server took.
+// An accepted chunk stays committed whatever happens later: the ledger
+// must match what the server took.
 func (up *contribUpload) run(ctx context.Context) (sent map[string]int, failed int, err error) {
 	sleep := time.Duration(up.p.cfg.Current().PTR.CommitSleep * float64(time.Second))
 	sent = map[string]int{}
@@ -227,8 +209,6 @@ func (up *contribUpload) run(ctx context.Context) (sent map[string]int, failed i
 	return sent, failed, nil
 }
 
-// commit records an accepted chunk in the ledger and walks its queue items to
-// done.
 func (up *contribUpload) commit(i int, chunk contribChunk, sent map[string]int) {
 	for _, it := range chunk.items {
 		if _, cerr := up.store.Complete(it); cerr != nil {
@@ -246,9 +226,8 @@ func (up *contribUpload) commit(i int, chunk contribChunk, sent map[string]int) 
 	}
 }
 
-// failRemainder leaves everything from chunk i onward for the manual retry;
-// the accepted chunks before it are already in the ledger. Used on a post
-// failure and on cancellation, so claimed rows never strand in 'sending'.
+// Both a failed post and a cancel end here, so no claimed row strands in
+// 'sending', where retry and rescind cannot reach it.
 func (up *contribUpload) failRemainder(i int, code, reason string) int {
 	failed := 0
 	for _, c := range up.chunks[i:] {
@@ -270,8 +249,6 @@ func (up *contribUpload) failRemainder(i int, code, reason string) int {
 	return failed
 }
 
-// contribResolved re-runs one item's staging predicate: true when the
-// world already resolved it and the item commits as a local no-op.
 func (p *Processor) contribResolved(sender ContribSender, it ptr.ContribItem) (bool, error) {
 	hashHex := hex.EncodeToString(it.Hash)
 	switch it.Kind {
@@ -300,9 +277,6 @@ func (p *Processor) contribResolved(sender ContribSender, it ptr.ContribItem) (b
 	return false, fmt.Errorf("unknown contribution kind %q", it.Kind)
 }
 
-// contribUnit is one packable piece: a pair, or one tag's mapping rows
-// merged into a single content entry (grouped by kind, tag, and reason
-// the way the hydrus client uploads them).
 type contribUnit struct {
 	kind   string
 	tag    string
@@ -312,10 +286,8 @@ type contribUnit struct {
 	items  []ptr.ContribItem
 }
 
-// packContribChunks orders petitions before pends (the hydrus
-// ordering), groups mapping rows per tag, and cuts chunks at the
-// per-POST weight; a mapping group larger than the remaining room
-// splits across chunks.
+// Petitions go before pends and mapping rows group per tag, as the hydrus
+// client uploads them.
 func packContribChunks(items []ptr.ContribItem) []contribChunk {
 	var petitions, pends []ptr.ContribItem
 	for _, it := range items {
@@ -408,8 +380,6 @@ func packContribChunks(items []ptr.ContribItem) []contribChunk {
 	return chunks
 }
 
-// postContribChunk uploads one chunk with bounded retries on transient
-// refusals (509, network, 5xx).
 func (p *Processor) postContribChunk(ctx context.Context, sender ContribSender, chunk contribChunk) error {
 	var err error
 	for attempt := 0; attempt < contribPostRetries; attempt++ {
@@ -431,7 +401,6 @@ func (p *Processor) postContribChunk(ctx context.Context, sender ContribSender, 
 	return err
 }
 
-// contribSummary renders the job's one-line result.
 func contribSummary(sent map[string]int, droppedKnown, droppedFiltered, failed int) string {
 	line := fmt.Sprintf("committed %d tag adds, %d removal petitions, %d alias and %d implication suggestions",
 		sent[ptr.ContribMappingAdd], sent[ptr.ContribMappingPetition],

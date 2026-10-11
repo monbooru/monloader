@@ -1,7 +1,5 @@
 #!/bin/sh
-# packaging/build-appimage.sh
-#
-# Builds the bundled AppImage into dist/
+# Builds the bundled AppImage into dist/.
 set -eu
 
 . ./packaging/release-env.sh

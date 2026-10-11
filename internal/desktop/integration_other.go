@@ -2,9 +2,6 @@
 
 package desktop
 
-// Neither hook is written on the platforms this build covers; both report
-// unsupported so the UI hides the controls rather than offering a no-op.
-
 func menuSupported() bool { return false }
 
 func autostartSupported() bool { return false }

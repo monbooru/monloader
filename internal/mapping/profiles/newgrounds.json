@@ -1,0 +1,12 @@
+{
+  "family": "generic",
+  "kind": "other",
+  "auth": "username_password",
+  "example": "https://www.newgrounds.com/art/view/tomfulp/ryu-is-hawt",
+  "rating_overrides": {
+    "e": "general",
+    "t": "sensitive",
+    "m": "questionable",
+    "a": "explicit"
+  }
+}

@@ -2,37 +2,22 @@ package ptr
 
 import (
 	"context"
-	"database/sql"
-	"encoding/hex"
-	"errors"
+	"maps"
 	"slices"
 	"strings"
 )
 
-// maxGraphDepth bounds sibling-chain following and parent-closure recursion, so
-// a cyclic or pathological graph cannot spin the query.
 const maxGraphDepth = 64
 
-// maxImpliedBy bounds a tag's reverse-implication answer: a mega-parent (a
-// series every character implies) can have thousands of children, and the
-// answer feeds a per-row pair-preview fan-out on the caller's side.
+// A mega-parent can have thousands of children, and each one answered
+// fans out a pair preview on the caller's side.
 const maxImpliedBy = 200
 
-// TagsForHash returns the PTR tags for a file sha256 (hex), sibling-resolved to
-// their ideal form and closed over their parents (implications). The strings
-// are raw hydrus tags (namespaced or bare); the caller maps them to monbooru
-// categories. A hash the index does not know returns no tags and ok=false.
+// TagsForHash answers raw hydrus tags; mapping them to monbooru
+// categories is the caller's job.
 func (s *Store) TagsForHash(hashHex string) (tags []string, ok bool, err error) {
-	raw, derr := hex.DecodeString(hashHex)
-	if derr != nil || len(raw) != 32 {
-		return nil, false, nil
-	}
-	var hashID uint64
-	err = s.db.QueryRow(`SELECT hash_id FROM hashes WHERE hash=?`, raw).Scan(&hashID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
-	}
-	if err != nil {
+	hashID, ok, err := s.hashIDByHex(hashHex)
+	if err != nil || !ok {
 		return nil, false, err
 	}
 	closed, err := s.displayIdeals(hashID)
@@ -46,46 +31,24 @@ func (s *Store) TagsForHash(hashHex string) (tags []string, ok bool, err error) 
 	return names, true, nil
 }
 
-// queryUint64s runs a one-argument query and collects its single uint64
-// column.
 func (s *Store) queryUint64s(query string, arg int64) ([]uint64, error) {
-	rows, err := s.db.Query(query, arg)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []uint64
-	for rows.Next() {
-		var id uint64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, func(id *uint64) []any { return []any{id} }, query, arg)
 }
 
-// tagIDsForHash returns the tag ids mapped to a hash id.
 func (s *Store) tagIDsForHash(hashID uint64) ([]uint64, error) {
 	return s.queryUint64s(`SELECT tag_id FROM mappings WHERE hash_id=?`, int64(hashID))
 }
 
-// resolveSibling follows the sibling (alias) chain from a tag id to its ideal,
-// with a visit set so a cycle stops instead of looping. Only a missing row is
-// a chain end; a real query failure propagates so the caller fails instead of
-// silently answering with an unresolved alias.
+// Only a missing row ends the chain: a failed query must not pass as an
+// unresolved alias.
 func (s *Store) resolveSibling(id uint64) (uint64, error) {
 	seen := map[uint64]bool{id: true}
 	for i := 0; i < maxGraphDepth; i++ {
-		var good uint64
-		err := s.db.QueryRow(`SELECT good_tag_id FROM siblings WHERE bad_tag_id=?`, int64(id)).Scan(&good)
-		if errors.Is(err, sql.ErrNoRows) {
-			return id, nil
-		}
+		good, ok, err := scanOne[uint64](s.db.QueryRow(`SELECT good_tag_id FROM siblings WHERE bad_tag_id=?`, int64(id)))
 		if err != nil {
 			return 0, err
 		}
-		if seen[good] {
+		if !ok || seen[good] {
 			return id, nil
 		}
 		seen[good] = true
@@ -94,17 +57,9 @@ func (s *Store) resolveSibling(id uint64) (uint64, error) {
 	return id, nil
 }
 
-// parentClosure adds the transitive parents (implications) of every tag in the
-// seed set, each itself sibling-resolved, bounded by depth.
 func (s *Store) parentClosure(seed map[uint64]bool) (map[uint64]bool, error) {
-	out := map[uint64]bool{}
-	for id := range seed {
-		out[id] = true
-	}
-	frontier := make([]uint64, 0, len(seed))
-	for id := range seed {
-		frontier = append(frontier, id)
-	}
+	out := maps.Clone(seed)
+	frontier := slices.Collect(maps.Keys(seed))
 	for depth := 0; depth < maxGraphDepth && len(frontier) > 0; depth++ {
 		var next []uint64
 		for _, id := range frontier {
@@ -128,16 +83,10 @@ func (s *Store) parentClosure(seed map[uint64]bool) (map[uint64]bool, error) {
 	return out, nil
 }
 
-// parentsOf returns the direct parent (implication) tag ids of a tag id, in a
-// stable order so the graph answer does not shuffle between runs.
 func (s *Store) parentsOf(childID uint64) ([]uint64, error) {
 	return s.queryUint64s(`SELECT parent_tag_id FROM parents WHERE child_tag_id=? ORDER BY parent_tag_id`, int64(childID))
 }
 
-// displayIdeals is a hash's display view: every raw mapping on it
-// sibling-resolved to its ideal, closed over its parents. The tag lookup
-// answers with it and the contribution diff compares against it, so the
-// derivation is named once rather than spelled out on each side.
 func (s *Store) displayIdeals(hashID uint64) (map[uint64]bool, error) {
 	tagIDs, err := s.tagIDsForHash(hashID)
 	if err != nil {
@@ -154,42 +103,27 @@ func (s *Store) displayIdeals(hashID uint64) (map[uint64]bool, error) {
 	return s.parentClosure(ideals)
 }
 
-// tagName resolves one tag id to its string, or "" for an id with no
-// definition - a mapping can reference a tag defined in an update the sync has
-// not reached yet.
+// Mid-sync a mapping can outrun its tag's definition, so a missing id
+// answers "" rather than an error.
 func (s *Store) tagName(id uint64) (string, error) {
-	var name string
-	err := s.db.QueryRow(`SELECT tag FROM tags WHERE tag_id=?`, int64(id)).Scan(&name)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
+	name, _, err := scanOne[string](s.db.QueryRow(`SELECT tag FROM tags WHERE tag_id=?`, int64(id)))
 	return name, err
 }
 
-// tagNames resolves a set of tag ids to their strings, dropping any id without a
-// definition (a mapping can reference a tag defined in a not-yet-processed
-// update during an incomplete sync).
 func (s *Store) tagNames(ids map[uint64]bool) ([]string, error) {
 	out := make([]string, 0, len(ids))
 	for id := range ids {
-		var name string
-		err := s.db.QueryRow(`SELECT tag FROM tags WHERE tag_id=?`, int64(id)).Scan(&name)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
+		name, ok, err := scanOne[string](s.db.QueryRow(`SELECT tag FROM tags WHERE tag_id=?`, int64(id)))
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, name)
+		if ok {
+			out = append(out, name)
+		}
 	}
 	return out, nil
 }
 
-// TagInfo is what the PTR knows about one tag: its ideal (sibling-resolved)
-// form, the other tags that alias to that ideal, its implications (the
-// transitive parent closure), and the tags that imply it (direct children
-// only - declared pairs, not a descendant closure, which explodes on a
-// mega-parent). All strings are raw hydrus tags.
 type TagInfo struct {
 	Known        bool     `json:"known"`
 	Ideal        string   `json:"ideal,omitempty"`
@@ -198,20 +132,13 @@ type TagInfo struct {
 	ImpliedBy    []string `json:"implied_by,omitempty"`
 }
 
-// TagRange is one scan a spelling search performs: a half-open range on
-// tags_by_name starting at Prefix, narrowed to the rows carrying any of
-// Contains at a word start when it is set. A prefix search leaves Contains
-// empty and the range is a seek; a substring search sets Prefix to a namespace
-// and pays a walk of it, which is why an unnamespaced substring is not offered.
+// TagRange with Contains set walks its whole Prefix range, so a substring
+// search needs a namespace prefix.
 type TagRange struct {
 	Prefix   string
 	Contains []string
 }
 
-// TagMatch is one sibling cluster a spelling search found: the spellings that
-// matched, the ideal they resolve to, and how big the cluster's graph is, so
-// the caller can rank and label without a second round trip. All strings are
-// raw hydrus tags.
 type TagMatch struct {
 	Ideal        string
 	Matched      []string
@@ -220,11 +147,6 @@ type TagMatch struct {
 	ImpliedBy    int
 }
 
-// SearchTags walks tags_by_name over each range and folds what it finds into
-// one entry per sibling cluster, in the order the scans met them. truncated
-// reports that a range filled scanCap, so the caller can say the answer is
-// partial. Ranges are capped individually; a cluster met by two ranges collects
-// both spellings.
 func (s *Store) SearchTags(ctx context.Context, ranges []TagRange, scanCap int) (matches []TagMatch, truncated bool, err error) {
 	seen := map[uint64]bool{}
 	byIdeal := map[uint64]int{}
@@ -242,6 +164,11 @@ func (s *Store) SearchTags(ctx context.Context, ranges []TagRange, scanCap int) 
 				continue
 			}
 			seen[row.id] = true
+			// Each row walks its sibling and graph tables on the pool
+			// lookups share, so an abandoned keystroke stops here.
+			if err := ctx.Err(); err != nil {
+				return nil, false, err
+			}
 			ideal, err := s.resolveSibling(row.id)
 			if err != nil {
 				return nil, false, err
@@ -262,10 +189,8 @@ func (s *Store) SearchTags(ctx context.Context, ranges []TagRange, scanCap int) 
 	return matches, truncated, nil
 }
 
-// scanRange reads one range's rows, in index order, up to cap. The cap is a
-// LIMIT, so it bounds the rows answered, not the rows a substring query's LIKE
-// walks past to find them; ctx is what stops an abandoned walk, which would
-// otherwise run to completion on a connection pool hash lookups share.
+// LIMIT bounds the rows answered, not the rows LIKE walks past; only ctx
+// stops an abandoned walk on the pool lookups share.
 func (s *Store) scanRange(ctx context.Context, rng TagRange, cap int) (out []struct {
 	id   uint64
 	name string
@@ -278,8 +203,7 @@ func (s *Store) scanRange(ctx context.Context, rng TagRange, cap int) (out []str
 	}
 	if len(rng.Contains) > 0 {
 		var clauses []string
-		// The separator wildcard collapses a term's spellings onto one pattern,
-		// so the same clause arrives once per spelling the caller offered.
+		// Spellings that differ only in separators render the same pattern.
 		seen := map[string]bool{}
 		for _, term := range rng.Contains {
 			for _, pattern := range containsPatterns(rng.Prefix, term) {
@@ -314,9 +238,6 @@ func (s *Store) scanRange(ctx context.Context, rng TagRange, cap int) (out []str
 	return out, len(out), rows.Err()
 }
 
-// tagMatch describes one cluster by its ideal id: the ideal's name and the
-// sizes of the three relation sets TagGraph would answer with, counted the
-// same way so a search row and a later graph query agree.
 func (s *Store) tagMatch(idealID uint64) (TagMatch, error) {
 	name, err := s.tagName(idealID)
 	if err != nil {
@@ -336,10 +257,7 @@ func (s *Store) tagMatch(idealID uint64) (TagMatch, error) {
 	return m, nil
 }
 
-// clusterRelations answers both relation sides for one cluster: the parents the
-// graph reports as implications, and the children it reports as implied_by,
-// each capped the way the graph caps them. tagMatch takes the two lengths and
-// tagInfo the two name lists, so a search row's counts and a later graph query
+// Search rows and graph answers both come from here, so their counts
 // cannot drift apart.
 func (s *Store) clusterRelations(idealID uint64, cluster []uint64) (implications, impliedBy []string, err error) {
 	parentIDs, err := s.relationsOfCluster(cluster, s.parentsOf)
@@ -361,8 +279,6 @@ func (s *Store) clusterRelations(idealID uint64, cluster []uint64) (implications
 	return implications, impliedBy, nil
 }
 
-// prefixEnd is the exclusive upper bound of a prefix range, or "" when the
-// prefix runs to the end of the key space and the range needs no bound.
 func prefixEnd(prefix string) string {
 	b := []byte(prefix)
 	for i := len(b) - 1; i >= 0; i-- {
@@ -374,26 +290,16 @@ func prefixEnd(prefix string) string {
 	return ""
 }
 
-// containsPatterns renders a term into the LIKE patterns matching it at a word
-// start inside the namespace: opening the subtag, or after a space, underscore,
-// paren or dash. A plain %term% also matches the middle of unrelated words -
-// "aran" sits inside "paranormal" and "burbunaranjo" - and on a namespace this
-// size those fill the scan cap alphabetically long before the tag being looked
-// for. % is escaped, but the term's own separators stay LIKE's single-character
-// wildcard: hydrus stores a word break as a space and a booru import keeps the
-// underscore, so one pattern covers either rather than one per combination.
+// Word starts only: a plain %term% fills the scan cap with mid-word hits.
+// Separators stay LIKE's _ wildcard, as hydrus stores a word break as a
+// space and booru imports keep the underscore.
 func containsPatterns(namespace, term string) []string {
 	e := strings.NewReplacer(`\`, `\\`, `%`, `\%`, " ", "_").Replace(term)
 	return []string{namespace + e + "%", "% " + e + "%", `%\_` + e + "%", "%(" + e + "%", "%-" + e + "%"}
 }
 
-// TagGraph answers alias / implication questions for raw hydrus tag spellings.
-// For each queried name it returns the ideal form, every alias that resolves to
-// that ideal (the queried spelling excluded), and the implications. A name the
-// index does not know returns Known=false. A batch is hundreds of names deep
-// and each one walks the graph, so ctx is checked between them: a caller that
-// timed out and retried would otherwise leave the first walk running to
-// completion and stack a second on the same small connection pool.
+// TagGraph checks ctx per name: an abandoned batch would otherwise walk
+// on and stack under the retry on the small pool.
 func (s *Store) TagGraph(ctx context.Context, names []string) (map[string]TagInfo, error) {
 	out := make(map[string]TagInfo, len(names))
 	for _, name := range names {
@@ -410,16 +316,12 @@ func (s *Store) TagGraph(ctx context.Context, names []string) (map[string]TagInf
 }
 
 func (s *Store) tagInfo(name string) (TagInfo, error) {
-	var id uint64
-	// tags carries no unique index on the spelling, so order the pick: a
-	// repository anomaly publishing two ids for one tag must at least resolve
-	// the same way on every query.
-	err := s.db.QueryRow(`SELECT tag_id FROM tags WHERE tag=? ORDER BY tag_id LIMIT 1`, name).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return TagInfo{Known: false}, nil
-	}
+	id, ok, err := s.tagIDByName(name)
 	if err != nil {
 		return TagInfo{}, err
+	}
+	if !ok {
+		return TagInfo{Known: false}, nil
 	}
 	idealID, err := s.resolveSibling(id)
 	if err != nil {
@@ -430,7 +332,6 @@ func (s *Store) tagInfo(name string) (TagInfo, error) {
 		return TagInfo{}, err
 	}
 	info := TagInfo{Known: true, Ideal: idealName}
-	// Aliases: every tag that resolves to the same ideal, minus the query.
 	aliasIDs, err := s.aliasesOf(idealID)
 	if err != nil {
 		return TagInfo{}, err
@@ -447,11 +348,8 @@ func (s *Store) tagInfo(name string) (TagInfo, error) {
 			info.Aliases = append(info.Aliases, name)
 		}
 	}
-	// Implications and implied-by: the direct edges declared on any spelling in
-	// the cluster, each end resolved to its ideal. Only declared edges - the
-	// ancestor closure belongs to the file lookup, where every implied tag has
-	// to land on the file; handing it out here would have the caller mirror
-	// edges the PTR never declared and then offer them back as contributions.
+	// Declared edges only, not the closure: the caller mirrors these and
+	// would offer undeclared ones back as contributions.
 	cluster, err := s.clusterOf(id)
 	if err != nil {
 		return TagInfo{}, err
@@ -463,11 +361,8 @@ func (s *Store) tagInfo(name string) (TagInfo, error) {
 	return info, nil
 }
 
-// clusterOf returns the tag ids sharing an ideal with id: the ideal itself and
-// the aliases resolving to it. A declared relation can sit on any spelling in
-// the cluster, so every question about one has to ask over the whole set - a
-// check that pins an endpoint to its ideal alone denies edges the graph
-// reports, and the two sides then disagree about what the PTR holds.
+// A relation can sit on any spelling, so every relation question asks
+// over the whole cluster.
 func (s *Store) clusterOf(id uint64) ([]uint64, error) {
 	ideal, err := s.resolveSibling(id)
 	if err != nil {
@@ -480,8 +375,7 @@ func (s *Store) clusterOf(id uint64) ([]uint64, error) {
 	return append(aliases, ideal), nil
 }
 
-// relationsOfCluster collects one relation side across every spelling in the
-// cluster, deduped and id-ordered so a capped answer is deterministic.
+// Sorted so a capped answer is deterministic.
 func (s *Store) relationsOfCluster(cluster []uint64, of func(uint64) ([]uint64, error)) ([]uint64, error) {
 	var out []uint64
 	for _, id := range cluster {
@@ -495,8 +389,6 @@ func (s *Store) relationsOfCluster(cluster []uint64, of func(uint64) ([]uint64, 
 	return slices.Compact(out), nil
 }
 
-// idealNames resolves each tag id to its ideal's name, dropping exclude and
-// repeats and stopping at limit (0 = no limit).
 func (s *Store) idealNames(ids []uint64, exclude uint64, limit int) ([]string, error) {
 	var out []string
 	seen := map[uint64]bool{exclude: true}
@@ -523,15 +415,11 @@ func (s *Store) idealNames(ids []uint64, exclude uint64, limit int) ([]string, e
 	return out, nil
 }
 
-// childrenOf returns the direct child (implication) tag ids of a tag id, in a
-// stable order so the capped answer is deterministic.
 func (s *Store) childrenOf(parentID uint64) ([]uint64, error) {
 	return s.queryUint64s(`SELECT child_tag_id FROM parents WHERE parent_tag_id=? ORDER BY child_tag_id`, int64(parentID))
 }
 
-// aliasesOf returns the bad-tag ids that resolve to a good tag id in one step,
-// following no further chain of its own: the ideal is already the chain end,
-// and the graph is shallow in practice.
+// One step only: the PTR's sibling chains are shallow in practice.
 func (s *Store) aliasesOf(goodID uint64) ([]uint64, error) {
 	return s.queryUint64s(`SELECT bad_tag_id FROM siblings WHERE good_tag_id=?`, int64(goodID))
 }

@@ -18,74 +18,52 @@ import (
 	internalweb "github.com/monbooru/monloader/internal/web"
 )
 
-// appName is the identity the desktop profile builds its directory names,
-// its log filename and its single-instance answer from.
 const appName = "monloader"
 
-// defaultDesktop is stamped at link time by the desktop artifacts, so
-// double-clicking one lands in the profile rather than on the container
-// defaults. -desktop=false still turns it off.
+// Stamped "true" at link time (-X) by the desktop artifacts.
 var defaultDesktop string
 
-// desktopPort is what a config created by the desktop profile binds, next
-// to monbooru's 8455 so the pair is memorable.
 const desktopPort = "8456"
 
-// monbooruPort is where a desktop monbooru listens, which is what a fresh
-// config points at before pairing.
 const monbooruPort = "8455"
 
-// probeTimeout bounds the single-instance question. It is a loopback
-// request to a process that either answers immediately or is not there.
+// A loopback request to a process that answers at once or is not there.
 const probeTimeout = 500 * time.Millisecond
 
-// desktopSeed adjusts the defaults a config file that does not exist yet is
-// written with: what monloader generates for itself moves to the OS data
-// directory, and the log file earns a level that writes something.
 func desktopSeed(l desktop.Layout) func(*config.Config) {
 	return func(cfg *config.Config) {
 		localSeed(cfg)
-		// The container's /ptr is nowhere on a desktop; the profile settles
-		// that folder at start, once the data directory is known
-		// (ptrFolder), and nothing is downloaded into it until the operator
-		// asks.
+		// The container's /ptr means nothing on a desktop; the folder is
+		// created at start.
 		cfg.PTR.DataPath = ""
 		cfg.PTR.Enabled = false
-		// The log file is the only thing a desktop bug report can carry, and
-		// nothing writes at the warn default while the app is healthy.
+		// A desktop bug report carries only the log, which warn leaves empty.
 		cfg.Log.Level = "info"
-		// A portable install takes its paths from the config package, which
-		// states the whole beside-the-program layout in one place and keeps
-		// it relative.
+		// A portable install keeps the config package's relative paths:
+		// OS-native ones would pin the folder to the machine it was first
+		// run on.
 		if l.Portable {
 			return
 		}
-		// Under the config directory sits only what the operator writes -
-		// the toml and the mapping profiles. Everything monloader generates
-		// for itself, cookies included, belongs with the rest of its data.
+		// The config directory holds only what the operator writes;
+		// cookies go with the data.
 		cfg.GalleryDL.ConfigPath = filepath.Join(l.DataDir, "gallery-dl.json")
 		cfg.GalleryDL.ArchivePath = filepath.Join(l.DataDir, "gallery-dl-archive.sqlite")
 		cfg.GalleryDL.CookiesDir = filepath.Join(l.DataDir, "cookies")
 	}
 }
 
-// localSeed is what every install outside a container starts from. The
-// container's two values differ in kind: it listens on 0.0.0.0 because it
-// has to, and reaches monbooru by a compose service name that resolves
-// nowhere else. On any other machine the bind would put a downloader with
-// no password in front of the whole LAN; the setup wizard offers the
-// network as the other choice.
+// Loopback outside a container: a wildcard bind would put a downloader
+// with no password in front of the whole LAN.
 func localSeed(cfg *config.Config) {
 	cfg.Server.BindAddress = "127.0.0.1:" + desktopPort
 	cfg.Server.BaseURL = "http://localhost:" + desktopPort
 	cfg.Monbooru.APIURL = "http://127.0.0.1:" + monbooruPort
 }
 
-// hostSeed puts what monloader writes for itself beside the config file it
-// was handed, the one folder a run outside a container can assume exists.
-// Absolute, so a service unit's working directory cannot move them. The PTR
-// index is named but not created, as it is in the image: the sync refusing a
-// folder that is not there is what tells an operator the disk is not mounted.
+// Absolute, so a service unit's working directory cannot move the paths
+// later. The PTR folder is named, not created: the sync refusing a
+// missing one is what tells an operator the disk is not mounted.
 func hostSeed(configPath string) func(*config.Config) {
 	dir := filepath.Dir(configPath)
 	if abs, err := filepath.Abs(dir); err == nil {
@@ -100,19 +78,13 @@ func hostSeed(configPath string) func(*config.Config) {
 	}
 }
 
-// inContainer reports whether the shipped image is what is running. The
-// image bakes the variable and nothing else sets it, which is what lets a
-// config created anywhere else stop inheriting its volume layout.
+// The image bakes MONLOADER_CONTAINER and nothing else sets it.
 func inContainer() bool {
 	return os.Getenv("MONLOADER_CONTAINER") != ""
 }
 
-// ptrFolder settles the PTR index folder for an install that names none,
-// creating it: the sync refuses a path that is not there, so an empty one
-// leaves the feature unreachable. The config file gets it too, since the
-// enable flag is saved against that file and a start refuses to load one
-// with the sync on and no path behind it. Settings repoints it at a disk
-// with more room - 70 GB rarely fits beside the rest of a user's data.
+// Created, not only named: the sync refuses a missing folder. Saved too:
+// a start refuses a config with the sync on and no path.
 func ptrFolder(cfg *config.Config, l desktop.Layout, configPath, dataDir string) {
 	if cfg.PTR.DataPath != "" {
 		return
@@ -122,16 +94,18 @@ func ptrFolder(cfg *config.Config, l desktop.Layout, configPath, dataDir string)
 		logx.Warnf("could not create the ptr folder %s: %v", dir, err)
 		return
 	}
-	// What lands in the file has to travel with a portable folder like every
-	// other path in it; the running config keeps the absolute one.
+	// The file's copy travels with a portable folder; the running config
+	// keeps the absolute path.
 	base := ""
 	if l.Portable {
 		base = l.ConfigDir
 	}
-	record := config.RelativeTo(dir, base)
 	persist, err := config.LoadFromFileIn(configPath, base)
 	if err == nil {
-		persist.PTR.DataPath = record
+		persist.PTR.DataPath = dir
+		// The load resolved every path against base; saved as loaded, the
+		// gallery-dl ones would pin the folder where it first ran.
+		config.RelativizeIn(persist, base)
 		err = config.Save(persist, configPath)
 	}
 	if err != nil {
@@ -141,9 +115,6 @@ func ptrFolder(cfg *config.Config, l desktop.Layout, configPath, dataDir string)
 	cfg.PTR.DataPath = dir
 }
 
-// claimPort answers a second launch before anything tries to bind. It
-// returns false when this process should stop, having already done
-// whatever the situation called for.
 func claimPort(addr string, openBrowser bool) bool {
 	local := desktop.LoopbackAddr(addr)
 	inst, found := desktop.Probe(local, probeTimeout)
@@ -151,8 +122,7 @@ func claimPort(addr string, openBrowser bool) bool {
 		return true
 	}
 	if inst.App == appName {
-		// stdout, not the log: a -no-browser launch from a terminal is the
-		// one shape of this that has nothing else to show the operator.
+		// stdout: a -no-browser launch from a terminal shows nothing else.
 		fmt.Printf("%s is already running on http://%s\n", appName, local)
 		if openBrowser {
 			if err := desktop.OpenBrowser("http://" + local); err != nil {
@@ -169,11 +139,22 @@ func claimPort(addr string, openBrowser bool) bool {
 	return false
 }
 
-// relaunch starts a fresh process carrying this one's arguments, for the
-// Restart control. It runs after the shutdown has released the port, the
-// queue store and the index, so the new process probes an empty port and
-// binds it. -no-browser is added because the page that asked for the restart
-// is already open and reloads itself; a second tab would be noise.
+// Two launches can both probe an empty port; the one that lost the bind
+// waits for the winner to answer, which its gallery-dl probe alone may hold
+// back for 30 s.
+func awaitWinner(addr string, openBrowser bool) bool {
+	local := desktop.LoopbackAddr(addr)
+	deadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, found := desktop.Probe(local, probeTimeout); found {
+			return !claimPort(addr, openBrowser)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return false
+}
+
+// -no-browser is added: the page that asked for the restart reloads itself.
 func relaunch() {
 	exe := desktop.Program()
 	if exe == "" {
@@ -189,17 +170,13 @@ func relaunch() {
 		logx.Errorf("restart: %v", err)
 		return
 	}
-	// Nothing here waits on it: this process is on its way out.
 	_ = cmd.Process.Release()
 }
 
-// dialogOnFatal is set by the desktop profile: a shortcut launch on Windows
-// has no console, so a startup failure has to reach a message box or it
-// reaches nobody.
+// A shortcut launch on Windows has no console, so a startup failure must
+// reach a message box.
 var dialogOnFatal bool
 
-// fatalf reports a startup failure through the log sink - which the desktop
-// profile has already pointed at a file - and exits non-zero.
 func fatalf(format string, a ...any) {
 	msg := fmt.Sprintf(format, a...)
 	logx.Errorf("FATAL %s", msg)
@@ -209,9 +186,6 @@ func fatalf(format string, a ...any) {
 	os.Exit(1)
 }
 
-// explicitFlag returns value only when the operator actually passed the
-// flag, so the desktop profile can tell "-config was given" from the flag
-// set's own default without changing what -help prints.
 func explicitFlag(name, value string) string {
 	passed := ""
 	flag.Visit(func(f *flag.Flag) {
@@ -222,8 +196,6 @@ func explicitFlag(name, value string) string {
 	return passed
 }
 
-// versionLine is what -version prints: the version, plus the build stamp in
-// parentheses when the artifact carries one.
 func versionLine() string {
 	line := appName + " " + internalweb.Version
 	if label := internalweb.BuildLabel(); label != "" {
@@ -232,9 +204,6 @@ func versionLine() string {
 	return line
 }
 
-// openWhenServing waits for the listener to answer before opening a
-// browser, so a first run that pays a cold start does not land the user on
-// a connection-refused page.
 func openWhenServing(addr string) {
 	local := desktop.LoopbackAddr(addr)
 	deadline := time.Now().Add(30 * time.Second)
@@ -250,9 +219,6 @@ func openWhenServing(addr string) {
 	logx.Warnf("the server did not answer in time; open http://%s yourself", local)
 }
 
-// runTray serves the optional tray. It is never the only route to anything
-// - Open, start-at-login and Quit are all in Settings - so a platform or a
-// build without one is a log line, not a failure.
 func runTray(ctx context.Context, srv *internalweb.Server, bindAddr string) {
 	local := desktop.LoopbackAddr(bindAddr)
 	hook := srv.DesktopHook()
@@ -272,8 +238,7 @@ func runTray(ctx context.Context, srv *internalweb.Server, bindAddr string) {
 	}
 }
 
-// trayIconPath is the .ico the Windows artifacts ship beside the binary.
-// Elsewhere the icon comes from the desktop theme by name.
+// Windows only: elsewhere the tray names its icon from the desktop theme.
 func trayIconPath() string {
 	if runtime.GOOS != "windows" {
 		return ""

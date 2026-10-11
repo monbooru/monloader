@@ -6,16 +6,12 @@ import (
 	"runtime"
 )
 
-// OpenBrowser points the desktop's default browser at url.
 func OpenBrowser(url string) error { return launch(url) }
 
-// OpenFolder shows path in the desktop's file manager.
 func OpenFolder(path string) error { return launch(path) }
 
-// launch hands a URL or a path to the platform's opener. The process is
-// started and not waited on: explorer.exe exits non-zero on perfectly
-// successful opens, and none of the three tells us anything useful once
-// the handler has been handed the target.
+// The exit status is ignored: explorer.exe exits non-zero even on a
+// successful open.
 func launch(target string) error {
 	name, args := opener(target)
 	if name == "" {

@@ -23,11 +23,11 @@ modules:
     sources:
       - type: file
         only-arches: [x86_64]
-        url: https://codeberg.org/mikf/gallery-dl/releases/download/v1.32.10/gallery-dl.bin
-        sha256: ac077cbff1b048916d61d7bcd8f43cf56b1e6a6b0698bd5c55bb436649e5748d
+        url: https://codeberg.org/mikf/gallery-dl/releases/download/v1.32.15/gallery-dl.bin
+        sha256: 8c586d0bd6e4814e14b2b05278dc19ed636cf9a0b7b089cb1f18a722179c714f
       - type: file
         dest-filename: LICENSE.gallery-dl
-        url: https://codeberg.org/mikf/gallery-dl/raw/tag/v1.32.10/LICENSE
+        url: https://codeberg.org/mikf/gallery-dl/raw/tag/v1.32.15/LICENSE
         sha256: 8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
 
   - name: monloader
@@ -39,12 +39,9 @@ modules:
     build-commands:
       - |
         set -eu
-        VERSION=$(tr -d '[:space:]' < VERSION.md)
-        REPO=$(tr -d '[:space:]' < REPOSITORY.md)
-        DOC=$(tr -d '[:space:]' < DOC.md)
-        MOD=github.com/monbooru/monloader/internal/web
+        . ./packaging/release-env.sh
         CGO_ENABLED=0 go build \
-          -ldflags="-s -w -X '$MOD.Version=$VERSION' -X '$MOD.RepoURL=$REPO' -X '$MOD.DocURL=$DOC' -X '$MOD.Package=flatpak'" \
+          -ldflags="-s -w $LDFLAGS -X '$MOD.Package=flatpak'" \
           -o monloader ./cmd/monloader
         HEADING=$(awk '/^## /{print $2; exit}' CHANGELOG.md)
         RELDATE=$(awk '/^## /{print $4; exit}' CHANGELOG.md)

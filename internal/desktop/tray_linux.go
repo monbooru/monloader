@@ -20,21 +20,15 @@ import (
 	"unsafe"
 )
 
-// The Linux tray is behind a build tag because it needs CGo and
-// libayatana-appindicator, and on GNOME the icon does not appear at all
-// without a user-installed extension. No shipped artifact sets that tag - the
-// archives, the AppImage and the Flatpak all build CGO_ENABLED=0 - so this is
-// `make build-tray` alone, which CI compiles so it cannot rot unseen. It is
-// never the only route to anything.
+// Behind the tray tag: it needs CGo and libayatana-appindicator. No
+// shipped artifact sets the tag.
 
-// trayState is the running menu. GTK owns the thread, and the callbacks
-// come back from C with no user data, so the state is package-level and
-// guarded rather than threaded through.
+// Package-level: the C callbacks carry no user data.
 var trayState struct {
 	mu        sync.Mutex
 	menu      TrayMenu
 	autostart *C.GtkCheckMenuItem
-	suppress  bool // set while the code, not the user, moves the tick
+	suppress  bool
 }
 
 //export monloaderTrayOpen
@@ -60,14 +54,15 @@ func monloaderTrayQuit() {
 
 //export monloaderTrayAutostart
 func monloaderTrayAutostart() {
-	trayState.mu.Lock()
-	defer trayState.mu.Unlock()
 	if trayState.suppress {
 		return
 	}
-	on := trayState.menu.toggleAutostart()
-	// Writing the file can fail; the tick has to follow the disk, not the
-	// click, and setting it back re-enters this callback.
+	trayState.mu.Lock()
+	menu := trayState.menu
+	trayState.mu.Unlock()
+	on := menu.toggleAutostart()
+	// The tick follows the disk, not the click, and setting it re-enters
+	// this callback on this thread, so mu must not be held here.
 	trayState.suppress = true
 	C.gtk_check_menu_item_set_active(trayState.autostart, cbool(on))
 	trayState.suppress = false
@@ -80,12 +75,10 @@ func cbool(b bool) C.gboolean {
 	return C.FALSE
 }
 
-// TrayAvailable reports whether this build has a tray at all, which is what
-// decides whether Settings offers a switch for it.
 func TrayAvailable() bool { return true }
 
-// RunTray serves the tray until ctx is done. GTK's main loop owns the
-// thread it is started on, so the goroutine is locked to one.
+// RunTray locks its goroutine to one thread: GTK's main loop owns the
+// thread it starts on.
 func RunTray(ctx context.Context, m TrayMenu) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -127,8 +120,6 @@ func RunTray(ctx context.Context, m TrayMenu) error {
 	appendTrayItem(menu, "Quit", 2)
 	C.app_indicator_set_menu(indicator, (*C.GtkMenu)(unsafe.Pointer(menu)))
 
-	// Shutting the app down has to reach GTK's loop, which only leaves it
-	// on its own quit call.
 	stopped := make(chan struct{})
 	go func() {
 		select {

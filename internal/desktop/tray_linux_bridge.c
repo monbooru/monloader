@@ -1,8 +1,7 @@
 //go:build linux && tray
 
-// The GTK callbacks live here rather than in the Go file's preamble: a
-// preamble beside //export is copied into two translation units, so it may
-// hold declarations only.
+// Not in the Go preamble: beside //export it is copied into two translation
+// units, so it may hold declarations only.
 
 #include <gtk/gtk.h>
 #include "_cgo_export.h"

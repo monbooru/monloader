@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -12,9 +13,6 @@ import (
 	"github.com/monbooru/monloader/internal/logx"
 )
 
-// outboundPair is an in-flight "connect to monbooru" attempt. The token is the
-// credential monbooru will use to call back; it is committed only once monbooru
-// approves and returns its own token, so a denied attempt leaves nothing behind.
 type outboundPair struct {
 	requestID string
 	token     config.Token
@@ -38,8 +36,7 @@ func (s *Server) clearPairAttempt() {
 	s.pairMu.Unlock()
 }
 
-// takePairAttempt clears the attempt only if it is still att, so two concurrent
-// polls cannot both commit the same approval.
+// Compare-and-clear, so two concurrent polls cannot both commit one approval.
 func (s *Server) takePairAttempt(att *outboundPair) bool {
 	s.pairMu.Lock()
 	defer s.pairMu.Unlock()
@@ -51,12 +48,7 @@ func (s *Server) takePairAttempt(att *outboundPair) bool {
 }
 
 func (s *Server) hasPairedToken(peer string) bool {
-	for _, t := range s.cfg.Current().Auth.Tokens {
-		if t.Paired == peer {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(s.cfg.Current().Auth.Tokens, func(t config.Token) bool { return t.Paired == peer })
 }
 
 func (s *Server) monbooruPairData(r *http.Request, msg string) map[string]any {
@@ -68,12 +60,8 @@ func (s *Server) monbooruPairData(r *http.Request, msg string) map[string]any {
 	}
 }
 
-// pairSelfURL is the address monloader advertises to monbooru at pairing: the
-// port it actually binds. base_url is a display value that can point at a proxy
-// or carry a stale port, so it is not used here - monbooru rewrites the host to
-// the source the request came from and keeps this port to reach back for the
-// connectivity light and teardown. Falls back to base_url if the bind address
-// has no parseable port.
+// The bound port, not base_url, which may name a proxy or a stale port:
+// monbooru swaps in the host the request came from and keeps this port.
 func pairSelfURL(cfg *config.Config) string {
 	if _, port, err := net.SplitHostPort(strings.TrimSpace(cfg.Server.BindAddress)); err == nil && port != "" {
 		return "http://localhost:" + port
@@ -81,16 +69,9 @@ func pairSelfURL(cfg *config.Config) string {
 	return cfg.Server.BaseURL
 }
 
-// monbooruPairConnect offers a pairing to monbooru. monloader mints the token
-// monbooru will carry, sends its own URL plus that token, and starts waiting
-// for the operator to approve in monbooru.
 func (s *Server) monbooruPairConnect(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.render(w, "monbooru_pair", s.monbooruPairData(r, "bad form data"))
-		return
-	}
-	if s.hasPairedToken("monbooru") {
-		s.render(w, "monbooru_pair", s.monbooruPairData(r, "already paired; remove the pairing first to re-pair"))
 		return
 	}
 	if err := s.startMonbooruPairing(r.Context()); err != nil {
@@ -100,9 +81,6 @@ func (s *Server) monbooruPairConnect(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "monbooru_pair", s.monbooruPairData(r, "waiting"))
 }
 
-// startMonbooruPairing asks monbooru for a pairing and records the attempt
-// the poll then follows. Shared with the setup wizard, whose first step
-// offers the same handshake before the operator has seen Settings.
 func (s *Server) startMonbooruPairing(ctx context.Context) error {
 	cfg := s.cfg.Current()
 	if strings.TrimSpace(cfg.Monbooru.APIURL) == "" {
@@ -111,7 +89,6 @@ func (s *Server) startMonbooruPairing(ctx context.Context) error {
 	peerSecret := config.GenerateSecret()
 	tok := config.TokenFromSecret("monbooru (paired)", peerSecret, config.AllScopes)
 	tok.Paired = "monbooru"
-	tok.PeerURL = cfg.Monbooru.APIURL
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	requestID, err := s.client.PairRequest(reqCtx, peerSecret, pairSelfURL(cfg), []string{config.ScopeRead, config.ScopeWrite})
@@ -123,8 +100,6 @@ func (s *Server) startMonbooruPairing(ctx context.Context) error {
 	return nil
 }
 
-// monbooruPairPoll checks the pending attempt; on approval it commits the
-// minted token and stores monbooru's returned token.
 func (s *Server) monbooruPairPoll(w http.ResponseWriter, r *http.Request) {
 	att := s.getPairAttempt()
 	if att == nil {
@@ -146,12 +121,14 @@ func (s *Server) monbooruPairPoll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !s.takePairAttempt(att) {
-			// A concurrent poll already committed this approval.
 			s.render(w, "monbooru_pair", s.monbooruPairData(r, ""))
 			return
 		}
 		tok := att.token
 		if err := s.updateConfig(func(c *config.Config) error {
+			// Replaces the old pair only now, so a denied or abandoned
+			// attempt leaves the working pairing untouched.
+			c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t config.Token) bool { return t.Paired == "monbooru" })
 			c.Auth.Tokens = append(c.Auth.Tokens, tok)
 			c.Monbooru.APIToken = token
 			return nil
@@ -178,9 +155,8 @@ func (s *Server) monbooruPairPoll(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// monbooruPairCancel abandons the pending attempt. Nothing was committed on
-// either side yet, so dropping it locally is enough; a stale approval in
-// monbooru ages out of its pending store on its own.
+// Nothing is committed on either side yet; monbooru's pending request
+// ages out on its own.
 func (s *Server) monbooruPairCancel(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.render(w, "monbooru_pair", s.monbooruPairData(r, "bad form data"))
@@ -191,8 +167,6 @@ func (s *Server) monbooruPairCancel(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "monbooru_pair", s.monbooruPairData(r, ""))
 }
 
-// monbooruPairRemove tears down this side: it drops the token monbooru carries
-// and the token monloader uses to push, so a re-pair starts clean.
 func (s *Server) monbooruPairRemove(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.render(w, "monbooru_pair", s.monbooruPairData(r, "bad form data"))
@@ -214,9 +188,6 @@ func (s *Server) monbooruPairRemove(w http.ResponseWriter, r *http.Request) {
 	s.renderDefaultGalleryOOB(w, r)
 }
 
-// notifyMonbooruTeardown asks monbooru to drop its side of the pairing and
-// returns an error when it could not be reached, so the caller can tell the
-// operator to remove the far end by hand.
 func (s *Server) notifyMonbooruTeardown(token string) error {
 	if token == "" {
 		return nil

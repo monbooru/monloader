@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/kwdict"
@@ -20,8 +22,6 @@ import (
 	"github.com/monbooru/monloader/internal/outcome"
 )
 
-// Item is one resolved post from a -j pass. Meta is the raw gallery-dl metadata
-// kwdict the mapping package interprets.
 type Item struct {
 	Category    string
 	Subcategory string
@@ -30,47 +30,36 @@ type Item struct {
 	Meta        map[string]any
 }
 
-// QueueItem is one Message.Queue handoff from a -j pass: a child URL a
-// dispatcher (a forum thread, a manga title, an archive board) delegates to,
-// with the kwdict the parent stamped on it. A plain -j lists these without
-// following them; a deep -J pass recurses into them instead.
+// QueueItem is a Message.Queue handoff: a plain -j lists it without
+// following, a deep -J pass recurses into it.
 type QueueItem struct {
 	URL  string
 	Meta map[string]any
 }
 
-// ResolveResult is a -j pass: the downloadable Url items, any Queue handoffs (a
-// dispatcher delegating to child extractors), and the top-level category. In
-// practice a URL yields one or the other - a booru search yields Items, a forum
-// thread or manga title yields Queue - so the pipeline routes on which is set.
+// In practice a URL yields Items (a booru search) or Queue (a forum
+// thread, a manga title), not both.
 type ResolveResult struct {
 	Items    []Item
 	Queue    []QueueItem
 	Category string
 }
 
-// Downloaded is one entry from the download pass, in source order: a written
-// file paired with its parsed .json sidecar metadata, or an archive skip
-// (Skipped set, no file).
 type Downloaded struct {
 	Path    string
 	Meta    map[string]any
 	Skipped bool
-	// Err names why a file gallery-dl reported as written cannot be pushed -
-	// an unreadable sidecar, a path outside the job's directory. Distinct
-	// from Skipped, which is the archive passing a post over: the operator
-	// reads that one as "already in your library", which this is not.
+	// A file that cannot be pushed; unlike Skipped, it is not "already in
+	// your library".
 	Err string
 }
 
-// Extractor is one entry from --list-extractors.
 type Extractor struct {
 	Category    string `json:"category"`
 	Subcategory string `json:"subcategory"`
 	Example     string `json:"example"`
 }
 
-// ProbeStatus classifies a per-site connectivity probe.
 type ProbeStatus string
 
 const (
@@ -80,65 +69,78 @@ const (
 	ProbeFailed       ProbeStatus = "failed"
 )
 
-// ProbeResult is the outcome of a per-site test probe.
 type ProbeResult struct {
 	Status ProbeStatus `json:"status"`
 	Detail string      `json:"detail,omitempty"`
 }
 
-// Runner is the gallery-dl surface the rest of the app depends on. The real
-// implementation shells out; tests inject a fake.
 type Runner interface {
 	Resolve(ctx context.Context, url, rng string, deep bool) (ResolveResult, error)
 	FetchMeta(ctx context.Context, url string) (map[string]any, error)
-	Download(ctx context.Context, url, rng, workDir string, force bool, onFile func(int, Downloaded), deep bool) ([]Downloaded, error)
+	Download(ctx context.Context, url, rng, workDir string, archive Archive, onFile func(int, Downloaded), deep bool) ([]Downloaded, error)
 	ListExtractors(ctx context.Context) ([]Extractor, error)
 	Probe(ctx context.Context, exampleURL string) (ProbeResult, error)
 	DebugLog(ctx context.Context, url, workRoot string) (log string, noExtractor bool, err error)
 	Version(ctx context.Context) string
 }
 
-// Tool is the real Runner: it shells out to the gallery-dl binary named in
-// config - or, when a managed install shadows the default (managed.go), to
-// that install, resolved per invocation so a switch needs no restart. It
-// passes the managed config file written by WriteManagedConfig. The site
-// lists are guarded because a profile save replaces them while a worker may
-// be resolving.
+// Tool resolves the binary on every run, so a managed install takes over
+// without a restart.
 type Tool struct {
 	cfg           *config.Config
 	mu            sync.RWMutex
 	managedRoot   string
+	secrets       func() []config.Secret
 	flatTagSites  []string
 	notesSites    []string
 	metadataSites []string
 }
 
-// New builds a Tool from config. flatTagSites, metadataSites, and notesSites
-// are the categories whose managed config sets `tags: true`, the `metadata`
-// include, and `notes: true`; the resolve pass overrides them off (see
-// resolveOffArgs).
 func New(cfg *config.Config, flatTagSites, metadataSites, notesSites []string) *Tool {
 	return &Tool{cfg: cfg, flatTagSites: flatTagSites, notesSites: notesSites, metadataSites: metadataSites}
 }
 
-// SetSiteLists replaces the cached site lists after a profile change, so the
-// resolve pass's option-off overrides track the effective profiles without a
-// restart.
 func (t *Tool) SetSiteLists(flatTagSites, metadataSites, notesSites []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.flatTagSites, t.metadataSites, t.notesSites = flatTagSites, metadataSites, notesSites
 }
 
-// SetManagedRoot names the managed-install directory binary resolution
-// checks; unset (the test default), only the configured binary path is used.
 func (t *Tool) SetManagedRoot(root string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.managedRoot = root
 }
 
-// binary resolves the gallery-dl to run for one invocation.
+// The config Tool was built with predates any credential saved since.
+func (t *Tool) SetSecrets(secrets func() []config.Secret) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.secrets = secrets
+}
+
+// gallery-dl's HTTP errors quote the request URL, and the gelbooru family
+// sends its api_key and user_id in the query string.
+func (t *Tool) redactText(text string) string {
+	t.mu.RLock()
+	secrets := t.secrets
+	t.mu.RUnlock()
+	list := t.cfg.Secrets()
+	if secrets != nil {
+		list = secrets()
+	}
+	text, _ = config.RedactSecrets(text, list)
+	return text
+}
+
+func (t *Tool) redact(err error) error {
+	var ce *outcome.CodedError
+	if !errors.As(err, &ce) {
+		return err
+	}
+	return &outcome.CodedError{Code: ce.Code, Msg: t.redactText(ce.Msg)}
+}
+
 func (t *Tool) binary() string {
 	t.mu.RLock()
 	root := t.managedRoot
@@ -146,7 +148,6 @@ func (t *Tool) binary() string {
 	return EffectiveBinary(t.cfg, root)
 }
 
-// siteLists snapshots the cached lists for one invocation.
 func (t *Tool) siteLists() (flatTagSites, metadataSites, notesSites []string) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -155,19 +156,21 @@ func (t *Tool) siteLists() (flatTagSites, metadataSites, notesSites []string) {
 
 var _ Runner = (*Tool)(nil)
 
-// runResult captures a finished subprocess.
 type runResult struct {
 	stdout   []byte
 	stderr   string
 	exitCode int
 }
 
-// run executes gallery-dl with args, returning its output and exit code. A
-// non-zero exit is reported via runResult.exitCode, not err; err is reserved
-// for failures to launch the process at all.
+// After a cancel kills gallery-dl, a child it left holding the output pipes
+// open would otherwise keep Wait, and the job, from returning.
+const waitDelay = 5 * time.Second
+
+// A non-zero exit is in exitCode, not err, which is only for a failed launch.
 func (t *Tool) run(ctx context.Context, args ...string) (runResult, error) {
 	bin := t.binary()
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.WaitDelay = waitDelay
 	hideConsole(cmd)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
@@ -180,9 +183,6 @@ func (t *Tool) run(ctx context.Context, args ...string) (runResult, error) {
 	return res, nil
 }
 
-// exitStatus interprets a cmd.Run/Wait error: a non-zero process exit is
-// reported as its code (nil error); only a failure to launch the binary
-// (missing, not executable) is an error.
 func exitStatus(err error) (int, error) {
 	if err == nil {
 		return 0, nil
@@ -194,8 +194,6 @@ func exitStatus(err error) (int, error) {
 	return 0, err
 }
 
-// configArgs prepends `-c <managed.json>` when the managed config exists, so
-// per-site credentials and the tags:true flags take effect.
 func (t *Tool) configArgs() []string {
 	p := t.cfg.GalleryDL.ConfigPath
 	if p == "" {
@@ -207,9 +205,7 @@ func (t *Tool) configArgs() []string {
 	return []string{"-c", p}
 }
 
-// rangeArgs builds the gallery-dl range flag for a window. A deep (dispatcher)
-// pass bounds the number of queued children with --chapter-range; a normal pass
-// bounds the files with --range.
+// --chapter-range bounds a dispatcher's queued children, --range the files.
 func rangeArgs(rng string, deep bool) []string {
 	if rng == "" {
 		return nil
@@ -220,13 +216,8 @@ func rangeArgs(rng string, deep bool) []string {
 	return []string{"--range", rng}
 }
 
-// resolveOffArgs turns the managed config's per-post enrichment options off
-// for the resolve pass: `tags: true` for the flat-tag families, `notes: true`
-// for the notes sites, and the danbooru/e621 `metadata` include. That pass
-// reads only category/id/num and the post URL; each option left on would spend
-// extra requests (per post, noted post, or page) for data only the download
-// pass needs. The command-line override beats the managed config's
-// per-extractor value.
+// The resolve pass needs only ids and URLs, so each enrichment option left on
+// would waste requests. -o beats the managed config's per-extractor value.
 func resolveOffArgs(flatTagSites, metadataSites, notesSites []string) []string {
 	var args []string
 	off := func(sites []string, opt string) {
@@ -240,23 +231,34 @@ func resolveOffArgs(flatTagSites, metadataSites, notesSites []string) []string {
 	return args
 }
 
-// downloadArgs assembles the gallery-dl download argv after the managed-config
-// flags: the destination, optional range, and the URL. force adds `-o archive=`,
-// an empty (falsy) value that makes gallery-dl open no archive at all, so it
-// neither skips already-recorded posts nor writes the archive file.
-func downloadArgs(workDir, rng, url string, force, deep bool) []string {
+type Archive int
+
+const (
+	ArchiveRead Archive = iota
+	// An empty -o archive= makes gallery-dl open no archive, so recorded
+	// posts are not skipped and nothing new is recorded.
+	ArchiveBypass
+	// Stops after catchUpSkips recorded posts in a row, which in a
+	// newest-first listing is where the previous fetch left off.
+	ArchiveCatchUp
+)
+
+// Slack for a post that gained a searched tag after the previous fetch and
+// so sits among older ones.
+const catchUpSkips = 20
+
+func downloadArgs(workDir, rng, url string, archive Archive, deep bool) []string {
 	args := []string{"-D", workDir}
 	args = append(args, rangeArgs(rng, deep)...)
-	if force {
+	switch archive {
+	case ArchiveBypass:
 		args = append(args, "-o", "archive=")
+	case ArchiveCatchUp:
+		args = append(args, "-o", "skip=abort:"+strconv.Itoa(catchUpSkips))
 	}
 	return append(args, url)
 }
 
-// runOut runs gallery-dl and answers its stdout, or a coded error: a canceled
-// context first (a kill looks like a failure otherwise), then the classified
-// exit. Resolve keeps its own copy - it needs the coded error unwrapped, to
-// spot unsupported_url before falling back to a directlink.
 func (t *Tool) runOut(ctx context.Context, args ...string) ([]byte, error) {
 	res, err := t.run(ctx, args...)
 	if ctx.Err() != nil {
@@ -271,13 +273,12 @@ func (t *Tool) runOut(ctx context.Context, args ...string) ([]byte, error) {
 	return res.stdout, nil
 }
 
-// Resolve runs `gallery-dl -j [--range] <url>` and parses the authoritative
-// item list. It turns the per-post enrichment options off (see
-// resolveOffArgs), whose extra fetches are wasted on this pass. A non-zero exit
-// becomes a coded error so the pipeline can attribute the failure. deep runs the
-// resolve-json mode (`-J`) instead, which follows Message.Queue handoffs into
-// their files; the child window is then bounded by --chapter-range, not --range.
 func (t *Tool) Resolve(ctx context.Context, url, rng string, deep bool) (ResolveResult, error) {
+	res, err := t.resolve(ctx, url, rng, deep)
+	return res, t.redact(err)
+}
+
+func (t *Tool) resolve(ctx context.Context, url, rng string, deep bool) (ResolveResult, error) {
 	args := t.configArgs()
 	args = append(args, resolveOffArgs(t.siteLists())...)
 	mode := "-j"
@@ -296,8 +297,6 @@ func (t *Tool) Resolve(ctx context.Context, url, rng string, deep bool) (Resolve
 	}
 	if res.exitCode != 0 {
 		cerr := classifyError(res.exitCode, res.stderr)
-		// gallery-dl rejects a bare media URL with no file extension as
-		// unsupported; resolve it as a directlink instead (see directfetch.go).
 		if cerr.Code == outcome.ErrCodeUnsupportedURL {
 			if items, ok := directlinkResolve(ctx, url); ok {
 				return ResolveResult{Items: items}, nil
@@ -308,23 +307,17 @@ func (t *Tool) Resolve(ctx context.Context, url, rng string, deep bool) (Resolve
 	return parseResolve(res.stdout)
 }
 
-// FetchMeta runs `gallery-dl -j <url>` with the enrichment options left ON
-// (unlike Resolve, which turns them off) so the first post's full metadata -
-// tags, commentary, notes, md5 - comes back without downloading the file. It
-// backs the source-refetch path, which maps that metadata and enriches an image
-// monbooru already holds.
+// FetchMeta keeps the enrichment options on: the full metadata is what it
+// is for.
 func (t *Tool) FetchMeta(ctx context.Context, url string) (map[string]any, error) {
 	out, err := t.runOut(ctx, append(t.configArgs(), "-j", url)...)
 	if err != nil {
-		return nil, err
+		return nil, t.redact(err)
 	}
-	return firstPostMeta(out)
+	meta, err := firstPostMeta(out)
+	return meta, t.redact(err)
 }
 
-// firstPostMeta pulls the first resolved post's kwdict out of a -j output
-// through the shared parseResolve, so the two readers of the message tuples
-// cannot drift; a document with no post is a mapping error rather than a
-// silent empty result, and a classified extraction error keeps its code.
 func firstPostMeta(data []byte) (map[string]any, error) {
 	res, err := parseResolve(data)
 	if err != nil {
@@ -340,20 +333,21 @@ func firstPostMeta(data []byte) (map[string]any, error) {
 	return res.Items[0].Meta, nil
 }
 
-// Download runs `gallery-dl -D <workDir> [--range] <url>` and returns the files
-// it wrote, each paired with its `.json` sidecar metadata. force bypasses the
-// download-archive so already-fetched posts are written again. onFile, when set,
-// is called for each file as gallery-dl prints it, so the caller can advance
-// items live instead of waiting for the whole download. deep bounds a
-// dispatcher's queued children with --chapter-range to match a deep resolve; the
-// download always follows Message.Queue handoffs regardless.
-func (t *Tool) Download(ctx context.Context, url, rng, workDir string, force bool, onFile func(int, Downloaded), deep bool) ([]Downloaded, error) {
+// The download always follows Message.Queue handoffs; deep only moves the
+// window to --chapter-range.
+func (t *Tool) Download(ctx context.Context, url, rng, workDir string, archive Archive, onFile func(int, Downloaded), deep bool) ([]Downloaded, error) {
+	dls, err := t.download(ctx, url, rng, workDir, archive, onFile, deep)
+	return dls, t.redact(err)
+}
+
+func (t *Tool) download(ctx context.Context, url, rng, workDir string, archive Archive, onFile func(int, Downloaded), deep bool) ([]Downloaded, error) {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
-	args := append(t.configArgs(), downloadArgs(workDir, rng, url, force, deep)...)
+	args := append(t.configArgs(), downloadArgs(workDir, rng, url, archive, deep)...)
 	bin := t.binary()
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.WaitDelay = waitDelay
 	hideConsole(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -364,42 +358,34 @@ func (t *Tool) Download(ctx context.Context, url, rng, workDir string, force boo
 	if err := cmd.Start(); err != nil {
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: fmt.Errorf("running %s: %w", bin, err).Error()}
 	}
-	// Drain stdout to EOF (collecting results as they land) before Wait, per the
-	// StdoutPipe contract.
+	// Drained to EOF before Wait, as StdoutPipe requires.
 	results := reportDownloads(stdout, workDir, onFile)
 	exit, runErr := exitStatus(cmd.Wait())
-	// A canceled job kills the subprocess; that must not read like a real
-	// download failure (transportError draws the same line for pushes).
+	// A canceled job kills the subprocess, which must not read as a
+	// download failure.
 	if ctx.Err() != nil {
 		return results, &outcome.CodedError{Code: outcome.ErrCodeCanceled, Msg: ctx.Err().Error()}
 	}
 	if runErr != nil {
-		// Like the non-zero-exit branch below: hand back what landed so the
-		// pipeline can push it and mark only the rest failed.
+		// Results go back with the error: the pipeline pushes what landed
+		// and fails only the rest.
 		return results, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: runErr.Error()}
 	}
 	if exit != 0 {
 		cerr := classifyError(exit, strings.TrimSpace(errBuf.String()))
-		// gallery-dl rejects a bare media URL with no file extension as
-		// unsupported; fetch it as a directlink instead (see directfetch.go).
 		if cerr.Code == outcome.ErrCodeUnsupportedURL {
 			if dls, ok, derr := directlinkDownload(ctx, url, workDir, onFile); ok {
 				return dls, derr
 			}
 		}
-		// Return what landed before the error so the pipeline can push it and
-		// mark the rest failed.
 		return results, cerr
 	}
 	return results, nil
 }
 
-// reportDownloads reads gallery-dl's download stdout, returning one entry per
-// post in source order: a written file with its sidecar, or an archive skip
-// (printed as `# <path>`, no file). onFile is called for each written file at
-// its position so the caller can advance that row live. The `.json` sidecar is
-// on disk by the time its path prints; a written line the wrapper cannot use
-// is recorded with its reason so positions stay aligned.
+// gallery-dl prints an archive skip as "# <path>"; the .json sidecar is on
+// disk by the time a path prints, a skip's included. A failed download
+// prints nothing; an unusable line takes an entry so the pipeline can fail it.
 func reportDownloads(r io.Reader, workDir string, onFile func(int, Downloaded)) []Downloaded {
 	var out []Downloaded
 	sc := bufio.NewScanner(r)
@@ -409,24 +395,29 @@ func reportDownloads(r io.Reader, workDir string, onFile func(int, Downloaded)) 
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "# ") {
-			out = append(out, Downloaded{Skipped: true})
+		if path, ok := strings.CutPrefix(line, "# "); ok {
+			d := Downloaded{Skipped: true}
+			if within(workDir, path) {
+				d.Meta, _ = readMeta(path)
+			}
+			out = append(out, d)
 			continue
 		}
-		// Every path here comes from the subprocess's stdout. The managed
-		// config pins its directory to the job dir and gallery-dl sanitizes
-		// the names it derives from post metadata, so this holds today - and
-		// keeps holding if either ever stops being true.
+		// The managed config pins the directory and gallery-dl sanitizes
+		// names, but a path from the subprocess's stdout is still not
+		// trusted.
 		if !within(workDir, line) {
 			logx.Warnf("gdl: refusing %s, outside the job directory %s", line, workDir)
 			out = append(out, Downloaded{Err: "the downloaded file landed outside the job directory"})
 			continue
 		}
-		d, ok := readSidecar(line)
-		if !ok {
+		meta, err := readMeta(line)
+		if err != nil {
+			logx.Warnf("gdl: %v", err)
 			out = append(out, Downloaded{Err: "the downloaded file has no readable metadata sidecar"})
 			continue
 		}
+		d := Downloaded{Path: line, Meta: meta}
 		if onFile != nil {
 			onFile(len(out), d)
 		}
@@ -434,12 +425,13 @@ func reportDownloads(r io.Reader, workDir string, onFile func(int, Downloaded)) 
 	}
 	if err := sc.Err(); err != nil {
 		logx.Warnf("gdl: reading download output: %v", err)
+		// An over-long line stops the scanner; left unread, the pipe fills
+		// and gallery-dl blocks writing, which Wait would then wait out.
+		_, _ = io.Copy(io.Discard, r)
 	}
 	return out
 }
 
-// Version returns the gallery-dl version string for /health, or "" if the
-// binary cannot be run.
 func (t *Tool) Version(ctx context.Context) string {
 	res, err := t.run(ctx, "--version")
 	if err != nil || res.exitCode != 0 {
@@ -448,12 +440,6 @@ func (t *Tool) Version(ctx context.Context) string {
 	return strings.TrimSpace(string(res.stdout))
 }
 
-// parseResolve decodes gallery-dl's -j output: a JSON array of message
-// tuples. Url messages (type 3) carry `[3, file_url, kwdict]` and become items;
-// Queue messages (type 6) carry `[6, child_url, kwdict]` and become handoffs a
-// dispatcher delegates to; directory messages (type 2) and others are skipped.
-// An extraction error is reported as `[-1, {error, message}]` while gallery-dl
-// still exits 0, so it is captured and surfaced when nothing resolved.
 func parseResolve(data []byte) (ResolveResult, error) {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
@@ -483,8 +469,6 @@ func parseResolve(data []byte) (ResolveResult, error) {
 		if mtype == 6 { // [6, child_url, kwdict]: a dispatcher handoff
 			var url string
 			var meta map[string]any
-			// A handoff whose URL is not a string has nothing a deep pass
-			// could follow; keeping it would queue an empty-URL fetch.
 			if json.Unmarshal(parts[1], &url) != nil || url == "" {
 				continue
 			}
@@ -511,24 +495,18 @@ func parseResolve(data []byte) (ResolveResult, error) {
 		res.setCategory(meta)
 		res.Items = append(res.Items, itemFromMeta(meta))
 	}
-	// A resolve that yielded nothing but reported an error (zero exit) would
-	// otherwise look like a clean empty success; fail it instead.
 	if len(res.Items) == 0 && len(res.Queue) == 0 && gdlErr != nil {
 		return ResolveResult{}, gdlErr
 	}
 	return res, nil
 }
 
-// setCategory records the top-level extractor category from the first message
-// that carries one (every message's kwdict is stamped with it).
 func (r *ResolveResult) setCategory(meta map[string]any) {
 	if r.Category == "" {
 		r.Category = kwdict.String(meta, "category")
 	}
 }
 
-// resolveError classifies a gallery-dl -j error object `{error, message}` into
-// the stable code vocabulary, reusing the stderr substring rules.
 func resolveError(raw json.RawMessage) *outcome.CodedError {
 	var e struct {
 		Error   string `json:"error"`
@@ -542,7 +520,6 @@ func resolveError(raw json.RawMessage) *outcome.CodedError {
 	return classifyError(1, text)
 }
 
-// itemFromMeta builds an Item from a kwdict.
 func itemFromMeta(meta map[string]any) Item {
 	return Item{
 		Category:    kwdict.String(meta, "category"),
@@ -553,8 +530,6 @@ func itemFromMeta(meta map[string]any) Item {
 	}
 }
 
-// within reports whether path is inside dir. An empty dir admits everything,
-// which is the shape the parser tests use.
 func within(dir, path string) bool {
 	if dir == "" {
 		return true
@@ -563,19 +538,14 @@ func within(dir, path string) bool {
 	return err == nil && filepath.IsLocal(rel)
 }
 
-// readSidecar pairs a written file with its `.json` sidecar, reading the
-// sidecar for the mapping metadata. False when the sidecar is missing or not
-// valid JSON - a file without metadata cannot be mapped.
-func readSidecar(path string) (Downloaded, bool) {
+func readMeta(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path + ".json")
 	if err != nil {
-		logx.Warnf("gdl: reading sidecar %s.json: %v", path, err)
-		return Downloaded{}, false
+		return nil, fmt.Errorf("reading sidecar %s.json: %w", path, err)
 	}
 	var meta map[string]any
 	if json.Unmarshal(data, &meta) != nil {
-		logx.Warnf("gdl: sidecar %s.json is not valid JSON", path)
-		return Downloaded{}, false
+		return nil, fmt.Errorf("sidecar %s.json is not valid JSON", path)
 	}
-	return Downloaded{Path: path, Meta: meta}, true
+	return meta, nil
 }
