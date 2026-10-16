@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 var (

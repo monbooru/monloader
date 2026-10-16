@@ -32,3 +32,7 @@ const (
 	errInternal   = "internal_error"
 	errSaveFailed = "save_failed"
 )
+
+// ErrSetupRequired is answered by the web first-run gate, in front of every
+// route here.
+const ErrSetupRequired = "setup_required"

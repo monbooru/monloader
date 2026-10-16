@@ -21,11 +21,11 @@ import (
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/gdl"
 	"github.com/monbooru/monloader/internal/kwdict"
-	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/shared/logx"
 	"github.com/monbooru/monloader/internal/similarity"
 	"github.com/monbooru/monloader/internal/sitestate"
 )
@@ -498,16 +498,17 @@ func (p *Processor) processItems(ctx context.Context, job *queue.Job, entries []
 		if pf.Collection != "" && order == 0 {
 			order = i + 1
 		}
-		meta := pushMetaFrom(pf, d.Path, p.itemURL(d.Meta, submittedURL, pageURL), kwdict.ID(d.Meta))
+		meta := pushMetaFrom(pf, d.Path, p.itemURL(d.Meta, submittedURL, pageURL), d.Meta)
 		meta.Collection, meta.CollectionOrder = pf.Collection, order
 		meta.Via, meta.Folder = pf.Via, folder
 		p.pushOne(ctx, job, i, d.Path, meta, gallery)
 	}
 }
 
-func pushMetaFrom(pf mapping.PushFields, path, url, postID string) monbooru.PushMeta {
+func pushMetaFrom(pf mapping.PushFields, path, url string, meta map[string]any) monbooru.PushMeta {
 	return monbooru.PushMeta{
-		PostFields: postFieldsFrom(pf, url, postID),
+		PostFields: postFieldsFrom(pf, url, kwdict.ID(meta)),
+		MD5:        kwdict.String(meta, "md5"),
 		Filename:   filepath.Base(path),
 	}
 }

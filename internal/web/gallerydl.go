@@ -204,7 +204,7 @@ func (s *Server) gdlStatusFragment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderGDLPanel(w http.ResponseWriter, r *http.Request, kind, msg string) {
-	panel := s.gdlPanel(r.Context(), s.csrfToken(sessionFromContext(r.Context())))
+	panel := s.gdlPanel(r.Context(), s.sessions.CSRFToken(sessionFromContext(r.Context())))
 	if msg != "" {
 		panel.MsgKind, panel.Msg = kind, msg
 	}

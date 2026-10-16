@@ -1,142 +1,15 @@
 package web
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
+	"github.com/monbooru/monloader/internal/shared/pairing"
 )
-
-const (
-	pairPendingTTL = 5 * time.Minute
-	pairMaxPending = 16
-)
-
-type pairState string
-
-const (
-	pairPending  pairState = "pending"
-	pairApproved pairState = "approved"
-	pairDenied   pairState = "denied"
-)
-
-// Nothing is minted until the claim, so an approval never collected
-// issues no token.
-type pairReq struct {
-	ID        string
-	App       string
-	Source    string
-	Scopes    []string
-	State     pairState
-	Claimed   bool
-	CreatedAt time.Time
-}
-
-type pairStore struct {
-	mu sync.Mutex
-	m  map[string]*pairReq
-}
-
-func newPairStore() *pairStore { return &pairStore{m: map[string]*pairReq{}} }
-
-func pairID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand unavailable: " + err.Error())
-	}
-	return hex.EncodeToString(b)
-}
-
-func (ps *pairStore) sweepLocked() {
-	cutoff := time.Now().Add(-pairPendingTTL)
-	for id, r := range ps.m {
-		if r.CreatedAt.Before(cutoff) {
-			delete(ps.m, id)
-		}
-	}
-}
-
-func (ps *pairStore) create(app, source string, scopes []string) (string, bool) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	ps.sweepLocked()
-	pending := 0
-	for _, r := range ps.m {
-		if r.State != pairPending {
-			continue
-		}
-		// A repeat offer updates the waiting one: two identical rows would
-		// approve into two tokens under one name, neither revocable alone.
-		if strings.EqualFold(r.App, app) {
-			r.Source, r.Scopes, r.CreatedAt = source, scopes, time.Now()
-			return r.ID, true
-		}
-		pending++
-	}
-	if pending >= pairMaxPending {
-		return "", false
-	}
-	id := pairID()
-	ps.m[id] = &pairReq{ID: id, App: app, Source: source, Scopes: scopes, State: pairPending, CreatedAt: time.Now()}
-	return id, true
-}
-
-func (ps *pairStore) get(id string) (pairReq, bool) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	if r, ok := ps.m[id]; ok {
-		return *r, true
-	}
-	return pairReq{}, false
-}
-
-func (ps *pairStore) listPending() []pairReq {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	ps.sweepLocked()
-	var out []pairReq
-	for _, r := range ps.m {
-		if r.State == pairPending {
-			out = append(out, *r)
-		}
-	}
-	return out
-}
-
-func (ps *pairStore) setState(id string, st pairState) bool {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	r, ok := ps.m[id]
-	if !ok || r.State != pairPending {
-		return false
-	}
-	r.State = st
-	return true
-}
-
-func (ps *pairStore) claim(id string) (pairReq, bool) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	r, ok := ps.m[id]
-	if !ok || r.State != pairApproved || r.Claimed {
-		return pairReq{}, false
-	}
-	r.Claimed = true
-	return *r, true
-}
-
-func (ps *pairStore) remove(id string) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	delete(ps.m, id)
-}
 
 // Any origin is allowed, the extension's included: the operator's approval
 // is the real gate.
@@ -210,42 +83,43 @@ func (s *Server) extPairRequest(w http.ResponseWriter, r *http.Request) {
 		pairError(w, http.StatusConflict, "already_paired", "already paired with "+body.App+"; remove the existing pairing first")
 		return
 	}
-	id, ok := s.pairs.create(body.App, r.RemoteAddr, body.RequestedScopes)
+	id, ok := s.pairs.Create(pairing.Request{App: body.App, Source: r.RemoteAddr, Scopes: body.RequestedScopes})
 	if !ok {
 		pairError(w, http.StatusTooManyRequests, "too_many_requests", "too many pending pairing requests")
 		return
 	}
 	logx.Infof("pairing: request from %s", body.App)
-	pairJSON(w, http.StatusOK, map[string]string{"request_id": id, "status": "pending"})
+	pairJSON(w, http.StatusOK, map[string]string{"request_id": id, "status": string(pairing.Pending)})
 }
 
 func (s *Server) extPairStatus(w http.ResponseWriter, r *http.Request) {
 	setPairCORS(w, r)
-	req, ok := s.pairs.get(r.URL.Query().Get("id"))
+	req, ok := s.pairs.Get(r.URL.Query().Get("id"))
 	if !ok {
 		pairError(w, http.StatusNotFound, "not_found", "unknown pairing request")
 		return
 	}
-	if req.State != pairApproved {
+	if req.State != pairing.Approved {
 		pairJSON(w, http.StatusOK, map[string]string{"status": string(req.State)})
 		return
 	}
-	cr, won := s.pairs.claim(req.ID)
+	cr, won := s.pairs.Claim(req.ID)
 	if !won {
-		pairJSON(w, http.StatusOK, map[string]string{"status": "approved"})
+		pairJSON(w, http.StatusOK, map[string]string{"status": string(pairing.Approved)})
 		return
 	}
 	secret, err := s.mintExtToken(cr)
 	if err != nil {
+		s.pairs.Unclaim(cr.ID)
 		pairError(w, http.StatusInternalServerError, "mint_failed", err.Error())
 		return
 	}
-	s.pairs.remove(cr.ID)
+	s.pairs.Remove(cr.ID)
 	w.Header().Set("Cache-Control", "no-store")
-	pairJSON(w, http.StatusOK, map[string]string{"status": "approved", "token": secret})
+	pairJSON(w, http.StatusOK, map[string]string{"status": string(pairing.Approved), "token": secret})
 }
 
-func (s *Server) mintExtToken(req pairReq) (string, error) {
+func (s *Server) mintExtToken(req pairing.Request) (string, error) {
 	tok, secret := config.GenerateToken(req.App+" (paired)", grantedScopes(req.Scopes))
 	tok.Paired = req.App
 	if err := s.updateConfig(func(c *config.Config) error {
@@ -259,7 +133,7 @@ func (s *Server) mintExtToken(req pairReq) (string, error) {
 }
 
 func (s *Server) extPairData(r *http.Request) map[string]any {
-	pending := s.pairs.listPending()
+	pending := s.pairs.ListPending()
 	for i := range pending {
 		// The operator approves what this column shows, so it names the
 		// grant, not the ask.
@@ -268,7 +142,7 @@ func (s *Server) extPairData(r *http.Request) map[string]any {
 	return map[string]any{
 		"Pending":   pending,
 		"Paired":    s.hasPairedToken("monsender"),
-		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
+		"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context())),
 	}
 }
 
@@ -285,7 +159,7 @@ func (s *Server) monsenderPairingFragment(w http.ResponseWriter, r *http.Request
 
 func (s *Server) monsenderPairApprove(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
-	if s.pairs.setState(r.PathValue("id"), pairApproved) {
+	if s.pairs.SetState(r.PathValue("id"), pairing.Approved) {
 		logx.Infof("pairing: approved extension request %s", r.PathValue("id"))
 	}
 	s.render(w, "monsender_pairing", s.extPairData(r))
@@ -293,7 +167,7 @@ func (s *Server) monsenderPairApprove(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) monsenderPairDeny(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
-	s.pairs.setState(r.PathValue("id"), pairDenied)
+	s.pairs.SetState(r.PathValue("id"), pairing.Denied)
 	s.render(w, "monsender_pairing", s.extPairData(r))
 }
 

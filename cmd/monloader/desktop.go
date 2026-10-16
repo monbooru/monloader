@@ -12,9 +12,8 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/desktop"
-	"github.com/monbooru/monloader/internal/fsx"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/desktop"
+	"github.com/monbooru/monloader/internal/shared/logx"
 	internalweb "github.com/monbooru/monloader/internal/web"
 )
 
@@ -243,7 +242,7 @@ func trayIconPath() string {
 	if runtime.GOOS != "windows" {
 		return ""
 	}
-	dir := fsx.ExeDir()
+	dir := desktop.ExeDir()
 	if dir == "" {
 		return ""
 	}

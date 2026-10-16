@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 const defaultMaxFinished = 100

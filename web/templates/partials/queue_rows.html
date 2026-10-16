@@ -4,7 +4,7 @@
 <tr class="job-row">
   <td class="st-{{.Worst.Status}}">{{.Worst.Status}}<span class="job-time" title="{{stampLocal .Worst.StatusChangedAt}}">{{humanSince .Worst.StatusChangedAt}}</span>{{if .Watched}}<span class="job-lane">watched</span>{{end}}</td>
   <td class="queue-url">{{.Lead.Subject}}{{if .Lead.URL}} <a class="queue-view" href="{{.Lead.URL}}" target="_blank" rel="noopener" title="open the source in a new tab">view</a>{{end}}{{with clientMeta .Lead}} <span class="queue-sent" title="{{.}}">sent</span>{{end}}</td>
-  <td><span class="job-kind" title="{{if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}} job">{{if eq .Lead.Kind "lookup"}}{{if eq .Lead.Backend "all"}}lookup{{else}}lookup:{{.Lead.Backend}}{{end}}{{else if eq .Lead.Kind "hash_import"}}import{{else if eq .Lead.Kind "contrib"}}contrib:ptr{{else if eq .Lead.Kind "ptr_lookup"}}lookup:ptr{{else if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}}</span>{{with .Lead.LookupClass}}<span class="job-lane">{{.}}</span>{{end}}</td>
+  <td><span class="job-kind" title="{{if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}} job">{{if eq .Lead.Kind "lookup"}}{{if eq .Lead.Backend "all"}}lookup{{else}}lookup:{{.Lead.Backend}}{{end}}{{else if eq .Lead.Kind "hash_import"}}import{{else if eq .Lead.Kind "contrib"}}contrib:ptr{{else if eq .Lead.Kind "ptr_lookup"}}lookup:ptr{{else if eq .Lead.Kind "replace"}}upgrade{{else if .Lead.Kind}}{{.Lead.Kind}}{{else}}download{{end}}</span>{{with .Lead.LookupClass}}<span class="job-lane">{{.}}</span>{{end}}</td>
   <td class="queue-site" title="{{.Lead.Site}}">{{.Lead.Site}}</td>
   <td class="queue-gallery" title="{{.Lead.Gallery}}">{{.Lead.Gallery}}</td>
   <td class="queue-summary">

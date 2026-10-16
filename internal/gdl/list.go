@@ -6,7 +6,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 func (t *Tool) ListExtractors(ctx context.Context) ([]Extractor, error) {

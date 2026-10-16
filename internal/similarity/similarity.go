@@ -53,7 +53,7 @@ type Client struct {
 	canonical func(rawURL string) (site, canonical string, ok bool)
 	postURL   func(site, id string) string
 
-	// Service endpoints; fixed except in tests.
+	// The public endpoints, under any [lookup.<service>].url.
 	iqdbURL     string
 	saucenaoURL string
 
@@ -147,7 +147,8 @@ func (c *Client) searchIQDB(ctx context.Context, img []byte) (Result, error) {
 		params.Set("login", site.Username)
 		params.Set("api_key", site.APIKey)
 	}
-	status, body, err := c.post(ctx, "iqdb", c.iqdbURL+"?"+params.Encode(), img, "search[file]")
+	endpoint := cmp.Or(c.cfg.Current().Lookup.Iqdb.URL, c.iqdbURL)
+	status, body, err := c.post(ctx, "iqdb", endpoint+"?"+params.Encode(), img, "search[file]")
 	if err != nil {
 		return Result{}, err
 	}
@@ -189,7 +190,8 @@ func (c *Client) searchSauceNAO(ctx context.Context, img []byte) (Result, error)
 		"numres":      {"16"},
 		"api_key":     {c.cfg.Current().Lookup.Saucenao.APIKey},
 	}
-	status, body, err := c.post(ctx, "saucenao", c.saucenaoURL+"?"+params.Encode(), img, "file")
+	endpoint := cmp.Or(c.cfg.Current().Lookup.Saucenao.URL, c.saucenaoURL)
+	status, body, err := c.post(ctx, "saucenao", endpoint+"?"+params.Encode(), img, "file")
 	if err != nil {
 		return Result{}, err
 	}

@@ -47,6 +47,21 @@ func LoopbackAddr(addr string) string {
 	return net.JoinHostPort(host, port)
 }
 
+// LocalRequest reports a request from this machine's own browser. A proxy
+// header refuses it, since behind a same-host proxy every peer is loopback,
+// and so does a non-loopback Host: a page rebound to 127.0.0.1 sends one.
+func LocalRequest(r *http.Request) bool {
+	if !IsLoopbackAddr(r.Host) {
+		return false
+	}
+	for _, h := range []string{"X-Forwarded-For", "Forwarded", "X-Real-IP", "Via"} {
+		if r.Header.Get(h) != "" {
+			return false
+		}
+	}
+	return IsLoopbackAddr(r.RemoteAddr)
+}
+
 func IsLoopbackAddr(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

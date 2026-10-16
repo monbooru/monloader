@@ -2,14 +2,10 @@ package web
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/monbooru/monloader/internal/config"
 	"golang.org/x/crypto/bcrypt"
@@ -18,63 +14,6 @@ import (
 type contextKey int
 
 const sessionContextKey contextKey = 1
-
-type Session struct {
-	ID        string
-	ExpiresAt time.Time
-}
-
-type SessionStore struct {
-	mu       sync.RWMutex
-	sessions map[string]Session
-}
-
-func NewSessionStore() *SessionStore { return &SessionStore{sessions: map[string]Session{}} }
-
-func (s *SessionStore) New(lifetimeDays int) (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	id := base64.RawURLEncoding.EncodeToString(buf)
-	s.mu.Lock()
-	s.sessions[id] = Session{ID: id, ExpiresAt: time.Now().Add(time.Duration(lifetimeDays) * 24 * time.Hour)}
-	s.mu.Unlock()
-	return id, nil
-}
-
-func (s *SessionStore) Get(id string) (Session, bool) {
-	s.mu.RLock()
-	sess, ok := s.sessions[id]
-	s.mu.RUnlock()
-	if !ok {
-		return Session{}, false
-	}
-	if time.Now().After(sess.ExpiresAt) {
-		// Nothing else sweeps the map.
-		s.Delete(id)
-		return Session{}, false
-	}
-	return sess, true
-}
-
-func (s *SessionStore) Delete(id string) {
-	s.mu.Lock()
-	delete(s.sessions, id)
-	s.mu.Unlock()
-}
-
-func (s *SessionStore) Clear() { s.ClearExcept("") }
-
-func (s *SessionStore) ClearExcept(keep string) {
-	s.mu.Lock()
-	for id := range s.sessions {
-		if id != keep {
-			delete(s.sessions, id)
-		}
-	}
-	s.mu.Unlock()
-}
 
 func sessionFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(sessionContextKey).(string)
@@ -91,7 +30,7 @@ func (s *Server) SessionMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		sessID := sessionCookie(r)
-		if _, ok := s.sessions.Get(sessID); !ok {
+		if !s.sessions.Valid(sessID) {
 			if isHTMXRequest(r) {
 				w.Header().Set("HX-Redirect", "/login")
 				w.WriteHeader(http.StatusUnauthorized)
@@ -131,7 +70,7 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loginData(errMsg string) map[string]any {
 	data := map[string]any{
 		"Title":        "Login - " + s.titleName(),
-		"CSRFToken":    s.csrfToken("anon"),
+		"CSRFToken":    s.sessions.CSRFToken("anon"),
 		"Conn":         "checking",
 		"BooruName":    s.booruName(),
 		"BooruFavicon": s.booruFaviconURL(),
@@ -159,11 +98,7 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "login", s.loginData("incorrect password"))
 		return
 	}
-	id, err := s.sessions.New(s.cfg.Current().Auth.SessionLifetimeDays)
-	if err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
+	id := s.sessions.Create(s.cfg.Current().Auth.SessionLifetimeDays)
 	http.SetCookie(w, &http.Cookie{
 		Name:     "monloader_session",
 		Value:    id,
@@ -303,7 +238,7 @@ func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderAuthTokensOOB(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "auth_tokens", map[string]any{
 		"Tokens":    slices.Clone(s.cfg.Current().Auth.Tokens),
-		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
+		"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context())),
 		"OOB":       true,
 	})
 }
@@ -333,7 +268,7 @@ func (s *Server) settingsTokenPrivilegesGet(w http.ResponseWriter, r *http.Reque
 	s.render(w, "token_privileges_dialog", map[string]any{
 		"ID":        id,
 		"Scopes":    rows,
-		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
+		"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context())),
 		"Paired":    tok.Paired != "",
 	})
 }
@@ -389,7 +324,7 @@ func (s *Server) renderAuthPasswordOOB(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "auth_password_section", map[string]any{
 		"AuthEnabled": s.cfg.Current().Auth.EnablePassword,
 		"HasPassword": s.cfg.Current().Auth.PasswordHash != "",
-		"CSRFToken":   s.csrfToken(sessionFromContext(r.Context())),
+		"CSRFToken":   s.sessions.CSRFToken(sessionFromContext(r.Context())),
 		"OOB":         true,
 	})
 }

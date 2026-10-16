@@ -13,7 +13,7 @@ import (
 const debugLogTimeout = 60 * time.Second
 
 func (s *Server) itemDebug(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"CSRFToken": s.csrfToken(sessionFromContext(r.Context()))}
+	data := map[string]any{"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context()))}
 	url := strings.TrimSpace(r.FormValue("url"))
 	if !config.IsHTTPURL(url) {
 		data["Error"] = "this item has no source link to re-run"

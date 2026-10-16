@@ -3,7 +3,6 @@ package web
 import (
 	"fmt"
 	"io/fs"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,8 +12,8 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/desktop"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/desktop"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 // Every route that reaches the filesystem or the process goes through
@@ -30,27 +29,11 @@ func (s *Server) localOnly(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// The desktop flag comes from the launch, never a request, and loopback keeps
-// LAN viewers out. A forwarded hop is refused: behind a same-host proxy every
-// peer is loopback, and a proxy that adds none of these headers defeats it. So is a Host other than a loopback name: a page rebound
-// to 127.0.0.1 under its own name sends one. The bind address is
-// deliberately no condition: gating on it would take Restart away just when
-// the wizard's network choice needs one.
+// The desktop flag comes from the launch, never a request. The bind address
+// is deliberately no condition: gating on it would take Restart away just
+// when the wizard's network choice needs one.
 func (s *Server) desktopLocal(r *http.Request) bool {
-	if !s.desktop || !desktop.IsLoopbackAddr(r.Host) {
-		return false
-	}
-	for _, h := range []string{"X-Forwarded-For", "Forwarded", "X-Real-IP", "Via"} {
-		if r.Header.Get(h) != "" {
-			return false
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return s.desktop && desktop.LocalRequest(r)
 }
 
 // Past this a listing is unreadable anyway; the operator types the path.
@@ -60,17 +43,12 @@ const maxBrowseEntries = 500
 // an identifier.
 var browseIntoRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-type browseEntry struct {
-	Name string
-	Path string
-}
-
 type browseData struct {
 	Into      string
 	Path      string
 	Parent    string
-	Entries   []browseEntry
-	Roots     []browseEntry
+	Entries   []desktop.Dir
+	Roots     []desktop.Dir
 	Sandboxed bool
 	Err       string
 	Truncated bool
@@ -85,7 +63,7 @@ func (s *Server) browseDirs(w http.ResponseWriter, r *http.Request) {
 	}
 	data := browseData{Into: into, Sandboxed: desktop.Sandboxed(), Limit: maxBrowseEntries}
 	for _, root := range desktop.Roots() {
-		data.Roots = append(data.Roots, browseEntry{Name: root, Path: root})
+		data.Roots = append(data.Roots, desktop.Dir{Name: root, Path: root})
 	}
 
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
@@ -100,30 +78,11 @@ func (s *Server) browseDirs(w http.ResponseWriter, r *http.Request) {
 		data.Parent = parent
 	}
 
-	entries, err := os.ReadDir(data.Path)
+	var err error
+	data.Entries, data.Truncated, err = desktop.ListDirs(data.Path, maxBrowseEntries)
 	if err != nil {
 		data.Err = "cannot read this folder"
 	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		full := filepath.Join(data.Path, e.Name())
-		// Stat, not the entry's type: a symlinked folder reports as a link.
-		fi, err := os.Stat(full)
-		if err != nil || !fi.IsDir() {
-			continue
-		}
-		if len(data.Entries) == maxBrowseEntries {
-			data.Truncated = true
-			break
-		}
-		data.Entries = append(data.Entries, browseEntry{Name: e.Name(), Path: full})
-	}
-	// ReadDir's byte order puts every capitalised name first.
-	slices.SortFunc(data.Entries, func(a, b browseEntry) int {
-		return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
-	})
 	s.render(w, "dir_picker", data)
 }
 
@@ -184,35 +143,16 @@ func (s *Server) desktopFolder(kind string) (string, bool) {
 func (s *Server) DesktopHook() desktop.Hook {
 	icon, _ := fs.ReadFile(s.staticFS, "appicon.png")
 	return desktop.Hook{
-		App:     "monloader",
-		Name:    s.titleName(),
-		Comment: "Downloader for monbooru",
-		Icon:    icon,
+		App:        "monloader",
+		Name:       s.titleName(),
+		Comment:    "Downloader for monbooru",
+		Categories: "Graphics;Photography;",
+		Icon:       icon,
 	}
 }
 
-// Read back from disk on every load, so a file removed by hand shows as off.
-type desktopIntegration struct {
-	MenuSupported      bool
-	MenuEnabled        bool
-	AutostartSupported bool
-	AutostartEnabled   bool
-	TraySupported      bool
-	TrayEnabled        bool
-}
-
-func (d desktopIntegration) Supported() bool { return d.MenuSupported || d.AutostartSupported }
-
-func (s *Server) desktopIntegration() desktopIntegration {
-	h := s.DesktopHook()
-	return desktopIntegration{
-		MenuSupported:      h.MenuSupported(),
-		MenuEnabled:        h.MenuEnabled(),
-		AutostartSupported: h.AutostartSupported(),
-		AutostartEnabled:   h.AutostartEnabled(),
-		TraySupported:      desktop.TrayAvailable(),
-		TrayEnabled:        s.TrayEnabled(),
-	}
+func (s *Server) desktopIntegration() desktop.Integration {
+	return s.DesktopHook().Integration(s.TrayEnabled())
 }
 
 func (s *Server) TrayEnabled() bool { return s.cfg.Current().Desktop.Tray }
@@ -295,7 +235,7 @@ func (s *Server) desktopRestartPrompt() string { return s.desktopStopPrompt("Res
 
 func (s *Server) desktopActionsFragment(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "desktop_actions", map[string]any{
-		"CSRFToken":     s.csrfToken(sessionFromContext(r.Context())),
+		"CSRFToken":     s.sessions.CSRFToken(sessionFromContext(r.Context())),
 		"QuitPrompt":    s.desktopQuitPrompt(),
 		"RestartPrompt": s.desktopRestartPrompt(),
 	})

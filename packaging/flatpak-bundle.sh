@@ -5,6 +5,8 @@ set -eu
 app=io.github.monbooru.Monloader
 VERSION=$(tr -d '[:space:]' < VERSION.md)
 
+runtime=$(awk -F"'" '/^runtime-version:/ {print $2}' "packaging/flatpak/$app.yml")
+
 if ! err=$(bwrap --ro-bind / / --unshare-user --unshare-pid --proc /proc true 2>&1); then
   {
     echo "$err"
@@ -40,8 +42,8 @@ fi
 ok=0
 for attempt in 1 2 3; do
   if flatpak install --user -y --noninteractive flathub \
-       org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08 \
-       org.freedesktop.Sdk.Extension.golang//25.08; then
+       "org.freedesktop.Platform//$runtime" "org.freedesktop.Sdk//$runtime" \
+       "org.freedesktop.Sdk.Extension.golang//$runtime"; then
     ok=1
     break
   fi

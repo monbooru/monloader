@@ -17,7 +17,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 type Config struct {
@@ -291,6 +291,8 @@ type LookupConfig struct {
 type LookupService struct {
 	Order  int    `toml:"order"`
 	APIKey string `toml:"api_key,omitempty"`
+	// Empty keeps the service's public endpoint.
+	URL string `toml:"url,omitempty"`
 }
 
 // A new service also needs its LookupConfig field and a Service case.
@@ -768,6 +770,8 @@ func applyEnvOverrides(cfg *Config) {
 	envOverride("MONLOADER_PTR_ADDRESS", &cfg.PTR.Address, parseString)
 	envOverride("MONLOADER_PTR_ACCESS_KEY", &cfg.PTR.AccessKey, parseString)
 	envOverride("MONLOADER_LOOKUP_SAUCENAO_API_KEY", &cfg.Lookup.Saucenao.APIKey, parseString)
+	envOverride("MONLOADER_LOOKUP_IQDB_URL", &cfg.Lookup.Iqdb.URL, parseString)
+	envOverride("MONLOADER_LOOKUP_SAUCENAO_URL", &cfg.Lookup.Saucenao.URL, parseString)
 	envOverride("MONLOADER_DOWNLOADER_CONCURRENCY", &cfg.Downloader.Concurrency, strconv.Atoi)
 	envOverride("MONLOADER_DOWNLOADER_MAX_ITEMS_PER_JOB", &cfg.Downloader.MaxItemsPerJob, strconv.Atoi)
 	envOverride("MONLOADER_DOWNLOADER_HISTORY_RETENTION_DAYS", &cfg.Downloader.HistoryRetentionDays, strconv.Atoi)
@@ -842,5 +846,13 @@ func validate(cfg *Config) error {
 	cfg.Lookup.Iqdb.Order = max(cfg.Lookup.Iqdb.Order, 0)
 	cfg.Lookup.Saucenao.Order = max(cfg.Lookup.Saucenao.Order, 0)
 	cfg.Lookup.ScheduledDailyBudget = max(cfg.Lookup.ScheduledDailyBudget, 0)
+	for _, name := range LookupServices {
+		// The request carries the service's credentials in its query.
+		if raw := cfg.Lookup.Service(name).URL; raw != "" {
+			if u, err := url.Parse(raw); err != nil || u.Scheme != "https" || u.Host == "" {
+				return fmt.Errorf("lookup.%s.url %q must be an absolute https URL", name, raw)
+			}
+		}
+	}
 	return nil
 }

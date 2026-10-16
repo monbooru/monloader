@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
+	"github.com/monbooru/monloader/internal/shared/pairing"
 )
 
 type outboundPair struct {
@@ -56,7 +57,7 @@ func (s *Server) monbooruPairData(r *http.Request, msg string) map[string]any {
 		"Paired":    s.hasPairedToken("monbooru"),
 		"Waiting":   s.getPairAttempt() != nil,
 		"Message":   msg,
-		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
+		"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context())),
 	}
 }
 
@@ -115,7 +116,7 @@ func (s *Server) monbooruPairPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch status {
-	case "approved":
+	case string(pairing.Approved):
 		if token == "" {
 			s.render(w, "monbooru_pair", s.monbooruPairData(r, "waiting"))
 			return
@@ -141,12 +142,9 @@ func (s *Server) monbooruPairPoll(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "monbooru_pair", s.monbooruPairData(r, ""))
 		s.renderAuthTokensOOB(w, r)
 		s.renderDefaultGalleryOOB(w, r)
-	case "denied":
+	case string(pairing.Denied):
 		s.clearPairAttempt()
 		s.render(w, "monbooru_pair", s.monbooruPairData(r, "request denied in monbooru"))
-	case "expired":
-		s.clearPairAttempt()
-		s.render(w, "monbooru_pair", s.monbooruPairData(r, "request expired; try again"))
 	case "not_found":
 		s.clearPairAttempt()
 		s.render(w, "monbooru_pair", s.monbooruPairData(r, "monbooru no longer has this request - connect again"))

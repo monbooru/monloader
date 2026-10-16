@@ -13,11 +13,12 @@ import (
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/kwdict"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/contract"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 // Via lands in monbooru's images.origin and each pushed tag's tagger_name.
-const Via = "monloader"
+const Via = contract.Via
 
 // CategoryDirectlink is gallery-dl's pseudo-extractor for a bare media
 // URL with no booru behind it.

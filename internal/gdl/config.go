@@ -6,7 +6,7 @@ import (
 	"slices"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 // Per site, later layers win: profile behavior keys, profile options,

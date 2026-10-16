@@ -16,7 +16,7 @@ services:
       # - /path/to/monloader/ptr:/ptr
     environment:
       - MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8456
-      # Internal URL: how the container reach monbooru on the network
+      # Internal URL: how the container reaches monbooru on the network
       - MONLOADER_MONBOORU_API_URL=http://monbooru:8455
       # Browser URL: how you reach monbooru in the browser
       - MONLOADER_MONBOORU_WEB_URL=http://localhost:8455

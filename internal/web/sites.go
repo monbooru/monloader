@@ -131,7 +131,7 @@ func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 		"ExportLines":        exportLines,
 		"OptionsPublic":      optionsPublic,
 		"CookiesPlaceholder": filepath.Join(s.cfg.Current().GalleryDL.CookiesDir, name+".txt"),
-		"CSRFToken":          s.csrfToken(sessionFromContext(r.Context())),
+		"CSRFToken":          s.sessions.CSRFToken(sessionFromContext(r.Context())),
 		"Families":           mapping.ProfileFamilies,
 		"Kinds":              mapping.ProfileKinds,
 		"Auths":              mapping.ProfileAuths,

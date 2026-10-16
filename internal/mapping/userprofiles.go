@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 // The name becomes a profile file name and a managed-config key: a

@@ -80,7 +80,7 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 	}
 
 	pf := p.mapper.Map(w.Meta)
-	meta := pushMetaFrom(pf, w.Path, p.itemURL(w.Meta, snap.URL, snap.PageURL), kwdict.ID(w.Meta))
+	meta := pushMetaFrom(pf, w.Path, p.itemURL(w.Meta, snap.URL, snap.PageURL), w.Meta)
 	pushRes, err := p.client.ReplaceImageFile(ctx, snap.ImageID, w.Path, meta, snap.Gallery)
 	if err != nil {
 		// monbooru already recorded these refusals on its fetch status

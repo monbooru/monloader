@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 type ContribSender interface {

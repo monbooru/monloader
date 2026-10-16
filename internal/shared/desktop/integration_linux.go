@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/monbooru/monloader/internal/fsx"
 )
 
 func menuSupported() bool { return !Sandboxed() && !underSystemPrefix() }
@@ -42,15 +40,9 @@ func autostartPath(app string) (string, error) {
 	return filepath.Join(dir, "autostart", app+".desktop"), nil
 }
 
-func menuEnabled(app string) bool {
-	path, err := menuEntryPath(app)
-	return err == nil && fsx.IsFile(path)
-}
+func menuEnabled(app string) bool { return fileAt(menuEntryPath(app)) }
 
-func autostartEnabled(app string) bool {
-	path, err := autostartPath(app)
-	return err == nil && fsx.IsFile(path)
-}
+func autostartEnabled(app string) bool { return fileAt(autostartPath(app)) }
 
 func enableMenu(h Hook) error {
 	path, err := menuEntryPath(h.App)
@@ -65,13 +57,7 @@ func enableMenu(h Hook) error {
 	return writeFile(path, desktopEntry(h, icon, false))
 }
 
-func disableMenu(app string) error {
-	path, err := menuEntryPath(app)
-	if err != nil {
-		return err
-	}
-	return removeFile(path)
-}
+func disableMenu(app string) error { return removeAt(menuEntryPath(app)) }
 
 func enableAutostart(h Hook) error {
 	path, err := autostartPath(h.App)
@@ -81,13 +67,7 @@ func enableAutostart(h Hook) error {
 	return writeFile(path, desktopEntry(h, h.App, true))
 }
 
-func disableAutostart(app string) error {
-	path, err := autostartPath(app)
-	if err != nil {
-		return err
-	}
-	return removeFile(path)
-}
+func disableAutostart(app string) error { return removeAt(autostartPath(app)) }
 
 // GNOME reads X-GNOME-Autostart-enabled to tell whether its own settings
 // disabled the entry.
@@ -101,7 +81,7 @@ func desktopEntry(h Hook, icon string, autostart bool) string {
 	if icon != "" {
 		body += "Icon=" + icon + "\n"
 	}
-	body += "Terminal=false\nCategories=Graphics;Photography;\n"
+	body += "Terminal=false\nCategories=" + h.Categories + "\n"
 	if autostart {
 		body += "X-GNOME-Autostart-enabled=true\n"
 	}
@@ -130,7 +110,7 @@ func installIcon(h Hook) error {
 }
 
 func underSystemPrefix() bool {
-	dir := fsx.ExeDir()
+	dir := ExeDir()
 	if dir == "" {
 		return false
 	}
@@ -149,7 +129,12 @@ func writeFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o644)
 }
 
-func removeFile(path string) error {
+func fileAt(path string, err error) bool { return err == nil && IsFile(path) }
+
+func removeAt(path string, err error) error {
+	if err != nil {
+		return err
+	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}

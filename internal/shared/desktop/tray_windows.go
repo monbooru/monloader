@@ -130,7 +130,7 @@ func RunTray(ctx context.Context, m TrayMenu) error {
 	defer runtime.UnlockOSThread()
 
 	instance, _, _ := procGetModuleHandle.Call(0)
-	className, err := windows.UTF16PtrFromString("MonloaderTrayWindow")
+	className, err := windows.UTF16PtrFromString("MonTrayWindow")
 	if err != nil {
 		return err
 	}

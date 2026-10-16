@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/ptr"
@@ -314,9 +315,12 @@ func ContribSendRefusal(ctx context.Context, svc PTRService) *ContribRefusal {
 		return &ContribRefusal{http.StatusConflict, errPTRAccountRequired, "no personal account key is set"}
 	}
 	// Fresh, so a ban the janitors just set refuses the send now rather
-	// than after a receipted handoff.
+	// than after a receipted handoff; bounded well inside monbooru's 10 s
+	// send budget, past which the cached flag answers.
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	banned := false
-	if acc, err := svc.RefreshAccount(ctx); err == nil {
+	if acc, err := svc.RefreshAccount(rctx); err == nil {
 		banned = acc.Banned
 	} else if c := svc.Status().Contrib; c != nil {
 		banned = c.Banned
@@ -352,6 +356,11 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 	if commit && !h.contribAccountGate(r.Context(), w) {
 		return
 	}
+	// A sender that gave up waiting has already told its user the send
+	// failed, so nothing may land behind its back.
+	if r.Context().Err() != nil {
+		return
+	}
 	store, ok := h.contribStore(w)
 	if !ok {
 		return
@@ -382,7 +391,7 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{"results": results}
 	status := http.StatusOK
-	if commit && len(accepted) > 0 {
+	if commit && len(accepted) > 0 && r.Context().Err() == nil {
 		resp["job_id"] = h.queue.EnqueueContrib(accepted, false)
 		status = http.StatusAccepted
 	}

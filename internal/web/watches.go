@@ -40,7 +40,7 @@ func (s *Server) watchesScreen(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) watchRows(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"CSRFToken": s.csrfToken(sessionFromContext(r.Context()))}
+	data := map[string]any{"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context()))}
 	s.fillWatches(data)
 	s.render(w, "watch_rows", data)
 }

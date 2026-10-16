@@ -1,15 +1,13 @@
-// Package desktop is the per-OS side of the -desktop profile, copied from
-// monbooru with internal/fsx/exedir.go and kept in step by hand: a fix
-// here belongs there too.
+// Package desktop is the per-OS side of the -desktop profile.
 package desktop
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-
-	"github.com/monbooru/monloader/internal/fsx"
+	"strings"
 )
 
 type Layout struct {
@@ -34,7 +32,7 @@ func Resolve(app, explicitConfig string) (Layout, error) {
 		// folder is not seeded.
 		if !Sandboxed() {
 			if dir := InstallDir(); dir != "" {
-				if p := filepath.Join(dir, app+".toml"); fsx.IsFile(p) {
+				if p := filepath.Join(dir, app+".toml"); IsFile(p) {
 					l.ConfigPath, l.Portable = p, true
 					l.DataDir = filepath.Join(dir, "data")
 				}
@@ -77,8 +75,8 @@ func dataHome(app string) (string, error) {
 	return filepath.Join(dir, app, "data"), nil
 }
 
-// Program is the AppImage itself when run from one: the executable's
-// mount is gone once it exits.
+// Program is the AppImage itself when run from one: the executable's mount
+// is gone once it exits.
 func Program() string {
 	if p := os.Getenv("APPIMAGE"); p != "" {
 		return p
@@ -93,7 +91,7 @@ func Program() string {
 	return exe
 }
 
-// InstallDir is not for bundled tools: fsx.ExeDir has to keep pointing
+// InstallDir is not for bundled tools: ExeDir has to keep pointing
 // inside the AppImage mount.
 func InstallDir() string {
 	p := Program()
@@ -107,5 +105,53 @@ func Sandboxed() bool {
 	if os.Getenv("FLATPAK_ID") != "" {
 		return true
 	}
-	return fsx.IsFile("/.flatpak-info")
+	return IsFile("/.flatpak-info")
+}
+
+func PicturesDir() string {
+	if runtime.GOOS == "windows" {
+		if home := os.Getenv("USERPROFILE"); home != "" {
+			return filepath.Join(home, "Pictures")
+		}
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if dir := xdgUserDir("XDG_PICTURES_DIR", home); dir != "" {
+		return dir
+	}
+	return filepath.Join(home, "Pictures")
+}
+
+func xdgUserDir(key, home string) string {
+	cfgDir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	f, err := os.Open(filepath.Join(cfgDir, "user-dirs.dirs"))
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	scan := bufio.NewScanner(f)
+	for scan.Scan() {
+		line := strings.TrimSpace(scan.Text())
+		rest, ok := strings.CutPrefix(line, key+"=")
+		if !ok {
+			continue
+		}
+		val := strings.Trim(strings.TrimSpace(rest), `"`)
+		val = strings.TrimSpace(strings.Replace(val, "$HOME", home, 1))
+		if val == "" {
+			continue
+		}
+		// xdg-user-dirs writes $HOME itself for a disabled folder; that
+		// must not become the gallery.
+		if val = filepath.Clean(val); val != home {
+			return val
+		}
+	}
+	return ""
 }

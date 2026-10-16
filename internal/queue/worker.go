@@ -6,8 +6,8 @@ import (
 	"runtime/debug"
 	"slices"
 
-	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/outcome"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 func (q *Queue) Start() {

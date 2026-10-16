@@ -9,18 +9,19 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/outcome"
+	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
 type JobStatus string
 
 const (
-	JobQueued      JobStatus = "queued"
-	JobRunning     JobStatus = "running"
-	JobSucceeded   JobStatus = "succeeded"
-	JobPartial     JobStatus = "partial"
-	JobFailed      JobStatus = "failed"
-	JobCanceled    JobStatus = "canceled"
-	JobInterrupted JobStatus = "interrupted"
+	JobQueued      JobStatus = contract.JobQueued
+	JobRunning     JobStatus = contract.JobRunning
+	JobSucceeded   JobStatus = contract.JobSucceeded
+	JobPartial     JobStatus = contract.JobPartial
+	JobFailed      JobStatus = contract.JobFailed
+	JobCanceled    JobStatus = contract.JobCanceled
+	JobInterrupted JobStatus = contract.JobInterrupted
 )
 
 func ValidJobStatus(s JobStatus) bool {
@@ -76,7 +77,7 @@ type JobKind string
 
 const (
 	KindMetadata   JobKind = "metadata"
-	KindLookup     JobKind = "lookup"
+	KindLookup     JobKind = contract.KindLookup
 	KindHashImport JobKind = "hash_import"
 	KindReplace    JobKind = "replace"
 	KindContrib    JobKind = "contrib"

@@ -18,14 +18,16 @@ import (
 
 	"github.com/monbooru/monloader/internal/api"
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/desktop"
 	"github.com/monbooru/monloader/internal/gdl"
-	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/shared/desktop"
+	"github.com/monbooru/monloader/internal/shared/logx"
+	"github.com/monbooru/monloader/internal/shared/pairing"
+	"github.com/monbooru/monloader/internal/shared/session"
 	"github.com/monbooru/monloader/internal/similarity"
 	"github.com/monbooru/monloader/internal/sitestate"
 	webFS "github.com/monbooru/monloader/web"
@@ -68,7 +70,7 @@ type Server struct {
 
 	pairMu      sync.Mutex
 	pairAttempt *outboundPair
-	pairs       *pairStore
+	pairs       *pairing.Store[pairing.Request, *pairing.Request]
 
 	queue     *queue.Queue
 	client    *monbooru.Client
@@ -85,12 +87,12 @@ type Server struct {
 	statusMu          sync.Mutex
 	monbooruConn      string
 	monbooruVersion   string
+	monbooruMismatch  string
 	monbooruCheckedAt time.Time
 
-	sessions   *SessionStore
-	csrfSecret []byte
-	tmpl       *template.Template
-	staticFS   fs.FS
+	sessions *session.Store
+	tmpl     *template.Template
+	staticFS fs.FS
 
 	desktop      bool
 	logDir       string
@@ -130,15 +132,14 @@ func NewServer(cfg *config.Provider, configPath, stateDir, workRoot string, q *q
 		workRoot:     workRoot,
 		queue:        q,
 		client:       client,
-		pairs:        newPairStore(),
+		pairs:        pairing.NewStore[pairing.Request](),
 		runner:       runner,
 		mapper:       mapper,
 		catalog:      catalog,
 		siteState:    siteState,
 		ptr:          ptrEngine,
 		sim:          sim,
-		sessions:     NewSessionStore(),
-		csrfSecret:   mustRandBytes(32),
+		sessions:     session.New(),
 		tmpl:         tmpl,
 		staticFS:     staticFS,
 		desktop:      dk.Active,
@@ -432,7 +433,7 @@ func (s *Server) base(r *http.Request, nav, title string) map[string]any {
 	return map[string]any{
 		"Title":              title,
 		"ActiveNav":          nav,
-		"CSRFToken":          s.csrfToken(sessionFromContext(r.Context())),
+		"CSRFToken":          s.sessions.CSRFToken(sessionFromContext(r.Context())),
 		"AuthEnabled":        s.cfg.Current().Auth.EnablePassword,
 		"Version":            Version,
 		"Build":              BuildLabel(),
@@ -445,6 +446,7 @@ func (s *Server) base(r *http.Request, nav, title string) map[string]any {
 		"BooruFavicon":       s.booruFaviconURL(),
 		"Conn":               conn,
 		"MonbooruVersion":    connVer,
+		"MonbooruMismatch":   s.monbooruAPIMismatch(),
 		"Paused":             s.queue.Paused(),
 		"MonbooruPaired":     s.hasPairedToken("monbooru"),
 		"MonbooruConfigured": s.monbooruConfigured(),
@@ -596,9 +598,22 @@ func (s *Server) monbooruStatusCached(ctx context.Context) (status, version stri
 	s.statusMu.Unlock()
 
 	status, version = s.checkMonbooru(ctx)
+	mismatch := ""
+	if status == "ok" {
+		mismatch = api.PeerMismatch(s.client.APIPair(ctx))
+	}
 
 	s.statusMu.Lock()
-	s.monbooruConn, s.monbooruVersion, s.monbooruCheckedAt = status, version, time.Now()
+	if mismatch != "" && mismatch != s.monbooruMismatch {
+		logx.Warnf("monbooru: %s", mismatch)
+	}
+	s.monbooruConn, s.monbooruVersion, s.monbooruMismatch, s.monbooruCheckedAt = status, version, mismatch, time.Now()
 	s.statusMu.Unlock()
 	return status, version
+}
+
+func (s *Server) monbooruAPIMismatch() string {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.monbooruMismatch
 }

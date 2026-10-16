@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/kwdict"
-	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/shared/contract"
+	"github.com/monbooru/monloader/internal/shared/logx"
 	"github.com/monbooru/monloader/internal/similarity"
 )
 
@@ -40,7 +41,7 @@ func (p *Processor) processLookup(ctx context.Context, job, snap *queue.Job) err
 
 // monbooru matches this name to render the PTR's line apart from the
 // online walk.
-const ptrTrailName = "Public Tag Repository"
+const ptrTrailName = contract.TrailPTR
 
 // A PTR enrich is unverified, so only the caller's image/hash pair ties the
 // tags to the image, and a replace can leave that hash stale. An error or a
@@ -92,7 +93,7 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	var warnings []string
 	if ptrHit {
 		res, enrichErr := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
-			PostFields: monbooru.PostFields{Tags: ptrTags, Source: "ptr"},
+			PostFields: monbooru.PostFields{Tags: ptrTags, Source: contract.SourcePTR},
 			Verify:     false,
 		})
 		if enrichErr != nil {
@@ -270,7 +271,7 @@ func (p *Processor) lookupPTR(ctx context.Context, job, snap *queue.Job) error {
 	}
 	tags := mapping.MapPTRTags(rawTags)
 	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
-		PostFields: monbooru.PostFields{Tags: tags, Source: "ptr"},
+		PostFields: monbooru.PostFields{Tags: tags, Source: contract.SourcePTR},
 		Verify:     false,
 	})
 	if err != nil {

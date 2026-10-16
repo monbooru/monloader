@@ -1,5 +1,19 @@
 # Changelog
 
+## [v1.13.1] - 2026-10-16
+### Added
+- Set custom iqdb and SauceNAO endpoints in the config.
+- The connection light now flags a monbooru whose API contract does not match.
+
+### Changed
+- The Flatpak no longer sees home or removable media.
+
+### Fixed
+- Long non-Latin commentary is no longer cut short on push.
+- The browser extension reads the desktop first-run refusal instead of reporting monloader unreachable.
+- Upgrade jobs read "upgrade" in the queue instead of "replace".
+- Linux menu and autostart entries can launch from paths with special characters.
+
 ## [v1.13.0] - 2026-10-11
 ### Added
 - Save search and schedule them in the Watched tab. ([#28](https://github.com/monbooru/monloader/issues/28))
@@ -14,7 +28,7 @@
 - Bundled gallery-dl updated to 1.32.15.
 
 ### Fixed
-- Pixiv and Civitai imports preserve per-post links, tags, IDs, and image ratings. ([#30](https://github.com/monbooru/monloader/issues/30), [#29](https://github.com/monbooru/monloader/issues/29))
+- Pixiv and Civitai imports preserve per-post links, tags, IDs, and image ratings. Reset any custom Pixiv or Civitai profile if you're using custom settings. ([#30](https://github.com/monbooru/monloader/issues/30), [#29](https://github.com/monbooru/monloader/issues/29))
 - CBZ filenames are safe for monbooru's filesystem, including Windows-backed galleries. ([#31](https://github.com/monbooru/monloader/issues/31))
 - Long gallery-dl output no longer leaves downloads stuck.
 - Changing the UI password signs out all other browser sessions.
@@ -25,6 +39,9 @@
 
 ### Removed
 - The 3dbooru profile; bundled gallery-dl no longer ships its extractor.
+
+### Internal
+- Downloading AVIF and JPEG XL to monbooru requires monbooru v1.22.0 or newer.
 
 Thanks to @ivabus for the suggestion (https://github.com/monbooru/monloader/issues/28).
 Thanks to @ElectricTea for the suggestion (https://github.com/monbooru/monloader/issues/32).

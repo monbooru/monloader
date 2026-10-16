@@ -97,7 +97,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	}
 
 	mux.HandleFunc("OPTIONS /api/v1/", func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w, r)
+		SetCORS(w, r)
 		w.WriteHeader(http.StatusNoContent)
 	})
 }
@@ -105,7 +105,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 // CORS goes on before the checks so the extension can read a refusal.
 func (h *Handler) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w, r)
+		SetCORS(w, r)
 		cfg := h.cfg.Current()
 		if len(cfg.Auth.Tokens) == 0 {
 			apiError(w, http.StatusServiceUnavailable, errAPIDisabled, "API is disabled: generate an API token in Settings to enable it")
@@ -138,7 +138,7 @@ func scopeForMethod(method string) string {
 }
 
 // Any Origin is reflected: the bearer token, not CORS, is the gate.
-func setCORS(w http.ResponseWriter, r *http.Request) {
+func SetCORS(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		origin = "*"

@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 // Catalog is replaced wholesale, so a reader never mixes two binaries'

@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/outcome"
@@ -48,6 +47,9 @@ type PostFields struct {
 
 type PushMeta struct {
 	PostFields
+	// Outside PostFields, whose JSON names are the enrich's: there it is
+	// source_md5.
+	MD5             string
 	Filename        string
 	Collection      string
 	CollectionOrder int
@@ -284,8 +286,8 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 	payload.URL = trimToLen(payload.URL, maxURLLen)
 	payload.Commentary = trimToLen(payload.Commentary, maxCommentaryLen)
 	payload.CommentaryTranslated = trimToLen(payload.CommentaryTranslated, maxCommentaryLen)
-	payload.CommentaryDText = trimToLen(payload.CommentaryDText, maxCommentaryLen)
-	payload.CommentaryTranslatedDText = trimToLen(payload.CommentaryTranslatedDText, maxCommentaryLen)
+	payload.CommentaryDText = trimToLen(payload.CommentaryDText, maxCommentaryDTextLen)
+	payload.CommentaryTranslatedDText = trimToLen(payload.CommentaryTranslatedDText, maxCommentaryDTextLen)
 	payload.Original = trimToLen(payload.Original, maxOriginalLen)
 	payload.ParentURL = trimToLen(payload.ParentURL, maxURLLen)
 	buf, err := json.Marshal(payload)
@@ -433,23 +435,24 @@ func writeFilePart(w *multipart.Writer, filename string, src io.Reader) error {
 }
 
 // monbooru rejects longer values, so they are trimmed before the push; a
-// directlink's URL can pass 2048.
+// directlink's URL can pass 2048. The caps count characters, not bytes.
 const (
-	maxSourceLen     = 200
-	maxPostIDLen     = 64
-	maxURLLen        = 2048
-	maxCommentaryLen = 10000
-	maxOriginalLen   = 2048
+	maxSourceLen          = 200
+	maxPostIDLen          = 64
+	maxURLLen             = 2048
+	maxCommentaryLen      = 10000
+	maxCommentaryDTextLen = 4 * maxCommentaryLen
+	maxOriginalLen        = 2048
 )
 
 func trimToLen(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	for limit > 0 && !utf8.RuneStart(s[limit]) {
+	for i := range s {
+		if limit == 0 {
+			return s[:i]
+		}
 		limit--
 	}
-	return s[:limit]
+	return s
 }
 
 // Empty fields are omitted so a bare push touches nothing on monbooru's
@@ -476,8 +479,8 @@ func writeMetaFields(w *multipart.Writer, meta PushMeta) error {
 	field("url", trimToLen(meta.URL, maxURLLen))
 	field("commentary", trimToLen(meta.Commentary, maxCommentaryLen))
 	field("commentary_translated", trimToLen(meta.CommentaryTranslated, maxCommentaryLen))
-	field("commentary_dtext", trimToLen(meta.CommentaryDText, maxCommentaryLen))
-	field("commentary_translated_dtext", trimToLen(meta.CommentaryTranslatedDText, maxCommentaryLen))
+	field("commentary_dtext", trimToLen(meta.CommentaryDText, maxCommentaryDTextLen))
+	field("commentary_translated_dtext", trimToLen(meta.CommentaryTranslatedDText, maxCommentaryDTextLen))
 	field("original", trimToLen(meta.Original, maxOriginalLen))
 	field("parent_url", trimToLen(meta.ParentURL, maxURLLen))
 	if len(meta.Notes) > 0 {
@@ -499,6 +502,7 @@ func writeMetaFields(w *multipart.Writer, meta PushMeta) error {
 		field("post_size", strconv.FormatInt(meta.PostSize, 10))
 	}
 	field("post_ext", meta.PostExt)
+	field("md5", meta.MD5)
 	return err
 }
 
@@ -596,6 +600,21 @@ func (c *Client) TestConnection(ctx context.Context) (string, error) {
 	return info.Version, nil
 }
 
+// APIPair reads monbooru's /health, which needs no token; zeroes when it
+// predates the fields.
+func (c *Client) APIPair(ctx context.Context) (api, minPeer int) {
+	resp, body, err := c.do(ctx, http.MethodGet, c.base()+"/health", "", nil, "")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return 0, 0
+	}
+	var h struct {
+		API        int `json:"api"`
+		MinPeerAPI int `json:"min_peer_api"`
+	}
+	_ = json.Unmarshal(body, &h)
+	return h.API, h.MinPeerAPI
+}
+
 // Unauthenticated: the operator approves the request in monbooru.
 // peerToken is what monbooru will call back with.
 func (c *Client) PairRequest(ctx context.Context, peerToken, selfURL string, scopes []string) (string, error) {
@@ -620,10 +639,9 @@ func (c *Client) PairRequest(ctx context.Context, peerToken, selfURL string, sco
 		}
 		return "", fmt.Errorf("monbooru pairing request failed: %s", resp.Status)
 	}
-	// A monbooru still in its first-run wizard redirects the API there,
-	// into a 200 carrying HTML.
+	// A 200 from anything but monbooru's pairing endpoint carries no id.
 	if out.RequestID == "" {
-		return "", fmt.Errorf("monbooru answered the pairing request with no request id; it may not be set up yet")
+		return "", fmt.Errorf("monbooru answered the pairing request with no request id")
 	}
 	return out.RequestID, nil
 }

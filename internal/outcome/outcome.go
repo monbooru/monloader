@@ -2,44 +2,46 @@
 // branch on these strings.
 package outcome
 
+import "github.com/monbooru/monloader/internal/shared/contract"
+
 type Outcome string
 
 const (
-	Created   Outcome = "created"
-	Duplicate Outcome = "duplicate"
-	Enriched  Outcome = "enriched"
+	Created   Outcome = contract.OutcomeCreated
+	Duplicate Outcome = contract.OutcomeDuplicate
+	Enriched  Outcome = contract.OutcomeEnriched
 	// Matched is a hash lookup that found tags; unlike Enriched nothing
 	// was written, the caller applies them.
-	Matched            Outcome = "matched"
-	Replaced           Outcome = "replaced"
-	SkippedArchive     Outcome = "skipped_archive"
-	SkippedUnsupported Outcome = "skipped_unsupported"
-	Failed             Outcome = "failed"
+	Matched            Outcome = contract.OutcomeMatched
+	Replaced           Outcome = contract.OutcomeReplaced
+	SkippedArchive     Outcome = contract.OutcomeSkippedArchive
+	SkippedUnsupported Outcome = contract.OutcomeSkippedUnsupported
+	Failed             Outcome = contract.OutcomeFailed
 )
 
 const (
-	ErrCodeDownloadFailed      = "download_failed"
-	ErrCodeUnsupportedURL      = "unsupported_url"
-	ErrCodeAuthRequired        = "auth_required"
-	ErrCodeBlocked             = "blocked"
-	ErrCodeRateLimited         = "rate_limited"
-	ErrCodeNetworkUnreachable  = "network_unreachable"
-	ErrCodeFileTooLarge        = "file_too_large"
-	ErrCodeMonbooruUnreachable = "monbooru_unreachable"
-	ErrCodeMonbooruRejected    = "monbooru_rejected"
-	ErrCodeHashMismatch        = "hash_mismatch"
+	ErrCodeDownloadFailed      = contract.CodeDownloadFailed
+	ErrCodeUnsupportedURL      = contract.CodeUnsupportedURL
+	ErrCodeAuthRequired        = contract.CodeAuthRequired
+	ErrCodeBlocked             = contract.CodeBlocked
+	ErrCodeRateLimited         = contract.CodeRateLimited
+	ErrCodeNetworkUnreachable  = contract.CodeNetworkUnreachable
+	ErrCodeFileTooLarge        = contract.CodeFileTooLarge
+	ErrCodeMonbooruUnreachable = contract.CodeMonbooruUnreachable
+	ErrCodeMonbooruRejected    = contract.CodeMonbooruRejected
+	ErrCodeHashMismatch        = contract.CodeHashMismatch
 	// ErrCodeAlreadyExists and ErrCodeWrongType are monbooru's 409 replace
 	// refusals: the original already exists as another image, or the
 	// target or the new file is not an image.
-	ErrCodeAlreadyExists      = "already_exists"
-	ErrCodeWrongType          = "wrong_type"
-	ErrCodeMappingFailed      = "mapping_failed"
-	ErrCodeCanceled           = "canceled"
-	ErrCodeHashNotFound       = "hash_not_found"
-	ErrCodePTRUnavailable     = "ptr_unavailable"
-	ErrCodePTRAccountRequired = "ptr_account_required"
-	ErrCodePTRBanned          = "ptr_banned"
-	ErrCodePTRSyncing         = "ptr_syncing"
+	ErrCodeAlreadyExists      = contract.CodeAlreadyExists
+	ErrCodeWrongType          = contract.CodeWrongType
+	ErrCodeMappingFailed      = contract.CodeMappingFailed
+	ErrCodeCanceled           = contract.CodeCanceled
+	ErrCodeHashNotFound       = contract.CodeHashNotFound
+	ErrCodePTRUnavailable     = contract.CodePTRUnavailable
+	ErrCodePTRAccountRequired = contract.CodePTRAccountRequired
+	ErrCodePTRBanned          = contract.CodePTRBanned
+	ErrCodePTRSyncing         = contract.CodePTRSyncing
 )
 
 type CodedError struct {

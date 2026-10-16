@@ -14,8 +14,8 @@ import (
 
 	"github.com/monbooru/monloader/internal/api"
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/ptr"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 type ptrEngine interface {
@@ -62,7 +62,7 @@ func (s *Server) ptrData(r *http.Request) ptrView {
 		HasIndex:  ptr.IndexExists(path),
 		FreeBytes: ptr.FreeBytes(path),
 		MinFreeGB: cfg.MinFreeGB,
-		CSRFToken: s.csrfToken(sessionFromContext(r.Context())),
+		CSRFToken: s.sessions.CSRFToken(sessionFromContext(r.Context())),
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		v.PathMissing = true

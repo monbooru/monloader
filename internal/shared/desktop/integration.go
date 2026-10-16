@@ -6,12 +6,14 @@ import (
 	"strings"
 )
 
-// Hook's Icon must be a PNG; nil installs none.
+// Hook's Icon must be a PNG; nil installs none. Categories is the menu
+// entry's freedesktop list, ";"-terminated.
 type Hook struct {
-	App     string
-	Name    string
-	Comment string
-	Icon    []byte
+	App        string
+	Name       string
+	Comment    string
+	Categories string
+	Icon       []byte
 }
 
 // MenuSupported is false for a packaged or sandboxed install, which ships
@@ -44,6 +46,29 @@ func (h Hook) SetAutostart(on bool) error {
 	return disableAutostart(h.App)
 }
 
+// Menu and autostart are read from disk so a hand-removed file shows as off.
+type Integration struct {
+	MenuSupported      bool
+	MenuEnabled        bool
+	AutostartSupported bool
+	AutostartEnabled   bool
+	TraySupported      bool
+	TrayEnabled        bool
+}
+
+func (d Integration) Supported() bool { return d.MenuSupported || d.AutostartSupported }
+
+func (h Hook) Integration(trayEnabled bool) Integration {
+	return Integration{
+		MenuSupported:      h.MenuSupported(),
+		MenuEnabled:        h.MenuEnabled(),
+		AutostartSupported: h.AutostartSupported(),
+		AutostartEnabled:   h.AutostartEnabled(),
+		TraySupported:      TrayAvailable(),
+		TrayEnabled:        trayEnabled,
+	}
+}
+
 // Unquoted: each sink quotes by its own rules. In a sandbox only the
 // host's flatpak run form can launch the app.
 func launchTarget() (string, []string) {
@@ -67,9 +92,10 @@ func LaunchCommand() string {
 }
 
 func execQuote(s string) string {
-	if !strings.ContainsAny(s, " \t\"'\\$`") {
-		return s
+	if strings.ContainsAny(s, " \t\n\"'\\$`<>~|&;*?#()") {
+		// The key file's string escapes are undone first: each quoting backslash is doubled.
+		r := strings.NewReplacer(`\`, `\\\\`, `"`, `\\"`, "`", "\\\\`", `$`, `\\$`)
+		s = `"` + r.Replace(s) + `"`
 	}
-	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`", `$`, `\$`)
-	return `"` + r.Replace(s) + `"`
+	return strings.ReplaceAll(s, "%", "%%")
 }

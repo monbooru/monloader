@@ -17,9 +17,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/monbooru/monloader/internal/shared/desktop"
+
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/fsx"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 // A managed install only shadows the bundled binary, the fallback a revert
@@ -55,7 +56,7 @@ func ManagedBinary(root string) string {
 	if root == "" {
 		return ""
 	}
-	if p := filepath.Join(root, standaloneName()); fsx.IsFile(p) {
+	if p := filepath.Join(root, standaloneName()); desktop.IsFile(p) {
 		return p
 	}
 	venv := filepath.Join(root, "venv")
@@ -92,7 +93,7 @@ func ManagedInstalled(root string) bool {
 	if root == "" {
 		return false
 	}
-	if fsx.IsFile(filepath.Join(root, standaloneName())) {
+	if desktop.IsFile(filepath.Join(root, standaloneName())) {
 		return true
 	}
 	_, err := os.Stat(filepath.Join(root, "venv"))
@@ -120,12 +121,12 @@ func EffectiveBinary(cfg *config.Config, root string) string {
 }
 
 func bundledBinary() string {
-	dir := fsx.ExeDir()
+	dir := desktop.ExeDir()
 	if dir == "" {
 		return ""
 	}
 	p := filepath.Join(dir, standaloneName())
-	if !fsx.IsFile(p) {
+	if !desktop.IsFile(p) {
 		return ""
 	}
 	if runtime.GOOS != "windows" {

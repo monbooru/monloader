@@ -18,10 +18,10 @@ import (
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/gdl"
-	"github.com/monbooru/monloader/internal/logx"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 func (s *Server) addScreen(w http.ResponseWriter, r *http.Request) {
@@ -257,7 +257,7 @@ func (s *Server) queueActionsFragment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) queueRows(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"CSRFToken": s.csrfToken(sessionFromContext(r.Context()))}
+	data := map[string]any{"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context()))}
 	s.fillQueue(r, data)
 	s.render(w, "queue_rows", data)
 }
@@ -527,7 +527,7 @@ func (s *Server) then(op func(), render http.HandlerFunc) http.HandlerFunc {
 func (s *Server) renderPauseToggle(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "pause_toggle", map[string]any{
 		"Paused":    s.queue.Paused(),
-		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
+		"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context())),
 	})
 }
 
@@ -565,10 +565,11 @@ func (s *Server) renderConnLight(w http.ResponseWriter, status, version string) 
 	// The poll must answer a resolved state: "checking" arms the load
 	// trigger, so each swap would poll again a second later.
 	s.render(w, "conn_light", map[string]any{
-		"Conn":            status,
-		"MonbooruWebURL":  s.monbooruWebLink(),
-		"MonbooruVersion": version,
-		"MonbooruPaired":  s.hasPairedToken("monbooru"),
+		"Conn":             status,
+		"MonbooruWebURL":   s.monbooruWebLink(),
+		"MonbooruVersion":  version,
+		"MonbooruMismatch": s.monbooruAPIMismatch(),
+		"MonbooruPaired":   s.hasPairedToken("monbooru"),
 	})
 }
 
@@ -679,7 +680,7 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 
 	s.fillGalleryFields(r, data)
 
-	csrf := s.csrfToken(sessionFromContext(r.Context()))
+	csrf := s.sessions.CSRFToken(sessionFromContext(r.Context()))
 	boorus, manga, other := s.visibleSites()
 	data["BooruSites"] = s.siteRows(boorus, csrf)
 	data["MangaSites"] = s.siteRows(manga, csrf)
@@ -692,7 +693,7 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 	data["Stats"] = s.gatherStats()
 	data["MonbooruPaired"] = s.hasPairedToken("monbooru")
 	data["MonbooruPairWaiting"] = s.getPairAttempt() != nil
-	data["MonsenderPending"] = s.pairs.listPending()
+	data["MonsenderPending"] = s.pairs.ListPending()
 	data["MonsenderPaired"] = s.hasPairedToken("monsender")
 	// Empty except on a refused save; the fields read the typed values
 	// from here first.

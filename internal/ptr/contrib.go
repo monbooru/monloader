@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 var ErrAccountExists = errors.New("a personal account key is already set")

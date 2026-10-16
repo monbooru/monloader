@@ -8,7 +8,7 @@ package desktop
 #include <gtk/gtk.h>
 #include <libayatana-appindicator/app-indicator.h>
 
-void monloader_tray_connect(GtkWidget *item, int which);
+void desktop_tray_connect(GtkWidget *item, int which);
 */
 import "C"
 
@@ -31,8 +31,8 @@ var trayState struct {
 	suppress  bool
 }
 
-//export monloaderTrayOpen
-func monloaderTrayOpen() {
+//export desktopTrayOpen
+func desktopTrayOpen() {
 	trayState.mu.Lock()
 	open := trayState.menu.Open
 	trayState.mu.Unlock()
@@ -41,8 +41,8 @@ func monloaderTrayOpen() {
 	}
 }
 
-//export monloaderTrayQuit
-func monloaderTrayQuit() {
+//export desktopTrayQuit
+func desktopTrayQuit() {
 	trayState.mu.Lock()
 	quit := trayState.menu.Quit
 	trayState.mu.Unlock()
@@ -52,8 +52,8 @@ func monloaderTrayQuit() {
 	}
 }
 
-//export monloaderTrayAutostart
-func monloaderTrayAutostart() {
+//export desktopTrayAutostart
+func desktopTrayAutostart() {
 	if trayState.suppress {
 		return
 	}
@@ -115,7 +115,7 @@ func RunTray(ctx context.Context, m TrayMenu) error {
 		C.gtk_check_menu_item_set_active(trayState.autostart, cbool(on))
 		C.gtk_menu_shell_append((*C.GtkMenuShell)(unsafe.Pointer(menu)), item)
 		C.gtk_widget_show(item)
-		C.monloader_tray_connect(item, 1)
+		C.desktop_tray_connect(item, 1)
 	}
 	appendTrayItem(menu, "Quit", 2)
 	C.app_indicator_set_menu(indicator, (*C.GtkMenu)(unsafe.Pointer(menu)))
@@ -139,5 +139,5 @@ func appendTrayItem(menu *C.GtkWidget, label string, which C.int) {
 	item := C.gtk_menu_item_new_with_label(text)
 	C.gtk_menu_shell_append((*C.GtkMenuShell)(unsafe.Pointer(menu)), item)
 	C.gtk_widget_show(item)
-	C.monloader_tray_connect(item, which)
+	C.desktop_tray_connect(item, which)
 }

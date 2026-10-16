@@ -9,7 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/monbooru/monloader/internal/desktop"
+	"github.com/monbooru/monloader/internal/shared/desktop"
 )
 
 func runHealthcheck(argv []string) {

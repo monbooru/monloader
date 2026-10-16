@@ -7,9 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/monbooru/monloader/internal/api"
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/desktop"
-	"github.com/monbooru/monloader/internal/logx"
+	"github.com/monbooru/monloader/internal/shared/desktop"
+	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 // A loopback probe: the process answers at once or is not there.
@@ -29,7 +30,7 @@ type setupData struct {
 	Menu         bool
 	Autostart    bool
 	Port         string
-	Integration  desktopIntegration
+	Integration  desktop.Integration
 }
 
 func (s *Server) setupPending() bool {
@@ -43,11 +44,15 @@ func (s *Server) SetupMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		// API clients get a JSON refusal they can show; a 303 to the
-		// wizard tells them nothing.
+		// wizard tells them nothing. A preflight goes through, or the
+		// extension could not read the refusal.
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			_, _ = w.Write([]byte(`{"error":"monloader has not been set up yet - finish the first-run setup in its window","code":"setup_required"}`))
+			if r.Method == http.MethodOptions {
+				next.ServeHTTP(w, r)
+				return
+			}
+			api.SetCORS(w, r)
+			pairError(w, http.StatusConflict, api.ErrSetupRequired, "monloader has not been set up yet - finish the first-run setup in its window")
 			return
 		}
 		if r.Header.Get("HX-Request") == "true" {
@@ -93,7 +98,7 @@ func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, d setupData
 	d.Port = port
 	d.BooruName = s.booruName()
 	d.TitleName = s.titleName()
-	d.CSRFToken = s.csrfToken(sessionFromContext(r.Context()))
+	d.CSRFToken = s.sessions.CSRFToken(sessionFromContext(r.Context()))
 	d.Paired = s.hasPairedToken("monbooru")
 	d.Integration = s.desktopIntegration()
 	if d.APIURL != "" {

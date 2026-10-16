@@ -748,6 +748,8 @@ var apiSchemas = []apiSchema{
 		{Name: "status", Type: "string"},
 		{Name: "version", Type: "string"},
 		{Name: "gallerydl_version", Type: "string"},
+		{Name: "api", Type: "integer", Description: "The /api/v1 contract's number; it moves when a path, field, status code or vocabulary word a peer reads changes"},
+		{Name: "min_peer_api", Type: "integer", Description: "The oldest monbooru api this monloader still drives"},
 	}},
 	{Name: "EnqueueResponse", Props: []prop{
 		{Name: "job_id", Type: "integer"},
@@ -960,7 +962,7 @@ func anchorize(s string) string {
 }
 
 func (h *Handler) openAPIJSON(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
+	SetCORS(w, r)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(buildSpec(h.cfg.Current().Server.BaseURL, h.version, h.endpoints()))
 }
@@ -975,7 +977,7 @@ type docsView struct {
 }
 
 func (h *Handler) openAPIDocs(w http.ResponseWriter, r *http.Request) {
-	setCORS(w, r)
+	SetCORS(w, r)
 	view := docsView{
 		Title:        "monloader API",
 		Version:      h.version,
