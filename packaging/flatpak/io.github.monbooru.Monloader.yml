@@ -19,11 +19,11 @@ modules:
     sources:
       - type: file
         only-arches: [x86_64]
-        url: https://codeberg.org/mikf/gallery-dl/releases/download/v1.32.15/gallery-dl.bin
-        sha256: 8c586d0bd6e4814e14b2b05278dc19ed636cf9a0b7b089cb1f18a722179c714f
+        url: https://codeberg.org/mikf/gallery-dl/releases/download/v1.32.17/gallery-dl.bin
+        sha256: ccf4d304408a0d57ef78d4ad9221aaad964e36b57466109b48595a52377dcdcc
       - type: file
         dest-filename: LICENSE.gallery-dl
-        url: https://codeberg.org/mikf/gallery-dl/raw/tag/v1.32.15/LICENSE
+        url: https://codeberg.org/mikf/gallery-dl/raw/tag/v1.32.17/LICENSE
         sha256: 8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
 
   - name: monloader
@@ -35,6 +35,7 @@ modules:
     build-commands:
       - |
         set -eu
+        export GOTOOLCHAIN=go$(awk '/^go /{print $2; exit}' go.mod)
         . ./packaging/release-env.sh
         CGO_ENABLED=0 go build \
           -ldflags="-s -w $LDFLAGS -X '$MOD.Package=flatpak'" \

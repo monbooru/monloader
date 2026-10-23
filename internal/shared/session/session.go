@@ -1,5 +1,5 @@
-// Package session holds a process's browser sessions and the CSRF tokens
-// bound to them. Nothing outlives the process: a restart signs everyone out.
+// Package session holds the browser sessions, CSRF tokens and login backoff.
+// Nothing outlives the process: a restart signs everyone out.
 package session
 
 import (
@@ -30,7 +30,11 @@ func randomBytes(n int) []byte {
 	return b
 }
 
+// time.Duration overflows past about 106751 days; a century reads as "never".
+const maxLifetimeDays = 36500
+
 func (s *Store) Create(lifetimeDays int) string {
+	lifetimeDays = min(lifetimeDays, maxLifetimeDays)
 	id := base64.RawURLEncoding.EncodeToString(randomBytes(32))
 	s.mu.Lock()
 	s.expires[id] = time.Now().Add(time.Duration(lifetimeDays) * 24 * time.Hour)

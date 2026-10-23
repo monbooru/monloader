@@ -22,15 +22,16 @@ var WatchIntervals = []int{0, 6, 12, 24, 72, 168}
 const watchTick = time.Minute
 
 type WatchCheck struct {
-	CheckedAt time.Time `json:"checked_at"`
-	JobID     int64     `json:"job_id,omitempty"`
-	Site      string    `json:"site,omitempty"`
-	Status    JobStatus `json:"status,omitempty"`
-	Created   int       `json:"created,omitempty"`
-	Duplicate int       `json:"duplicate,omitempty"`
-	Total     int       `json:"total,omitempty"`
-	ErrorCode string    `json:"error_code,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	CheckedAt   time.Time `json:"checked_at"`
+	JobID       int64     `json:"job_id,omitempty"`
+	Site        string    `json:"site,omitempty"`
+	Subcategory string    `json:"subcategory,omitempty"`
+	Status      JobStatus `json:"status,omitempty"`
+	Created     int       `json:"created,omitempty"`
+	Duplicate   int       `json:"duplicate,omitempty"`
+	Total       int       `json:"total,omitempty"`
+	ErrorCode   string    `json:"error_code,omitempty"`
+	Error       string    `json:"error,omitempty"`
 }
 
 type Watch struct {
@@ -121,20 +122,26 @@ func (q *Queue) setWatch(id int64, save func() error, apply func(*Watch)) error 
 }
 
 // A running check finishes, since its downloads stay; one still queued
-// would only fetch for a search nobody watches.
+// would only fetch for a search nobody watches. Queued checks leave the
+// FIFO under the hold that finds them, or a worker could start one.
 func (q *Queue) RemoveWatch(id int64) error {
-	var queued []int64
+	var queued []*Job
+	var evicted []int64
 	err := q.setWatch(id, func() error { return q.store.DeleteWatch(id) }, func(*Watch) {
 		q.watches = slices.DeleteFunc(q.watches, func(w *Watch) bool { return w.ID == id })
 		for _, j := range q.pending {
 			if j.Watch == id {
-				queued = append(queued, j.ID)
+				queued = append(queued, j)
 			}
 		}
+		for _, j := range queued {
+			evicted = append(evicted, q.cancelPendingLocked(j)...)
+		}
 	})
-	for _, jid := range queued {
-		_ = q.cancelKeepingRow(jid)
+	for _, j := range queued {
+		q.settleCanceled(j, nil)
 	}
+	q.persistDelete(evicted)
 	return err
 }
 
@@ -307,15 +314,16 @@ func (q *Queue) updateWatchCheck(id int64, update func(*WatchCheck)) {
 
 func checkOf(s *Job) WatchCheck {
 	return WatchCheck{
-		CheckedAt: cmp.Or(s.StartedAt, s.FinishedAt),
-		JobID:     s.ID,
-		Site:      s.Site,
-		Status:    s.Status,
-		Created:   s.Summary.Created,
-		Duplicate: s.Summary.Duplicate,
-		Total:     s.Summary.Total,
-		ErrorCode: s.ErrorCode,
-		Error:     s.Error,
+		CheckedAt:   cmp.Or(s.StartedAt, s.FinishedAt),
+		JobID:       s.ID,
+		Site:        s.Site,
+		Subcategory: s.Subcategory,
+		Status:      s.Status,
+		Created:     s.Summary.Created,
+		Duplicate:   s.Summary.Duplicate,
+		Total:       s.Summary.Total,
+		ErrorCode:   s.ErrorCode,
+		Error:       s.Error,
 	}
 }
 

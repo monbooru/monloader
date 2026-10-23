@@ -16,34 +16,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/outcome"
+	"github.com/monbooru/monloader/internal/shared/contract"
+	"github.com/monbooru/monloader/internal/shared/pairing"
 )
 
-// The JSON tags are the enrich wire names; writeMetaFields spells the
-// same names by hand for a push, so a new field goes there too.
-type PostFields struct {
-	Tags                 []string `json:"tags"`
-	Source               string   `json:"source"`
-	PostID               string   `json:"post_id,omitempty"`
-	URL                  string   `json:"url"`
-	Commentary           string   `json:"commentary,omitempty"`
-	CommentaryTranslated string   `json:"commentary_translated,omitempty"`
-	// The same two bodies in the source's markup, which monbooru converts
-	// and prefers over the plain fields.
-	CommentaryDText           string    `json:"commentary_dtext,omitempty"`
-	CommentaryTranslatedDText string    `json:"commentary_translated_dtext,omitempty"`
-	Original                  string    `json:"original,omitempty"`
-	ParentURL                 string    `json:"parent_url,omitempty"`
-	Notes                     []NoteBox `json:"notes,omitempty"`
-	// What the post says about the file it serves, which monbooru checks
-	// against the local file.
-	PostWidth  int    `json:"post_width,omitempty"`
-	PostHeight int    `json:"post_height,omitempty"`
-	PostSize   int64  `json:"post_size,omitempty"`
-	PostExt    string `json:"post_ext,omitempty"`
-}
+type PostFields = contract.PostFields
 
 type PushMeta struct {
 	PostFields
@@ -57,16 +38,7 @@ type PushMeta struct {
 	Folder          string
 }
 
-type NoteBox struct {
-	X    int    `json:"x"`
-	Y    int    `json:"y"`
-	W    int    `json:"w"`
-	H    int    `json:"h"`
-	Body string `json:"body"`
-	// monbooru converts it and falls back to Body, which an older
-	// monbooru reads alone.
-	BodyHTML string `json:"body_html,omitempty"`
-}
+type NoteBox = contract.NoteBox
 
 type Result struct {
 	Outcome     outcome.Outcome
@@ -76,12 +48,7 @@ type Result struct {
 	MergeNote   string
 }
 
-type Gallery struct {
-	Name   string `json:"name"`
-	Images int    `json:"images"`
-	Tags   int    `json:"tags"`
-	Active bool   `json:"active"`
-}
+type Gallery = contract.Gallery
 
 // Client reads the API URL and token on every request, so a settings save
 // lands without a restart.
@@ -271,15 +238,10 @@ func replaceNote(data []byte) string {
 	return note
 }
 
-type EnrichPayload struct {
-	// Embedded, so encoding/json flattens it into the same wire shape.
-	PostFields
-	SourceMD5  string  `json:"source_md5,omitempty"`
-	Verify     bool    `json:"verify"`
-	Similarity float64 `json:"similarity,omitempty"`
-}
+type EnrichPayload = contract.EnrichRequest
 
-// A 409 means the post no longer serves the same file, so nothing changed.
+// A 409 means the post no longer serves the same file, so nothing changed,
+// unless it is a desktop monbooru's setup_required.
 func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string, payload EnrichPayload) (*Result, error) {
 	payload.Source = trimToLen(payload.Source, maxSourceLen)
 	payload.PostID = trimToLen(payload.PostID, maxPostIDLen)
@@ -290,6 +252,8 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 	payload.CommentaryTranslatedDText = trimToLen(payload.CommentaryTranslatedDText, maxCommentaryDTextLen)
 	payload.Original = trimToLen(payload.Original, maxOriginalLen)
 	payload.ParentURL = trimToLen(payload.ParentURL, maxURLLen)
+	payload.PostExt = dropOverLen(payload.PostExt, contract.MaxPostExt)
+	payload.SourceMD5 = dropOverLen(payload.SourceMD5, contract.MaxMD5)
 	buf, err := json.Marshal(payload)
 	if err != nil {
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: err.Error()}
@@ -304,7 +268,11 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 		note, warnings := enrichResult(respBody)
 		return &Result{Outcome: outcome.Enriched, MonbooruID: imageID, MergeNote: note, TagWarnings: warnings}, nil
 	case http.StatusConflict:
-		return nil, &outcome.CodedError{Code: outcome.ErrCodeHashMismatch, Msg: apiErrMessage(respBody, resp.Status)}
+		msg, code := apiErr(respBody, resp.Status)
+		if code == contract.CodeSetupRequired {
+			return nil, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: msg}
+		}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeHashMismatch, Msg: msg}
 	default:
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(respBody, resp.Status)}
 	}
@@ -426,7 +394,7 @@ func writeFilePart(w *multipart.Writer, filename string, src io.Reader) error {
 	if filename == "" {
 		filename = "upload"
 	}
-	fw, err := w.CreateFormFile("file", filename)
+	fw, err := w.CreateFormFile(contract.FieldFile, filename)
 	if err != nil {
 		return err
 	}
@@ -437,12 +405,12 @@ func writeFilePart(w *multipart.Writer, filename string, src io.Reader) error {
 // monbooru rejects longer values, so they are trimmed before the push; a
 // directlink's URL can pass 2048. The caps count characters, not bytes.
 const (
-	maxSourceLen          = 200
-	maxPostIDLen          = 64
-	maxURLLen             = 2048
-	maxCommentaryLen      = 10000
-	maxCommentaryDTextLen = 4 * maxCommentaryLen
-	maxOriginalLen        = 2048
+	maxSourceLen          = contract.MaxSourceLabel
+	maxPostIDLen          = contract.MaxPostID
+	maxURLLen             = contract.MaxURL
+	maxCommentaryLen      = contract.MaxCommentary
+	maxCommentaryDTextLen = contract.MaxDText
+	maxOriginalLen        = contract.MaxOriginal
 )
 
 func trimToLen(s string, limit int) string {
@@ -451,6 +419,14 @@ func trimToLen(s string, limit int) string {
 			return s[:i]
 		}
 		limit--
+	}
+	return s
+}
+
+// Dropped rather than cut short, which would make it a wrong claim.
+func dropOverLen(s string, limit int) string {
+	if utf8.RuneCountInString(s) > limit {
+		return ""
 	}
 	return s
 }
@@ -470,39 +446,39 @@ func writeMetaFields(w *multipart.Writer, meta PushMeta) error {
 		if jerr != nil {
 			return jerr
 		}
-		field("tags", string(tagsJSON))
+		field(contract.FieldTags, string(tagsJSON))
 	}
-	field("via", meta.Via)
-	field("folder", meta.Folder)
-	field("source", trimToLen(meta.Source, maxSourceLen))
-	field("post_id", trimToLen(meta.PostID, maxPostIDLen))
-	field("url", trimToLen(meta.URL, maxURLLen))
-	field("commentary", trimToLen(meta.Commentary, maxCommentaryLen))
-	field("commentary_translated", trimToLen(meta.CommentaryTranslated, maxCommentaryLen))
-	field("commentary_dtext", trimToLen(meta.CommentaryDText, maxCommentaryDTextLen))
-	field("commentary_translated_dtext", trimToLen(meta.CommentaryTranslatedDText, maxCommentaryDTextLen))
-	field("original", trimToLen(meta.Original, maxOriginalLen))
-	field("parent_url", trimToLen(meta.ParentURL, maxURLLen))
+	field(contract.FieldVia, meta.Via)
+	field(contract.FieldFolder, meta.Folder)
+	field(contract.FieldSource, trimToLen(meta.Source, maxSourceLen))
+	field(contract.FieldPostID, trimToLen(meta.PostID, maxPostIDLen))
+	field(contract.FieldURL, trimToLen(meta.URL, maxURLLen))
+	field(contract.FieldCommentary, trimToLen(meta.Commentary, maxCommentaryLen))
+	field(contract.FieldCommentaryTranslated, trimToLen(meta.CommentaryTranslated, maxCommentaryLen))
+	field(contract.FieldCommentaryDText, trimToLen(meta.CommentaryDText, maxCommentaryDTextLen))
+	field(contract.FieldCommentaryTranslatedDText, trimToLen(meta.CommentaryTranslatedDText, maxCommentaryDTextLen))
+	field(contract.FieldOriginal, trimToLen(meta.Original, maxOriginalLen))
+	field(contract.FieldParentURL, trimToLen(meta.ParentURL, maxURLLen))
 	if len(meta.Notes) > 0 {
 		if notesJSON, jerr := json.Marshal(meta.Notes); jerr == nil {
-			field("notes", string(notesJSON))
+			field(contract.FieldNotes, string(notesJSON))
 		}
 	}
-	field("collection", meta.Collection)
+	field(contract.FieldCollection, trimToLen(meta.Collection, contract.MaxCollection))
 	if meta.CollectionOrder > 0 {
-		field("collection_order", strconv.Itoa(meta.CollectionOrder))
+		field(contract.FieldCollectionOrder, strconv.Itoa(meta.CollectionOrder))
 	}
 	if meta.PostWidth > 0 {
-		field("post_width", strconv.Itoa(meta.PostWidth))
+		field(contract.FieldPostWidth, strconv.Itoa(meta.PostWidth))
 	}
 	if meta.PostHeight > 0 {
-		field("post_height", strconv.Itoa(meta.PostHeight))
+		field(contract.FieldPostHeight, strconv.Itoa(meta.PostHeight))
 	}
 	if meta.PostSize > 0 {
-		field("post_size", strconv.FormatInt(meta.PostSize, 10))
+		field(contract.FieldPostSize, strconv.FormatInt(meta.PostSize, 10))
 	}
-	field("post_ext", meta.PostExt)
-	field("md5", meta.MD5)
+	field(contract.FieldPostExt, dropOverLen(meta.PostExt, contract.MaxPostExt))
+	field(contract.FieldMD5, dropOverLen(meta.MD5, contract.MaxMD5))
 	return err
 }
 
@@ -560,10 +536,7 @@ func rejected(body []byte, status string) *outcome.CodedError {
 }
 
 func apiErr(body []byte, status string) (msg, code string) {
-	var e struct {
-		Error string `json:"error"`
-		Code  string `json:"code"`
-	}
+	var e contract.Error
 	if json.Unmarshal(body, &e) != nil {
 		return status, ""
 	}
@@ -600,42 +573,35 @@ func (c *Client) TestConnection(ctx context.Context) (string, error) {
 	return info.Version, nil
 }
 
-// APIPair reads monbooru's /health, which needs no token; zeroes when it
-// predates the fields.
-func (c *Client) APIPair(ctx context.Context) (api, minPeer int) {
+func (c *Client) Health(ctx context.Context) contract.Health {
 	resp, body, err := c.do(ctx, http.MethodGet, c.base()+"/health", "", nil, "")
 	if err != nil || resp.StatusCode != http.StatusOK {
-		return 0, 0
+		return contract.Health{}
 	}
-	var h struct {
-		API        int `json:"api"`
-		MinPeerAPI int `json:"min_peer_api"`
-	}
+	var h contract.Health
 	_ = json.Unmarshal(body, &h)
-	return h.API, h.MinPeerAPI
+	return h
 }
 
 // Unauthenticated: the operator approves the request in monbooru.
 // peerToken is what monbooru will call back with.
-func (c *Client) PairRequest(ctx context.Context, peerToken, selfURL string, scopes []string) (string, error) {
-	payload, _ := json.Marshal(map[string]any{
-		"app":              "monloader",
-		"url":              selfURL,
-		"requested_scopes": scopes,
-		"peer_token":       peerToken,
+func (c *Client) PairRequest(ctx context.Context, peerToken, selfURL, version string, scopes []string) (string, error) {
+	payload, _ := json.Marshal(pairing.RequestBody{
+		App:             contract.AppMonloader,
+		URL:             selfURL,
+		RequestedScopes: scopes,
+		PeerToken:       peerToken,
+		Version:         version,
 	})
 	resp, body, err := c.do(ctx, http.MethodPost, c.base()+"/api/v1/pair/request", "application/json", bytes.NewReader(payload), "")
 	if err != nil {
 		return "", err
 	}
-	var out struct {
-		RequestID string `json:"request_id"`
-		Error     string `json:"error"`
-	}
+	var out pairing.Accepted
 	_ = json.Unmarshal(body, &out)
 	if resp.StatusCode != http.StatusOK {
-		if out.Error != "" {
-			return "", fmt.Errorf("%s", out.Error)
+		if msg, _ := apiErr(body, ""); msg != "" {
+			return "", fmt.Errorf("%s", msg)
 		}
 		return "", fmt.Errorf("monbooru pairing request failed: %s", resp.Status)
 	}
@@ -656,15 +622,12 @@ func (c *Client) PairStatus(ctx context.Context, requestID string) (status, toke
 	if resp.StatusCode == http.StatusNotFound {
 		return "not_found", "", nil
 	}
-	var out struct {
-		Status string `json:"status"`
-		Token  string `json:"token"`
-	}
+	var out pairing.StatusBody
 	_ = json.Unmarshal(body, &out)
 	if resp.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("monbooru pairing status failed: %s", resp.Status)
 	}
-	return out.Status, out.Token, nil
+	return string(out.Status), out.Token, nil
 }
 
 // The caller passes the issued token, captured before it clears the stored one.
@@ -673,7 +636,7 @@ func (c *Client) PairTeardown(ctx context.Context, token string) error {
 	if err != nil {
 		return err
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("monbooru pairing remove failed: %s", resp.Status)
 	}
 	return nil

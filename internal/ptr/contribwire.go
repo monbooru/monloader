@@ -78,8 +78,6 @@ func (u *C2SUpdate) AddParent(action int, child, parent, reason string) {
 
 func (u *C2SUpdate) Empty() bool { return len(u.entries) == 0 }
 
-func (u *C2SUpdate) Len() int { return len(u.entries) }
-
 func (u *C2SUpdate) EncodePOSTBody() ([]byte, error) {
 	var actionOrder []int
 	grouped := map[int][]any{}
@@ -127,10 +125,10 @@ func parseServerError(status int, body []byte) *ServerError {
 	if err := json.Unmarshal(body, &raw); err != nil || raw.Error == "" {
 		return &ServerError{Status: status, Message: clip(string(body))}
 	}
-	return &ServerError{Status: status, Message: raw.Error, ExceptionType: raw.ExceptionType}
+	return &ServerError{Status: status, Message: clip(raw.Error), ExceptionType: raw.ExceptionType}
 }
 
-// A proxy's or captive portal's error page would otherwise land whole in
+// A proxy's error page or a hydrus traceback would otherwise land whole in
 // every claimed item's error.
 const maxServerMessage = 300
 

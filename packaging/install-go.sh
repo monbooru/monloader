@@ -1,17 +1,25 @@
-#!/usr/bin/env bash
-# Install the pinned Go toolchain and put it on the job's PATH.
+#!/bin/sh
+# packaging/install-go.sh <version> <sha256> [arch]
+#
+# Installs the pinned Go toolchain into /usr/local/go and puts it on the
+# job's PATH. 
+set -eu
 
-set -euo pipefail
+version=$1
+sha=$2
+arch=${3:-amd64}
 
-: "${GO_VERSION:?GO_VERSION is not set}"
-: "${GO_SHA256_LINUX_AMD64:?GO_SHA256_LINUX_AMD64 is not set}"
-: "${GITHUB_PATH:?GITHUB_PATH is not set}"
+as_root() {
+  if [ "$(id -u)" = 0 ]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
 
-sudo=""
-[ "$(id -u)" -eq 0 ] || sudo=sudo
-
-curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
-echo "${GO_SHA256_LINUX_AMD64}  /tmp/go.tgz" | sha256sum -c -
-$sudo rm -rf /usr/local/go
-$sudo tar -C /usr/local -xzf /tmp/go.tgz
+curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${version}.linux-${arch}.tar.gz"
+echo "${sha}  /tmp/go.tgz" | sha256sum -c -
+as_root rm -rf /usr/local/go
+as_root tar -C /usr/local -xzf /tmp/go.tgz
+rm -f /tmp/go.tgz
 echo /usr/local/go/bin >> "$GITHUB_PATH"

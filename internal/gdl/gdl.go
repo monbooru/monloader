@@ -19,6 +19,7 @@ import (
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/kwdict"
 	"github.com/monbooru/monloader/internal/outcome"
+	"github.com/monbooru/monloader/internal/shared/desktop"
 	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
@@ -171,7 +172,8 @@ func (t *Tool) run(ctx context.Context, args ...string) (runResult, error) {
 	bin := t.binary()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.WaitDelay = waitDelay
-	hideConsole(cmd)
+	killGroupOnCancel(cmd)
+	desktop.HideConsole(cmd)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
@@ -256,7 +258,7 @@ func downloadArgs(workDir, rng, url string, archive Archive, deep bool) []string
 	case ArchiveCatchUp:
 		args = append(args, "-o", "skip=abort:"+strconv.Itoa(catchUpSkips))
 	}
-	return append(args, url)
+	return append(args, "--", url)
 }
 
 func (t *Tool) runOut(ctx context.Context, args ...string) ([]byte, error) {
@@ -287,7 +289,7 @@ func (t *Tool) resolve(ctx context.Context, url, rng string, deep bool) (Resolve
 	}
 	args = append(args, mode)
 	args = append(args, rangeArgs(rng, deep)...)
-	args = append(args, url)
+	args = append(args, "--", url)
 	res, err := t.run(ctx, args...)
 	if ctx.Err() != nil {
 		return ResolveResult{}, &outcome.CodedError{Code: outcome.ErrCodeCanceled, Msg: ctx.Err().Error()}
@@ -310,7 +312,7 @@ func (t *Tool) resolve(ctx context.Context, url, rng string, deep bool) (Resolve
 // FetchMeta keeps the enrichment options on: the full metadata is what it
 // is for.
 func (t *Tool) FetchMeta(ctx context.Context, url string) (map[string]any, error) {
-	out, err := t.runOut(ctx, append(t.configArgs(), "-j", url)...)
+	out, err := t.runOut(ctx, append(t.configArgs(), "-j", "--", url)...)
 	if err != nil {
 		return nil, t.redact(err)
 	}
@@ -348,7 +350,8 @@ func (t *Tool) download(ctx context.Context, url, rng, workDir string, archive A
 	bin := t.binary()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.WaitDelay = waitDelay
-	hideConsole(cmd)
+	killGroupOnCancel(cmd)
+	desktop.HideConsole(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
@@ -373,6 +376,7 @@ func (t *Tool) download(ctx context.Context, url, rng, workDir string, archive A
 	}
 	if exit != 0 {
 		cerr := classifyError(exit, strings.TrimSpace(errBuf.String()))
+		cerr.Msg = t.stderrSummary(cerr.Msg)
 		if cerr.Code == outcome.ErrCodeUnsupportedURL {
 			if dls, ok, derr := directlinkDownload(ctx, url, workDir, onFile); ok {
 				return dls, derr
@@ -381,6 +385,26 @@ func (t *Tool) download(ctx context.Context, url, rng, workDir string, archive A
 		return results, cerr
 	}
 	return results, nil
+}
+
+const maxErrorMessage = 300
+
+// The message lands in every item the run failed, so it is one line: the
+// last [error] one. Redacted first, so a clip cannot split a secret.
+func (t *Tool) stderrSummary(stderr string) string {
+	lines := strings.Split(stderr, "\n")
+	msg := strings.TrimSpace(lines[len(lines)-1])
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "[error]") {
+			msg = strings.TrimSpace(lines[i])
+			break
+		}
+	}
+	msg = t.redactText(msg)
+	if len(msg) <= maxErrorMessage {
+		return msg
+	}
+	return strings.ToValidUTF8(msg[:maxErrorMessage], "") + "..."
 }
 
 // gallery-dl prints an archive skip as "# <path>"; the .json sidecar is on
@@ -473,7 +497,7 @@ func parseResolve(data []byte) (ResolveResult, error) {
 				continue
 			}
 			if len(parts) >= 3 {
-				_ = json.Unmarshal(parts[2], &meta)
+				meta, _ = decodeMeta(parts[2])
 			}
 			res.setCategory(meta)
 			res.Queue = append(res.Queue, QueueItem{URL: url, Meta: meta})
@@ -485,9 +509,9 @@ func parseResolve(data []byte) (ResolveResult, error) {
 		var meta map[string]any
 		// The canonical shape is [3, url, kwdict]; tolerate [3, kwdict].
 		if len(parts) >= 3 {
-			_ = json.Unmarshal(parts[2], &meta)
+			meta, _ = decodeMeta(parts[2])
 		} else {
-			_ = json.Unmarshal(parts[1], &meta)
+			meta, _ = decodeMeta(parts[1])
 		}
 		if meta == nil {
 			continue
@@ -543,9 +567,18 @@ func readMeta(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading sidecar %s.json: %w", path, err)
 	}
-	var meta map[string]any
-	if json.Unmarshal(data, &meta) != nil {
+	meta, err := decodeMeta(data)
+	if err != nil {
 		return nil, fmt.Errorf("sidecar %s.json is not valid JSON", path)
 	}
 	return meta, nil
+}
+
+// Numbers stay json.Number: post ids above 2^53 do not survive float64.
+func decodeMeta(data []byte) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var meta map[string]any
+	err := dec.Decode(&meta)
+	return meta, err
 }

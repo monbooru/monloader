@@ -143,7 +143,7 @@ func (p *Processor) ptrTagsFor(sha256 string) (tags []string, hit bool, miss str
 		return nil, false, ""
 	}
 	if !p.ptr.CaughtUp() {
-		return nil, false, "skipped, still syncing"
+		return nil, false, contract.TrailSkipped + ", still syncing"
 	}
 	rawTags, ok, err := p.ptr.TagsForHash(sha256)
 	switch {
@@ -201,8 +201,8 @@ func composeLookupNote(ptrApplied bool, ptrNote, ptrMiss, site, onlineNote strin
 }
 
 func (p *Processor) reportPTRTrail(ctx context.Context, snap *queue.Job, onlineTrail []string) {
-	report := append([]string{ptrTrailName + ": match, tags applied"}, onlineTrail...)
-	if rerr := p.client.ReportFetchOutcome(ctx, snap.ImageID, snap.Gallery, string(snap.Kind), snap.Backend, outcome.ErrCodeHashNotFound, strings.Join(report, "; ")); rerr != nil {
+	report := append([]string{ptrTrailName + contract.TrailMatch + ", tags applied"}, onlineTrail...)
+	if rerr := p.client.ReportFetchOutcome(ctx, snap.ImageID, snap.Gallery, string(snap.Kind), snap.Backend, outcome.ErrCodeHashNotFound, strings.Join(report, contract.TrailSeparator)); rerr != nil {
 		logx.Warnf("queue: job %d fetch-status report failed: %v", snap.ID, rerr)
 	}
 }
@@ -243,10 +243,10 @@ func claimedMD5(meta map[string]any, queryMD5 string, sim float64) string {
 	return ""
 }
 
-// monbooru splits the "; "-joined entries back into a list, so each must
+// monbooru splits the joined entries back into a list, so each must
 // stay "source: reason".
 func missError(trail []string) error {
-	return &outcome.CodedError{Code: outcome.ErrCodeHashNotFound, Msg: strings.Join(trail, "; ")}
+	return &outcome.CodedError{Code: outcome.ErrCodeHashNotFound, Msg: strings.Join(trail, contract.TrailSeparator)}
 }
 
 func (p *Processor) lookupPTR(ctx context.Context, job, snap *queue.Job) error {

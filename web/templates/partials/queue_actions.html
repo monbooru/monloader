@@ -3,20 +3,20 @@ they inherit its page number from here instead: a clear answering with page 1
 would swap its rows in under a pager still reading page N. */}}<span id="queue-actions" class="queue-actions" hx-get="/internal/queue-actions" hx-trigger="every 2s [!confirmOpen()]" hx-target="#queue-actions" hx-swap="outerHTML" hx-vals='js:{page: queuePageNum()}'>
   {{if .HasSucceeded}}
   <button type="button" hx-post="/queue/clear-succeeded" hx-target="#queue-rows" hx-swap="innerHTML"
-          hx-confirm="clear every download that finished with nothing left to do?"
-          data-confirm-ok="clear succeeded"
-          data-confirm-danger="removes those rows from this list; the images they pushed to monbooru stay.">clear succeeded</button>
+          hx-confirm="Clear every download that finished with nothing left to do?"
+          data-confirm-ok="Clear succeeded"
+          data-confirm-danger="Removes those rows from this list; the images they pushed to monbooru stay.">Clear succeeded</button>
   {{end}}
   {{if .HasFinished}}
   <button type="button" hx-post="/queue/clear" hx-target="#queue-rows" hx-swap="innerHTML"
-          hx-confirm="clear recent history?"
-          data-confirm-ok="clear"
-          data-confirm-danger="removes every finished row, failures included; the images already pushed to monbooru stay.">clear</button>
+          hx-confirm="Clear recent history?"
+          data-confirm-ok="Clear"
+          data-confirm-danger="Removes every finished row, failures included; the images already pushed to monbooru stay.">Clear</button>
   {{end}}
   {{if .HasPending}}
   <button type="button" hx-post="/queue/cancel-pending" hx-target="#queue-rows" hx-swap="innerHTML"
-          hx-confirm="cancel every job that has not started?"
-          data-confirm-ok="cancel pending"
-          data-confirm-danger="the job now downloading finishes; the rest stay as canceled rows you can retry.">cancel pending</button>
+          hx-confirm="Cancel every job that has not started?"
+          data-confirm-ok="Cancel pending"
+          data-confirm-danger="The job now downloading finishes; the rest stay as canceled rows you can retry.">Cancel pending</button>
   {{end}}
 </span>{{end}}

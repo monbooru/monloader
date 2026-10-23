@@ -1,4 +1,4 @@
-FROM golang:1.27.2-trixie AS build
+FROM golang:1.27.3-trixie AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -9,7 +9,7 @@ RUN . ./packaging/release-env.sh && \
       -o /monloader ./cmd/monloader
 
 FROM python:3.13-slim-trixie
-RUN pip install --no-cache-dir gallery-dl==1.32.15
+RUN pip install --no-cache-dir gallery-dl==1.32.17
 
 COPY --from=build /monloader /usr/local/bin/monloader
 

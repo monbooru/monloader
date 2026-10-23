@@ -6,22 +6,21 @@
 <main id="content" class="content-wide">
   <form class="add-bar" hx-post="/" hx-target="#add-flash" hx-swap="innerHTML" hx-vals='js:{page: queuePageNum()}'
         hx-on::after-request="if (event.detail.xhr.getResponseHeader('HX-Retarget')) { this.reset(); document.getElementById('add-flash').textContent = ''; }">
-    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="add-row">
       <div class="search-input-wrap">
-        <input type="text" name="url" autocomplete="off" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}} placeholder="paste a booru URL or an md5 hash - post, pool, tag search, artist...">
+        <input type="text" name="url" autocomplete="off" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}} placeholder="Paste a booru URL or an MD5 hash - post, pool, tag search, artist...">
       </div>
-      <select name="items" aria-label="items to fetch" title="how many posts to fetch">{{template "items_options" .ItemChoices}}</select>
-      <button type="submit" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}}>download</button>
+      <select name="items" aria-label="Items to fetch" title="How many posts to fetch">{{template "items_options" .ItemChoices}}</select>
+      <button type="submit" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}}>Download</button>
       {{template "queue_actions" .Actions}}
     </div>
   </form>
   {{template "lookup_status" .}}
-  <div id="add-flash" class="hint"></div>
+  <div id="add-flash" class="field-hint"></div>
   <div class="table-scroll">
-  <table class="queue-table">
+  <table class="data-table queue-table">
     <thead>
-      <tr><th>status</th><th>url</th><th>type</th><th>site</th><th>gallery</th><th>summary</th><th></th></tr>
+      <tr><th>Status</th><th>URL</th><th>Type</th><th>Site</th><th>Gallery</th><th>Summary</th><th></th></tr>
     </thead>
     <!-- The action buttons in the rows inherit the target and swap from
          here (and the CSRF header from body), so each carries only its verb. -->

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/shared/contract"
+	"github.com/monbooru/monloader/internal/shared/desktop"
 	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
@@ -19,7 +21,7 @@ type State string
 const (
 	StateDisabled State = "disabled"
 	StateSyncing  State = "syncing"
-	StateReady    State = "ready"
+	StateReady    State = contract.PTRReady
 	StatePaused   State = "paused"
 	StateError    State = "error"
 )
@@ -194,12 +196,12 @@ func (e *Engine) checkFreeSpace() error {
 	if e.cfg.MinFreeGB <= 0 {
 		return nil
 	}
-	free, err := freeBytes(e.cfg.DataPath)
+	_, free, err := desktop.DiskUsage(e.cfg.DataPath)
 	if err != nil {
 		return fmt.Errorf("checking free space on %s: %w", e.cfg.DataPath, err)
 	}
 	if free < uint64(e.cfg.MinFreeGB)*gib {
-		return fmt.Errorf("only %.1f GB free on %s, below the %d GB floor for the initial sync",
+		return fmt.Errorf("only %.1f GiB free on %s, below the %d GiB floor for the initial sync",
 			float64(free)/gib, e.cfg.DataPath, e.cfg.MinFreeGB)
 	}
 	return nil
@@ -761,7 +763,7 @@ func (e *Engine) waitWake(ctx context.Context, d time.Duration) bool {
 
 func FreeBytes(path string) int64 {
 	for p := path; ; {
-		if n, err := freeBytes(p); err == nil {
+		if _, n, err := desktop.DiskUsage(p); err == nil {
 			return int64(n)
 		}
 		parent := filepath.Dir(p)

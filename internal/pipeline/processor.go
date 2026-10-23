@@ -25,6 +25,7 @@ import (
 	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/shared/fsx"
 	"github.com/monbooru/monloader/internal/shared/logx"
 	"github.com/monbooru/monloader/internal/similarity"
 	"github.com/monbooru/monloader/internal/sitestate"
@@ -111,6 +112,7 @@ func (p *Processor) processDownload(ctx context.Context, job, snap *queue.Job) e
 
 	resolved := res.Items
 	site := resolved[0].Category
+	job.SetSubcategory(resolved[0].Subcategory)
 	cbz := p.mapper.KindOf(site) == mapping.KindManga
 	if cbz && snap.Watch != 0 {
 		return abortJob(ctx, job, errWatchManga)
@@ -588,6 +590,11 @@ func (p *Processor) processChapters(ctx context.Context, job, snap *queue.Job, r
 
 // A chapter is one book, so the archive is bypassed and every page lands.
 func (p *Processor) importChapter(ctx context.Context, job *queue.Job, i int, chapterURL, gallery, workDir string) {
+	// The link comes from gallery-dl's output, not from the operator.
+	if !config.IsHTTPURL(chapterURL) {
+		failItem(job, i, outcome.ErrCodeUnsupportedURL, "not an http(s) chapter link: "+chapterURL)
+		return
+	}
 	res, err := p.runner.Resolve(ctx, chapterURL, "", false)
 	if err != nil {
 		failItem(job, i, errorCode(err), err.Error())
@@ -630,7 +637,7 @@ func chapterLabel(rawURL string) string {
 }
 
 func (p *Processor) processCBZ(ctx context.Context, job *queue.Job, itemIdx int, downloaded []gdl.Downloaded, total int, gallery, workDir string, dlErr error, sourceURL string) {
-	bundleName := sanitizeFilename(poolName(downloaded))
+	bundleName := fsx.SanitizeFilename(poolName(downloaded))
 
 	if ctx.Err() != nil {
 		return
@@ -665,18 +672,6 @@ func (p *Processor) processCBZ(ctx context.Context, job *queue.Job, itemIdx int,
 		return
 	}
 	recordSuccess(job, itemIdx, res)
-}
-
-// monbooru writes the file, maybe on Windows or an SMB share, so Windows' set
-// is folded whatever OS monloader runs on.
-func sanitizeFilename(name string) string {
-	name = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || strings.ContainsRune(`<>:"/\|?*`, r) {
-			return '_'
-		}
-		return r
-	}, name)
-	return strings.Trim(name, " .")
 }
 
 func (p *Processor) aggregatePool(downloaded []gdl.Downloaded, poolURL, poolName, folder string, extras mapping.Extras) monbooru.PushMeta {
@@ -891,8 +886,10 @@ func bundleKey(resolved []gdl.Item) string {
 
 func orderedPages(downloaded []gdl.Downloaded) []string {
 	ordered := slices.Clone(downloaded)
+	// Chapter extractors number their pages as page, not num.
+	ordinal := func(m map[string]any) int { return cmp.Or(kwdict.Num(m), kwdict.Int(m, "page")) }
 	slices.SortStableFunc(ordered, func(a, b gdl.Downloaded) int {
-		return cmp.Or(cmp.Compare(kwdict.Num(a.Meta), kwdict.Num(b.Meta)), cmp.Compare(a.Path, b.Path))
+		return cmp.Or(cmp.Compare(ordinal(a.Meta), ordinal(b.Meta)), cmp.Compare(a.Path, b.Path))
 	})
 	paths := make([]string, len(ordered))
 	for i, d := range ordered {

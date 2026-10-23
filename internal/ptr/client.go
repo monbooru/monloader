@@ -51,9 +51,10 @@ func newClient(cfg config.PTRConfig) *client {
 		hc: &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
-				// The PTR's certificate is self-signed; each update blob's
-				// sha256 check is the integrity control instead of the chain.
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // documented in the threat model
+				// The PTR's certificate is self-signed, as hydrus accepts it. The
+				// blob sha256 catches corruption, not an on-path attacker, who
+				// could serve a matching manifest and read the Hydrus-Key.
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // self-signed PTR; on-path risk accepted, as hydrus does
 			},
 		},
 	}
@@ -66,14 +67,6 @@ func (c *client) Metadata(ctx context.Context, since uint64) (*metadataSlice, er
 		return nil, err
 	}
 	return parseMetadata(raw)
-}
-
-func (c *client) Update(ctx context.Context, hashHex string) (*update, error) {
-	raw, err := c.updateRaw(ctx, hashHex)
-	if err != nil {
-		return nil, err
-	}
-	return parseUpdate(raw)
 }
 
 // updateRaw skips the parse: the sync holds an entry's blobs compressed

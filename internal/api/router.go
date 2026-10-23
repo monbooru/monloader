@@ -2,16 +2,14 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"strconv"
-	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/gdl"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/sitestate"
 )
 
@@ -106,24 +104,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 func (h *Handler) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		SetCORS(w, r)
-		cfg := h.cfg.Current()
-		if len(cfg.Auth.Tokens) == 0 {
-			apiError(w, http.StatusServiceUnavailable, errAPIDisabled, "API is disabled: generate an API token in Settings to enable it")
-			return
-		}
-		const prefix = "Bearer "
-		got := r.Header.Get("Authorization")
-		if !strings.HasPrefix(got, prefix) {
-			apiError(w, http.StatusUnauthorized, errUnauthorized, "missing or invalid authorization header")
-			return
-		}
-		tok := cfg.FindTokenByHash(config.HashToken(got[len(prefix):]))
-		if tok == nil {
-			apiError(w, http.StatusUnauthorized, errUnauthorized, "invalid bearer token")
-			return
-		}
-		if !tok.HasScope(scope) {
-			apiError(w, http.StatusForbidden, errInsufficientScope, "token lacks the "+scope+" scope")
+		if _, status, code, msg := h.cfg.Current().Auth.Tokens.Authorize(r.Header.Get("Authorization"), scope); status != 0 {
+			contract.WriteError(w, status, code, msg)
 			return
 		}
 		next(w, r)
@@ -149,47 +131,6 @@ func SetCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Vary", "Origin")
 }
 
-func apiError(w http.ResponseWriter, status int, code, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg, "code": code})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
 // Sized for the largest legitimate body, a bulk contribution confirm's
 // tag lists.
 const maxRequestBody = 1 << 20
-
-func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
-	return json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(v)
-}
-
-func apiPathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
-	v, err := strconv.ParseInt(r.PathValue(name), 10, 64)
-	if err != nil {
-		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid "+name)
-		return 0, false
-	}
-	return v, true
-}
-
-func parsePage(r *http.Request, defaultLimit, maxLimit int) (page, limit int) {
-	page, limit = 1, defaultLimit
-	q := r.URL.Query()
-	if p := q.Get("page"); p != "" {
-		if n, err := strconv.Atoi(p); err == nil && n > 0 {
-			page = n
-		}
-	}
-	if l := q.Get("limit"); l != "" {
-		if n, err := strconv.Atoi(l); err == nil && n > 0 {
-			limit = min(n, maxLimit)
-		}
-	}
-	return page, limit
-}

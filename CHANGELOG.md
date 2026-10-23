@@ -1,5 +1,39 @@
 # Changelog
 
+## [v1.13.2] - 2026-10-23
+### Added
+- Theme selector in settings from the themes folder, with a built-in light theme.
+- monbooru's keyboard shortcuts on every page; `?` lists them.
+- Logging in returns to the page that asked for it.
+- An unknown key in `monloader.toml` is named in a warning at startup.
+
+### Changed
+- The web UI is closer to monbooru's layout, tables, colors and wording.
+- Failed logins back off per client, and the refusal says how long to wait.
+- A failed job shows its reason under the code, from gallery-dl's last error line.
+- JSON API bodies over 1 MiB answer 413 `file_too_large`; the API version moves to 2.
+- Bundled gallery-dl updated to 1.32.17.
+
+### Fixed
+- Canceling a job stops every process gallery-dl started, Windows included.
+- A pool with a long name no longer fails every page.
+- API enqueues count text limits in characters, so CJK text is not refused early.
+- Chapter .cbz pages follow gallery-dl's page order.
+- A post with no ID records its permalink as source, not the listing URL.
+- Site options no longer overwrite a profile's nested options in the managed gallery-dl config.
+- A second gallery-dl install or revert can no longer start while one is running.
+- Refused refresh and replace jobs report monbooru's refusal instead of a misleading code.
+- Re-pairing monbooru clears a pause left on the old link.
+- Re-pairing the browser extension replaces its token, and an approved request reads as waiting.
+- Item links render as plain text instead of pointing at `api_url` when `web_url` is blank.
+- A watch on a single post says there is nothing to watch.
+- Setting the first password keeps you logged in.
+- The session cookie is Secure over HTTPS.
+- Outside a container, scratch files go under the user's cache folder, not `/tmp`.
+
+### Removed
+- `server.custom_css` and `server.logo`; put them in a theme folder instead.
+
 ## [v1.13.1] - 2026-10-16
 ### Added
 - Set custom iqdb and SauceNAO endpoints in the config.

@@ -146,7 +146,7 @@ func (q *Queue) finish(j *Job) {
 	if quiet {
 		q.persistDelete([]int64{j.ID})
 	} else {
-		q.persist(j)
+		q.persistKept(j)
 	}
 	q.persistDelete(evicted)
 	j.signalDone()

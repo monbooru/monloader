@@ -91,42 +91,34 @@ document.body.addEventListener("htmx:afterSwap", function (e) {
   }
 });
 
-// A state outside this list, "checking" included, keeps the server-rendered
-// banner, so it does not flash.
-function applyMonbooruState(conn) {
-  if (conn !== "down" && conn !== "ok" && conn !== "rejected" && conn !== "unpaired" &&
-      conn !== "paused" && conn !== "unconfigured") {
+function applyMonbooruBanner() {
+  var light = document.getElementById("peer-light");
+  var banner = document.getElementById("monbooru-banner");
+  if (!light || !banner || light.dataset.conn === "checking") {
     return;
   }
-  var blocked = conn !== "ok";
-  var banner = document.getElementById("monbooru-banner");
-  if (banner) {
-    banner.hidden = !blocked;
-    var msg = document.getElementById("monbooru-banner-msg");
-    if (msg && blocked) {
-      msg.textContent = conn === "rejected" ? "monbooru rejected the api token"
-        : conn === "unpaired" ? "monbooru is not paired"
-        : conn === "unconfigured" ? "monbooru is not configured"
-        : conn === "paused" ? "the monbooru link is paused - downloads are disabled until you resume it from the footer light"
-        : "monbooru is unreachable";
-    }
-    // A pause is the operator's own doing, so the banner points at the
-    // light, not the settings.
-    var fix = document.getElementById("monbooru-banner-fix");
-    if (fix) {
-      fix.hidden = conn === "paused";
-    }
+  var off = light.dataset.peerOff || "";
+  banner.hidden = off === "";
+  var msg = document.getElementById("monbooru-banner-msg");
+  if (msg && off) {
+    msg.textContent = off;
   }
-  document.querySelectorAll(".needs-monbooru").forEach(function (el) {
-    el.disabled = blocked;
-  });
+  // A pause is the operator's own doing, so the banner points at the
+  // light, not the settings.
+  var fix = document.getElementById("monbooru-banner-fix");
+  if (fix) {
+    fix.hidden = light.dataset.conn === "paused";
+  }
 }
-document.body.addEventListener("htmx:afterSwap", function () {
-  var light = document.getElementById("conn-light");
-  if (light) {
-    applyMonbooruState(light.dataset.conn);
+document.addEventListener("DOMContentLoaded", applyMonbooruBanner);
+
+document.addEventListener("DOMContentLoaded", function () {
+  var url = document.body.dataset.canonicalUrl;
+  if (url) {
+    history.replaceState(null, "", url);
   }
 });
+document.body.addEventListener("htmx:afterSwap", applyMonbooruBanner);
 
 function applyPauseState() {
   var banner = document.getElementById("queue-paused-banner");
@@ -175,41 +167,6 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 });
 
-// Hidden panels still submit, so one save writes every tab.
-onClick(".dialog-tab", function (tab) {
-  var dlg = tab.closest("dialog");
-  dlg.querySelectorAll(".dialog-tab").forEach(function (t) { t.classList.toggle("active", t === tab); });
-  dlg.querySelectorAll(".dialog-panel").forEach(function (p) { p.hidden = p.id !== tab.dataset.panel; });
-});
-
-// execCommand covers origins without the clipboard API: a plain-http LAN
-// page is not a secure context.
-onClick("[data-copy-from]", function (btn, e) {
-  e.preventDefault();
-  var src = document.querySelector(btn.dataset.copyFrom);
-  var text = src ? (src.value !== undefined ? src.value : src.textContent) : "";
-  var flash = btn.parentElement && btn.parentElement.querySelector(".copy-flash");
-  var done = function () {
-    if (!flash) { return; }
-    flash.hidden = false;
-    setTimeout(function () { flash.hidden = true; }, 1500);
-  };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text, done); });
-  } else {
-    fallbackCopy(text, done);
-  }
-});
-
-function fallbackCopy(text, done) {
-  var ta = document.createElement("textarea");
-  ta.value = text;
-  document.body.appendChild(ta);
-  ta.select();
-  try { document.execCommand("copy"); } catch (err) { /* fall through */ }
-  document.body.removeChild(ta);
-  done();
-}
 
 onClick(".item-debug", function (btn) {
   htmx.ajax("GET", "/internal/item-debug?url=" + encodeURIComponent(btn.dataset.url), "#debug-log-body").then(function () {
@@ -255,98 +212,6 @@ onClick(".maprow-del", function (del) {
   del.closest(".maprow").remove();
 });
 
-// Browse only opens the dialog: the button's own hx-get fetches the listing.
-document.addEventListener("click", function (e) {
-  if (e.target.closest(".dir-picker-open")) {
-    var dlg = document.getElementById("dir-picker-dialog");
-    if (dlg && !dlg.open) dlg.showModal();
-    return;
-  }
-  var use = e.target.closest(".dir-picker-use");
-  if (!use) return;
-  var input = document.getElementById(use.dataset.into || "");
-  if (input) {
-    input.value = use.dataset.path || "";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  }
-  var open = use.closest("dialog");
-  if (open) open.close();
-});
-
-// The polls' trigger filters read this: a swap under the open pop-in
-// detaches the button whose request is pending, and htmx drops a request
-// from a detached element.
-function confirmOpen() {
-  var dlg = document.getElementById("confirm-dialog");
-  return !!(dlg && dlg.open);
-}
-function showConfirm(message, onOk, okLabel, danger, detail) {
-  var dlg = document.getElementById("confirm-dialog");
-  if (!dlg) {
-    if (window.confirm(detail ? message + "\n\n" + detail : message)) {
-      onOk();
-    }
-    return;
-  }
-  document.getElementById("confirm-dialog-msg").textContent = message || "";
-  var detailEl = document.getElementById("confirm-dialog-detail");
-  if (detailEl) {
-    detailEl.textContent = detail || "";
-    detailEl.style.display = detail ? "" : "none";
-  }
-  var okBtn = document.getElementById("confirm-dialog-ok");
-  var cancelBtn = document.getElementById("confirm-dialog-cancel");
-  okBtn.textContent = okLabel || "ok";
-  okBtn.classList.toggle("btn-danger", !!danger);
-  var close = function () {
-    dlg.close();
-    okBtn.onclick = null;
-    cancelBtn.onclick = null;
-  };
-  okBtn.onclick = function () {
-    close();
-    onOk();
-  };
-  cancelBtn.onclick = close;
-  dlg.showModal();
-  (danger ? cancelBtn : okBtn).focus();
-}
-document.body.addEventListener("htmx:confirm", function (e) {
-  if (!e.detail || !e.detail.question) {
-    return;
-  }
-  e.preventDefault();
-  var elt = e.detail.elt;
-  var okLabel = elt && elt.dataset ? elt.dataset.confirmOk : "";
-  var danger = !!(elt && elt.hasAttribute && elt.hasAttribute("data-confirm-danger"));
-  // The attribute doubles as the warning subtext when it carries a value.
-  var detail = elt && elt.getAttribute ? elt.getAttribute("data-confirm-danger") : "";
-  showConfirm(e.detail.question, function () { e.detail.issueRequest(true); }, okLabel, danger, detail);
-});
-
-// htmx:confirm only fires for htmx requests, so hx-confirm on a plain form is
-// handled here; form.submit() fires no submit event, so it cannot loop.
-document.body.addEventListener("submit", function (e) {
-  var form = e.target;
-  if (!form || !form.hasAttribute || !form.hasAttribute("hx-confirm")) {
-    return;
-  }
-  if (form.hasAttribute("hx-get") || form.hasAttribute("hx-post") ||
-      form.hasAttribute("hx-put") || form.hasAttribute("hx-patch") || form.hasAttribute("hx-delete")) {
-    return;
-  }
-  e.preventDefault();
-  showConfirm(form.getAttribute("hx-confirm"), function () { form.submit(); },
-    form.dataset.confirmOk, form.hasAttribute("data-confirm-danger"),
-    form.getAttribute("data-confirm-danger"));
-});
-
-document.body.addEventListener("token-saved", function (e) {
-  var id = e.detail && e.detail.dialog;
-  if (!id) return;
-  var dlg = document.getElementById(id);
-  if (dlg && dlg.open) dlg.close();
-});
 
 var chainDragging = null;
 document.body.addEventListener("dragstart", function (e) {
@@ -428,4 +293,49 @@ document.addEventListener("DOMContentLoaded", function () {
     document.querySelectorAll("#chain-on li").forEach(function (li, i) { add(li.dataset.name, i + 1); });
     document.querySelectorAll("#chain-off li").forEach(function (li) { add(li.dataset.name, ""); });
   });
+});
+
+// The chords come from the data-chord links; a key typed into a field is the
+// field's.
+document.addEventListener("keydown", function (e) {
+  var tag = e.target.tagName.toLowerCase();
+  var isInput = tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable;
+  if (e.key === "Escape") {
+    if (isInput) {
+      e.target.blur();
+    }
+    return;
+  }
+  if (isInput || e.ctrlKey || e.metaKey || e.altKey) {
+    return;
+  }
+  var help = document.getElementById("shortcuts-help");
+  if (document.querySelector("dialog[open]")) {
+    if (e.key === "?" && help && help.open) {
+      e.preventDefault();
+      help.close();
+    }
+    return;
+  }
+  if (chordStep(e)) {
+    return;
+  }
+  if (e.key === "?" && help) {
+    e.preventDefault();
+    openShortcutSheet();
+    return;
+  }
+  if (e.key === "s" || e.key === "/") {
+    var bar = document.querySelector(".add-bar input[name=url]");
+    if (bar && !bar.disabled) {
+      e.preventDefault();
+      bar.focus();
+    }
+    return;
+  }
+  var chords = chordMapFromPage();
+  if (chords[e.key]) {
+    e.preventDefault();
+    enterChord(chords[e.key], e.key);
+  }
 });

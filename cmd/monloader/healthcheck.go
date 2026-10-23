@@ -9,6 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/shared/desktop"
 )
 
@@ -45,7 +46,7 @@ func resolveHealthAddr(configPath string) string {
 		}
 	}
 	if addr == "" {
-		addr = "127.0.0.1:8456"
+		addr = "127.0.0.1:" + contract.PortMonloader
 	}
 	return desktop.LoopbackAddr(addr)
 }

@@ -2,32 +2,28 @@
 <div id="monbooru-pair"{{if .Waiting}} hx-post="/settings/monbooru/pair/poll" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
   {{$csrf := .CSRFToken}}
   {{if .Waiting}}
-  <p class="field-hint">waiting for approval in monbooru... approve the request there to complete the pairing.
+  <p class="field-hint">Waiting for approval in monbooru... Approve the request there to complete the pairing.
     <form hx-post="/settings/monbooru/pair/cancel" hx-target="#monbooru-pair" hx-swap="outerHTML" style="display:inline">
-      <input type="hidden" name="_csrf" value="{{$csrf}}">
-      <button type="submit">cancel</button>
+      <button type="submit">Cancel</button>
     </form>
   </p>
   {{else if .Paired}}
-  <p class="field-hint">connected to monbooru.
+  <p class="field-hint">Connected to monbooru.
     <form hx-post="/settings/monbooru/pair/connect" hx-target="#monbooru-pair" hx-swap="outerHTML" style="display:inline">
-      <input type="hidden" name="_csrf" value="{{$csrf}}">
-      <button type="submit">reconnect</button>
+      <button type="submit" class="peer-accent">Reconnect</button>
     </form>
     <form hx-post="/settings/monbooru/pair/remove" hx-target="#monbooru-pair" hx-swap="outerHTML"
-          hx-confirm="remove the monbooru pairing?" data-confirm-ok="remove"
-          data-confirm-danger="you will need to re-pair before monloader can push again." style="display:inline">
-      <input type="hidden" name="_csrf" value="{{$csrf}}">
-      <button type="submit" class="btn-danger">remove pairing</button>
+          hx-confirm="Remove the monbooru pairing?" data-confirm-ok="Remove"
+          data-confirm-danger="You will need to re-pair before monloader can push again." style="display:inline">
+      <button type="submit" class="btn-danger">Remove pairing</button>
     </form>
   </p>
   {{else}}
-  <p class="field-hint">to pair with monbooru: click connect, then approve the request in monbooru, under settings &gt; plugins.</p>
+  <p class="field-hint">To pair with monbooru: click Connect to monbooru, then approve the request in monbooru, under Settings &gt; Plugins.</p>
   <form hx-post="/settings/monbooru/pair/connect" hx-target="#monbooru-pair" hx-swap="outerHTML" style="display:inline">
-    <input type="hidden" name="_csrf" value="{{$csrf}}">
-    <button type="submit">connect to monbooru</button>
+    <button type="submit" class="peer-accent">Connect to monbooru</button>
   </form>
   {{end}}
-  {{if .Message}} <span class="hint">{{.Message}}</span>{{end}}
+  {{if .Message}} <span class="field-hint">{{.Message}}</span>{{end}}
 </div>
 {{end}}

@@ -7,16 +7,17 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/shared/session"
 )
 
 // Longer than the site probe's: this run fetches the file, not just the post.
 const debugLogTimeout = 60 * time.Second
 
 func (s *Server) itemDebug(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context()))}
+	data := map[string]any{"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context()))}
 	url := strings.TrimSpace(r.FormValue("url"))
 	if !config.IsHTTPURL(url) {
-		data["Error"] = "this item has no source link to re-run"
+		data["Error"] = "This item has no source link to re-run."
 		s.render(w, "item_debug", data)
 		return
 	}

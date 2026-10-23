@@ -1,9 +1,6 @@
 package config
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -17,6 +14,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/monbooru/monloader/internal/shared/apitoken"
+	"github.com/monbooru/monloader/internal/shared/contract"
+	"github.com/monbooru/monloader/internal/shared/fsx"
 	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
@@ -42,15 +42,15 @@ type Config struct {
 type ServerConfig struct {
 	BindAddress string `toml:"bind_address"`
 	BaseURL     string `toml:"base_url"`
-	CustomCSS   string `toml:"custom_css"`
 	BooruName   string `toml:"name"`
-	BooruLogo   string `toml:"logo"`
+	Theme       string `toml:"theme"`
 }
 
 type MonbooruConfig struct {
 	APIURL   string `toml:"api_url"`
 	APIToken string `toml:"api_token"`
-	// Browser-facing, for links; empty falls back to APIURL.
+	// Browser-facing, for links; empty leaves them plain text, since
+	// APIURL may name a host only monloader resolves.
 	WebURL         string `toml:"web_url"`
 	DefaultGallery string `toml:"default_gallery"`
 	// Pausing keeps the pairing on disk, so resuming needs no re-pair.
@@ -58,11 +58,7 @@ type MonbooruConfig struct {
 }
 
 func (m MonbooruConfig) WebBase() string {
-	base := m.WebURL
-	if base == "" {
-		base = m.APIURL
-	}
-	return strings.TrimRight(base, "/")
+	return strings.TrimRight(m.WebURL, "/")
 }
 
 type DownloaderConfig struct {
@@ -98,47 +94,18 @@ type GalleryDLConfig struct {
 }
 
 type AuthConfig struct {
-	EnablePassword      bool    `toml:"enable_password"`
-	PasswordHash        string  `toml:"password_hash"`
-	SessionLifetimeDays int     `toml:"session_lifetime_days"`
-	Tokens              []Token `toml:"tokens,omitempty"`
+	EnablePassword      bool          `toml:"enable_password"`
+	PasswordHash        string        `toml:"password_hash"`
+	SessionLifetimeDays int           `toml:"session_lifetime_days"`
+	Tokens              apitoken.List `toml:"tokens,omitempty"`
 }
 
 const (
-	ScopeRead  = "read"
-	ScopeWrite = "write"
+	ScopeRead  = contract.ScopeRead
+	ScopeWrite = contract.ScopeWrite
 )
 
 var AllScopes = []string{ScopeRead, ScopeWrite}
-
-type Token struct {
-	ID        string   `toml:"id"`
-	Name      string   `toml:"name"`
-	TokenHash string   `toml:"token_hash"`
-	Scopes    []string `toml:"scopes"`
-	CreatedAt string   `toml:"created_at"`
-	Paired    string   `toml:"paired,omitempty"`
-}
-
-func (t Token) HasScope(scope string) bool { return slices.Contains(t.Scopes, scope) }
-
-func HashToken(secret string) string {
-	sum := sha256.Sum256([]byte(secret))
-	return hex.EncodeToString(sum[:])
-}
-
-func GenerateSecret() string {
-	return hex.EncodeToString(mustRandom(16))
-}
-
-// A failed CSPRNG must never degrade into a predictable all-zero secret.
-func mustRandom(n int) []byte {
-	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		panic("crypto/rand unavailable: " + err.Error())
-	}
-	return buf
-}
 
 func IsHexHash(s string, n int) bool {
 	_, err := hex.DecodeString(s)
@@ -152,93 +119,6 @@ func IsHTTPURL(s string) bool {
 
 func IsRelativeFolder(s string) bool {
 	return !strings.HasPrefix(s, "/") && !slices.Contains(strings.Split(s, "/"), "..")
-}
-
-// monbooru refuses a longer origin label.
-const maxViaLen = 200
-
-// monbooru selects the tag-source group with [data-source="<via>"], so
-// whitespace or a quote there breaks the selector.
-func IsValidVia(s string) bool {
-	return len(s) <= maxViaLen && !strings.ContainsAny(s, " \t\n\r\"'<>[]\\")
-}
-
-func newTokenID() string {
-	return hex.EncodeToString(mustRandom(8))
-}
-
-// An operator's token must not pass for one the pairing flow minted.
-func reservedTokenName(name string) bool {
-	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(name)), "(paired)")
-}
-
-func ValidateTokenName(name string) error {
-	n := strings.TrimSpace(name)
-	if n == "" {
-		return fmt.Errorf("token name must not be empty")
-	}
-	if reservedTokenName(n) {
-		return fmt.Errorf("token names ending in \"(paired)\" are reserved")
-	}
-	return nil
-}
-
-// GenerateToken belongs outside a replayed config mutation, so the id,
-// secret and timestamp stay stable.
-func GenerateToken(name string, scopes []string) (Token, string) {
-	secret := GenerateSecret()
-	return TokenFromSecret(name, secret, scopes), secret
-}
-
-func TokenFromSecret(name, secret string, scopes []string) Token {
-	return Token{
-		ID:        newTokenID(),
-		Name:      name,
-		TokenHash: HashToken(secret),
-		Scopes:    scopes,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-}
-
-func (cfg *Config) TokenNameExists(name string) bool {
-	n := strings.ToLower(strings.TrimSpace(name))
-	return slices.ContainsFunc(cfg.Auth.Tokens, func(t Token) bool { return strings.ToLower(t.Name) == n })
-}
-
-func (cfg *Config) FindTokenByHash(hash string) *Token {
-	for i := range cfg.Auth.Tokens {
-		if subtle.ConstantTimeCompare([]byte(cfg.Auth.Tokens[i].TokenHash), []byte(hash)) == 1 {
-			return &cfg.Auth.Tokens[i]
-		}
-	}
-	return nil
-}
-
-func (cfg *Config) RemoveToken(id string) bool {
-	i := slices.IndexFunc(cfg.Auth.Tokens, func(t Token) bool { return t.ID == id })
-	if i < 0 {
-		return false
-	}
-	cfg.Auth.Tokens = slices.Delete(cfg.Auth.Tokens, i, i+1)
-	return true
-}
-
-func (cfg *Config) FindToken(id string) *Token {
-	for i := range cfg.Auth.Tokens {
-		if cfg.Auth.Tokens[i].ID == id {
-			return &cfg.Auth.Tokens[i]
-		}
-	}
-	return nil
-}
-
-func (cfg *Config) SetTokenScopes(id string, scopes []string) bool {
-	tok := cfg.FindToken(id)
-	if tok == nil {
-		return false
-	}
-	tok.Scopes = scopes
-	return true
 }
 
 type LogConfig struct {
@@ -296,13 +176,13 @@ type LookupService struct {
 }
 
 // A new service also needs its LookupConfig field and a Service case.
-var LookupServices = []string{"iqdb", "saucenao"}
+var LookupServices = []string{contract.TrailIQDB, contract.TrailSauceNAO}
 
 func (l *LookupConfig) Service(name string) *LookupService {
 	switch name {
-	case "iqdb":
+	case contract.TrailIQDB:
 		return &l.Iqdb
-	case "saucenao":
+	case contract.TrailSauceNAO:
 		return &l.Saucenao
 	}
 	return nil
@@ -353,13 +233,12 @@ type HostLabel struct {
 
 func Default() *Config {
 	return &Config{
-		// 8456 beside monbooru's 8455, the same pair in every profile.
 		Server: ServerConfig{
-			BindAddress: "0.0.0.0:8456",
-			BaseURL:     "http://localhost:8456",
+			BindAddress: "0.0.0.0:" + contract.PortMonloader,
+			BaseURL:     "http://localhost:" + contract.PortMonloader,
 		},
 		Monbooru: MonbooruConfig{
-			APIURL: "http://monbooru:8455",
+			APIURL: "http://monbooru:" + contract.PortMonbooru,
 		},
 		Downloader: DownloaderConfig{
 			Concurrency:          1,
@@ -458,38 +337,19 @@ func absent(path string, portable bool) (bool, error) {
 
 // binary_path is left alone: it names a command on PATH as often as a file.
 func resolveIn(cfg *Config, base string) {
-	cfg.GalleryDL.ConfigPath = absIn(cfg.GalleryDL.ConfigPath, base)
-	cfg.GalleryDL.ArchivePath = absIn(cfg.GalleryDL.ArchivePath, base)
-	cfg.GalleryDL.CookiesDir = absIn(cfg.GalleryDL.CookiesDir, base)
-	cfg.GalleryDL.SupportedSitesPath = absIn(cfg.GalleryDL.SupportedSitesPath, base)
-	cfg.PTR.DataPath = absIn(cfg.PTR.DataPath, base)
-}
-
-func absIn(path, base string) string {
-	if path == "" || filepath.IsAbs(path) {
-		return path
-	}
-	return filepath.Join(base, path)
+	cfg.GalleryDL.ConfigPath = fsx.AbsIn(cfg.GalleryDL.ConfigPath, base)
+	cfg.GalleryDL.ArchivePath = fsx.AbsIn(cfg.GalleryDL.ArchivePath, base)
+	cfg.GalleryDL.CookiesDir = fsx.AbsIn(cfg.GalleryDL.CookiesDir, base)
+	cfg.GalleryDL.SupportedSitesPath = fsx.AbsIn(cfg.GalleryDL.SupportedSitesPath, base)
+	cfg.PTR.DataPath = fsx.AbsIn(cfg.PTR.DataPath, base)
 }
 
 func RelativizeIn(cfg *Config, base string) {
-	cfg.GalleryDL.ConfigPath = RelativeTo(cfg.GalleryDL.ConfigPath, base)
-	cfg.GalleryDL.ArchivePath = RelativeTo(cfg.GalleryDL.ArchivePath, base)
-	cfg.GalleryDL.CookiesDir = RelativeTo(cfg.GalleryDL.CookiesDir, base)
-	cfg.GalleryDL.SupportedSitesPath = RelativeTo(cfg.GalleryDL.SupportedSitesPath, base)
-	cfg.PTR.DataPath = RelativeTo(cfg.PTR.DataPath, base)
-}
-
-// A path outside base stays absolute rather than moving with the folder.
-func RelativeTo(path, base string) string {
-	if path == "" || base == "" {
-		return path
-	}
-	rel, err := filepath.Rel(base, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return path
-	}
-	return filepath.ToSlash(rel)
+	cfg.GalleryDL.ConfigPath = fsx.RelIn(cfg.GalleryDL.ConfigPath, base)
+	cfg.GalleryDL.ArchivePath = fsx.RelIn(cfg.GalleryDL.ArchivePath, base)
+	cfg.GalleryDL.CookiesDir = fsx.RelIn(cfg.GalleryDL.CookiesDir, base)
+	cfg.GalleryDL.SupportedSitesPath = fsx.RelIn(cfg.GalleryDL.SupportedSitesPath, base)
+	cfg.PTR.DataPath = fsx.RelIn(cfg.PTR.DataPath, base)
 }
 
 // LoadWithDefaults applies seed only to a config it creates; one already on
@@ -522,12 +382,14 @@ func load(path, base string, seed func(*Config)) (*Config, error) {
 		}
 	}
 
-	cfg, err := LoadFromFileIn(path, base)
+	cfg, unknown, err := decodeFile(path, base)
 	if err != nil {
 		return nil, err
 	}
+	if len(unknown) > 0 {
+		logx.Warnf("config: ignoring unknown key(s) in %s, which the next settings save drops: %v", path, unknown)
+	}
 	applyEnvOverrides(cfg)
-	// Again, so an env override is checked like a file value.
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
@@ -575,10 +437,17 @@ func seedLookupDefaults(cfg *Config, md toml.MetaData) {
 }
 
 // LoadFromFileIn skips the MONLOADER_* overrides: a save writes this layer,
-// so an env value never lands in the file. A caller must pass the base it
+// so an env value never lands in the file. Nor is it validated, since a key
+// the environment supplies can be empty here. A caller must pass the base it
 // loaded with, or a key the file omits takes the container default and a
 // save writes it into the file.
 func LoadFromFileIn(path, base string) (*Config, error) {
+	cfg, _, err := decodeFile(path, base)
+	return cfg, err
+}
+
+func decodeFile(path, base string) (*Config, []toml.Key, error) {
+	var unknown []toml.Key
 	cfg := Default()
 	if base != "" {
 		portableDefaults(cfg)
@@ -594,65 +463,27 @@ func LoadFromFileIn(path, base string) (*Config, error) {
 		cfg.SetupDone = true
 		md, err := toml.DecodeFile(path, cfg)
 		if err != nil {
-			return nil, fmt.Errorf("parsing config file %q: %w", path, err)
+			return nil, nil, fmt.Errorf("parsing config file %q: %w", path, err)
 		}
 		seedLookupDefaults(cfg, md)
+		unknown = md.Undecoded()
 	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("checking config file: %w", err)
+		return nil, nil, fmt.Errorf("checking config file: %w", err)
 	}
 	if base != "" {
 		resolveIn(cfg, base)
+	} else if wd, err := os.Getwd(); err == nil {
+		resolveIn(cfg, wd)
 	}
-	if err := validate(cfg); err != nil {
-		return nil, err
-	}
-	return cfg, nil
+	return cfg, unknown, nil
 }
 
 func Save(cfg *Config, path string) error {
-	return WriteFileAtomic(path, func(f *os.File) error {
+	return fsx.WriteDurable(path, func(f *os.File) error {
 		if err := toml.NewEncoder(f).Encode(cfg); err != nil {
 			return fmt.Errorf("encoding config: %w", err)
 		}
 		return nil
-	})
-}
-
-// Synced before the rename: a zero-length monloader.toml costs a full re-pair.
-func WriteFileAtomic(path string, write func(f *os.File) error) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	// Both are no-ops once the rename has landed.
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-	}()
-	if err := write(tmp); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("syncing temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("renaming temp file: %w", err)
-	}
-	return nil
-}
-
-func WriteFileBytesAtomic(path string, data []byte) error {
-	return WriteFileAtomic(path, func(f *os.File) error {
-		_, err := f.Write(data)
-		return err
 	})
 }
 
@@ -664,7 +495,7 @@ func (cfg *Config) Clone() *Config {
 	cp.TagOverrides = append([]TagOverride(nil), cfg.TagOverrides...)
 	cp.RatingOverrides = append([]RatingOverride(nil), cfg.RatingOverrides...)
 	cp.HostLabels = append([]HostLabel(nil), cfg.HostLabels...)
-	cp.Auth.Tokens = append([]Token(nil), cfg.Auth.Tokens...)
+	cp.Auth.Tokens = append(apitoken.List(nil), cfg.Auth.Tokens...)
 	for i := range cp.Auth.Tokens {
 		cp.Auth.Tokens[i].Scopes = slices.Clone(cp.Auth.Tokens[i].Scopes)
 	}

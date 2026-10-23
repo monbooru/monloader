@@ -32,13 +32,13 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 	enrich := kind == queue.KindLookup || kind == queue.KindMetadata || kind == queue.KindPTRLookup
 
 	switch {
-	case it.SHA256 != "":
+	case base != "" && it.SHA256 != "":
 		d.ViewURL = base + "/i/" + it.SHA256
-	case it.MonbooruID != 0:
+	case base != "" && it.MonbooruID != 0:
 		d.ViewURL = fmt.Sprintf("%s/images/%d", base, it.MonbooruID)
 	case kind == queue.KindContrib && it.URL != "":
 		d.ViewURL = it.URL
-	case enrich && imageID != 0:
+	case base != "" && enrich && imageID != 0:
 		d.ViewURL = fmt.Sprintf("%s/images/%d", base, imageID)
 	}
 

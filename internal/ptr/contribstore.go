@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
 // ContribStore's staged rows are operator intent, not a rebuildable
@@ -22,12 +24,12 @@ const contribFile = "contrib.sqlite"
 // Tag is the mapping tag, the sibling's bad or the parent's child; Tag2
 // the sibling's good or the parent's parent.
 const (
-	ContribMappingAdd      = "mapping_add"
-	ContribMappingPetition = "mapping_petition"
-	ContribSibling         = "sibling"
-	ContribParent          = "parent"
-	ContribSiblingPetition = "sibling_petition"
-	ContribParentPetition  = "parent_petition"
+	ContribMappingAdd      = contract.ContribMappingAdd
+	ContribMappingPetition = contract.ContribMappingPetition
+	ContribSibling         = contract.ContribSibling
+	ContribParent          = contract.ContribParent
+	ContribSiblingPetition = contract.ContribSiblingPetition
+	ContribParentPetition  = contract.ContribParentPetition
 )
 
 // Ledger outcomes; the empty string means pending.
@@ -67,6 +69,8 @@ CREATE TABLE IF NOT EXISTS contrib_log (
     outcome      TEXT NOT NULL DEFAULT '',
     outcome_at   INTEGER
 );
+CREATE INDEX IF NOT EXISTS contrib_log_kind_tag_hash ON contrib_log (kind, tag, hash);
+CREATE INDEX IF NOT EXISTS contrib_log_committed_at ON contrib_log (committed_at);
 `
 
 type ContribItem struct {
@@ -110,7 +114,12 @@ func OpenContribStore(dataPath string) (*ContribStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("resetting sending rows: %w", err)
 	}
-	return &ContribStore{db: db}, nil
+	s := &ContribStore{db: db}
+	if err := s.PruneLog(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("pruning the contribution log: %w", err)
+	}
+	return s, nil
 }
 
 func (s *ContribStore) Close() error { return s.db.Close() }
@@ -208,19 +217,20 @@ func (s *ContribStore) Complete(it ContribItem) (logID int64, err error) {
 	if _, err := tx.Exec(`DELETE FROM contrib_items WHERE id = ?`, it.ID); err != nil {
 		return 0, err
 	}
-	// Unsettled rows never age out: they guard against re-sending what
-	// the repository has not answered yet.
-	if _, err := tx.Exec(
-		`DELETE FROM contrib_log WHERE outcome != '' AND committed_at < ?`,
-		time.Now().AddDate(0, 0, -contribLogKeepDays).Unix(),
-	); err != nil {
-		return 0, err
-	}
 	logID, err = res.LastInsertId()
 	if err != nil {
 		return 0, err
 	}
 	return logID, tx.Commit()
+}
+
+// Unsettled rows never age out: they guard against re-sending what the
+// repository has not answered yet.
+func (s *ContribStore) PruneLog() error {
+	_, err := s.db.Exec(
+		`DELETE FROM contrib_log WHERE outcome != '' AND committed_at < ?`,
+		time.Now().AddDate(0, 0, -contribLogKeepDays).Unix())
+	return err
 }
 
 func (s *ContribStore) FailItem(id int64, msg string) error {

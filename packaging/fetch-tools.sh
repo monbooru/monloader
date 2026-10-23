@@ -12,4 +12,5 @@ curl -fsSL -o tools/gallery-dl.exe "$base/gallery-dl.exe"
 echo "${GDL_SHA256_WINDOWS_AMD64}  tools/gallery-dl.exe" | sha256sum -c -
 curl -fsSL -o tools/LICENSE.gallery-dl \
   "https://codeberg.org/mikf/gallery-dl/raw/tag/v${GDL_VERSION}/LICENSE"
+echo "${GDL_LICENSE_SHA256}  tools/LICENSE.gallery-dl" | sha256sum -c -
 ls -la tools

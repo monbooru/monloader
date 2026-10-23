@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/shared/fsx"
 	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
@@ -125,7 +126,7 @@ func WriteManagedConfig(cfg *config.Config, flatTagSites, metadataSites, notesSi
 	if path == "" {
 		return fmt.Errorf("gallerydl.config_path is empty")
 	}
-	if err := config.WriteFileBytesAtomic(path, data); err != nil {
+	if err := fsx.WriteFile(path, data); err != nil {
 		return fmt.Errorf("writing managed config: %w", err)
 	}
 	return nil
@@ -143,10 +144,13 @@ func blockFor(extractor map[string]any, site string) map[string]any {
 func mergeMaps(dst, src map[string]any) {
 	for k, sv := range src {
 		if sm, ok := sv.(map[string]any); ok {
-			if dm, ok := dst[k].(map[string]any); ok {
-				mergeMaps(dm, sm)
-				continue
+			dm, ok := dst[k].(map[string]any)
+			if !ok {
+				dm = map[string]any{}
+				dst[k] = dm
 			}
+			mergeMaps(dm, sm)
+			continue
 		}
 		dst[k] = sv
 	}

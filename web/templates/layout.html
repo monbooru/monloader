@@ -1,49 +1,64 @@
 {{define "doc_head"}}<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-app="monloader">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{.Title}}</title>
-  <link rel="icon" type="image/png" href="{{.BooruFavicon}}">
-  <link rel="stylesheet" href="/static/main.css">
-  {{if .CustomCSS}}<link rel="stylesheet" href="/custom.css">{{end}}
-  <script src="/static/htmx.min.js" defer></script>
+{{template "webui/head" .}}
+  <script src="/static/shared/htmx.min.js" defer></script>
+  <script src="/static/shared/base.js" defer></script>
   <script src="/static/main.js" defer></script>
 </head>
-<body hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'>
+<body{{with .CanonicalURL}} data-canonical-url="{{.}}"{{end}}>
 {{end}}
 
 {{define "topbar"}}
   <div id="topbar">
-    <a href="/" id="logo"><img src="{{.BooruLogo}}" alt="" class="topbar-logo"><span>{{.BooruName}}</span></a>
-    <nav>
-      <a href="/queue" {{if eq .ActiveNav "queue"}}class="active"{{end}}>Queue</a>
-      <a href="/watches" {{if eq .ActiveNav "watches"}}class="active"{{end}}>Watched</a>
-      <a href="/ptr" {{if eq .ActiveNav "ptr"}}class="active"{{end}}>PTR</a>
-      <a href="/settings" {{if eq .ActiveNav "settings"}}class="active"{{end}}>Settings</a>
+    <a href="/" id="logo" data-chord="g g"><img src="{{.BooruLogo}}" alt="" class="topbar-logo"><span>{{.BooruName}}</span></a>
+    <nav id="nav">
+      <a data-chord="g q" href="/queue" class="nav-queue{{if eq .ActiveNav "queue"}} active{{end}}">Queue</a>
+      <a data-chord="g w" href="/watches" class="nav-watches{{if eq .ActiveNav "watches"}} active{{end}}">Watched</a>
+      <a data-chord="g p" href="/ptr" class="nav-ptr{{if eq .ActiveNav "ptr"}} active{{end}}">PTR</a>
+      <a data-chord="g s" href="/settings" class="nav-settings{{if eq .ActiveNav "settings"}} active{{end}}">Settings</a>
     </nav>
     <div id="topbar-right">
       {{template "pause_toggle" .}}
       {{if .AuthEnabled}}
-      {{template "postbtn" dict "Action" "/logout" "CSRF" .CSRFToken "Label" "logout" "Inline" true}}
+      <form method="POST" action="/logout" style="display:inline">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <button type="submit" class="topbar-action">[logout]</button>
+      </form>
       {{end}}
     </div>
   </div>
+  <div id="page-notice" class="degraded-banner" data-login-url="/login" hidden></div>
 {{end}}
 
 {{define "footer"}}
   <footer id="footer">
-    <div class="footer-line">{{template "conn_light" .}}{{if .MonbooruPaired}} &middot; {{end}}<a href="{{.RepoURL}}" target="_blank" rel="noopener">monloader{{if .Build}} ({{.Build}}){{end}}</a> {{.Version}}{{if .GalleryDLVersion}} &middot; <a href="https://github.com/mikf/gallery-dl" target="_blank" rel="noopener">gallery-dl</a> {{.GalleryDLVersion}}{{end}} &middot; <a href="{{.DocURL}}" target="_blank" rel="noopener">help</a> &middot; <a href="/api/v1/docs" target="_blank" rel="noopener">API</a></div>
+    <div id="footer-left"></div>
+    <div id="footer-right">{{template "webui/peer_light" .MonbooruLight}}{{if .MonbooruPaired}} &middot; {{end}}<a href="{{.RepoURL}}" target="_blank" rel="noopener">monloader{{if .Build}} ({{.Build}}){{end}}</a> {{.Version}}{{if .GalleryDLVersion}} &middot; <a href="https://github.com/mikf/gallery-dl" target="_blank" rel="noopener">gallery-dl</a> {{.GalleryDLVersion}}{{end}} &middot; <a href="#" id="footer-shortcuts" onclick="openShortcutSheet();return false">shortcuts</a> &middot; <a href="{{.DocURL}}" target="_blank" rel="noopener">help</a> &middot; <a href="/api/v1/docs" target="_blank" rel="noopener">API</a></div>
   </footer>
 {{end}}
 
 {{define "doc_foot"}}
-<dialog id="confirm-dialog">
-  <p id="confirm-dialog-msg"></p>
-  <p id="confirm-dialog-detail" class="hint"></p>
+{{template "webui/confirm_dialog"}}
+<dialog id="shortcuts-help">
+  <h3>Keyboard Shortcuts</h3>
+  <div class="shortcuts-help-grid">
+    <section data-surface="anywhere">
+      <h4>Anywhere</h4>
+      <ul>
+        <li><kbd>?</kbd><span>Toggle this overlay</span></li>
+        <li data-when=".add-bar input[name=url]"><kbd>s</kbd><kbd>/</kbd><span>Focus the URL box</span></li>
+        <li><kbd>Esc</kbd><span>Close dialog &middot; leave a field</span></li>
+        <li><kbd>g</kbd><kbd>g</kbd><span>Home</span></li>
+        <li><kbd>g</kbd><kbd>q</kbd><span>Queue</span></li>
+        <li><kbd>g</kbd><kbd>w</kbd><span>Watched</span></li>
+        <li><kbd>g</kbd><kbd>p</kbd><span>PTR</span></li>
+        <li><kbd>g</kbd><kbd>s</kbd><span>Settings</span></li>
+      </ul>
+    </section>
+  </div>
   <div class="dialog-actions">
-    <button type="button" id="confirm-dialog-cancel">cancel</button>
-    <button type="button" id="confirm-dialog-ok">ok</button>
+    <button type="button" onclick="document.getElementById('shortcuts-help').close()">Close</button>
   </div>
 </dialog>
 </body>

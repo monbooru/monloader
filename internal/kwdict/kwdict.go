@@ -2,12 +2,17 @@
 // across sites and releases.
 package kwdict
 
-import "strconv"
+import (
+	"encoding/json"
+	"strconv"
+)
 
 func String(m map[string]any, key string) string {
 	switch v := m[key].(type) {
 	case string:
 		return v
+	case json.Number:
+		return v.String()
 	case float64:
 		return strconv.FormatFloat(v, 'f', -1, 64)
 	default:
@@ -37,6 +42,12 @@ func Num(m map[string]any) int {
 
 func Int(m map[string]any, key string) int {
 	switch v := m[key].(type) {
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return int(n)
+		}
+		f, _ := v.Float64()
+		return int(f)
 	case float64:
 		return int(v)
 	case string:

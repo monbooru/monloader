@@ -9,8 +9,10 @@ import (
 
 	"github.com/monbooru/monloader/internal/api"
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/shared/desktop"
 	"github.com/monbooru/monloader/internal/shared/logx"
+	"github.com/monbooru/monloader/internal/shared/session"
 )
 
 // A loopback probe: the process answers at once or is not there.
@@ -69,7 +71,7 @@ func setupExempt(path string) bool {
 	// /health must always answer (single-instance check, container
 	// healthcheck), /login would bounce against the session gate, and a
 	// refused client needs the API reference.
-	case "/health", "/setup", "/login", "/logout", "/api/v1/openapi.json", "/api/v1/docs":
+	case "/health", "/setup", "/login", "/logout", "/api/v1/openapi.json", "/api/v1/docs", "/theme.css", "/theme.logo", "/theme.favicon":
 		return true
 	}
 	return strings.HasPrefix(path, "/static/")
@@ -93,16 +95,16 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, d setupData) {
 	_, port, err := net.SplitHostPort(s.cfg.Current().Server.BindAddress)
 	if err != nil {
-		port = "8456"
+		port = contract.PortMonloader
 	}
 	d.Port = port
 	d.BooruName = s.booruName()
 	d.TitleName = s.titleName()
-	d.CSRFToken = s.sessions.CSRFToken(sessionFromContext(r.Context()))
-	d.Paired = s.hasPairedToken("monbooru")
+	d.CSRFToken = s.sessions.CSRFToken(session.FromContext(r.Context()))
+	d.Paired = s.hasPairedToken(contract.AppMonbooru)
 	d.Integration = s.desktopIntegration()
 	if d.APIURL != "" {
-		if inst, found := desktop.Probe(desktop.LoopbackAddr(hostPort(d.APIURL)), monbooruProbeTimeout); found && inst.App == "monbooru" {
+		if inst, found := desktop.Probe(desktop.LoopbackAddr(hostPort(d.APIURL)), monbooruProbeTimeout); found && inst.App == contract.AppMonbooru {
 			d.Found = true
 			d.FoundVersion = inst.Version
 		}
@@ -133,7 +135,7 @@ func (s *Server) setupPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		s.renderSetup(w, r, setupData{Err: "bad form"})
+		s.renderSetup(w, r, setupData{Err: "Bad form data."})
 		return
 	}
 	form := setupData{
@@ -144,7 +146,7 @@ func (s *Server) setupPost(w http.ResponseWriter, r *http.Request) {
 		Autostart: r.FormValue("start_at_login") == "on",
 	}
 	if form.APIURL != "" && !config.IsHTTPURL(form.APIURL) {
-		form.Err = "that is not an http(s) address"
+		form.Err = "That is not an http(s) address."
 		s.renderSetup(w, r, form)
 		return
 	}
@@ -164,33 +166,25 @@ func (s *Server) setupPost(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		form.Err = "save failed: " + err.Error()
+		form.Err = "Could not save: " + err.Error()
 		s.renderSetup(w, r, form)
 		return
 	}
 
-	h := s.DesktopHook()
-	if h.MenuSupported() {
-		if err := h.SetMenu(form.Menu); err != nil {
-			logx.Warnf("setup: could not write the menu entry: %v", err)
-		}
-	}
-	if h.AutostartSupported() {
-		if err := h.SetAutostart(form.Autostart); err != nil {
-			logx.Warnf("setup: could not write start at login: %v", err)
-		}
+	for _, f := range s.DesktopHook().Apply(form.Menu, form.Autostart) {
+		logx.Warnf("setup: could not write %s", f)
 	}
 	// The setup is done either way, so a failed pairing request reports
 	// from Settings, beside the control that re-offers it; re-rendering
 	// the wizard would call a finished setup a refusal.
 	done := "/"
-	if form.Pair && form.APIURL != "" && !s.hasPairedToken("monbooru") {
+	if form.Pair && form.APIURL != "" && !s.hasPairedToken(contract.AppMonbooru) {
 		if err := s.startMonbooruPairing(r.Context()); err != nil {
 			logx.Warnf("setup: could not ask monbooru to pair: %v", err)
 			done = "/settings?kind=err&section=monbooru&msg=" +
-				url.QueryEscape("setup finished, but the pairing request failed: "+err.Error()) + "#pairing"
+				url.QueryEscape("Setup finished, but the pairing request failed: "+err.Error()) + "#pairing"
 		}
 	}
-	logx.Infof("setup: done")
+	logx.Infof("setup: done, reachable from %s", map[bool]string{true: "the network", false: "this computer"}[form.LAN])
 	http.Redirect(w, r, done, http.StatusSeeOther)
 }

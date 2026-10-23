@@ -44,8 +44,11 @@ CREATE TABLE IF NOT EXISTS watches (
 );
 `
 
+// Only these are URI syntax in a path; a URL encoding breaks relative and drive-letter paths.
+var uriPathEscaper = strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23")
+
 func storeDSN(path string) string {
-	return "file:" + path +
+	return "file:" + uriPathEscaper.Replace(path) +
 		"?_pragma=busy_timeout(10000)" +
 		"&_pragma=journal_mode(wal)" +
 		"&_pragma=synchronous(normal)"
@@ -61,18 +64,23 @@ func OpenStore(dir string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("creating queue store schema: %w", err)
 	}
-	// A database created before the write-order guard lacks the column.
-	if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN seq INTEGER NOT NULL DEFAULT 0`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		_ = db.Close()
-		return nil, fmt.Errorf("migrating queue store schema: %w", err)
-	}
-	if _, err := db.Exec(`ALTER TABLE watches ADD COLUMN max_items INTEGER NOT NULL DEFAULT 0`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		_ = db.Close()
-		return nil, fmt.Errorf("migrating queue store schema: %w", err)
+	// A database created before the write-order guard or the watch cap lacks the column.
+	for _, c := range []struct{ table, column string }{{"jobs", "seq"}, {"watches", "max_items"}} {
+		if err := addColumn(db, c.table, c.column, "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrating queue store schema: %w", err)
+		}
 	}
 	return &Store{db: db}, nil
+}
+
+func addColumn(db *sql.DB, table, column, def string) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_xinfo(?) WHERE name = ?`, table, column).Scan(&n); err != nil || n > 0 {
+		return err
+	}
+	_, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + def)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }

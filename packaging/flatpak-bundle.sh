@@ -1,11 +1,13 @@
 #!/bin/sh
 # Installs the runtime and builds the Flatpak bundle into dist/.
+
 set -eu
 
-app=io.github.monbooru.Monloader
-VERSION=$(tr -d '[:space:]' < VERSION.md)
+. ./packaging/release-env.sh
+app=io.github.monbooru.$(echo "$APP" | awk '{print toupper(substr($0, 1, 1)) substr($0, 2)}')
 
 runtime=$(awk -F"'" '/^runtime-version:/ {print $2}' "packaging/flatpak/$app.yml")
+
 
 if ! err=$(bwrap --ro-bind / / --unshare-user --unshare-pid --proc /proc true 2>&1); then
   {
@@ -29,11 +31,12 @@ fi
 fbver=$(flatpak-builder --version | awk '{print $NF}')
 fbrest=${fbver#*.}
 if [ "${fbver%%.*}" -lt 1 ] || { [ "${fbver%%.*}" -eq 1 ] && [ "${fbrest%%.*}" -lt 4 ]; }; then
-  echo "flatpak-builder $fbver is too old for this runtime; 1.4 or newer" >&2
+  echo "flatpak-builder $fbver is too old for the $runtime runtime; 1.4 or newer" >&2
   exit 1
 fi
 
 flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
 cfg="$HOME/.local/share/flatpak/repo/config"
 if [ -f "$cfg" ]; then
   sed -i '/^\[remote "flathub"\]/a http2=false' "$cfg"
@@ -55,6 +58,7 @@ done
 mkdir -p dist
 flatpak-builder --user --disable-rofiles-fuse --force-clean --repo=repo \
   build-dir "packaging/flatpak/$app.yml"
+
 flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
-  repo "dist/monloader_${VERSION#v}_x86_64.flatpak" "$app"
+  repo "dist/${APP}_${VERSION#v}_x86_64.flatpak" "$app"
 ls -la dist

@@ -1,0 +1,26 @@
+{{define "webui/login_page"}}
+<!DOCTYPE html>
+<html lang="en" data-app="{{.App}}">
+<head>
+{{template "webui/head" .}}
+{{with .Manifest}}<link rel="manifest" href="{{.}}">{{end}}
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-box">
+      <h1>{{.BooruName}}</h1>
+      {{with .Error}}<div class="login-error">{{.}}</div>{{end}}
+      {{if not .AuthDisabled}}
+      <form method="POST" action="/login">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        {{with .Next}}<input type="hidden" name="next" value="{{.}}">{{end}}
+        <input type="text" name="username" value="operator" autocomplete="username" hidden>
+        <input type="password" name="password" placeholder="Password" autocomplete="current-password" autofocus>
+        <button type="submit">Login</button>
+      </form>
+      {{end}}
+    </div>
+  </div>
+</body>
+</html>
+{{end}}

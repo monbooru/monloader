@@ -2,8 +2,8 @@
 {{template "topbar" .}}
 <div class="content-scroll">
 <main id="content" class="ptr-shell">
-  <h1>Public Tag Repository</h1>
-  <p class="field-hint">Download a local copy of the Hydrus PTR. Off by default; when enabled it allows monloader to answer sha256 lookups offline.</p>
+  <h2>Public Tag Repository</h2>
+  <p class="field-hint">Download a local copy of the Hydrus PTR. Off by default; when enabled it allows monloader to answer SHA-256 lookups offline.</p>
   {{if .Flash}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
   <div id="ptr-body"{{if eq .PTR.Status.State "syncing"}} hx-get="/internal/ptr-status" hx-trigger="every 2s" hx-swap="innerHTML"{{end}}>
     {{template "ptr_body" .}}
@@ -18,73 +18,73 @@
 {{template "doc_foot" .}}{{end}}
 
 {{define "ptr_body"}}{{with .PTR}}
-{{if .PathMissing}}<p class="flash-warn">{{if .DataPath}}the data path {{.DataPath}} does not exist.{{else}}no data path is set.{{end}} Change it in the settings. In docker, mount a volume there before enabling.</p>{{end}}
+{{if .PathMissing}}<p class="flash-warn">{{if .DataPath}}The data path {{.DataPath}} does not exist.{{else}}No data path is set.{{end}} Change it in the Settings. In docker, mount a volume there before enabling.</p>{{end}}
 {{if eq .Status.State "disabled"}}
 <section class="settings-section">
-  <h2>disabled</h2>
-  {{$label := "enable ptr sync"}}
+  <div class="settings-section-header"><h3>Disabled</h3></div>
+  {{$label := "Enable PTR sync"}}
   {{if .HasIndex}}
-  {{$label = "resume ptr sync"}}
-  <p>The index is still on disk. Enabling picks the sync up where it stopped; deleting it is in <a href="/settings#ptr">settings</a>.</p>
+  {{$label = "Resume PTR sync"}}
+  <p>The index is still on disk. Enabling picks the sync up where it stopped; deleting it is in <a href="/settings#ptr">Settings</a>.</p>
   {{else}}
   <p>Enabling downloads the repository's full tag history and keeps a local index (tens of GB).<br>You can download a <a href="{{docPage "guides/ptr.html#starting-from-a-snapshot"}}" target="_blank" rel="noopener">pre-synced snapshot</a> to skip most of that download.</p>
   {{end}}
   <table class="stats-table">
     <tbody>
-      <tr><th>repository</th><td>{{.Address}}</td></tr>
-      <tr><th>data path</th><td>{{.DataPath}}</td></tr>
-      <tr><th>free space</th><td>{{if .FreeBytes}}{{humanBytes .FreeBytes}}{{else}}unknown{{end}}{{if and .MinFreeGB (not .HasIndex)}} (needs {{.MinFreeGB}} GB to start){{end}}</td></tr>
+      <tr><th>Repository</th><td class="stats-path">{{.Address}}</td></tr>
+      <tr><th>Data path</th><td class="stats-path">{{.DataPath}}</td></tr>
+      <tr><th>Free space</th><td class="stats-path">{{if .FreeBytes}}{{humanBytes .FreeBytes}}{{else}}unknown{{end}}{{if and .MinFreeGB (not .HasIndex)}} (needs {{.MinFreeGB}} GiB to start){{end}}</td></tr>
     </tbody>
   </table>
-  {{if not .PathMissing}}{{template "postbtn" dict "Action" "/ptr/enable" "CSRF" .CSRFToken "Label" $label}}{{end}}
+  {{if not .PathMissing}}{{template "postbtn" dict "Action" "/ptr/enable" "CSRF" .CSRFToken "Label" $label "Disabled" .BelowFloor "Title" (and .BelowFloor (printf "Needs %d GiB free to start" .MinFreeGB))}}{{end}}
 </section>
 {{else}}
 <section class="settings-section">
-  <h2>status: <span class="ptr-state ptr-state-{{.Status.State}}">{{.Status.State}}</span></h2>
+  <div class="settings-section-header"><h3>Status: <span class="ptr-state ptr-state-{{.Status.State}}">{{.Status.State}}</span></h3></div>
   {{if eq .Status.State "syncing"}}
   <p class="field-hint">The initial sync downloads the full tag history and takes days (weeks on an HDD).<br>You can download a <a href="{{docPage "guides/ptr.html#starting-from-a-snapshot"}}" target="_blank" rel="noopener">pre-synced snapshot</a> to skip most of that download.</p>
   <p>update {{.Status.Progress.UpdateIndex}}{{if .Status.Progress.UpdateCount}} / {{.Status.Progress.UpdateCount}}{{end}} &middot; {{humanBytes .Status.Progress.DownloadedBytes}} downloaded this session{{if .Status.Progress.DownloadRate}} &middot; {{humanBytes .Status.Progress.DownloadRate}}/s network{{end}}{{if .Status.Progress.ProcessRate}} &middot; {{.Status.Progress.ProcessRate}} rows/s{{end}}{{if .Status.Progress.LastAppliedAt}} &middot; last update applied {{humanAgo .Status.Progress.LastAppliedAt}}{{end}}</p>
   <div class="ptr-progress">
     <div class="ptr-bar"><div class="ptr-bar-fill" style="width:{{.Percent}}%"></div></div>
-    {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "pause"}}
+    {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "Pause"}}
   </div>
   {{else if eq .Status.State "paused"}}
   <div class="ptr-line">
-    <p>sync paused at update {{.Status.Progress.UpdateIndex}}.</p>
-    {{template "postbtn" dict "Action" "/ptr/resume" "CSRF" .CSRFToken "Label" "resume"}}
+    <p>Sync paused at update {{.Status.Progress.UpdateIndex}}.</p>
+    {{template "postbtn" dict "Action" "/ptr/resume" "CSRF" .CSRFToken "Label" "Resume"}}
   </div>
   {{else if eq .Status.State "error"}}
   <div class="ptr-line">
     <p class="flash-err" title="{{.Status.Error}}">{{.Status.Error}}</p>
     <div class="actions">
-      {{template "postbtn" dict "Action" "/ptr/retry" "CSRF" .CSRFToken "Label" "retry"}}
-      {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "pause"}}
+      {{template "postbtn" dict "Action" "/ptr/retry" "CSRF" .CSRFToken "Label" "Retry"}}
+      {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "Pause"}}
     </div>
   </div>
   {{else}}
   <div class="ptr-line">
     <p>caught up{{if .Status.NextUpdateDue}} &middot; next update {{humanDue .Status.NextUpdateDue}}{{end}}.</p>
-    {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "pause"}}
+    {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "Pause"}}
   </div>
   {{end}}
   <table class="stats-table">
     <tbody>
-      <tr><th>repository</th><td>{{.Address}}</td></tr>
-      <tr><th>data path</th><td>{{.DataPath}} &middot; {{humanBytes .Status.DiskBytes}} used{{if .FreeBytes}}, {{humanBytes .FreeBytes}} free{{end}}</td></tr>
-      {{if .Status.CoveredThrough}}<tr><th>coverage</th><td>data through {{humanDate .Status.CoveredThrough}}</td></tr>{{end}}
+      <tr><th>Repository</th><td class="stats-path">{{.Address}}</td></tr>
+      <tr><th>Data path</th><td class="stats-path">{{.DataPath}} &middot; {{humanBytes .Status.DiskBytes}} used{{if .FreeBytes}}, {{humanBytes .FreeBytes}} free{{end}}</td></tr>
+      {{if .Status.CoveredThrough}}<tr><th>Coverage</th><td class="stats-path">data through {{humanDate .Status.CoveredThrough}}</td></tr>{{end}}
     </tbody>
   </table>
 </section>
 
 <section class="settings-section">
-  <h2>index</h2>
+  <div class="settings-section-header"><h3>Index</h3></div>
   <table class="stats-table">
     <tbody>
-      <tr><th>hashes</th><td>{{.Status.Counts.Hashes}}</td></tr>
-      <tr><th>tags</th><td>{{.Status.Counts.Tags}}</td></tr>
-      <tr><th>mappings</th><td>{{.Status.Counts.Mappings}}</td></tr>
-      <tr><th>aliases</th><td>{{.Status.Counts.Siblings}}</td></tr>
-      <tr><th>implications</th><td>{{.Status.Counts.Parents}}</td></tr>
+      <tr><th>Hashes</th><td>{{.Status.Counts.Hashes}}</td></tr>
+      <tr><th>Tags</th><td>{{.Status.Counts.Tags}}</td></tr>
+      <tr><th>Mappings</th><td>{{.Status.Counts.Mappings}}</td></tr>
+      <tr><th>Aliases</th><td>{{.Status.Counts.Siblings}}</td></tr>
+      <tr><th>Implications</th><td>{{.Status.Counts.Parents}}</td></tr>
     </tbody>
   </table>
 </section>

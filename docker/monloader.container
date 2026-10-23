@@ -23,5 +23,8 @@ HealthStartPeriod=10s
 HealthTimeout=5s
 HealthOnFailure=restart
 
+[Service]
+Restart=always
+
 [Install]
 WantedBy=default.target

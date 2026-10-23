@@ -121,12 +121,6 @@ func (e *Engine) fetchAccount(ctx context.Context, fresh bool) (*Account, error)
 	return acc, nil
 }
 
-func (e *Engine) CachedAccount() *Account {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.account
-}
-
 func (e *Engine) contribStatusLocked() *ContribStatus {
 	cs := &ContribStatus{Account: e.hasPersonalKeyLocked()}
 	if e.account != nil {

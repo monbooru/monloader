@@ -69,7 +69,7 @@ Consider all listed sites to potentially be NSFW.
 <tr id="8muses" title="8muses">
     <td>8muses</td>
     <td>https://comics.8muses.com/</td>
-    <td><span title="https://comics.8muses.com/comics/album/PATH/TITLE">Albums</span></td>
+    <td><span title="https://comics.8muses.com/porn/album/PATH/TITLE">Albums</span></td>
     <td></td>
 </tr>
 <tr id="myportfolio" title="myportfolio">
@@ -574,7 +574,7 @@ Consider all listed sites to potentially be NSFW.
 <tr id="fapello" title="fapello">
     <td>Fapello</td>
     <td>https://fapello.com/</td>
-    <td><span title="https://fapello.com/model/">Models</span> |
+    <td><span title="https://fapello.com/MODEL/">Models</span> |
         <span title="https://fapello.com/trending/">Videos | Trending Posts | Popular Videos | Top Models</span> |
         <span title="https://fapello.com/MODEL/12345/">Posts</span></td>
     <td></td>
@@ -1848,6 +1848,7 @@ Consider all listed sites to potentially be NSFW.
     <td>Toyhouse</td>
     <td>https://toyhou.se/</td>
     <td><span title="https://www.toyhou.se/USER/art">Art</span> |
+        <span title="https://www.toyhou.se/12345.CHARACTER/gallery">Character Galleries</span> |
         <span title="https://toyhou.se/~images/12345">individual Images</span></td>
     <td></td>
 </tr>
@@ -1910,7 +1911,7 @@ Consider all listed sites to potentially be NSFW.
         <span title="https://x.com/home">Home Feed</span> |
         <span title="https://pbs.twimg.com/media/ABCDE?format=jpg&name=orig">individual Images</span> |
         <span title="https://x.com/USER/info">User Profile Information</span> |
-        <span title="https://x.com/USER/likes">Likes</span> |
+        <span title="https://x.com/i/history/likes">Likes</span> |
         <span title="https://x.com/i/lists/12345">Lists</span> |
         <span title="https://x.com/i/lists/12345/members">List Members</span> |
         <span title="https://x.com/USER/media">Media Timelines</span> |
@@ -3082,6 +3083,19 @@ Consider all listed sites to potentially be NSFW.
         <span title="https://thirsthub.cc/threads/TITLE.12345/">Threads</span></td>
     <td></td>
 </tr>
+<tr id="darkwanderer" title="darkwanderer">
+    <td>Darkwanderer</td>
+    <td>https://darkwanderer.net/</td>
+    <td><span title="https://darkwanderer.net/forums/TITLE.123/">Forums</span> |
+        <span title="https://darkwanderer.net/media/albums/ALBUM.123/">Albums</span> |
+        <span title="https://darkwanderer.net/media/categories/CATEGORY.123/">Media Categories</span> |
+        <span title="https://darkwanderer.net/media/NAME.123/">Media Files</span> |
+        <span title="https://darkwanderer.net/media/users/USER.123/">User Media</span> |
+        <span title="https://darkwanderer.net/threads/TITLE.12345/post-54321">Posts</span> |
+        <span title="https://darkwanderer.net/members/USER.123/">Profiles</span> |
+        <span title="https://darkwanderer.net/threads/TITLE.12345/">Threads</span></td>
+    <td></td>
+</tr>
 
 <tr id="moebooru" title="moebooru">
     <td colspan="4"><strong>Moebooru and MyImouto</strong></td>
@@ -3453,8 +3467,8 @@ Consider all listed sites to potentially be NSFW.
 </tr>
 <tr id="imxtw" title="imxtw">
     <td>Imxtw</td>
-    <td>https://imx.tw/</td>
-    <td><span title="https://imx.tw/ID">individual Images</span></td>
+    <td>https://imx.bz/</td>
+    <td><span title="https://imx.bz/ID">individual Images</span></td>
     <td></td>
 </tr>
 <tr id="picstate" title="picstate">

@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/monbooru/monloader/internal/shared/desktop"
+	"github.com/monbooru/monloader/internal/shared/fsx"
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/shared/logx"
@@ -114,30 +115,10 @@ func EffectiveBinary(cfg *config.Config, root string) string {
 	if p := ManagedBinary(root); p != "" {
 		return p
 	}
-	if p := bundledBinary(); p != "" {
+	if p := desktop.BundledTool("gallery-dl"); p != "" {
 		return p
 	}
 	return cfg.GalleryDL.BinaryPath
-}
-
-func bundledBinary() string {
-	dir := desktop.ExeDir()
-	if dir == "" {
-		return ""
-	}
-	p := filepath.Join(dir, standaloneName())
-	if !desktop.IsFile(p) {
-		return ""
-	}
-	if runtime.GOOS != "windows" {
-		// A file unpacked without its mode bits would shadow a working copy
-		// on PATH with one that cannot run.
-		fi, err := os.Stat(p)
-		if err != nil || fi.Mode()&0o111 == 0 {
-			return ""
-		}
-	}
-	return p
 }
 
 func EffectiveSupportedSitesPath(cfg *config.Config, root string) string {
@@ -152,7 +133,8 @@ func EffectiveSupportedSitesPath(cfg *config.Config, root string) string {
 
 func BinaryVersion(ctx context.Context, path string) string {
 	cmd := exec.CommandContext(ctx, path, "--version")
-	hideConsole(cmd)
+	killGroupOnCancel(cmd)
+	desktop.HideConsole(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -253,7 +235,8 @@ func installVenv(ctx context.Context, root, version string, report InstallProgre
 			return "", err
 		}
 		cmd := exec.CommandContext(ctx, python, "-m", "venv", venv)
-		hideConsole(cmd)
+		killGroupOnCancel(cmd)
+		desktop.HideConsole(cmd)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			os.RemoveAll(root)
 			return "", fmt.Errorf("creating the venv: %v: %s", err, outputTail(out))
@@ -282,7 +265,8 @@ func removeIfUnrunnable(ctx context.Context, root string) {
 func runPip(ctx context.Context, venv, version string, report InstallProgress) error {
 	cmd := exec.CommandContext(ctx, venvExe(venv, "pip"),
 		"install", "--no-cache-dir", "--only-binary", ":all:", "gallery-dl=="+version)
-	hideConsole(cmd)
+	killGroupOnCancel(cmd)
+	desktop.HideConsole(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -345,7 +329,7 @@ func fetchManagedSupportedSites(ctx context.Context, root, version string) {
 		fail("the site list is larger than expected")
 		return
 	}
-	if err := config.WriteFileBytesAtomic(dst, body); err != nil {
+	if err := fsx.WriteFile(dst, body); err != nil {
 		fail(err.Error())
 	}
 }

@@ -95,7 +95,7 @@ func flatten(prefix string, props []prop) []prop {
 }
 
 func (h *Handler) endpoints() []endpoint {
-	return []endpoint{
+	eps := []endpoint{
 		{
 			Method: "GET", Path: "/health",
 			Summary: "Liveness and versions", OperationID: "health", NoAuth: true,
@@ -435,7 +435,7 @@ func (h *Handler) endpoints() []endpoint {
 				},
 			},
 			Responses: []response{
-				{Status: "200", Description: "The pair's direction and PTR spellings"},
+				{Status: "200", Description: "The pair's direction and PTR spellings", Ref: "PTRContribPairPreview"},
 				{Status: "400", Description: "Malformed body or kind", Ref: "Error"},
 				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
 			},
@@ -467,9 +467,9 @@ func (h *Handler) endpoints() []endpoint {
 				},
 			},
 			Responses: []response{
-				{Status: "200", Description: "Per-item results; nothing was accepted for sending"},
-				{Status: "202", Description: "Per-item results plus the send job id"},
-				{Status: "400", Description: "Malformed body", Ref: "Error"},
+				{Status: "200", Description: "Per-item results and no send job: nothing was accepted, or commit was false and the accepted items wait staged", Ref: "PTRContribResults"},
+				{Status: "202", Description: "Per-item results plus the send job id", Ref: "PTRContribResults"},
+				{Status: "400", Description: "Malformed body, or an empty items list", Ref: "Error"},
 				{Status: "409", Description: "ptr_unavailable, ptr_account_required, ptr_banned, or ptr_syncing", Ref: "Error"},
 			},
 			Handler: h.ptrContribStage,
@@ -480,8 +480,38 @@ func (h *Handler) endpoints() []endpoint {
 			Description: "The unsent backlog (staged and failed items with errors), counts by kind and " +
 				"status, and the newest slice of the committed history with each row's janitor outcome.",
 			Responses: []response{
-				{Status: "200", Description: "Unsent items, counts, and history"},
+				{Status: "200", Description: "Unsent items, counts, and history", Props: []prop{
+					{Name: "unsent", Type: "array", Description: "staged and failed items, oldest first", Items: &prop{Type: "object", Props: []prop{
+						{Name: "id", Type: "integer"},
+						{Name: "kind", Type: "string"},
+						{Name: "tag", Type: "string", Description: "the mapping tag, the sibling's bad or the parent's child"},
+						{Name: "tag2", Type: "string", Description: "the sibling's good or the parent's parent; absent otherwise"},
+						{Name: "sha256", Type: "string", Description: "the file hash, for the mapping kinds"},
+						{Name: "reason", Type: "string"},
+						{Name: "origin", Type: "string"},
+						{Name: "status", Type: "string", Description: "staged, sending, or failed"},
+						{Name: "error", Type: "string", Description: "why the last send failed; absent otherwise"},
+						{Name: "created_at", Type: "integer", Description: "unix seconds"},
+					}}},
+					{Name: "counts", Type: "object", Props: []prop{
+						{Name: "by_kind", Type: "object", Description: "unsent items per kind"},
+						{Name: "by_status", Type: "object", Description: "unsent items per status"},
+						{Name: "outcomes", Type: "object", Description: "history rows per janitor outcome, pending included"},
+					}},
+					{Name: "log", Type: "array", Description: "the newest 100 committed items", Items: &prop{Type: "object", Props: []prop{
+						{Name: "id", Type: "integer"},
+						{Name: "kind", Type: "string"},
+						{Name: "tag", Type: "string"},
+						{Name: "tag2", Type: "string"},
+						{Name: "sha256", Type: "string"},
+						{Name: "reason", Type: "string"},
+						{Name: "committed_at", Type: "integer", Description: "unix seconds"},
+						{Name: "outcome", Type: "string", Description: "applied, approved, removed, or rescinded; absent while pending"},
+						{Name: "outcome_at", Type: "integer", Description: "unix seconds; absent while pending"},
+					}}},
+				}},
 				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
+				{Status: "500", Description: "The contribution store could not be read", Ref: "Error"},
 			},
 			Handler: h.ptrContribLedger,
 		},
@@ -492,8 +522,10 @@ func (h *Handler) endpoints() []endpoint {
 			Params:      []param{{Name: "id", In: "path", Required: true, Description: "Unsent item id"}},
 			Responses: []response{
 				{Status: "204", Description: "Rescinded"},
+				{Status: "400", Description: "The id is not an integer", Ref: "Error"},
 				{Status: "404", Description: "No unsent item with that id", Ref: "Error"},
 				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
+				{Status: "500", Description: "The contribution store could not be written", Ref: "Error"},
 			},
 			Handler: h.ptrContribRescind,
 		},
@@ -501,8 +533,11 @@ func (h *Handler) endpoints() []endpoint {
 			Method: "DELETE", Path: "/api/v1/ptr/contrib",
 			Summary: "Rescind every unsent item", OperationID: "ptrContribRescindAll",
 			Responses: []response{
-				{Status: "200", Description: "Count of rescinded items"},
+				{Status: "200", Description: "Count of rescinded items", Props: []prop{
+					{Name: "rescinded", Type: "integer"},
+				}},
 				{Status: "409", Description: "The PTR index is not available", Ref: "Error"},
+				{Status: "500", Description: "The contribution store could not be written", Ref: "Error"},
 			},
 			Handler: h.ptrContribRescindAll,
 		},
@@ -512,7 +547,7 @@ func (h *Handler) endpoints() []endpoint {
 			Description: "Queue one send job over every staged and failed item - the retry path for " +
 				"failed leftovers. Refused while another send is queued or running.",
 			Responses: []response{
-				{Status: "202", Description: "The send job id"},
+				{Status: "202", Description: "The send job id", Ref: "EnqueueResponse"},
 				{Status: "409", Description: "ptr_unavailable, ptr_account_required, ptr_banned, ptr_syncing, or already_running", Ref: "Error"},
 			},
 			Handler: h.ptrContribCommit,
@@ -525,9 +560,11 @@ func (h *Handler) endpoints() []endpoint {
 				"be withdrawn - the protocol reserves their resolution for janitors.",
 			Params: []param{{Name: "id", In: "path", Required: true, Description: "Ledger row id"}},
 			Responses: []response{
-				{Status: "202", Description: "The send job id"},
+				{Status: "202", Description: "The send job id", Ref: "EnqueueResponse"},
+				{Status: "400", Description: "The id is not an integer", Ref: "Error"},
 				{Status: "404", Description: "No ledger row with that id", Ref: "Error"},
 				{Status: "409", Description: "not_rescindable, or an account refusal", Ref: "Error"},
+				{Status: "500", Description: "The contribution store could not be read", Ref: "Error"},
 			},
 			Handler: h.ptrContribLogRescind,
 		},
@@ -591,7 +628,7 @@ func (h *Handler) endpoints() []endpoint {
 			Request: &reqBody{
 				Required: []string{"app"},
 				Props: []prop{
-					{Name: "app", Type: "string", Description: "The client's name, shown to the operator; \"monbooru\" is reserved for the dedicated pairing flow"},
+					{Name: "app", Type: "string", Description: "The client's name, shown to the operator: [A-Za-z0-9_-]{1,32}; \"monbooru\" is reserved for the dedicated pairing flow"},
 					{Name: "requested_scopes", Type: "array", Items: &prop{Type: "string"}, Description: "Scopes to ask for (read, write); an empty list grants read only"},
 				},
 			},
@@ -653,6 +690,20 @@ func (h *Handler) endpoints() []endpoint {
 			Handler: h.openAPIDocs,
 		},
 	}
+	for i, e := range eps {
+		if e.NoAuth {
+			continue
+		}
+		if e.Request != nil {
+			eps[i].Responses = append(eps[i].Responses, response{Status: "413", Description: "JSON body exceeds 1 MiB", Ref: "Error"})
+		}
+		eps[i].Responses = append(eps[i].Responses,
+			response{Status: "401", Description: "unauthorized: no bearer token, or one that matches none", Ref: "Error"},
+			response{Status: "403", Description: "insufficient_scope: the token lacks the scope this operation needs", Ref: "Error"},
+			response{Status: "503", Description: "api_disabled: no API token exists yet", Ref: "Error"},
+		)
+	}
+	return eps
 }
 
 var apiSchemas = []apiSchema{
@@ -824,6 +875,21 @@ var apiSchemas = []apiSchema{
 			{Name: "petitionable", Type: "boolean", Description: "false when a removal for this tag and hash is already staged or awaiting janitor review"},
 		}}},
 	}},
+	{Name: "PTRContribPairPreview", Props: []prop{
+		{Name: "a_ptr", Type: "string", Description: "the PTR spelling of a"},
+		{Name: "b_ptr", Type: "string", Description: "the PTR spelling of b"},
+		{Name: "direction", Type: "string", Description: "suggest, petition, pending, conflict, covered, or ineligible"},
+		{Name: "note", Type: "string", Description: "why the pair is ineligible; absent otherwise"},
+		{Name: "provisional", Type: "boolean", Description: "the index is still syncing; the direction may be stale"},
+	}},
+	{Name: "PTRContribResults", Props: []prop{
+		{Name: "results", Type: "array", Items: &prop{Type: "object", Props: []prop{
+			{Name: "kind", Type: "string", Description: "the item's kind, in request order"},
+			{Name: "result", Type: "string", Description: "staged, or why the item was refused"},
+			{Name: "note", Type: "string", Description: "detail on a refusal; absent otherwise"},
+		}}},
+		{Name: "job_id", Type: "integer", Description: "the send job, when anything was accepted and commit was on"},
+	}},
 }
 
 // The server URL is the root, not /api/v1, so /health shares the document.
@@ -844,9 +910,11 @@ func buildSpec(baseURL, version string, eps []endpoint) map[string]any {
 	return map[string]any{
 		"openapi": "3.0.3",
 		"info": map[string]any{
-			"title":       "monloader API",
-			"description": "Queue booru URLs for download into monbooru.",
-			"version":     version,
+			"title": "monloader API",
+			"description": "Queue booru URLs for download into monbooru. Errors answer {error, code}; clients branch on code. " +
+				"Every authenticated operation can answer 401 unauthorized, 403 insufficient_scope, or 503 api_disabled; " +
+				"on a desktop install whose first-run setup is not finished, every /api/v1 path but this reference answers 409 setup_required.",
+			"version": version,
 		},
 		"servers": []map[string]any{
 			{"url": baseURL, "description": "This server"},
@@ -993,7 +1061,7 @@ func (h *Handler) openAPIDocs(w http.ResponseWriter, r *http.Request) {
 }
 
 var docsTemplate = template.Must(template.New("api-docs").Parse(`<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-app="monloader">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

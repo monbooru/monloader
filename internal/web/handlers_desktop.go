@@ -6,14 +6,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/shared/desktop"
 	"github.com/monbooru/monloader/internal/shared/logx"
+	"github.com/monbooru/monloader/internal/shared/session"
 )
 
 // Every route that reaches the filesystem or the process goes through
@@ -39,51 +40,16 @@ func (s *Server) desktopLocal(r *http.Request) bool {
 // Past this a listing is unreadable anyway; the operator types the path.
 const maxBrowseEntries = 500
 
-// The id lands in an attribute the picker's script reads, so it must stay
-// an identifier.
-var browseIntoRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-
-type browseData struct {
-	Into      string
-	Path      string
-	Parent    string
-	Entries   []desktop.Dir
-	Roots     []desktop.Dir
-	Sandboxed bool
-	Err       string
-	Truncated bool
-	Limit     int
-}
-
 func (s *Server) browseDirs(w http.ResponseWriter, r *http.Request) {
-	into := r.URL.Query().Get("into")
-	if !browseIntoRe.MatchString(into) {
+	l, ok := desktop.Browse(r.URL.Query().Get("into"), r.URL.Query().Get("path"), maxBrowseEntries)
+	if !ok {
 		http.Error(w, "bad target", http.StatusBadRequest)
 		return
 	}
-	data := browseData{Into: into, Sandboxed: desktop.Sandboxed(), Limit: maxBrowseEntries}
-	for _, root := range desktop.Roots() {
-		data.Roots = append(data.Roots, desktop.Dir{Name: root, Path: root})
-	}
-
-	path := strings.TrimSpace(r.URL.Query().Get("path"))
-	if path == "" {
-		path, _ = os.UserHomeDir()
-	}
-	if path == "" {
-		path = string(filepath.Separator)
-	}
-	data.Path = filepath.Clean(path)
-	if parent := filepath.Dir(data.Path); parent != data.Path {
-		data.Parent = parent
-	}
-
-	var err error
-	data.Entries, data.Truncated, err = desktop.ListDirs(data.Path, maxBrowseEntries)
-	if err != nil {
-		data.Err = "cannot read this folder"
-	}
-	s.render(w, "dir_picker", data)
+	s.render(w, "webui/dir_picker", struct {
+		desktop.Listing
+		Route string
+	}{l, "/internal/browse"})
 }
 
 // The request names a kind, never a path, so no operator string reaches
@@ -92,31 +58,31 @@ var openFolderKinds = []string{"config", "logs", "cookies", "ptr"}
 
 func (s *Server) openFolder(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "bad form")
+		s.redirectFlash(w, r, "err", "Bad form data.")
 		return
 	}
 	kind := r.FormValue("kind")
 	if !slices.Contains(openFolderKinds, kind) {
-		s.redirectFlash(w, r, "err", "unknown folder")
+		s.redirectFlash(w, r, "err", "Unknown folder.")
 		return
 	}
 	dir, ours := s.desktopFolder(kind)
 	if dir == "" {
-		s.redirectFlash(w, r, "err", "that folder is not configured")
+		s.redirectFlash(w, r, "err", "That folder is not configured.")
 		return
 	}
 	if ours {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			s.redirectFlash(w, r, "err", "could not create "+dir+": "+err.Error())
+			s.redirectFlash(w, r, "err", "Could not create "+dir+": "+err.Error())
 			return
 		}
 	}
 	if err := desktop.OpenFolder(dir); err != nil {
 		logx.Warnf("open-folder %s: %v", kind, err)
-		s.redirectFlash(w, r, "err", "could not open "+dir)
+		s.redirectFlash(w, r, "err", "Could not open "+dir+".")
 		return
 	}
-	s.redirectFlash(w, r, "ok", "opened "+dir)
+	s.redirectFlash(w, r, "ok", "Opened "+dir+".")
 }
 
 // The bool is whether monloader owns the folder and may create it; the
@@ -143,7 +109,7 @@ func (s *Server) desktopFolder(kind string) (string, bool) {
 func (s *Server) DesktopHook() desktop.Hook {
 	icon, _ := fs.ReadFile(s.staticFS, "appicon.png")
 	return desktop.Hook{
-		App:        "monloader",
+		App:        s.desktopApp,
 		Name:       s.titleName(),
 		Comment:    "Downloader for monbooru",
 		Categories: "Graphics;Photography;",
@@ -159,21 +125,10 @@ func (s *Server) TrayEnabled() bool { return s.cfg.Current().Desktop.Tray }
 
 func (s *Server) settingsDesktopPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "bad form")
+		s.redirectFlash(w, r, "err", "Bad form data.")
 		return
 	}
-	h := s.DesktopHook()
-	var failures []string
-	if h.MenuSupported() {
-		if err := h.SetMenu(r.FormValue("menu_entry") == "on"); err != nil {
-			failures = append(failures, "menu entry: "+err.Error())
-		}
-	}
-	if h.AutostartSupported() {
-		if err := h.SetAutostart(r.FormValue("start_at_login") == "on"); err != nil {
-			failures = append(failures, "start at login: "+err.Error())
-		}
-	}
+	failures := s.DesktopHook().Apply(r.FormValue("menu_entry") == "on", r.FormValue("start_at_login") == "on")
 	if desktop.TrayAvailable() {
 		tray := r.FormValue("tray") == "on"
 		if err := s.updateConfig(func(c *config.Config) error {
@@ -187,19 +142,33 @@ func (s *Server) settingsDesktopPost(w http.ResponseWriter, r *http.Request) {
 		s.redirectFlash(w, r, "err", strings.Join(failures, "; "))
 		return
 	}
-	s.redirectFlash(w, r, "ok", "saved")
+	s.redirectFlash(w, r, "ok", "Saved.")
 }
 
 // Long enough for the response to reach the tab over loopback, short
 // enough to feel immediate.
 const quitDelay = 300 * time.Millisecond
 
-func (s *Server) stopWithPage(w http.ResponseWriter, r *http.Request, page, verb string, act func()) {
+func (s *Server) stopWithPage(w http.ResponseWriter, r *http.Request, verb string, act func()) {
 	running, queued := s.queue.InFlight()
-	s.render(w, page, map[string]any{
-		"BooruName": s.titleName(),
-		"InFlight":  running + queued,
-	})
+	inFlight := running + queued
+	page := map[string]any{"App": "monloader", "Poll": verb == "restart"}
+	if verb == "restart" {
+		page["Heading"] = s.titleName() + " is restarting"
+		page["Hint"] = "This page will reload automatically."
+		if inFlight > 0 {
+			page["Hint"] = fmt.Sprintf("This page will reload automatically. %d job(s) were running or waiting. The restart cancelled them; retry them from the queue once it is back.", inFlight)
+		}
+	} else {
+		page["Heading"] = s.titleName() + " has stopped"
+		page["Hint"] = "You can close this tab. Start it again from the applications menu."
+		if inFlight > 0 {
+			page["Hint"] = fmt.Sprintf("%d job(s) were running or waiting. Stopping cancelled them; retry them from the queue next time you start it.", inFlight)
+		}
+	}
+	theme := s.activeTheme()
+	page["Title"], page["BooruFavicon"], page["Theme"] = page["Heading"], themeFaviconURL(theme), theme.Path != ""
+	s.render(w, "webui/message_page", page)
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
@@ -211,11 +180,11 @@ func (s *Server) stopWithPage(w http.ResponseWriter, r *http.Request, page, verb
 }
 
 func (s *Server) settingsQuit(w http.ResponseWriter, r *http.Request) {
-	s.stopWithPage(w, r, "stopped", "quit", s.RequestQuit)
+	s.stopWithPage(w, r, "quit", s.RequestQuit)
 }
 
 func (s *Server) settingsRestart(w http.ResponseWriter, r *http.Request) {
-	s.stopWithPage(w, r, "restarting", "restart", s.RequestRestart)
+	s.stopWithPage(w, r, "restart", s.RequestRestart)
 }
 
 // Restart carries one too: it ends the queue exactly as a stop does.
@@ -235,7 +204,7 @@ func (s *Server) desktopRestartPrompt() string { return s.desktopStopPrompt("Res
 
 func (s *Server) desktopActionsFragment(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "desktop_actions", map[string]any{
-		"CSRFToken":     s.sessions.CSRFToken(sessionFromContext(r.Context())),
+		"CSRFToken":     s.sessions.CSRFToken(session.FromContext(r.Context())),
 		"QuitPrompt":    s.desktopQuitPrompt(),
 		"RestartPrompt": s.desktopRestartPrompt(),
 	})
@@ -245,7 +214,7 @@ func (s *Server) desktopActionsFragment(w http.ResponseWriter, r *http.Request) 
 // over loopback.
 func (s *Server) monbooruAPIHint() string {
 	if s.desktop {
-		return "http://127.0.0.1:8455"
+		return "http://127.0.0.1:" + contract.PortMonbooru
 	}
 	return config.Default().Monbooru.APIURL
 }

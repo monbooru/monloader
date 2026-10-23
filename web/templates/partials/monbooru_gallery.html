@@ -3,7 +3,7 @@
   {{if .Paired}}
   <div class="settings-cols">
     <div class="field">
-      <label for="mb-default-gallery">default gallery</label>
+      <label for="mb-default-gallery">Default gallery</label>
       {{if .Galleries}}
       <select id="mb-default-gallery" name="default_gallery">
         <option value=""{{if not .DefaultGallery}} selected{{end}}>(none - monbooru's active gallery)</option>
@@ -12,10 +12,10 @@
       </select>
       {{else}}
       <input id="mb-default-gallery" type="text" name="default_gallery" value="{{.DefaultGallery}}">
-      <span class="hint">(galleries unavailable; monbooru unreachable)</span>
+      <span class="field-hint">(galleries unavailable; monbooru unreachable)</span>
       {{end}}
       {{if .GalleryWarn}}<span class="hint-warn">{{.GalleryWarn}}</span>{{end}}
-      <span class="field-hint">where downloads land unless a site sets its own target gallery. a download picks its gallery when it starts, so a change here also moves whatever is still queued.</span>
+      <span class="field-hint">Where downloads land unless a site sets its own target gallery. A download picks its gallery when it starts, so a change here also moves whatever is still queued.</span>
     </div>
     <div class="field"></div>
   </div>

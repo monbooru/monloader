@@ -16,13 +16,15 @@ const (
 	MaxPending = 16
 )
 
-// State is the status word a peer reads back while it polls.
+// State is the status word a peer reads back while it polls, and the one
+// a teardown answers.
 type State string
 
 const (
 	Pending  State = "pending"
 	Approved State = "approved"
 	Denied   State = "denied"
+	Removed  State = "removed"
 )
 
 // Nothing is issued until the claim, so an approval the peer never
@@ -118,6 +120,20 @@ func (s *Store[T, P]) ListPending() []T {
 	return out
 }
 
+// ListApproved returns the approvals whose token the peer has not collected yet.
+func (s *Store[T, P]) ListApproved() []T {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked()
+	var out []T
+	for _, p := range s.m {
+		if r := p.request(); r.State == Approved && !r.Claimed {
+			out = append(out, *p)
+		}
+	}
+	return out
+}
+
 func (s *Store[T, P]) Get(id string) (T, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -170,4 +186,23 @@ func (s *Store[T, P]) Remove(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.m, id)
+}
+
+// Embedding it lets an app's own offer body pass to DecodeOffer.
+type RequestBody struct {
+	App             string   `json:"app"`
+	URL             string   `json:"url,omitempty"`
+	RequestedScopes []string `json:"requested_scopes"`
+	PeerToken       string   `json:"peer_token,omitempty"`
+	Version         string   `json:"version,omitempty"`
+}
+
+type Accepted struct {
+	RequestID string `json:"request_id"`
+	Status    State  `json:"status"`
+}
+
+type StatusBody struct {
+	Status State  `json:"status"`
+	Token  string `json:"token,omitempty"`
 }

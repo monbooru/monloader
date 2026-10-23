@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -60,6 +62,24 @@ func LocalRequest(r *http.Request) bool {
 		}
 	}
 	return IsLoopbackAddr(r.RemoteAddr)
+}
+
+// A page that rebinds its own name to 127.0.0.1 sends that name, and with
+// no password it would otherwise drive every route.
+func ForeignHost(r *http.Request, bindAddr, baseURL string) bool {
+	return IsLoopbackAddr(bindAddr) && !IsLoopbackAddr(r.Host) && !sameHost(r.Host, baseURL)
+}
+
+func sameHost(host, baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		h = host
+	}
+	return strings.EqualFold(strings.Trim(h, "[]"), u.Hostname())
 }
 
 func IsLoopbackAddr(addr string) bool {

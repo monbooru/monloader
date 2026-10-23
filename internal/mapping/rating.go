@@ -1,30 +1,20 @@
 package mapping
 
-import "strings"
+import (
+	"strings"
 
-const (
-	RatingGeneral      = "general"
-	RatingSensitive    = "sensitive"
-	RatingQuestionable = "questionable"
-	RatingExplicit     = "explicit"
+	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
-var ratingRanks = map[string]int{
-	RatingGeneral:      0,
-	RatingSensitive:    1,
-	RatingQuestionable: 2,
-	RatingExplicit:     3,
-}
-
-func RatingRank(level string) int {
-	if r, ok := ratingRanks[level]; ok {
-		return r
-	}
-	return -1
-}
+const (
+	RatingGeneral      = contract.RatingGeneral
+	RatingSensitive    = contract.RatingSensitive
+	RatingQuestionable = contract.RatingQuestionable
+	RatingExplicit     = contract.RatingExplicit
+)
 
 func Stricter(a, b string) string {
-	if RatingRank(b) > RatingRank(a) {
+	if contract.RatingRank(b) > contract.RatingRank(a) {
 		return b
 	}
 	return a

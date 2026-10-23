@@ -1,1 +1,1 @@
-{{define "queue_paused"}}<div id="queue-paused-banner" class="page-banner"{{if not .Paused}} hidden{{end}}>downloads are paused - a job added now waits in the <a href="/queue">queue</a> until you resume with the pause control in the top bar.</div>{{end}}
+{{define "queue_paused"}}<div id="queue-paused-banner" class="degraded-banner"{{if not .Paused}} hidden{{end}}>Downloads are paused - a job added now waits in the <a href="/queue">queue</a> until you press [resume] at the top of the queue page.</div>{{end}}

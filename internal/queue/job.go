@@ -85,9 +85,9 @@ const (
 )
 
 const (
-	BackendBooru = "booru"
-	BackendPTR   = "ptr"
-	BackendAll   = "all"
+	BackendBooru = contract.LookupBooru
+	BackendPTR   = contract.LookupPTR
+	BackendAll   = contract.LookupAll
 )
 
 // Split from the lock so Snapshot copies it whole; reset zeroes any field
@@ -102,6 +102,7 @@ type jobState struct {
 	MD5            string    `json:"md5,omitempty"`
 	SHA256         string    `json:"sha256,omitempty"`
 	Site           string    `json:"site"`
+	Subcategory    string    `json:"-"`
 	Gallery        string    `json:"gallery"`
 	Folder         string    `json:"folder,omitempty"`
 	MaxItems       int       `json:"max_items,omitempty"`
@@ -251,6 +252,12 @@ func (j *Job) start(now time.Time) error {
 func (j *Job) SetSite(site string) {
 	j.mu.Lock()
 	j.Site = site
+	j.mu.Unlock()
+}
+
+func (j *Job) SetSubcategory(sub string) {
+	j.mu.Lock()
+	j.Subcategory = sub
 	j.mu.Unlock()
 }
 

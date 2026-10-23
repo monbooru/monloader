@@ -1,0 +1,11 @@
+{{define "webui/confirm_dialog"}}
+  <dialog id="confirm-dialog">
+    <p id="confirm-dialog-msg"></p>
+    <p id="confirm-dialog-danger" class="confirm-dialog-danger"></p>
+    <div class="dialog-actions">
+      <button type="button" id="confirm-dialog-ok" class="btn-danger">OK</button>
+      <button type="button" id="confirm-dialog-alt" hidden></button>
+      <button type="button" id="confirm-dialog-cancel">Cancel</button>
+    </div>
+  </dialog>
+{{end}}

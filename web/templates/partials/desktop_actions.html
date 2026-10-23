@@ -3,13 +3,13 @@ and a count rendered with the page is wrong by the time the operator clicks.
 The filter is the queue actions': swapping while the pop-in is open detaches
 the form whose confirmed submit is pending. */}}<div id="desktop-actions" class="actions" hx-get="/internal/desktop-actions" hx-trigger="every 5s [!confirmOpen()]" hx-target="#desktop-actions" hx-swap="outerHTML">
   <form method="POST" action="/settings/restart"
-        hx-confirm="{{.RestartPrompt}}" data-confirm-ok="restart" data-confirm-danger>
+        hx-confirm="{{.RestartPrompt}}" data-confirm-ok="Restart" data-confirm-danger>
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <button type="submit">restart monloader</button>
+    <button type="submit">Restart monloader</button>
   </form>
   <form method="POST" action="/settings/quit"
-        hx-confirm="{{.QuitPrompt}}" data-confirm-ok="stop" data-confirm-danger>
+        hx-confirm="{{.QuitPrompt}}" data-confirm-ok="Stop" data-confirm-danger>
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <button type="submit" class="btn-danger">stop monloader</button>
+    <button type="submit" class="btn-danger">Stop monloader</button>
   </form>
 </div>{{end}}

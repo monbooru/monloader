@@ -16,6 +16,21 @@ type Hook struct {
 	Icon       []byte
 }
 
+func (h Hook) Apply(menu, autostart bool) []string {
+	var failures []string
+	if h.MenuSupported() {
+		if err := h.SetMenu(menu); err != nil {
+			failures = append(failures, "menu entry: "+err.Error())
+		}
+	}
+	if h.AutostartSupported() {
+		if err := h.SetAutostart(autostart); err != nil {
+			failures = append(failures, "start at login: "+err.Error())
+		}
+	}
+	return failures
+}
+
 // MenuSupported is false for a packaged or sandboxed install, which ships
 // its own menu entry; a second would only duplicate it.
 func (h Hook) MenuSupported() bool { return menuSupported() }

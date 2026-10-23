@@ -11,33 +11,20 @@ import (
 
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/ptr"
+	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
 var sha256HexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-type contribToAdd struct {
-	Tag        string `json:"tag"`
-	PTR        string `json:"ptr"`
-	Status     string `json:"status"`
-	Note       string `json:"note,omitempty"`
-	UnknownTag bool   `json:"unknown_tag,omitempty"`
-}
+type contribToAdd = contract.ContribToAdd
 
-type contribPTROnly struct {
-	Tag          string `json:"tag"`
-	PTR          string `json:"ptr"`
-	Petitionable bool   `json:"petitionable"`
-}
+type contribPTROnly = contract.ContribPTROnly
 
-type contribPreviewResponse struct {
-	Provisional bool             `json:"provisional"`
-	ToAdd       []contribToAdd   `json:"to_add"`
-	PTROnly     []contribPTROnly `json:"ptr_only"`
-}
+type contribPreviewResponse = contract.ContribPreviewResponse
 
 func (h *Handler) contribGate(w http.ResponseWriter) bool {
 	if h.ptr == nil || !h.ptr.Enabled() {
-		apiError(w, http.StatusConflict, errPTRUnavailable, "the ptr index is not available")
+		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, "the ptr index is not available")
 		return false
 	}
 	return true
@@ -49,7 +36,7 @@ func (h *Handler) contribStore(w http.ResponseWriter) (*ptr.ContribStore, bool) 
 	}
 	store := h.ptr.Contrib()
 	if store == nil {
-		apiError(w, http.StatusConflict, errPTRUnavailable, "the contribution store is not available")
+		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, "the contribution store is not available")
 		return nil, false
 	}
 	return store, true
@@ -59,29 +46,24 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 	if !h.contribGate(w) {
 		return
 	}
-	var body struct {
-		SHA256  string   `json:"sha256"`
-		Tags    []string `json:"tags"`
-		Implied []string `json:"implied"`
-	}
-	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
+	var body contract.ContribPreviewRequest
+	if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
 		return
 	}
 	if !sha256HexRe.MatchString(body.SHA256) {
-		apiError(w, http.StatusBadRequest, errInvalidRequest, "sha256 must be 64 lowercase hex characters")
+		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "sha256 must be 64 lowercase hex characters")
 		return
 	}
 	// A missing field would answer an empty diff, which reads like a file
 	// with nothing to contribute.
 	if body.Tags == nil {
-		apiError(w, http.StatusBadRequest, errInvalidRequest, "tags is required; send an empty list for an untagged file")
+		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "tags is required; send an empty list for an untagged file")
 		return
 	}
 
 	p, err := h.newContribPreview(body.SHA256, body.Tags)
 	if err != nil {
-		apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
+		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 		return
 	}
 	resp := contribPreviewResponse{
@@ -90,14 +72,14 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 		PTROnly:     []contribPTROnly{},
 	}
 	if err := p.resolveSubmitted(body.Implied); err != nil {
-		apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
+		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 		return
 	}
 	if resp.PTROnly, err = p.removals(); err != nil {
-		apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
+		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	contract.WriteJSON(w, http.StatusOK, resp)
 }
 
 type contribPreview struct {
@@ -168,16 +150,16 @@ func (p *contribPreview) adds(tags []string) []contribToAdd {
 		}
 		if p.store != nil {
 			if waiting, err := p.store.UnsentByKindTag(ptr.ContribMappingAdd, mapped.PTR, p.hashRaw); err == nil && waiting {
-				entry.Status = "unsent"
+				entry.Status = contract.PreviewUnsent
 				out = append(out, entry)
 				continue
 			}
 		}
 		known, _ := p.h.mappingAddKnown(p.displayed[mapped.PTR], mapped.PTR, p.hashRaw, p.covered)
 		if known || p.carried[tag] {
-			entry.Status = "known"
+			entry.Status = contract.PreviewKnown
 		} else {
-			entry.Status = "new"
+			entry.Status = contract.PreviewNew
 			_, exists, err := p.h.ptr.IdealTag(mapped.PTR)
 			entry.UnknownTag = err == nil && !exists
 		}
@@ -288,22 +270,9 @@ func mustHex(h string) []byte {
 	return raw
 }
 
-type contribStageItem struct {
-	Kind   string `json:"kind"`
-	SHA256 string `json:"sha256"`
-	Tag    string `json:"tag"`
-	Bad    string `json:"bad"`
-	Good   string `json:"good"`
-	Child  string `json:"child"`
-	Parent string `json:"parent"`
-	Reason string `json:"reason"`
-}
+type contribStageItem = contract.ContribItem
 
-type contribStageResult struct {
-	Kind   string `json:"kind"`
-	Result string `json:"result"`
-	Note   string `json:"note,omitempty"`
-}
+type contribStageResult = contract.ContribResult
 
 const fixedRescindReason = "rescinding my own earlier add"
 
@@ -314,9 +283,8 @@ func ContribSendRefusal(ctx context.Context, svc PTRService) *ContribRefusal {
 	if !svc.HasPersonalKey() {
 		return &ContribRefusal{http.StatusConflict, errPTRAccountRequired, "no personal account key is set"}
 	}
-	// Fresh, so a ban the janitors just set refuses the send now rather
-	// than after a receipted handoff; bounded well inside monbooru's 10 s
-	// send budget, past which the cached flag answers.
+	// Fresh, so a ban the janitors just set refuses the send now; bounded
+	// well inside contract.ContribSendBudget.
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	banned := false
@@ -336,20 +304,15 @@ func ContribSendRefusal(ctx context.Context, svc PTRService) *ContribRefusal {
 
 func (h *Handler) contribAccountGate(ctx context.Context, w http.ResponseWriter) bool {
 	if refusal := ContribSendRefusal(ctx, h.ptr); refusal != nil {
-		apiError(w, refusal.Status, refusal.Code, refusal.Msg)
+		contract.WriteError(w, refusal.Status, refusal.Code, refusal.Msg)
 		return false
 	}
 	return true
 }
 
 func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Commit *bool              `json:"commit"`
-		Origin string             `json:"origin"`
-		Items  []contribStageItem `json:"items"`
-	}
-	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
+	var body contract.ContribRequest
+	if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
 		return
 	}
 	commit := body.Commit == nil || *body.Commit
@@ -366,7 +329,7 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(body.Items) == 0 {
-		apiError(w, http.StatusBadRequest, errInvalidRequest, "items must not be empty")
+		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "items must not be empty")
 		return
 	}
 
@@ -377,7 +340,7 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 	covered := h.ptr.Status().CoveredThrough
 	for _, item := range body.Items {
 		result, id := h.stageOne(store, item, body.Origin, covered)
-		if result.Result == "staged" && id != 0 {
+		if result.Result == contract.ContribStaged && id != 0 {
 			// The same item twice in one request is a duplicate; a row
 			// left from an earlier request is a genuine resend.
 			if seen[id] {
@@ -389,13 +352,13 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 		}
 		results = append(results, result)
 	}
-	resp := map[string]any{"results": results}
+	resp := contract.ContribResponse{Results: results}
 	status := http.StatusOK
 	if commit && len(accepted) > 0 && r.Context().Err() == nil {
-		resp["job_id"] = h.queue.EnqueueContrib(accepted, false)
+		resp.JobID = h.queue.EnqueueContrib(accepted, false)
 		status = http.StatusAccepted
 	}
-	writeJSON(w, status, resp)
+	contract.WriteJSON(w, status, resp)
 }
 
 func (h *Handler) stageOne(store *ptr.ContribStore, item contribStageItem, origin string, covered int64) (contribStageResult, int64) {
@@ -446,12 +409,12 @@ func (s *contribStager) stage(it ptr.ContribItem) (contribStageResult, int64) {
 	if dup {
 		// Re-confirming an unsent row resends it rather than reporting a no-op.
 		if existing, ok, _ := s.store.StagedID(it.Kind, it.Tag, it.Tag2, it.Hash); ok {
-			s.res.Result = "staged"
+			s.res.Result = contract.ContribStaged
 			return s.res, existing
 		}
 		return s.fail("duplicate", "an identical item already waits unsent")
 	}
-	s.res.Result = "staged"
+	s.res.Result = contract.ContribStaged
 	return s.res, id
 }
 
@@ -626,12 +589,12 @@ func (h *Handler) ptrContribLedger(w http.ResponseWriter, r *http.Request) {
 	}
 	unsent, err := store.Unsent()
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
+		contract.WriteError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 	logRows, err := store.LogRows(100)
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
+		contract.WriteError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 	unsentJSON := make([]contribUnsentJSON, 0, len(unsent))
@@ -656,7 +619,7 @@ func (h *Handler) ptrContribLedger(w http.ResponseWriter, r *http.Request) {
 			CommittedAt: row.CommittedAt, Outcome: row.Outcome, OutcomeAt: row.OutcomeAt,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	contract.WriteJSON(w, http.StatusOK, map[string]any{
 		"unsent": unsentJSON,
 		"counts": map[string]any{"by_kind": countsByKind, "by_status": countsByStatus, "outcomes": outcomes},
 		"log":    logJSON,
@@ -668,17 +631,17 @@ func (h *Handler) ptrContribRescind(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	id, ok := apiPathInt64(w, r, "id")
+	id, ok := contract.PathInt64(w, r, "id")
 	if !ok {
 		return
 	}
 	found, err := store.Rescind(id)
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
+		contract.WriteError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 	if !found {
-		apiError(w, http.StatusNotFound, errNotFound, "no unsent item with that id")
+		contract.WriteError(w, http.StatusNotFound, errNotFound, "no unsent item with that id")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -691,10 +654,10 @@ func (h *Handler) ptrContribRescindAll(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := store.RescindAll()
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
+		contract.WriteError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rescinded": n})
+	contract.WriteJSON(w, http.StatusOK, map[string]any{"rescinded": n})
 }
 
 // Only this path needs the already_running guard: per-confirm sends claim
@@ -704,11 +667,11 @@ func (h *Handler) ptrContribCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.queue.ContribSendLive() {
-		apiError(w, http.StatusConflict, errAlreadyRunning, "a contribution send is already running")
+		contract.WriteError(w, http.StatusConflict, errAlreadyRunning, "a contribution send is already running")
 		return
 	}
 	jobID := h.queue.EnqueueContrib(nil, true)
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": jobID})
+	contract.WriteJSON(w, http.StatusAccepted, contract.JobAccepted{JobID: jobID})
 }
 
 func (h *Handler) ptrContribLogRescind(w http.ResponseWriter, r *http.Request) {
@@ -719,17 +682,17 @@ func (h *Handler) ptrContribLogRescind(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	id, ok := apiPathInt64(w, r, "id")
+	id, ok := contract.PathInt64(w, r, "id")
 	if !ok {
 		return
 	}
 	itemID, rerr := RescindCommittedAdd(h.ptr, store, id)
 	if rerr != nil {
-		apiError(w, rerr.Status, rerr.Code, rerr.Msg)
+		contract.WriteError(w, rerr.Status, rerr.Code, rerr.Msg)
 		return
 	}
 	jobID := h.queue.EnqueueContrib([]int64{itemID}, false)
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": jobID})
+	contract.WriteJSON(w, http.StatusAccepted, contract.JobAccepted{JobID: jobID})
 }
 
 type ContribRefusal struct {
@@ -785,32 +748,21 @@ func RescindCommittedAdd(svc PTRService, store *ptr.ContribStore, logID int64) (
 	return itemID, nil
 }
 
-type pairPreviewResponse struct {
-	APtr        string `json:"a_ptr"`
-	BPtr        string `json:"b_ptr"`
-	Direction   string `json:"direction"`
-	Note        string `json:"note,omitempty"`
-	Provisional bool   `json:"provisional"`
-}
+type pairPreviewResponse = contract.PairPreviewResponse
 
 // A parent pair arrives as a=child, b=parent: monbooru owns the hydrus flip.
 func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) {
 	if !h.contribGate(w) {
 		return
 	}
-	var body struct {
-		Kind string `json:"kind"`
-		A    string `json:"a"`
-		B    string `json:"b"`
-	}
-	if err := decodeBody(w, r, &body); err != nil {
-		apiError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON body")
+	var body contract.PairPreviewRequest
+	if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
 		return
 	}
 	if strings.TrimSpace(body.A) == "" || strings.TrimSpace(body.B) == "" {
 		// Without this a field-name typo reads as a verdict about a tag
 		// rather than about the request.
-		apiError(w, http.StatusBadRequest, errInvalidRequest, "a and b are required")
+		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "a and b are required")
 		return
 	}
 	aMapped, bMapped := mapping.ContribTagFor(body.A), mapping.ContribTagFor(body.B)
@@ -818,7 +770,7 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 	for _, m := range []mapping.ContribTag{aMapped, bMapped} {
 		if !m.Eligible() {
 			resp.Direction, resp.Note = "ineligible", m.Note
-			writeJSON(w, http.StatusOK, resp)
+			contract.WriteJSON(w, http.StatusOK, resp)
 			return
 		}
 	}
@@ -834,7 +786,7 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 		suggestKind, petitionKind = ptr.ContribParent, ptr.ContribParentPetition
 		currentFn = h.ptr.ParentCurrent
 	default:
-		apiError(w, http.StatusBadRequest, errInvalidRequest, "kind must be sibling or parent")
+		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "kind must be sibling or parent")
 		return
 	}
 	// Raw-first like the petition stage: a stored spelling the mapper
@@ -842,7 +794,7 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 	// lookup keys on the raws the stage uses.
 	ra, rb, current, err := h.currentPetitionPair(currentFn, body.A, body.B)
 	if err != nil {
-		apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
+		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 		return
 	}
 
@@ -852,50 +804,50 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 			pending, _ = store.PendingLog(petitionKind, ra, rb)
 		}
 		if pending {
-			resp.Direction = "pending"
-			writeJSON(w, http.StatusOK, resp)
+			resp.Direction = contract.PairPending
+			contract.WriteJSON(w, http.StatusOK, resp)
 			return
 		}
 	}
 	if current {
-		resp.Direction = "petition"
+		resp.Direction = contract.PairPetition
 	} else if body.Kind == ptr.ContribSibling {
 		ia, err := h.endpointIdeals(body.A)
 		if err != nil {
-			apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
+			contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 			return
 		}
 		ib, err := h.endpointIdeals(body.B)
 		if err != nil {
-			apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
+			contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 			return
 		}
 		reverse, _ := h.ptr.SiblingCurrent(bMapped.PTR, aMapped.PTR)
 		switch {
 		case reverse:
-			resp.Direction = "conflict"
+			resp.Direction = contract.PairConflict
 		case sharesIdeal(ia, ib):
-			resp.Direction = "covered"
+			resp.Direction = contract.PairCovered
 		default:
-			resp.Direction = "suggest"
+			resp.Direction = contract.PairSuggest
 		}
 	} else {
 		if reverse, _ := h.ptr.ParentCurrent(bMapped.PTR, aMapped.PTR); reverse {
-			resp.Direction = "conflict"
+			resp.Direction = contract.PairConflict
 		} else {
 			covered, err := h.parentEdgeCovered(body.A, body.B)
 			if err != nil {
-				apiError(w, http.StatusConflict, errPTRUnavailable, err.Error())
+				contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 				return
 			}
 			if covered {
-				resp.Direction = "covered"
+				resp.Direction = contract.PairCovered
 			} else {
-				resp.Direction = "suggest"
+				resp.Direction = contract.PairSuggest
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	contract.WriteJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) parentEdgeCovered(a, b string) (bool, error) {

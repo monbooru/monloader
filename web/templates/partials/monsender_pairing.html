@@ -3,18 +3,18 @@
   {{$csrf := .CSRFToken}}
   {{if .Pending}}
   <div class="pairing-pending">
-  <p class="pairing-pending-msg">the monsender extension is requesting to pair. approve or deny below.</p>
-  <div style="overflow-x:auto">
-  <table class="token-table">
-    <thead><tr><th>app</th><th>source</th><th>scopes</th><th>approve</th><th>deny</th></tr></thead>
+  <p class="pairing-pending-msg">The monsender extension is requesting to pair. Approve or deny below.</p>
+  <div class="table-scroll">
+  <table class="data-table">
+    <thead><tr><th>App</th><th>Source</th><th>Scopes</th><th class="cell-action">Approve</th><th class="cell-action">Deny</th></tr></thead>
     <tbody>
       {{range .Pending}}
       <tr>
         <td>{{.App}}</td>
         <td>{{.Source}}</td>
         <td>{{range $i, $s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</td>
-        <td><form hx-post="/settings/auth/pair/{{.ID}}/approve" hx-target="#monsender-pairing" hx-swap="outerHTML" style="display:inline"><input type="hidden" name="_csrf" value="{{$csrf}}"><button type="submit" class="btn-success">approve</button></form></td>
-        <td><form hx-post="/settings/auth/pair/{{.ID}}/deny" hx-target="#monsender-pairing" hx-swap="outerHTML" style="display:inline"><input type="hidden" name="_csrf" value="{{$csrf}}"><button type="submit">deny</button></form></td>
+        <td class="cell-action"><form hx-post="/settings/auth/pair/{{.ID}}/approve" hx-target="#monsender-pairing" hx-swap="outerHTML" style="display:inline"><button type="submit" class="btn-sm btn-success">Approve</button></form></td>
+        <td class="cell-action"><form hx-post="/settings/auth/pair/{{.ID}}/deny" hx-target="#monsender-pairing" hx-swap="outerHTML" style="display:inline"><button type="submit" class="btn-sm">Deny</button></form></td>
       </tr>
       {{end}}
     </tbody>
@@ -23,16 +23,17 @@
   </div>
   {{end}}
   {{if .Paired}}
-  <p class="field-hint">paired with the extension.
+  <p class="field-hint">Paired with the extension.
     <form hx-post="/settings/auth/pair/remove" hx-target="#monsender-pairing" hx-swap="outerHTML"
-          hx-confirm="remove the extension pairing?" data-confirm-ok="remove"
-          data-confirm-danger="the extension must re-pair before it can send again." style="display:inline">
-      <input type="hidden" name="_csrf" value="{{$csrf}}">
-      <button type="submit" class="btn-danger">remove pairing</button>
+          hx-confirm="Remove the extension pairing?" data-confirm-ok="Remove"
+          data-confirm-danger="The extension must re-pair before it can send again." style="display:inline">
+      <button type="submit" class="btn-danger">Remove pairing</button>
     </form>
   </p>
+  {{else if .Awaiting}}
+  {{range .Awaiting}}<p class="field-hint">approved - waiting for {{.App}} to collect its token</p>{{end}}
   {{else}}
-  <p class="field-hint">to set up the monsender extension: in the extension click "connect to monloader", then approve the request here.</p>
+  <p class="field-hint">To set up the monsender extension: in the extension click "connect to monloader", then approve the request here.</p>
   {{end}}
 </div>
 {{end}}

@@ -1,15 +1,15 @@
 {{define "site_row"}}
 <tr>
-  <td>{{.Category}}{{if .CustomProfile}}<span class="hint" title="a user profile file overrides the shipped mapping"> (custom profile)</span>{{end}}</td>
-  <td>{{if .NeedsCred}}<span class="badge badge-warn">{{.Login}} !</span>{{else}}<span class="badge">{{.Login}}</span>{{end}}</td>
-  <td class="hint" title="{{.AuthSet}}">{{.AuthSet}}</td>
-  <td>{{if and .Site .Site.Gallery}}{{.Site.Gallery}}{{else}}<span class="hint">(default)</span>{{end}}</td>
-  <td class="site-state" id="state-{{.Category}}">{{if not .LastReached.IsZero}}<span class="site-last" title="last reached {{stampLocal .LastReached}}">last ok {{humanSince .LastReached}}</span>{{end}}</td>
+  <td>{{.Category}}{{if .CustomProfile}}<span class="status-dim" title="A user profile file overrides the shipped mapping"> (custom profile)</span>{{end}}</td>
+  <td>{{if .NeedsCred}}<span class="status-badge status-warn">{{.Login}} !</span>{{else}}<span class="status-badge">{{.Login}}</span>{{end}}</td>
+  <td class="status-dim" title="{{.AuthSet}}">{{.AuthSet}}</td>
+  <td>{{if and .Site .Site.Gallery}}{{.Site.Gallery}}{{else}}<span class="status-dim">(default)</span>{{end}}</td>
+  <td class="site-state" id="state-{{.Category}}">{{if not .LastReached.IsZero}}<span class="site-last" title="Last reached {{stampLocal .LastReached}}">last ok {{humanSince .LastReached}}</span>{{end}}</td>
   <td class="site-actions"><span class="actions">
-    <button type="button" hx-post="/settings/sites/{{.Category}}/test" hx-target="#state-{{.Category}}" hx-swap="innerHTML"
-            hx-on::before-request="this.closest('tr').querySelector('.site-state').innerHTML='<span class=&quot;hint&quot;>testing...</span>'">test</button>
-    {{template "site_edit_btn" (dict "Row" . "Label" "edit")}}
-    {{template "postbtn" dict "Action" (printf "/settings/sites/%s/reset" .Category) "CSRF" .CSRFToken "Label" "remove" "Title" "drop this site's credentials, gallery, cookies path, options and mapping overrides"}}
+    <button type="button" hx-post="/settings/sites/{{.Category}}/test" hx-target="previous .site-state" hx-swap="innerHTML"
+            hx-on::before-request="this.closest('tr').querySelector('.site-state').innerHTML='<span class=&quot;hint&quot;>testing...</span>'">Test</button>
+    {{template "site_edit_btn" (dict "Row" . "Label" "Edit")}}
+    {{template "postbtn" dict "Action" (printf "/settings/sites/%s/reset" .Category) "CSRF" .CSRFToken "Label" "Remove" "Title" "Drop this site's credentials, gallery, cookies path, options and mapping overrides"}}
   </span></td>
 </tr>
 {{end}}

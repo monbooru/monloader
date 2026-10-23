@@ -1,12 +1,12 @@
 {{define "ptr_contrib"}}
-<section id="ptr-contrib-card" class="settings-section"{{if .OOB}} hx-swap-oob="true"{{end}}{{if .SendRunning}} hx-get="/internal/ptr-contrib" hx-trigger="every 2s" hx-target="#ptr-contrib" hx-swap="innerHTML"{{end}}>
-  <h2>contributions</h2>
+<section id="ptr-contrib-card" class="settings-section"{{if .OOB}} hx-swap-oob="true"{{end}} hx-vals='{"page": {{.Page}}}'{{if .SendRunning}} hx-get="/internal/ptr-contrib" hx-trigger="every 2s" hx-target="#ptr-contrib" hx-swap="innerHTML"{{end}}>
+  <div class="settings-section-header"><h3>Contributions</h3></div>
   {{if .NoAccount}}
-  <p class="field-hint">contributing needs a personal account - see the account card above.</p>
+  <p class="field-hint">Contributing needs a personal account - see the account card above.</p>
   {{else}}
   {{if .RetryErr}}<p class="flash-warn">{{.RetryErr}}</p>{{end}}
-  {{if .NotReady}}<p class="field-hint">the index is still catching up; contributions can be sent once it is fully synced.</p>{{end}}
-  {{if .SendRunning}}<p class="field-hint">a send job is running - progress is on the <a href="/queue">queue</a>.</p>{{end}}
+  {{if .NotReady}}<p class="field-hint">The index is still catching up; contributions can be sent once it is fully synced.</p>{{end}}
+  {{if .SendRunning}}<p class="field-hint">A send job is running - progress is on the <a href="/queue">queue</a>.</p>{{end}}
   {{with .Activity}}{{if .Weeks}}
   <div class="ptr-activity">
     <p class="ptr-activity-total">{{.Total}} contribution{{if ne .Total 1}}s{{end}} in the last year</p>
@@ -22,7 +22,7 @@
   {{end}}{{end}}
   {{if .Unsent}}
   <p>{{len .Unsent}} unsent{{if .HasFailed}} (last send failed){{end}}
-    {{if not .NotReady}}<button hx-post="/ptr/contrib/retry" hx-target="#ptr-contrib" hx-swap="innerHTML">retry</button>{{end}}</p>
+    {{if not .NotReady}}<button hx-post="/ptr/contrib/retry" hx-target="#ptr-contrib" hx-swap="innerHTML">Retry</button>{{end}}</p>
   <table class="stats-table contrib-table">
     <tbody>
       {{range .Unsent}}
@@ -32,7 +32,7 @@
         <td>{{.Origin}}</td>
         <td>{{if .Error}}<span class="o-failed" title="{{.Error}}">failed</span>{{end}}</td>
         <td><button hx-post="/ptr/contrib/{{.ID}}/rescind" hx-target="#ptr-contrib" hx-swap="innerHTML"
-                    title="rescind: delete before anything is sent">x</button></td>
+                    title="Rescind: delete before anything is sent">x</button></td>
       </tr>
       {{end}}
     </tbody>
@@ -40,7 +40,7 @@
   {{end}}
   {{if .History}}
   <table class="stats-table contrib-table">
-    <thead><tr><th>sent</th><th>kind</th><th>item</th><th>outcome</th><th></th></tr></thead>
+    <thead><tr><th>Sent</th><th>Kind</th><th>Item</th><th>Outcome</th><th></th></tr></thead>
     <tbody>
       {{range .History}}
       <tr>
@@ -49,21 +49,21 @@
         <td class="queue-url">{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Label}}</a>{{else}}{{.Label}}{{end}}</td>
         <td>{{.Outcome}}</td>
         <td>{{if .Rescindable}}<button hx-post="/ptr/contrib/log/{{.ID}}/rescind" hx-target="#ptr-contrib" hx-swap="innerHTML"
-                hx-confirm="petition this tag add back off the PTR?"
-                title="asks the janitors to remove it; it does not undo">rescind (petition)</button>{{end}}</td>
+                hx-confirm="Petition this tag add back off the PTR?"
+                title="Asks the janitors to remove it; it does not undo">Rescind (petition)</button>{{end}}</td>
       </tr>
       {{end}}
     </tbody>
   </table>
   {{if gt .TotalPages 1}}
-  <div class="pager">
-    {{if gt .Page 1}}<button hx-get="/internal/ptr-contrib?page={{sub .Page 1}}" hx-target="#ptr-contrib" hx-swap="innerHTML">&larr; prev</button>{{end}}
-    <span>page {{.Page}} / {{.TotalPages}}</span>
-    {{if lt .Page .TotalPages}}<button hx-get="/internal/ptr-contrib?page={{add .Page 1}}" hx-target="#ptr-contrib" hx-swap="innerHTML">next &rarr;</button>{{end}}
+  <div class="pagination">
+    {{if gt .Page 1}}<button hx-get="/internal/ptr-contrib" hx-vals='{"page": {{sub .Page 1}}}' hx-target="#ptr-contrib" hx-swap="innerHTML">&larr; Prev</button>{{end}}
+    <span class="current">Page {{.Page}} / {{.TotalPages}}</span>
+    {{if lt .Page .TotalPages}}<button hx-get="/internal/ptr-contrib" hx-vals='{"page": {{add .Page 1}}}' hx-target="#ptr-contrib" hx-swap="innerHTML">Next &rarr;</button>{{end}}
   </div>
   {{end}}
   {{else}}{{if not .Unsent}}
-  <p class="field-hint">contributions are sent from monbooru's image page and tags page; only their record lives here.</p>
+  <p class="field-hint">Contributions are sent from monbooru's image page and tags page; only their record lives here.</p>
   {{end}}{{end}}
   {{end}}
 </section>

@@ -10,13 +10,16 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/shared/apitoken"
+	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/shared/logx"
 	"github.com/monbooru/monloader/internal/shared/pairing"
+	"github.com/monbooru/monloader/internal/shared/session"
 )
 
 type outboundPair struct {
 	requestID string
-	token     config.Token
+	token     apitoken.Token
 }
 
 func (s *Server) setPairAttempt(p *outboundPair) {
@@ -49,15 +52,15 @@ func (s *Server) takePairAttempt(att *outboundPair) bool {
 }
 
 func (s *Server) hasPairedToken(peer string) bool {
-	return slices.ContainsFunc(s.cfg.Current().Auth.Tokens, func(t config.Token) bool { return t.Paired == peer })
+	return slices.ContainsFunc(s.cfg.Current().Auth.Tokens, func(t apitoken.Token) bool { return t.Paired == peer })
 }
 
 func (s *Server) monbooruPairData(r *http.Request, msg string) map[string]any {
 	return map[string]any{
-		"Paired":    s.hasPairedToken("monbooru"),
+		"Paired":    s.hasPairedToken(contract.AppMonbooru),
 		"Waiting":   s.getPairAttempt() != nil,
 		"Message":   msg,
-		"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context())),
+		"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context())),
 	}
 }
 
@@ -72,7 +75,7 @@ func pairSelfURL(cfg *config.Config) string {
 
 func (s *Server) monbooruPairConnect(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.render(w, "monbooru_pair", s.monbooruPairData(r, "bad form data"))
+		s.render(w, "monbooru_pair", s.monbooruPairData(r, "Bad form data."))
 		return
 	}
 	if err := s.startMonbooruPairing(r.Context()); err != nil {
@@ -85,16 +88,16 @@ func (s *Server) monbooruPairConnect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startMonbooruPairing(ctx context.Context) error {
 	cfg := s.cfg.Current()
 	if strings.TrimSpace(cfg.Monbooru.APIURL) == "" {
-		return errors.New("set the monbooru api url first")
+		return errors.New("set the monbooru API URL first")
 	}
-	peerSecret := config.GenerateSecret()
-	tok := config.TokenFromSecret("monbooru (paired)", peerSecret, config.AllScopes)
-	tok.Paired = "monbooru"
+	peerSecret := apitoken.NewSecret()
+	tok := apitoken.FromSecret(contract.AppMonbooru+" (paired)", peerSecret, config.AllScopes)
+	tok.Paired = contract.AppMonbooru
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	requestID, err := s.client.PairRequest(reqCtx, peerSecret, pairSelfURL(cfg), []string{config.ScopeRead, config.ScopeWrite})
+	requestID, err := s.client.PairRequest(reqCtx, peerSecret, pairSelfURL(cfg), Version, []string{config.ScopeRead, config.ScopeWrite})
 	if err != nil {
-		return errors.New("could not reach monbooru: " + err.Error())
+		return errors.New("Could not reach monbooru: " + err.Error())
 	}
 	s.setPairAttempt(&outboundPair{requestID: requestID, token: tok})
 	logx.Infof("pairing: requested pairing with monbooru")
@@ -129,13 +132,16 @@ func (s *Server) monbooruPairPoll(w http.ResponseWriter, r *http.Request) {
 		if err := s.updateConfig(func(c *config.Config) error {
 			// Replaces the old pair only now, so a denied or abandoned
 			// attempt leaves the working pairing untouched.
-			c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t config.Token) bool { return t.Paired == "monbooru" })
+			c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t apitoken.Token) bool { return t.Paired == contract.AppMonbooru })
 			c.Auth.Tokens = append(c.Auth.Tokens, tok)
 			c.Monbooru.APIToken = token
+			// A hold on the old link would leave the new one refusing
+			// everything as not configured.
+			c.Monbooru.Paused = false
 			return nil
 		}); err != nil {
 			s.setPairAttempt(att) // restore so a later poll retries
-			s.render(w, "monbooru_pair", s.monbooruPairData(r, "could not save: "+err.Error()))
+			s.render(w, "monbooru_pair", s.monbooruPairData(r, "Could not save: "+err.Error()))
 			return
 		}
 		logx.Infof("pairing: connected to monbooru")
@@ -144,10 +150,10 @@ func (s *Server) monbooruPairPoll(w http.ResponseWriter, r *http.Request) {
 		s.renderDefaultGalleryOOB(w, r)
 	case string(pairing.Denied):
 		s.clearPairAttempt()
-		s.render(w, "monbooru_pair", s.monbooruPairData(r, "request denied in monbooru"))
+		s.render(w, "monbooru_pair", s.monbooruPairData(r, "Request denied in monbooru."))
 	case "not_found":
 		s.clearPairAttempt()
-		s.render(w, "monbooru_pair", s.monbooruPairData(r, "monbooru no longer has this request - connect again"))
+		s.render(w, "monbooru_pair", s.monbooruPairData(r, "monbooru no longer has this request - connect again."))
 	default:
 		s.render(w, "monbooru_pair", s.monbooruPairData(r, "waiting"))
 	}
@@ -157,7 +163,7 @@ func (s *Server) monbooruPairPoll(w http.ResponseWriter, r *http.Request) {
 // ages out on its own.
 func (s *Server) monbooruPairCancel(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.render(w, "monbooru_pair", s.monbooruPairData(r, "bad form data"))
+		s.render(w, "monbooru_pair", s.monbooruPairData(r, "Bad form data."))
 		return
 	}
 	s.clearPairAttempt()
@@ -167,18 +173,18 @@ func (s *Server) monbooruPairCancel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) monbooruPairRemove(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.render(w, "monbooru_pair", s.monbooruPairData(r, "bad form data"))
+		s.render(w, "monbooru_pair", s.monbooruPairData(r, "Bad form data."))
 		return
 	}
 	s.clearPairAttempt()
 	peerToken := s.cfg.Current().Monbooru.APIToken
-	if err := s.removePairingLocal("monbooru"); err != nil {
+	if err := s.removePairingLocal(contract.AppMonbooru); err != nil {
 		logx.Errorf("pairing: remove failed: %v", err)
 	}
 	msg := ""
 	if err := s.notifyMonbooruTeardown(peerToken); err != nil {
 		logx.Errorf("pairing: could not notify monbooru of teardown: %v", err)
-		msg = "removed here, but could not reach monbooru - remove the pairing in monbooru too."
+		msg = "Removed here, but could not reach monbooru - remove the pairing in monbooru too."
 	}
 	logx.Infof("pairing: removed monbooru pairing")
 	s.render(w, "monbooru_pair", s.monbooruPairData(r, msg))

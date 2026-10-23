@@ -21,7 +21,10 @@ import (
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/queue"
+	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/shared/logx"
+	"github.com/monbooru/monloader/internal/shared/session"
+	"github.com/monbooru/monloader/internal/shared/webui"
 )
 
 func (s *Server) addScreen(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +48,7 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		flashFragment(w, "err", "bad form data")
+		flashFragment(w, "err", "Bad form data.")
 		return
 	}
 	if msg := s.monbooruBlocked(); msg != "" {
@@ -54,12 +57,12 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 	}
 	target := strings.TrimSpace(r.FormValue("url"))
 	if target == "" {
-		flashFragment(w, "err", "enter a URL or an md5 hash")
+		flashFragment(w, "err", "Enter a URL or an MD5 hash.")
 		return
 	}
 	if md5, ok := hashImportTarget(target); ok {
 		if len(s.mapper.LookupSites()) == 0 {
-			flashFragment(w, "err", "md5 lookup is off - give a site a chain position in the settings lookup section")
+			flashFragment(w, "err", "MD5 lookup is off - give a site a chain position in the Settings lookup section.")
 			return
 		}
 		s.queue.EnqueueHashImport(md5, queue.Options{})
@@ -67,12 +70,12 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", sha256AddHint(s.ptr.Enabled(), s.ptr.CaughtUp()))
 		return
 	} else if !config.IsHTTPURL(target) {
-		flashFragment(w, "err", "enter a valid http(s) URL or an md5 hash")
+		flashFragment(w, "err", "Enter a valid http(s) URL or an MD5 hash.")
 		return
 	} else {
 		items, ok := parseItems(r.FormValue("items"))
 		if !ok {
-			flashFragment(w, "err", "pick how many items to fetch")
+			flashFragment(w, "err", "Pick how many items to fetch.")
 			return
 		}
 		s.queue.Enqueue(target, queue.Options{}.WithItems(items))
@@ -91,10 +94,10 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 // The controls are disabled client-side too; this guards a stale page.
 func (s *Server) monbooruBlocked() string {
 	if !s.monbooruConfigured() {
-		return "monbooru is not configured - set its connection in settings"
+		return "monbooru is not configured - set its connection in the Settings."
 	}
 	if s.monbooruPaused() {
-		return "the monbooru link is paused - resume it from the light in the footer"
+		return "The monbooru link is paused - resume it from the light in the footer."
 	}
 	return ""
 }
@@ -116,11 +119,11 @@ func looksLikeSHA256(s string) bool {
 func sha256AddHint(ptrEnabled, ptrCaughtUp bool) string {
 	switch {
 	case !ptrEnabled:
-		return "a sha256 looks tags up from the PTR, which is off - enable it on the ptr page"
+		return "A SHA-256 looks tags up from the PTR, which is off - enable it on the PTR page."
 	case !ptrCaughtUp:
-		return "a sha256 looks tags up from the PTR, which answers once it has finished syncing - follow it on the ptr page"
+		return "A SHA-256 looks tags up from the PTR, which answers once it has finished syncing - follow it on the PTR page."
 	default:
-		return "a sha256 is for looking tags up from the PTR (via monbooru), not for importing here - paste an md5 or a URL"
+		return "A SHA-256 is for looking tags up from the PTR (via monbooru), not for importing here - paste an MD5 or a URL."
 	}
 }
 
@@ -257,7 +260,7 @@ func (s *Server) queueActionsFragment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) queueRows(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context()))}
+	data := map[string]any{"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context()))}
 	s.fillQueue(r, data)
 	s.render(w, "queue_rows", data)
 }
@@ -320,6 +323,15 @@ func (g jobGroup) Live() bool {
 }
 
 func (g jobGroup) Windows() int { return len(g.IDs) }
+
+// A coded error is stored as "<code>: <message>", and the code is
+// printed beside the reason already.
+func (g jobGroup) Reason() string {
+	if g.Lead.ErrorCode == "" {
+		return g.Lead.Error
+	}
+	return strings.TrimPrefix(g.Lead.Error, g.Lead.ErrorCode+": ")
+}
 
 // Only archive skips: re-downloading a type monbooru cannot ingest
 // changes nothing.
@@ -443,22 +455,17 @@ func (s *Server) monbooruWebBase() string {
 	return s.cfg.Current().Monbooru.WebBase()
 }
 
-// Never falls back to api_url, an internal address a browser may not resolve.
-func (s *Server) monbooruWebLink() string {
-	return strings.TrimRight(s.cfg.Current().Monbooru.WebURL, "/")
-}
-
 func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, action func(id int64) error) {
 	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
 		switch err := action(id); {
 		case errors.Is(err, queue.ErrNotFound):
-			addBarFlash(w, "that job is no longer in the queue")
+			addBarFlash(w, "That job is no longer in the queue.")
 			return
 		case errors.Is(err, queue.ErrNoneRetried):
-			addBarFlash(w, "this download is still running - wait for it to finish")
+			addBarFlash(w, "This download is still running - wait for it to finish.")
 			return
 		case errors.Is(err, queue.ErrNotCapped):
-			addBarFlash(w, "this search has no more items to fetch")
+			addBarFlash(w, "This search has no more items to fetch.")
 			return
 		}
 	}
@@ -527,7 +534,7 @@ func (s *Server) then(op func(), render http.HandlerFunc) http.HandlerFunc {
 func (s *Server) renderPauseToggle(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "pause_toggle", map[string]any{
 		"Paused":    s.queue.Paused(),
-		"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context())),
+		"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context())),
 	})
 }
 
@@ -551,9 +558,9 @@ func (s *Server) setMonbooruPaused(w http.ResponseWriter, paused bool) {
 	// What was stored, not what was asked: a failed save leaves the old
 	// state in force. A live link renders checking, whose swap probes a
 	// second later rather than at the next 15 s poll, on a fresh check.
-	status := "paused"
+	status := webui.ConnPaused
 	if !s.monbooruPaused() {
-		status = "checking"
+		status = connChecking
 		s.statusMu.Lock()
 		s.monbooruConn = ""
 		s.statusMu.Unlock()
@@ -564,13 +571,17 @@ func (s *Server) setMonbooruPaused(w http.ResponseWriter, paused bool) {
 func (s *Server) renderConnLight(w http.ResponseWriter, status, version string) {
 	// The poll must answer a resolved state: "checking" arms the load
 	// trigger, so each swap would poll again a second later.
-	s.render(w, "conn_light", map[string]any{
-		"Conn":             status,
-		"MonbooruWebURL":   s.monbooruWebLink(),
-		"MonbooruVersion":  version,
-		"MonbooruMismatch": s.monbooruAPIMismatch(),
-		"MonbooruPaired":   s.hasPairedToken("monbooru"),
-	})
+	s.render(w, "webui/peer_light", s.monbooruLight(status, version))
+}
+
+func (s *Server) monbooruLight(conn, version string) webui.PeerLight {
+	return webui.PeerLight{
+		Peer: contract.AppMonbooru, Href: s.monbooruWebBase(), Conn: conn, Version: version,
+		Mismatch: s.monbooruAPIMismatch(), OffReason: monbooruOffReason(conn),
+		StatusURL: "/internal/monbooru-status",
+		PauseURL:  "/internal/monbooru/pause", ResumeURL: "/internal/monbooru/resume",
+		CheckNow: conn == connChecking, Paired: s.hasPairedToken(contract.AppMonbooru),
+	}
 }
 
 type siteRow struct {
@@ -658,10 +669,16 @@ func (s *Server) settingsScreen(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "settings", data)
 }
 
+// The page's own address replaces the one it was rendered under: a
+// refusal's POST-only path, or a flash in the query that a reload replays.
 func setFlash(data map[string]any, kind, section, msg string) {
 	data["Flash"] = msg
 	data["FlashKind"] = kind
 	data["FlashSection"] = section
+	data["CanonicalURL"] = "/settings"
+	if section != "" {
+		data["CanonicalURL"] = "/settings#" + section
+	}
 }
 
 func (s *Server) settingsData(r *http.Request) map[string]any {
@@ -680,20 +697,23 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 
 	s.fillGalleryFields(r, data)
 
-	csrf := s.sessions.CSRFToken(sessionFromContext(r.Context()))
+	csrf := s.sessions.CSRFToken(session.FromContext(r.Context()))
 	boorus, manga, other := s.visibleSites()
 	data["BooruSites"] = s.siteRows(boorus, csrf)
 	data["MangaSites"] = s.siteRows(manga, csrf)
 	data["OtherSites"] = s.siteRows(other, csrf)
 	data["LookupPanel"] = s.lookupPanel(csrf)
 	data["GDLPanel"] = s.gdlPanel(r.Context(), csrf)
+	data["Themes"] = s.themeCluster()
+	data["ThemesDir"] = s.themesDir()
 	ptrStatus := s.ptr.Status()
 	data["PTRDiskBytes"] = ptrStatus.DiskBytes
 	data["PTREnabled"] = ptrStatus.Enabled
 	data["Stats"] = s.gatherStats()
-	data["MonbooruPaired"] = s.hasPairedToken("monbooru")
+	data["MonbooruPaired"] = s.hasPairedToken(contract.AppMonbooru)
 	data["MonbooruPairWaiting"] = s.getPairAttempt() != nil
 	data["MonsenderPending"] = s.pairs.ListPending()
+	data["MonsenderAwaiting"] = s.pairs.ListApproved()
 	data["MonsenderPaired"] = s.hasPairedToken("monsender")
 	// Empty except on a refused save; the fields read the typed values
 	// from here first.
@@ -725,10 +745,10 @@ func (s *Server) fillGalleryFields(r *http.Request, data map[string]any) {
 
 func defaultGalleryWarning(name string, galleries []monbooru.Gallery) string {
 	if name == "" {
-		return "no default gallery set - downloads use monbooru's active gallery; pick one to set a fixed target"
+		return "No default gallery set - downloads use monbooru's active gallery; pick one to set a fixed target."
 	}
 	if galleryMissing(name, galleries) {
-		return "gallery \"" + name + "\" is not in monbooru - pushes will be rejected until it exists"
+		return "Gallery \"" + name + "\" is not in monbooru - pushes will be rejected until it exists."
 	}
 	return ""
 }
@@ -745,7 +765,7 @@ func galleryMissing(name string, galleries []monbooru.Gallery) bool {
 func (s *Server) renderDefaultGalleryOOB(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"OOB":            true,
-		"Paired":         s.hasPairedToken("monbooru"),
+		"Paired":         s.hasPairedToken(contract.AppMonbooru),
 		"DefaultGallery": s.cfg.Current().Monbooru.DefaultGallery,
 	}
 	s.fillGalleryFields(r, data)
@@ -854,7 +874,7 @@ func sectionForPath(path string) string {
 
 func (s *Server) saveMonbooru(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "bad form")
+		s.redirectFlash(w, r, "err", "Bad form data.")
 		return
 	}
 	apiURL := strings.TrimSpace(r.FormValue("api_url"))
@@ -868,7 +888,7 @@ func (s *Server) saveMonbooru(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(bad) > 0 {
-		s.refuseSave(w, r, strings.Join(bad, "; ")+" - nothing was saved")
+		s.refuseSave(w, r, strings.Join(bad, "; ")+" - nothing was saved.")
 		return
 	}
 	err := s.updateConfig(func(c *config.Config) error {
@@ -878,10 +898,10 @@ func (s *Server) saveMonbooru(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		s.refuseSave(w, r, "save failed: "+err.Error())
+		s.refuseSave(w, r, "Could not save: "+err.Error())
 		return
 	}
-	s.redirectFlash(w, r, "ok", "monbooru settings saved")
+	s.redirectFlash(w, r, "ok", "Saved.")
 }
 
 func (s *Server) testMonbooru(w http.ResponseWriter, r *http.Request) {
@@ -898,16 +918,16 @@ func (s *Server) testMonbooru(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	if _, err := monbooru.New(config.NewProvider(&tmp)).TestConnection(ctx); err != nil {
-		flashFragment(w, "err", "connection failed: "+err.Error()+note)
+		flashFragment(w, "err", "Connection failed: "+err.Error()+note)
 		return
 	}
 	// A swap, not a redirect, so the form's unsaved values survive.
-	flashFragment(w, "ok", "monbooru reachable - save to keep these settings")
+	flashFragment(w, "ok", "monbooru reachable - save to keep these settings.")
 }
 
 func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "bad form")
+		s.redirectFlash(w, r, "err", "Bad form data.")
 		return
 	}
 	// An absent field keeps its stored value; a posted one that does not
@@ -962,7 +982,7 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 		bad = append(bad, "clear succeeded after must not be longer than clear all history after")
 	}
 	if len(bad) > 0 {
-		s.refuseSave(w, r, strings.Join(bad, "; ")+" - nothing was saved")
+		s.refuseSave(w, r, strings.Join(bad, "; ")+" - nothing was saved.")
 		return
 	}
 	err := s.updateConfig(func(c *config.Config) error {
@@ -987,13 +1007,13 @@ func (s *Server) saveDownloader(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		s.refuseSave(w, r, "save failed: "+err.Error())
+		s.refuseSave(w, r, "Could not save: "+err.Error())
 		return
 	}
 	s.rewriteGDLConfig()
 	s.queue.SetRetention(s.cfg.Current().Downloader.HistoryRetention())
 	s.queue.SetSuccessRetention(s.cfg.Current().Downloader.SuccessRetention())
-	s.redirectFlash(w, r, "ok", "download settings saved")
+	s.redirectFlash(w, r, "ok", "Saved.")
 }
 
 func parseLookupOrder(raw string) (int, error) {
@@ -1031,11 +1051,11 @@ func (s *Server) resetSite(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		s.redirectFlash(w, r, "err", "save failed: "+err.Error())
+		s.redirectFlash(w, r, "err", "Could not save: "+err.Error())
 		return
 	}
 	s.refreshSiteLists()
-	s.redirectFlash(w, r, "ok", "site "+name+" removed")
+	s.redirectFlash(w, r, "ok", "Site "+name+" removed.")
 }
 
 func (s *Server) testSite(w http.ResponseWriter, r *http.Request) {
@@ -1087,7 +1107,7 @@ func siteState(w http.ResponseWriter, kind, msg, detail string, lastReached time
 
 func (s *Server) saveRaw(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "bad form")
+		s.redirectFlash(w, r, "err", "Bad form data.")
 		return
 	}
 	raw := r.FormValue("raw_config")
@@ -1096,9 +1116,9 @@ func (s *Server) saveRaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.updateConfig(func(c *config.Config) error { c.GalleryDL.RawConfig = raw; return nil }); err != nil {
-		s.redirectFlash(w, r, "err", "save failed: "+err.Error())
+		s.redirectFlash(w, r, "err", "Could not save: "+err.Error())
 		return
 	}
 	s.rewriteGDLConfig()
-	s.redirectFlash(w, r, "ok", "raw config saved")
+	s.redirectFlash(w, r, "ok", "Saved.")
 }

@@ -1,62 +1,44 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/shared/apitoken"
+	"github.com/monbooru/monloader/internal/shared/contract"
+	"github.com/monbooru/monloader/internal/shared/logx"
+	"github.com/monbooru/monloader/internal/shared/session"
+	"github.com/monbooru/monloader/internal/shared/webui"
 	"golang.org/x/crypto/bcrypt"
 )
 
-type contextKey int
+const sessionCookie = "monloader_session"
 
-const sessionContextKey contextKey = 1
-
-func sessionFromContext(ctx context.Context) string {
-	v, _ := ctx.Value(sessionContextKey).(string)
-	return v
-}
-
-func isHTMXRequest(r *http.Request) bool { return r.Header.Get("HX-Request") == "true" }
-
-func (s *Server) SessionMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if bypassAuth(r.URL.Path) || !s.cfg.Current().Auth.EnablePassword {
-			ctx := context.WithValue(r.Context(), sessionContextKey, "anon")
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-		sessID := sessionCookie(r)
-		if !s.sessions.Valid(sessID) {
-			if isHTMXRequest(r) {
-				w.Header().Set("HX-Redirect", "/login")
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
-			return
-		}
-		ctx := context.WithValue(r.Context(), sessionContextKey, sessID)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-// The API has its own bearer-token gate.
-func bypassAuth(p string) bool {
-	return strings.HasPrefix(p, "/api/v1/") || p == "/health" ||
+func isOpenPath(p string) bool {
+	return p == "/health" ||
 		strings.HasPrefix(p, "/static/") || p == "/login" ||
-		p == "/custom.css" || p == "/custom.logo"
+		p == "/theme.css" || p == "/theme.logo" || p == "/theme.favicon"
 }
 
-func sessionCookie(r *http.Request) string {
-	c, err := r.Cookie("monloader_session")
-	if err != nil {
-		return ""
+func (s *Server) SweepSessions(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.sessions.SweepExpired()
+			s.loginRL.Sweep()
+		case <-ctx.Done():
+			return
+		}
 	}
-	return c.Value
 }
 
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
@@ -64,16 +46,26 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	s.render(w, "login", s.loginData(""))
+	s.render(w, "webui/login_page", s.loginData("", loginNext(r.URL.Query().Get("next"))))
 }
 
-func (s *Server) loginData(errMsg string) map[string]any {
+func loginNext(p string) string {
+	if session.LocalPath(p) {
+		return p
+	}
+	return ""
+}
+
+func (s *Server) loginData(errMsg, next string) map[string]any {
+	theme := s.activeTheme()
 	data := map[string]any{
+		"App":          "monloader",
 		"Title":        "Login - " + s.titleName(),
-		"CSRFToken":    s.sessions.CSRFToken("anon"),
-		"Conn":         "checking",
+		"CSRFToken":    s.sessions.CSRFToken(session.Anon),
 		"BooruName":    s.booruName(),
-		"BooruFavicon": s.booruFaviconURL(),
+		"BooruFavicon": themeFaviconURL(theme),
+		"Theme":        theme.Path != "",
+		"Next":         next,
 	}
 	if errMsg != "" {
 		data["Error"] = errMsg
@@ -87,68 +79,90 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		http.Error(w, "Bad form data.", http.StatusBadRequest)
+		return
+	}
+	next := loginNext(r.FormValue("next"))
+	ip := session.ClientIP(r)
+	if wait := s.loginRL.Wait(ip); wait > 0 {
+		logx.Warnf("login rate-limited from %s", ip)
+		secs := int(math.Ceil(wait.Seconds()))
+		unit := "seconds"
+		if secs == 1 {
+			unit = "second"
+		}
+		s.renderLoginRefusal(w, http.StatusTooManyRequests, fmt.Sprintf("Wait %d %s before trying again.", secs, unit), next)
 		return
 	}
 	password := r.FormValue("password")
 	if bcrypt.CompareHashAndPassword([]byte(s.cfg.Current().Auth.PasswordHash), []byte(password)) != nil {
-		// render sets this too, but after WriteHeader, which drops it.
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusUnauthorized)
-		s.render(w, "login", s.loginData("incorrect password"))
+		s.loginRL.Fail(ip)
+		logx.Warnf("login failed from %s", ip)
+		s.renderLoginRefusal(w, http.StatusUnauthorized, "Invalid password", next)
 		return
 	}
-	id := s.sessions.Create(s.cfg.Current().Auth.SessionLifetimeDays)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "monloader_session",
-		Value:    id,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   s.cfg.Current().Auth.SessionLifetimeDays * 24 * 3600,
-	})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	s.loginRL.Succeed(ip)
+	logx.Infof("login success from %s", ip)
+	days := s.cfg.Current().Auth.SessionLifetimeDays
+	session.SetCookie(w, r, sessionCookie, s.sessions.Create(days), days*24*3600)
+	http.Redirect(w, r, cmp.Or(next, "/"), http.StatusSeeOther)
+}
+
+func (s *Server) renderLoginRefusal(w http.ResponseWriter, status int, msg, next string) {
+	// render sets this too, but after WriteHeader, which drops it.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	s.render(w, "webui/login_page", s.loginData(msg, next))
 }
 
 func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
-	s.sessions.Delete(sessionCookie(r))
-	http.SetCookie(w, &http.Cookie{Name: "monloader_session", Value: "", Path: "/", MaxAge: -1})
+	s.sessions.Delete(session.FromCookie(r, sessionCookie))
+	session.SetCookie(w, r, sessionCookie, "", -1)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
 func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		flashFragment(w, "err", "bad form")
+		flashFragment(w, "err", "Bad form data.")
 		return
 	}
 	newPass := r.FormValue("new_password")
 	if newPass == "" {
-		flashFragment(w, "err", "new password required")
+		flashFragment(w, "err", "New password required.")
 		return
 	}
 	if s.cfg.Current().Auth.PasswordHash != "" {
 		if bcrypt.CompareHashAndPassword([]byte(s.cfg.Current().Auth.PasswordHash), []byte(r.FormValue("current_password"))) != nil {
-			flashFragment(w, "err", "current password is incorrect")
+			flashFragment(w, "err", "Current password is incorrect.")
 			return
 		}
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
 	if err != nil {
-		flashFragment(w, "err", "error hashing password")
+		flashFragment(w, "err", "Error hashing password.")
 		return
 	}
+	wasOn := s.cfg.Current().Auth.EnablePassword
 	if err := s.updateConfig(func(c *config.Config) error {
 		c.Auth.PasswordHash = string(hash)
 		c.Auth.EnablePassword = true
 		return nil
 	}); err != nil {
-		flashFragment(w, "err", "could not save: "+err.Error())
+		flashFragment(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	// A password is often changed because the old one leaked: every other
-	// browser signs in again.
-	s.sessions.ClearExcept(sessionFromContext(r.Context()))
-	flashFragment(w, "ok", "password updated")
+	// browser signs in again. With auth off the setter holds only the anon
+	// session, so it gets a real one rather than the login page.
+	logx.Infof("settings: password updated from %s", session.ClientIP(r))
+	keep := session.FromContext(r.Context())
+	if !wasOn {
+		days := s.cfg.Current().Auth.SessionLifetimeDays
+		keep = s.sessions.Create(days)
+		session.SetCookie(w, r, sessionCookie, keep, days*24*3600)
+	}
+	s.sessions.ClearExcept(keep)
+	flashFragment(w, "ok", "Password updated.")
 	s.renderAuthPasswordOOB(w, r)
 }
 
@@ -156,12 +170,12 @@ func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
 // skip the check.
 func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		flashFragment(w, "err", "bad form")
+		flashFragment(w, "err", "Bad form data.")
 		return
 	}
 	if s.cfg.Current().Auth.PasswordHash != "" {
 		if bcrypt.CompareHashAndPassword([]byte(s.cfg.Current().Auth.PasswordHash), []byte(r.FormValue("current_password"))) != nil {
-			flashFragment(w, "err", "current password is incorrect")
+			flashFragment(w, "err", "Current password is incorrect.")
 			return
 		}
 	}
@@ -170,11 +184,12 @@ func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Reque
 		c.Auth.PasswordHash = ""
 		return nil
 	}); err != nil {
-		flashFragment(w, "err", "could not save: "+err.Error())
+		flashFragment(w, "err", "Could not save: "+err.Error())
 		return
 	}
+	logx.Infof("settings: password removed from %s", session.ClientIP(r))
 	s.sessions.Clear()
-	flashFragment(w, "ok", "password removed; authentication is now disabled")
+	flashFragment(w, "ok", "Password removed. Authentication is now disabled.")
 	s.renderAuthPasswordOOB(w, r)
 }
 
@@ -182,78 +197,70 @@ func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Reque
 // both layers store the same one.
 func (s *Server) settingsTokenCreate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		flashFragment(w, "err", "bad form data")
+		flashFragment(w, "err", "Bad form data.")
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
-	if err := config.ValidateTokenName(name); err != nil {
+	if err := apitoken.ValidateName(name); err != nil {
 		flashFragment(w, "err", err.Error())
 		return
 	}
-	tok, secret := config.GenerateToken(name, config.AllScopes)
+	tok, secret := apitoken.New(name, config.AllScopes)
 	if err := s.updateConfig(func(c *config.Config) error {
-		if c.TokenNameExists(name) {
-			return fmt.Errorf("a token named %q already exists", name)
-		}
-		c.Auth.Tokens = append(c.Auth.Tokens, tok)
-		return nil
+		return c.Auth.Tokens.Add(tok)
 	}); err != nil {
 		flashFragment(w, "err", err.Error())
 		return
 	}
+	logx.Infof("settings: API token %q created from %s", name, session.ClientIP(r))
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("HX-Trigger", "token-created")
-	s.render(w, "token_flash", map[string]any{"Token": secret})
+	s.render(w, "webui/token_created", map[string]any{"Token": secret})
 	s.renderAuthTokensOOB(w, r)
 }
 
 // Only these two peers have a remove-pairing control, so a token paired
 // under any other name stays revocable from the list.
 func hasPairingTeardown(peer string) bool {
-	return peer == "monbooru" || peer == "monsender"
+	return peer == contract.AppMonbooru || peer == "monsender"
 }
 
 func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tok := s.cfg.Current().FindToken(id)
+	tok := s.cfg.Current().Auth.Tokens.ByID(id)
 	if tok == nil {
-		flashFragment(w, "err", "token not found")
+		flashFragment(w, "err", "Token not found.")
 		return
 	}
 	if hasPairingTeardown(tok.Paired) {
-		flashFragment(w, "err", "this token is managed by a pairing; remove the pairing instead")
+		flashFragment(w, "err", "This token is managed by a pairing; remove the pairing instead.")
 		return
 	}
 	if err := s.updateConfig(func(c *config.Config) error {
-		c.RemoveToken(id)
+		c.Auth.Tokens.Remove(id)
 		return nil
 	}); err != nil {
-		flashFragment(w, "err", "could not save: "+err.Error())
+		flashFragment(w, "err", "Could not save: "+err.Error())
 		return
 	}
-	flashFragment(w, "ok", "token revoked")
+	logx.Infof("settings: API token %s revoked from %s", id, session.ClientIP(r))
+	flashFragment(w, "ok", "Token revoked.")
 	s.renderAuthTokensOOB(w, r)
 }
 
 func (s *Server) renderAuthTokensOOB(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "auth_tokens", map[string]any{
+	s.render(w, "webui/auth_tokens", map[string]any{
 		"Tokens":    slices.Clone(s.cfg.Current().Auth.Tokens),
-		"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context())),
+		"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context())),
 		"OOB":       true,
 	})
 }
 
-type tokenScopeRow struct {
-	Name    string
-	Desc    string
-	Checked bool
-}
-
 func (s *Server) settingsTokenPrivilegesGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tok := s.cfg.Current().FindToken(id)
+	tok := s.cfg.Current().Auth.Tokens.ByID(id)
 	if tok == nil {
-		http.Error(w, "token not found", http.StatusNotFound)
+		http.Error(w, "Token not found.", http.StatusNotFound)
 		return
 	}
 	scopes := slices.Clone(tok.Scopes)
@@ -261,70 +268,54 @@ func (s *Server) settingsTokenPrivilegesGet(w http.ResponseWriter, r *http.Reque
 		config.ScopeRead:  "read - queue and sites",
 		config.ScopeWrite: "write - enqueue and manage jobs",
 	}
-	rows := make([]tokenScopeRow, 0, len(config.AllScopes))
-	for _, sc := range config.AllScopes {
-		rows = append(rows, tokenScopeRow{Name: sc, Desc: descs[sc], Checked: slices.Contains(scopes, sc)})
-	}
-	s.render(w, "token_privileges_dialog", map[string]any{
+	s.render(w, "webui/token_privileges_dialog", map[string]any{
 		"ID":        id,
-		"Scopes":    rows,
-		"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context())),
+		"Scopes":    webui.ScopeRows(config.AllScopes, scopes, descs),
+		"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context())),
 		"Paired":    tok.Paired != "",
 	})
 }
 
 func (s *Server) settingsTokenPrivilegesPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		flashFragment(w, "err", "bad form data")
+		flashFragment(w, "err", "Bad form data.")
 		return
 	}
 	id := r.PathValue("id")
-	tok := s.cfg.Current().FindToken(id)
+	tok := s.cfg.Current().Auth.Tokens.ByID(id)
 	if tok == nil {
-		flashFragment(w, "err", "token not found")
+		flashFragment(w, "err", "Token not found.")
 		return
 	}
 	if tok.Paired != "" {
-		flashFragment(w, "err", "this token is managed by a pairing; its privileges can't be changed")
+		flashFragment(w, "err", "This token is managed by a pairing; its privileges can't be changed.")
 		return
 	}
-	scopes := filterScopes(r.Form["scope"])
+	scopes := apitoken.Filter(r.Form["scope"], config.AllScopes)
 	if err := s.updateConfig(func(c *config.Config) error {
-		c.SetTokenScopes(id, scopes)
+		c.Auth.Tokens.SetScopes(id, scopes)
 		return nil
 	}); err != nil {
-		flashFragment(w, "err", "could not save: "+err.Error())
+		flashFragment(w, "err", "Could not save: "+err.Error())
 		return
 	}
+	logx.Infof("settings: API token %s privileges updated from %s", id, session.ClientIP(r))
 	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"token-saved":{"dialog":"token-cfg-%s"}}`, id))
-	fmt.Fprintf(w,
-		`<span id="token-scopes-%s" hx-swap-oob="true">%s</span>`+
-			`<div id="flash-auth" hx-swap-oob="true"><div class="flash flash-ok">token privileges saved.</div></div>`,
-		id, strings.Join(scopes, " "))
-}
-
-func filterScopes(in []string) []string {
-	var out []string
-	for _, sc := range config.AllScopes {
-		if slices.Contains(in, sc) {
-			out = append(out, sc)
-		}
-	}
-	return out
+	s.render(w, "webui/token_scopes_saved", map[string]string{"ID": id, "Scopes": strings.Join(scopes, " ")})
 }
 
 func grantedScopes(requested []string) []string {
-	if sc := filterScopes(requested); len(sc) > 0 {
+	if sc := apitoken.Filter(requested, config.AllScopes); len(sc) > 0 {
 		return sc
 	}
 	return []string{config.ScopeRead}
 }
 
 func (s *Server) renderAuthPasswordOOB(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "auth_password_section", map[string]any{
+	s.render(w, "webui/auth_password_section", map[string]any{
 		"AuthEnabled": s.cfg.Current().Auth.EnablePassword,
 		"HasPassword": s.cfg.Current().Auth.PasswordHash != "",
-		"CSRFToken":   s.sessions.CSRFToken(sessionFromContext(r.Context())),
+		"CSRFToken":   s.sessions.CSRFToken(session.FromContext(r.Context())),
 		"OOB":         true,
 	})
 }

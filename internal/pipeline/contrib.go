@@ -118,6 +118,9 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 
 	up := p.newContribUpload(job, sender, store, packContribChunks(survivors))
 	sent, failedCount, uerr := up.run(ctx)
+	if perr := store.PruneLog(); perr != nil {
+		logx.Warnf("contrib: pruning the ledger: %v", perr)
+	}
 	if uerr != nil {
 		return uerr
 	}

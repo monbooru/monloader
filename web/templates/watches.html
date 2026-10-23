@@ -5,21 +5,20 @@
 <main id="content" class="content-wide">
   <form class="add-bar" hx-post="/watches" hx-target="#watch-flash" hx-swap="innerHTML"
         hx-on::after-request="if (event.detail.xhr.getResponseHeader('HX-Retarget')) { this.reset(); document.getElementById('watch-flash').textContent = ''; }">
-    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="add-row">
       <div class="search-input-wrap">
-        <input type="text" name="url" autocomplete="off"{{if .WatchStore}} class="needs-monbooru"{{end}}{{if not (and .WatchStore .MonbooruConfigured)}} disabled{{end}} placeholder="paste a search URL to watch">
+        <input type="text" name="url" autocomplete="off"{{if .WatchStore}} data-peer-title=""{{end}}{{if not (and .WatchStore .MonbooruConfigured)}} disabled{{end}} placeholder="Paste a search URL to watch">
       </div>
-      <select name="items" aria-label="items to fetch" title="how many posts to fetch">{{template "items_options" .ItemChoices}}</select>
-      <select name="interval_hours" aria-label="check every">{{range .Intervals}}<option value="{{.Hours}}"{{if eq .Hours $.DefaultWatchHours}} selected{{end}}>{{.Label}}</option>{{end}}</select>
-      <button type="submit"{{if .WatchStore}} class="needs-monbooru"{{end}}{{if not (and .WatchStore .MonbooruConfigured)}} disabled{{end}}>watch</button>
+      <select name="items" aria-label="Items to fetch" title="How many posts to fetch">{{template "items_options" .ItemChoices}}</select>
+      <select name="interval_hours" aria-label="Check every">{{range .Intervals}}<option value="{{.Hours}}"{{if eq .Hours $.DefaultWatchHours}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+      <button type="submit"{{if .WatchStore}} data-peer-title=""{{end}}{{if not (and .WatchStore .MonbooruConfigured)}} disabled{{end}}>Watch</button>
     </div>
   </form>
-  <div id="watch-flash" class="hint">{{if not .WatchStore}}<span class="flash-err">watches need the queue store, which is not writable</span>{{end}}</div>
+  <div id="watch-flash" class="field-hint">{{if not .WatchStore}}<span class="flash-err">Watches need the queue store, which is not writable.</span>{{end}}</div>
   <div class="table-scroll">
-  <table class="watch-table">
+  <table class="data-table watch-table">
     <thead>
-      <tr><th>last check</th><th>url</th><th>site</th><th>items</th><th>every</th><th>next</th><th></th></tr>
+      <tr><th>Last check</th><th>URL</th><th>Site</th><th>Items</th><th>Every</th><th>Next</th><th></th></tr>
     </thead>
     <!-- A focused select pauses the poll, which would otherwise close it mid-pick. -->
     <tbody id="watch-rows" hx-get="/internal/watch-rows" hx-trigger="load, every 2s [!confirmOpen() && document.activeElement.tagName !== 'SELECT']"

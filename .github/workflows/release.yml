@@ -11,11 +11,12 @@ permissions:
   packages: write
 
 env:
-  GO_VERSION: '1.27.2'
-  GO_SHA256_LINUX_AMD64: 'ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5'
-  GDL_VERSION: '1.32.15'
-  GDL_SHA256_LINUX_AMD64: '8c586d0bd6e4814e14b2b05278dc19ed636cf9a0b7b089cb1f18a722179c714f'
-  GDL_SHA256_WINDOWS_AMD64: 'd6c8ac8ffdc9194e90787225e70d0a7c9eeed23dd41c9574e235632b6f9593a4'
+  GO_VERSION: '1.27.3'
+  GO_SHA256_LINUX_AMD64: '65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40'
+  GDL_VERSION: '1.32.17'
+  GDL_SHA256_LINUX_AMD64: 'ccf4d304408a0d57ef78d4ad9221aaad964e36b57466109b48595a52377dcdcc'
+  GDL_SHA256_WINDOWS_AMD64: '77c8f4c6808cf1044a54ec7187b548f5977f7c304d5432b63cf6cfdfe70ffc12'
+  GDL_LICENSE_SHA256: '8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643'
 
 jobs:
   docker:
@@ -161,7 +162,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Go
-        run: ./packaging/install-go.sh
+        run: ./packaging/install-go.sh "${GO_VERSION}" "${GO_SHA256_LINUX_AMD64}"
 
       - name: Fetch the bundled gallery-dl
         run: ./packaging/fetch-tools.sh
@@ -190,7 +191,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends zip
-          ./packaging/install-go.sh
+          ./packaging/install-go.sh "${GO_VERSION}" "${GO_SHA256_LINUX_AMD64}"
 
       - name: Fetch the bundled gallery-dl
         run: ./packaging/fetch-tools.sh

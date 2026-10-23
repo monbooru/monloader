@@ -1,0 +1,35 @@
+{{define "webui/message_page"}}
+<!DOCTYPE html>
+<html lang="en" data-app="{{.App}}">
+<head>
+{{template "webui/head" .}}
+{{if .Poll}}<meta http-equiv="refresh" content="60;url=/">{{end}}
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-box">
+      <h1>{{.Heading}}</h1>
+      <p class="field-hint">{{.Hint}}</p>
+    </div>
+  </div>
+  {{if .Poll}}
+  <script>
+    // After 8 probes even without a refusal, in case the restart was too quick to see.
+    (function () {
+      var down = false, tries = 0;
+      var probe = function () {
+        if (tries++ > 240) { return; }
+        var settled = down || tries > 8;
+        fetch("/health", { cache: "no-store" })
+          .then(function (r) {
+            if (r.ok && settled) { location.replace("/"); } else { setTimeout(probe, 250); }
+          })
+          .catch(function () { down = true; setTimeout(probe, 250); });
+      };
+      setTimeout(probe, 250);
+    })();
+  </script>
+  {{end}}
+</body>
+</html>
+{{end}}

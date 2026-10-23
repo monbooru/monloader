@@ -247,8 +247,9 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	}
 
 	var tags []string
+	// monbooru keeps the first rating tag of a push, so only pf.Rating's goes.
 	add := func(s string) {
-		if s = applyTagRule(profile.TagRules, normalizeTag(s)); s != "" {
+		if s = applyTagRule(profile.TagRules, normalizeTag(s)); s != "" && !strings.HasPrefix(s, "rating:") {
 			tags = append(tags, s)
 		}
 	}
@@ -305,7 +306,7 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	}
 	pf.Rating = m.ratingFor(category, profile, raw)
 	if pf.Rating != "" {
-		add("rating:" + pf.Rating)
+		tags = append(tags, "rating:"+pf.Rating)
 	}
 
 	slices.Sort(tags)
@@ -533,7 +534,7 @@ func PoolName(meta map[string]any) string {
 	return ""
 }
 
-// Without a template the permalink metadata is used, so a bulk job's
+// Without a template or an id the permalink metadata is used, so a bulk job's
 // items link to their own posts rather than the submitted listing.
 func (m *Mapper) PostURL(meta map[string]any) string {
 	category := kwdict.String(meta, "category")
@@ -541,10 +542,10 @@ func (m *Mapper) PostURL(meta map[string]any) string {
 		return directlinkURL(meta)
 	}
 	profile := m.profileFor(category)
-	if profile.PostURL == "" {
-		return permalinkURL(meta)
+	if id := kwdict.ID(meta); profile.PostURL != "" && id != "" {
+		return strings.ReplaceAll(profile.PostURL, "{id}", id)
 	}
-	return strings.ReplaceAll(profile.PostURL, "{id}", kwdict.ID(meta))
+	return permalinkURL(meta)
 }
 
 // Some extractors put a site-relative path or free text in permalink.
@@ -559,8 +560,8 @@ func permalinkURL(meta map[string]any) string {
 
 func (m *Mapper) categoryFor(site string, profile Profile, suffix string) (string, bool) {
 	for _, o := range m.cfg.Current().TagOverrides {
-		if o.Site == site && o.From == suffix && o.To != "" && validTagCategories[o.To] {
-			return o.To, true
+		if o.Site == site && o.From == suffix && validTagCategories[o.To] {
+			return o.To, o.To != ""
 		}
 	}
 	if to, ok := profile.CategoryOverrides[suffix]; ok {

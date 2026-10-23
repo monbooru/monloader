@@ -1,17 +1,18 @@
 package api
 
-import "github.com/monbooru/monloader/internal/outcome"
+import (
+	"github.com/monbooru/monloader/internal/outcome"
+
+	"github.com/monbooru/monloader/internal/shared/contract"
+)
 
 // The error payload's code values: clients branch on them and the OpenAPI
 // text quotes them, so never respell one.
 const (
-	errInvalidRequest    = "invalid_request"
-	errNotFound          = "not_found"
-	errConflict          = "conflict"
-	errNamespaceReq      = "namespace_required"
-	errUnauthorized      = "unauthorized"
-	errInsufficientScope = "insufficient_scope"
-	errAPIDisabled       = "api_disabled"
+	errInvalidRequest = contract.CodeInvalidRequest
+	errNotFound       = "not_found"
+	errConflict       = "conflict"
+	errNamespaceReq   = "namespace_required"
 
 	errMonbooruUnconfigured = "monbooru_unconfigured"
 	errMonbooruPaused       = "monbooru_paused"
@@ -35,4 +36,4 @@ const (
 
 // ErrSetupRequired is answered by the web first-run gate, in front of every
 // route here.
-const ErrSetupRequired = "setup_required"
+const ErrSetupRequired = contract.CodeSetupRequired

@@ -1,13 +1,15 @@
 {{define "setup"}}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-app="monloader">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.TitleName}} setup</title>
   <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="stylesheet" href="/static/shared/base.css">
   <link rel="stylesheet" href="/static/main.css">
-  <script src="/static/htmx.min.js"></script>
+  <script src="/static/shared/htmx.min.js"></script>
+  <script src="/static/shared/base.js" defer></script>
   <script src="/static/main.js" defer></script>
 </head>
 <body>
@@ -18,45 +20,45 @@
   <form method="POST" action="/setup">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
 
-    <h2>connect to monbooru</h2>
+    <h2>Connect to monbooru</h2>
     {{if .Found}}
-    <p>found monbooru{{if .FoundVersion}} {{.FoundVersion}}{{end}} at this address.</p>
+    <p>Found monbooru{{if .FoundVersion}} {{.FoundVersion}}{{end}} at this address.</p>
     {{else}}
-    <p class="field-hint">monbooru has to be running for the handshake. start it and reload, or type its address if it is on another machine. you can set it up later in settings.</p>
+    <p class="field-hint">monbooru has to be running for the handshake. Start it and reload, or type its address if it is on another machine. You can set it up later in the Settings.</p>
     {{end}}
     <div class="field">
-      <label for="setup-api-url">monbooru api url</label>
+      <label for="setup-api-url">monbooru API URL</label>
       <input id="setup-api-url" type="text" name="api_url" value="{{.APIURL}}" placeholder="http://127.0.0.1:8455">
     </div>
     {{if and .Found (not .Paired)}}
     <div class="field">
-      <label><input type="checkbox" name="pair" {{if .Pair}}checked{{end}}> ask monbooru to pair</label>
-      <p class="field-hint">approve the request in monbooru, under settings > plugins.</p>
+      <label><input type="checkbox" name="pair" {{if .Pair}}checked{{end}}> Ask monbooru to pair</label>
+      <p class="field-hint">Approve the request in monbooru, under Settings > Plugins.</p>
     </div>
     {{end}}
 
-    <h2>who can reach it?</h2>
+    <h2>Who can reach it?</h2>
     <div class="field">
-      <label><input type="radio" name="reach" value="local" {{if not .LAN}}checked{{end}}> only this computer</label>
+      <label><input type="radio" name="reach" value="local" {{if not .LAN}}checked{{end}}> Only this computer</label>
       <p class="field-hint">monloader answers at http://localhost:{{.Port}} and at no other address.</p>
-      <label><input type="radio" name="reach" value="lan" {{if .LAN}}checked{{end}}> other devices on the LAN too</label>
-      <p class="field-hint">another device on the same network opens it at this machine's address, port {{.Port}}. takes effect when {{.BooruName}} restarts.</p>
+      <label><input type="radio" name="reach" value="lan" {{if .LAN}}checked{{end}}> Other devices on the LAN too</label>
+      <p class="field-hint">Another device on the same network opens it at this machine's address, port {{.Port}}. Takes effect when {{.BooruName}} restarts.</p>
     </div>
 
     {{$dk := .Integration}}
     {{if $dk.Supported}}
-    <h2>launching {{.BooruName}}</h2>
+    <h2>Launching {{.BooruName}}</h2>
     <div class="field">
       {{if $dk.MenuSupported}}
-      <label><input type="checkbox" name="menu_entry" {{if .Menu}}checked{{end}}> add {{.BooruName}} to the applications menu</label>
+      <label><input type="checkbox" name="menu_entry" {{if .Menu}}checked{{end}}> Add {{.BooruName}} to the applications menu</label>
       {{end}}
       {{if $dk.AutostartSupported}}
-      <label><input type="checkbox" name="start_at_login" {{if .Autostart}}checked{{end}}> start at login</label>
+      <label><input type="checkbox" name="start_at_login" {{if .Autostart}}checked{{end}}> Start at login</label>
       {{end}}
     </div>
     {{end}}
 
-    <div class="setup-actions"><button type="submit">open {{.BooruName}}</button></div>
+    <div class="setup-actions"><button type="submit">Open {{.BooruName}}</button></div>
   </form>
 </div>
 </body>

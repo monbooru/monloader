@@ -7,8 +7,11 @@ import (
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/shared/apitoken"
+	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/shared/logx"
 	"github.com/monbooru/monloader/internal/shared/pairing"
+	"github.com/monbooru/monloader/internal/shared/session"
 )
 
 // Any origin is allowed, the extension's included: the operator's approval
@@ -31,14 +34,16 @@ func pairJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func pairError(w http.ResponseWriter, status int, code, msg string) {
-	pairJSON(w, status, map[string]string{"code": code, "error": msg})
+	pairJSON(w, status, contract.Error{Error: msg, Code: code})
 }
+
+func pairRefuse(w http.ResponseWriter, f *pairing.Refusal) { pairError(w, f.Status, f.Code, f.Msg) }
 
 func (s *Server) removePairingLocal(peer string) error {
 	return s.updateConfig(func(c *config.Config) error {
-		c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t config.Token) bool { return t.Paired == peer })
-		if peer == "monbooru" {
-			c.Monbooru.APIToken = ""
+		c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t apitoken.Token) bool { return t.Paired == peer })
+		if peer == contract.AppMonbooru {
+			c.Monbooru.APIToken, c.Monbooru.Paused = "", false
 		}
 		return nil
 	})
@@ -50,79 +55,67 @@ func (s *Server) extPairTeardown(w http.ResponseWriter, r *http.Request) {
 	const prefix = "Bearer "
 	got := r.Header.Get("Authorization")
 	cfg := s.cfg.Current()
-	tok := cfg.FindTokenByHash(config.HashToken(strings.TrimPrefix(got, prefix)))
+	tok := cfg.Auth.Tokens.ByHash(apitoken.Hash(strings.TrimPrefix(got, prefix)))
 	if !strings.HasPrefix(got, prefix) || tok == nil || tok.Paired == "" {
-		pairError(w, http.StatusUnauthorized, "unauthorized", "pairing token required")
+		pairRefuse(w, pairing.NoPairingToken())
 		return
 	}
 	if err := s.removePairingLocal(tok.Paired); err != nil {
-		pairError(w, http.StatusInternalServerError, "remove_failed", err.Error())
+		pairError(w, http.StatusInternalServerError, pairing.CodeRemoveFailed, err.Error())
 		return
 	}
 	logx.Infof("pairing: %s removed the pairing remotely", tok.Paired)
-	pairJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+	pairJSON(w, http.StatusOK, pairing.StatusBody{Status: pairing.Removed})
 }
 
 func (s *Server) extPairRequest(w http.ResponseWriter, r *http.Request) {
 	setPairCORS(w, r)
-	var body struct {
-		App             string   `json:"app"`
-		RequestedScopes []string `json:"requested_scopes"`
+	var body pairing.RequestBody
+	if f := pairing.DecodeOffer(w, r, &body); f != nil {
+		pairRefuse(w, f)
+		return
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil || body.App == "" {
-		pairError(w, http.StatusBadRequest, "invalid_request", "app and a JSON body are required")
+	if !pairing.ValidApp(body.App) {
+		pairError(w, http.StatusBadRequest, pairing.CodeInvalidRequest, "app must match [A-Za-z0-9_-]{1,32}")
 		return
 	}
 	// monbooru's pairing has its own flow; an extension approved under
 	// the name would show a phantom connection.
-	if strings.EqualFold(body.App, "monbooru") {
-		pairError(w, http.StatusBadRequest, "invalid_request", "app name \"monbooru\" is reserved")
+	if strings.EqualFold(body.App, contract.AppMonbooru) {
+		pairError(w, http.StatusBadRequest, pairing.CodeInvalidRequest, "app name \"monbooru\" is reserved")
 		return
 	}
 	if s.hasPairedToken(body.App) {
 		pairError(w, http.StatusConflict, "already_paired", "already paired with "+body.App+"; remove the existing pairing first")
 		return
 	}
-	id, ok := s.pairs.Create(pairing.Request{App: body.App, Source: r.RemoteAddr, Scopes: body.RequestedScopes})
-	if !ok {
-		pairError(w, http.StatusTooManyRequests, "too_many_requests", "too many pending pairing requests")
+	accepted, f := s.pairs.Offer(pairing.Request{App: body.App, Source: session.ClientIP(r), Scopes: body.RequestedScopes})
+	if f != nil {
+		pairRefuse(w, f)
 		return
 	}
 	logx.Infof("pairing: request from %s", body.App)
-	pairJSON(w, http.StatusOK, map[string]string{"request_id": id, "status": string(pairing.Pending)})
+	pairJSON(w, http.StatusOK, accepted)
 }
 
 func (s *Server) extPairStatus(w http.ResponseWriter, r *http.Request) {
 	setPairCORS(w, r)
-	req, ok := s.pairs.Get(r.URL.Query().Get("id"))
-	if !ok {
-		pairError(w, http.StatusNotFound, "not_found", "unknown pairing request")
+	body, f := s.pairs.Poll(r.URL.Query().Get("id"), s.mintExtToken)
+	if f != nil {
+		pairRefuse(w, f)
 		return
 	}
-	if req.State != pairing.Approved {
-		pairJSON(w, http.StatusOK, map[string]string{"status": string(req.State)})
-		return
+	if body.Token != "" {
+		w.Header().Set("Cache-Control", "no-store")
 	}
-	cr, won := s.pairs.Claim(req.ID)
-	if !won {
-		pairJSON(w, http.StatusOK, map[string]string{"status": string(pairing.Approved)})
-		return
-	}
-	secret, err := s.mintExtToken(cr)
-	if err != nil {
-		s.pairs.Unclaim(cr.ID)
-		pairError(w, http.StatusInternalServerError, "mint_failed", err.Error())
-		return
-	}
-	s.pairs.Remove(cr.ID)
-	w.Header().Set("Cache-Control", "no-store")
-	pairJSON(w, http.StatusOK, map[string]string{"status": string(pairing.Approved), "token": secret})
+	pairJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) mintExtToken(req pairing.Request) (string, error) {
-	tok, secret := config.GenerateToken(req.App+" (paired)", grantedScopes(req.Scopes))
+	tok, secret := apitoken.New(req.App+" (paired)", grantedScopes(req.Scopes))
 	tok.Paired = req.App
 	if err := s.updateConfig(func(c *config.Config) error {
+		c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t apitoken.Token) bool { return t.Paired == req.App })
 		c.Auth.Tokens = append(c.Auth.Tokens, tok)
 		return nil
 	}); err != nil {
@@ -141,8 +134,9 @@ func (s *Server) extPairData(r *http.Request) map[string]any {
 	}
 	return map[string]any{
 		"Pending":   pending,
+		"Awaiting":  s.pairs.ListApproved(),
 		"Paired":    s.hasPairedToken("monsender"),
-		"CSRFToken": s.sessions.CSRFToken(sessionFromContext(r.Context())),
+		"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context())),
 	}
 }
 

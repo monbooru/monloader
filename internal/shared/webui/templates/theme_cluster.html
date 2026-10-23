@@ -1,0 +1,10 @@
+{{define "webui/theme_cluster"}}
+<div id="theme-cluster" class="theme-cluster">
+  {{$active := .Active}}{{$post := .PostURL}}
+  <span class="field-hint">theme:</span>
+  {{range $i, $n := .Names}}{{if $i}}<span class="footer-sep">·</span>{{end}}{{if eq $n $active}}<span class="theme-cluster-active">[{{$n}}]</span>{{else}}<form hx-post="{{$post}}" hx-swap="none" style="display:inline">
+    <input type="hidden" name="theme" value="{{$n}}">
+    <button type="submit">{{$n}}</button>
+  </form>{{end}}{{end}}
+</div>
+{{end}}

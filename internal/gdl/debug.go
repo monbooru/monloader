@@ -32,7 +32,7 @@ func (t *Tool) DebugLog(ctx context.Context, url, workRoot string) (log string, 
 	// archive= so an already-recorded post is fetched, not skipped with
 	// nothing to show.
 	args := append(t.configArgs(), "-o", logfileOption(path), "-o", "archive=",
-		"-D", dir, "--range", "1-1", url)
+		"-D", dir, "--range", "1-1", "--", url)
 	res, runErr := t.run(ctx, args...)
 	if ctx.Err() != nil {
 		return "", false, &outcome.CodedError{Code: outcome.ErrCodeCanceled, Msg: ctx.Err().Error()}

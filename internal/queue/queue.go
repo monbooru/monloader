@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -111,6 +112,9 @@ type Queue struct {
 	// Serializes a take with its store write: the row holds an absolute
 	// value, so writes landing out of order would refund a spend.
 	budgetWrite sync.Mutex
+	// Serializes a row's liveness check and save with a delete, so a
+	// Clear landing in between cannot have its delete undone.
+	rowWrite sync.Mutex
 
 	watches []*Watch
 
@@ -221,11 +225,26 @@ func (q *Queue) persist(j *Job) {
 	}
 }
 
+// persistKept skips a job a Clear has dropped: saving it would bring it
+// back at the next boot. Caller must not hold q.mu.
+func (q *Queue) persistKept(j *Job) {
+	q.rowWrite.Lock()
+	defer q.rowWrite.Unlock()
+	q.mu.Lock()
+	kept := q.index[j.ID] == j
+	q.mu.Unlock()
+	if kept {
+		q.persist(j)
+	}
+}
+
 // Caller must not hold q.mu.
 func (q *Queue) persistDelete(ids []int64) {
 	if q.store == nil || len(ids) == 0 {
 		return
 	}
+	q.rowWrite.Lock()
+	defer q.rowWrite.Unlock()
 	if err := q.store.DeleteJobs(ids); err != nil {
 		logx.Warnf("queue: store delete failed: %v", err)
 	}
@@ -320,7 +339,7 @@ func (q *Queue) RecordPTRLookup(gallery string, scheduled bool, asked int, match
 	if j := q.recentPTRLookupLocked(now, scheduled); j != nil {
 		q.mu.Unlock()
 		j.recordPTRLookup(gallery, asked, matched, now)
-		q.persist(j)
+		q.persistKept(j)
 		return
 	}
 	q.nextID++
@@ -332,7 +351,7 @@ func (q *Queue) RecordPTRLookup(gallery string, scheduled bool, asked int, match
 	q.index[j.ID] = j
 	evicted := q.pushFinishedLocked(j)
 	q.mu.Unlock()
-	q.persist(j)
+	q.persistKept(j)
 	q.persistDelete(evicted)
 }
 
@@ -405,7 +424,8 @@ func (q *Queue) List(opts ListOptions) ([]*Job, int) {
 
 	total := len(snaps)
 	if opts.Limit > 0 {
-		start := (max(opts.Page, 1) - 1) * opts.Limit
+		// Past this the offset wraps negative.
+		start := (min(max(opts.Page, 1), math.MaxInt/opts.Limit) - 1) * opts.Limit
 		if start >= len(snaps) {
 			return []*Job{}, total
 		}
@@ -420,6 +440,12 @@ func (q *Queue) Retry(id int64, force bool) error {
 	if j == nil {
 		q.mu.Unlock()
 		return ErrNotFound
+	}
+	// A processor settles the status before finish takes the job off
+	// the worker.
+	if _, ok := q.running[id]; ok {
+		q.mu.Unlock()
+		return errors.New("cannot retry a running job")
 	}
 	if err := j.reset(force, q.now()); err != nil {
 		q.mu.Unlock()
@@ -569,19 +595,24 @@ func (q *Queue) reconcileSeries(j *Job) {
 // CancelSeries stops a live series but keeps its finished windows and
 // their imports; a finished series is removed whole.
 func (q *Queue) CancelSeries(id int64) error {
-	return q.cancelSeries(id, q.Cancel)
+	ids, live, err := q.seriesToCancel(id)
+	for _, jid := range ids {
+		_ = q.cancel(jid, live)
+	}
+	return err
 }
 
-func (q *Queue) cancelSeries(id int64, cancelOne func(int64) error) error {
+// live is whether id was live; then only the windows live with it are
+// listed, and each must be re-checked, since one may finish meanwhile.
+func (q *Queue) seriesToCancel(id int64) (ids []int64, live bool, err error) {
 	q.mu.Lock()
+	defer q.mu.Unlock()
 	src := q.index[id]
 	if src == nil {
-		q.mu.Unlock()
-		return ErrNotFound
+		return nil, false, ErrNotFound
 	}
 	root := src.seriesKey()
-	live := q.isLiveLocked(id)
-	var ids []int64
+	live = q.isLiveLocked(id)
 	for jid, j := range q.index {
 		if j.seriesKey() != root {
 			continue
@@ -591,11 +622,7 @@ func (q *Queue) cancelSeries(id int64, cancelOne func(int64) error) error {
 		}
 		ids = append(ids, jid)
 	}
-	q.mu.Unlock()
-	for _, jid := range ids {
-		_ = cancelOne(jid)
-	}
-	return nil
+	return ids, live, nil
 }
 
 // CancelLive refuses a finished series: a stale cancel button must not
@@ -611,7 +638,11 @@ func (q *Queue) CancelLive(id int64) error {
 	case !live:
 		return ErrNotRunning
 	}
-	return q.cancelSeries(id, q.cancelKeepingRow)
+	ids, _, err := q.seriesToCancel(id)
+	for _, jid := range ids {
+		_ = q.cancelKeepingRow(jid)
+	}
+	return err
 }
 
 func (q *Queue) cancelKeepingRow(id int64) error {
@@ -626,16 +657,29 @@ func (q *Queue) cancelKeepingRow(id int64) error {
 		q.mu.Unlock()
 		return nil
 	}
-	q.removeFromPendingLocked(id)
-	j.cancel(q.now())
-	evicted := q.pushFinishedLocked(j)
+	if !q.isLiveLocked(id) {
+		q.mu.Unlock()
+		return ErrNotRunning
+	}
+	evicted := q.cancelPendingLocked(j)
 	q.mu.Unlock()
+	q.settleCanceled(j, evicted)
+	return nil
+}
+
+func (q *Queue) cancelPendingLocked(j *Job) (evicted []int64) {
+	q.removeFromPendingLocked(j.ID)
+	j.cancel(q.now())
+	return q.pushFinishedLocked(j)
+}
+
+// Caller must not hold q.mu.
+func (q *Queue) settleCanceled(j *Job, evicted []int64) {
 	j.signalDone()
 	q.stampCanceledCheck(j)
 	q.reportDropped(j)
 	q.persist(j)
 	q.persistDelete(evicted)
-	return nil
 }
 
 func (q *Queue) isLiveLocked(id int64) bool {
@@ -657,11 +701,19 @@ func (q *Queue) liveLocked(match func(*Job) bool) bool {
 // Cancel is the API's DELETE: a running job stays in history as canceled,
 // anything else is removed.
 func (q *Queue) Cancel(id int64) error {
+	return q.cancel(id, false)
+}
+
+func (q *Queue) cancel(id int64, liveOnly bool) error {
 	q.mu.Lock()
 	j := q.index[id]
 	if j == nil {
 		q.mu.Unlock()
 		return ErrNotFound
+	}
+	if liveOnly && !q.isLiveLocked(id) {
+		q.mu.Unlock()
+		return ErrNotRunning
 	}
 	if cancel, ok := q.cancels[id]; ok {
 		cancel()

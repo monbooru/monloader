@@ -2,6 +2,8 @@ package api
 
 import (
 	"cmp"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/gdl"
 	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
 type SiteEntry struct {
@@ -75,7 +78,7 @@ func (h *Handler) listSites(w http.ResponseWriter, r *http.Request) {
 			cmp.Compare(a.Category, b.Category),
 			cmp.Compare(a.Subcategory, b.Subcategory))
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"total": len(out), "sites": out})
+	contract.WriteJSON(w, http.StatusOK, map[string]any{"total": len(out), "sites": out})
 }
 
 func boolRank(b bool) int {
@@ -98,27 +101,32 @@ func (h *Handler) testSite(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			URL string `json:"url"`
 		}
-		if decodeBody(w, r, &body) == nil {
+		err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(&body)
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			contract.RefuseJSONBody(w, err, maxRequestBody)
+			return
+		}
+		if err == nil {
 			probeURL = strings.TrimSpace(body.URL)
 		}
 	}
 	if probeURL != "" && !config.IsHTTPURL(probeURL) {
 		// It becomes a gallery-dl argument, where a leading dash would
 		// read as an option.
-		apiError(w, http.StatusBadRequest, errInvalidRequest, "url must be an http(s) URL")
+		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "url must be an http(s) URL")
 		return
 	}
 	if probeURL == "" {
 		probeURL = h.mapper.ExampleURL(name, h.catalog.ExampleFor(name))
 	}
 	if probeURL == "" {
-		apiError(w, http.StatusNotFound, errNotFound, "no example URL for site "+name+"; supply a url")
+		contract.WriteError(w, http.StatusNotFound, errNotFound, "no example URL for site "+name+"; supply a url")
 		return
 	}
 
 	res, err := h.runner.Probe(r.Context(), probeURL)
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, errInternal, err.Error())
+		contract.WriteError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 	out := siteProbe{ProbeResult: res}
@@ -127,5 +135,5 @@ func (h *Handler) testSite(w http.ResponseWriter, r *http.Request) {
 	} else if v := h.siteView(name); v.NeedsCredential {
 		out.MissingCredential = v.Login
 	}
-	writeJSON(w, http.StatusOK, out)
+	contract.WriteJSON(w, http.StatusOK, out)
 }

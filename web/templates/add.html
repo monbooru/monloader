@@ -1,29 +1,29 @@
 {{define "add"}}{{template "doc_head" .}}
+<div id="page-notice" class="degraded-banner" data-login-url="/login" hidden></div>
 {{template "monbooru_banner" .}}
 {{template "queue_paused" .}}
 <main id="landing">
   <img src="{{.BooruLogo}}" alt="" class="landing-logo">
   <h1>{{.BooruName}}</h1>
   <form id="add-form" class="add-form" hx-post="/" hx-target="#add-flash" hx-swap="innerHTML">
-    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="add-row">
       <div class="search-input-wrap">
-        <input id="add-input" type="text" name="url" autocomplete="off" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}}
-               placeholder="paste a booru URL or an md5 hash - post, pool, tag search, artist...">
+        <input id="add-input" type="text" name="url" autocomplete="off" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}}
+               placeholder="Paste a booru URL or an MD5 hash - post, pool, tag search, artist...">
       </div>
-      <select name="items" aria-label="items to fetch" title="how many posts to fetch">{{template "items_options" .ItemChoices}}</select>
-      <button type="submit" class="needs-monbooru"{{if not .MonbooruConfigured}} disabled{{end}}>download</button>
+      <select name="items" aria-label="Items to fetch" title="How many posts to fetch">{{template "items_options" .ItemChoices}}</select>
+      <button type="submit" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}}>Download</button>
     </div>
   </form>
   {{template "lookup_status" .}}
-  <div class="hint"><a href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">see the supported sites</a></div>
-  <div id="add-flash" class="hint"></div>
+  <div class="field-hint"><a href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">See the supported sites</a></div>
+  <div id="add-flash" class="field-hint"></div>
   <div class="links">
-    <a href="/queue">[ queue ]</a>
-    <a href="/watches">[ watched ]</a>
-    <a href="/ptr">[ ptr ]</a>
-    <a href="/settings">[ settings ]</a>
-    {{if .MonbooruWebURL}}<a href="{{.MonbooruWebURL}}">[ go to monbooru ]</a>{{end}}
+    <a href="/queue">[queue]</a>
+    <a href="/watches">[watched]</a>
+    <a href="/ptr">[PTR]</a>
+    <a href="/settings">[settings]</a>
+    {{if .MonbooruWebURL}}<a href="{{.MonbooruWebURL}}">[go to monbooru]</a>{{end}}
   </div>
 </main>
 {{template "footer" .}}

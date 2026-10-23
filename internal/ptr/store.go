@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -80,10 +81,13 @@ const (
 	queryCacheKB  = 16 * 1024
 )
 
+// Only these are URI syntax in a path; a URL encoding breaks relative and drive-letter paths.
+var uriPathEscaper = strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23")
+
 // Under WAL, synchronous(normal) may lose recent commits on power loss;
 // each carries its cursor, so the sync resumes cleanly.
 func dsn(path string, cacheKB int) string {
-	return "file:" + path +
+	return "file:" + uriPathEscaper.Replace(path) +
 		"?_pragma=busy_timeout(10000)" +
 		"&_pragma=journal_mode(wal)" +
 		"&_pragma=synchronous(normal)" +
@@ -520,11 +524,6 @@ func applyPairs(tx *sql.Tx, query string, pairs []pair) error {
 		}
 	}
 	return nil
-}
-
-// Scans every table, so production reads the census through StoredCounts.
-func (s *Store) Counts() (Counts, error) {
-	return s.counts(context.Background())
 }
 
 func (s *Store) counts(ctx context.Context) (Counts, error) {

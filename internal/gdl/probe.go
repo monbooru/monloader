@@ -17,7 +17,7 @@ func (t *Tool) Probe(ctx context.Context, exampleURL string) (ProbeResult, error
 
 func (t *Tool) probe(ctx context.Context, exampleURL string) (ProbeResult, error) {
 	args := t.configArgs()
-	args = append(args, "-j", "--range", "1-1", exampleURL)
+	args = append(args, "-j", "--range", "1-1", "--", exampleURL)
 	res, err := t.run(ctx, args...)
 	if err != nil {
 		return ProbeResult{Status: ProbeFailed, Detail: err.Error()}, nil

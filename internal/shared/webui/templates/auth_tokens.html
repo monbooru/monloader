@@ -1,0 +1,44 @@
+{{define "webui/auth_tokens"}}
+<div id="auth-tokens"{{if .OOB}} hx-swap-oob="true"{{end}}>
+  {{if .Tokens}}
+  <div class="table-scroll">
+  <table class="data-table">
+    <thead><tr><th>Name</th><th>Created</th><th>Scopes</th><th>Config</th><th class="cell-action">Revoke</th></tr></thead>
+    <tbody>
+      {{range .Tokens}}
+      <tr>
+        <td><strong>{{.Name}}</strong>{{if .Paired}} <span class="status-badge status-ok">paired</span>{{end}}</td>
+        <td>{{.CreatedAt}}</td>
+        <td><span id="token-scopes-{{.ID}}">{{range $i, $s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</span></td>
+        <td>
+          <button type="button" class="btn-sm"
+                  hx-get="/settings/auth/tokens/{{.ID}}/privileges"
+                  hx-target="#token-cfg-{{.ID}}-body"
+                  hx-trigger="click once"
+                  onclick="document.getElementById('token-cfg-{{.ID}}').showModal()">Config</button>
+        </td>
+        <td class="cell-action">
+          {{if .Paired}}<span class="field-hint">via pairing</span>{{else}}
+          <button class="btn-sm btn-danger"
+                  hx-delete="/settings/auth/tokens/{{.ID}}"
+                  hx-target="#flash-auth" hx-swap="innerHTML"
+                  hx-confirm="Revoke token {{.Name}}?"
+                  data-confirm-ok="Revoke"
+                  data-confirm-danger="Any integration using this token stops working immediately.">Revoke</button>{{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{range .Tokens}}
+  <dialog id="token-cfg-{{.ID}}">
+    <h4>{{.Name}} - privileges</h4>
+    <div id="token-cfg-{{.ID}}-body">Loading...</div>
+  </dialog>
+  {{end}}
+  {{else}}
+  <p class="field-hint">No tokens yet. The API is disabled until you create one.</p>
+  {{end}}
+</div>
+{{end}}

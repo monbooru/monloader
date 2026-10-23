@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -59,12 +59,20 @@ func main() {
 		return
 	}
 
-	// Registered first so it runs last: the new process must find the
-	// port, the queue store and the log file released.
+	exitCode := 0
+	defer func() {
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+	}()
+
+	// Runs after the defers below, so the new process finds the port and files released.
 	restartOnExit := false
 	defer func() {
 		if restartOnExit {
-			relaunch()
+			if err := desktop.Relaunch(); err != nil {
+				logx.Errorf("restart: %v", err)
+			}
 		}
 	}()
 
@@ -116,19 +124,24 @@ func main() {
 		fatalf("loading config: %v", err)
 	}
 	logx.Set(cfg.Log.Level)
-	if *desktopMode && !claimPort(cfg.Server.BindAddress, !*noBrowser) {
-		return
-	}
 	// Bound before the work root, the queue store or the ptr index is
 	// touched: a launch that loses the race must leave the winner's alone.
-	ln, err := net.Listen("tcp", cfg.Server.BindAddress)
-	if err != nil {
-		if *desktopMode && awaitWinner(cfg.Server.BindAddress, !*noBrowser) {
+	var ln net.Listener
+	if *desktopMode {
+		ln, err = desktop.Listen(appName, cfg.Server.BindAddress, bindWait)
+		if errors.Is(err, desktop.ErrRunning) {
+			if err := desktop.HandOver(appName, cfg.Server.BindAddress, !*noBrowser); err != nil {
+				logx.Warnf("%v", err)
+			}
 			return
 		}
-		if freshConfig && !*desktopMode {
-			log.Printf("monloader wrote %s with default settings meant for the docker image.", *configPath)
-			log.Printf("edit server.bind_address (and monbooru.api_url once monbooru runs), then run it again. docs: %s", internalweb.DocURL)
+		if err != nil {
+			fatalf("%v", err)
+		}
+	} else if ln, err = net.Listen("tcp", cfg.Server.BindAddress); err != nil {
+		if freshConfig && inContainer() {
+			logx.Warnf("monloader wrote %s with default settings meant for the docker image.", *configPath)
+			logx.Warnf("edit server.bind_address (and monbooru.api_url once monbooru runs), then run it again. docs: %s", internalweb.DocURL)
 		}
 		fatalf("HTTP server: %v", err)
 	}
@@ -201,9 +214,14 @@ func main() {
 		fatalf("creating web server: %v", err)
 	}
 
+	sweepCtx, stopSweeps := context.WithCancel(context.Background())
+	defer stopSweeps()
+	go srv.SweepSessions(sweepCtx)
+
 	httpSrv := &http.Server{
-		Addr:        cfg.Server.BindAddress,
-		Handler:     srv.Handler(),
+		Addr:    cfg.Server.BindAddress,
+		Handler: srv.Handler(),
+		// The whole request, unlike monbooru: no body here is larger than 8 MiB.
 		ReadTimeout: 30 * time.Second,
 		// No WriteTimeout: a ?wait=N enqueue or a push to monbooru runs
 		// for many seconds.
@@ -213,16 +231,21 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
+	srvErr := make(chan error, 1)
 	go func() {
 		logx.Infof("monloader listening on %s (work dir %s)", cfg.Server.BindAddress, workRoot)
 		if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			fatalf("HTTP server: %v", err)
+			srvErr <- err
 		}
 	}()
 
 	if *desktopMode {
 		if !*noBrowser {
-			go openWhenServing(cfg.Server.BindAddress)
+			go func() {
+				if err := desktop.OpenWhenServing(appName, cfg.Server.BindAddress, 30*time.Second); err != nil {
+					logx.Warnf("%v", err)
+				}
+			}()
 		}
 		if srv.TrayEnabled() {
 			trayCtx, stopTray := context.WithCancel(context.Background())
@@ -233,9 +256,14 @@ func main() {
 
 	select {
 	case <-quit:
+		logx.Infof("shutting down...")
 	case <-srv.QuitRequested():
+		logx.Infof("shutting down on request...")
+	case err := <-srvErr:
+		reportFatal("HTTP server: " + err.Error())
+		exitCode = 1
 	}
-	logx.Infof("shutting down...")
+	signal.Stop(quit)
 	// Before the drain: a ?wait parked on a queued job would hold it for
 	// the whole grace, and a container stop kills at about that much.
 	stopWatches()
@@ -264,19 +292,25 @@ func resolveWorkRoot(desktopMode bool) string {
 	// /work is a container convention; on a workstation it would be
 	// somebody else's directory. So is a fixed name under a shared /tmp,
 	// which another local user could pre-create and read or swap files in.
-	if desktopMode {
-		if dir, err := os.UserCacheDir(); err == nil {
-			return filepath.Join(dir, "monloader", "work")
+	if !desktopMode {
+		if fi, err := os.Stat(workMount); err == nil && fi.IsDir() {
+			if f, err := os.CreateTemp(workMount, ".probe"); err == nil {
+				name := f.Name()
+				f.Close()
+				os.Remove(name)
+				return workMount
+			}
 		}
-		return filepath.Join(os.TempDir(), "monloader-work")
+		// The image's /tmp is its own writable layer, shared with no one.
+		if inContainer() {
+			return filepath.Join(os.TempDir(), "monloader-work")
+		}
 	}
-	if fi, err := os.Stat(workMount); err == nil && fi.IsDir() {
-		if f, err := os.CreateTemp(workMount, ".probe"); err == nil {
-			name := f.Name()
-			f.Close()
-			os.Remove(name)
-			return workMount
-		}
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "monloader", "work")
+	}
+	if dir, err := os.MkdirTemp("", "monloader-work-"); err == nil {
+		return dir
 	}
 	return filepath.Join(os.TempDir(), "monloader-work")
 }

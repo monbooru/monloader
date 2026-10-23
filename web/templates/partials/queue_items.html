@@ -2,7 +2,7 @@
 <div class="item-row">
   <span class="item-subj" title="{{$d.Subject}}">{{if $d.SubjectURL}}<a href="{{$d.SubjectURL}}" target="_blank" rel="noopener">{{$d.Subject}}</a>{{else}}{{$d.Subject}}{{end}}</span>
   <span class="item-out">{{if $d.OutcomeTitle}}<span class="{{$d.OutcomeCls}}" title="{{$d.OutcomeTitle}}">{{$d.Outcome}}</span>{{else}}<span class="{{$d.OutcomeCls}}">{{$d.Outcome}}</span>{{end}}{{if $d.Note}} <span class="o-merge" title="{{$d.Note}}">({{$d.Note}})</span>{{end}}</span>
-  <span class="item-view">{{if $d.ViewURL}}<a href="{{$d.ViewURL}}" target="_blank" rel="noopener">view</a>{{end}}{{if $d.Warnings}} <span class="o-warn" title="{{join $d.Warnings ", "}}">{{len $d.Warnings}} tag warning{{if ne (len $d.Warnings) 1}}s{{end}}</span>{{end}}{{if $d.SubjectURL}} <button type="button" class="linklike item-debug" data-url="{{$d.DebugURL}}" title="re-run this post with gallery-dl debug logging">[?]</button>{{end}}</span>
+  <span class="item-view">{{if $d.ViewURL}}<a href="{{$d.ViewURL}}" target="_blank" rel="noopener">view</a>{{end}}{{if $d.Warnings}} <span class="o-warn" title="{{join $d.Warnings ", "}}">{{len $d.Warnings}} tag warning{{if ne (len $d.Warnings) 1}}s{{end}}</span> <span class="job-reason" title="{{index $d.Warnings 0}}">{{index $d.Warnings 0}}</span>{{end}}{{if $d.SubjectURL}} <button type="button" class="btn-link-accent item-debug" data-url="{{$d.DebugURL}}" title="Re-run this post with gallery-dl debug logging">[?]</button>{{end}}</span>
 </div>
 {{end}}{{end}}
 

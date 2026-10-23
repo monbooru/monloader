@@ -86,7 +86,7 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 		// monbooru already recorded these refusals on its fetch status
 		// with a richer message; a re-report would overwrite it.
 		switch errorCode(err) {
-		case outcome.ErrCodeAlreadyExists, outcome.ErrCodeWrongType, outcome.ErrCodeMonbooruRejected:
+		case outcome.ErrCodeAlreadyExists, outcome.ErrCodeWrongType:
 			failItem(job, 0, errorCode(err), err.Error())
 		default:
 			p.failEnrichFetch(ctx, job, snap, err)

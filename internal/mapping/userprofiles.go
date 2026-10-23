@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/shared/fsx"
 	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
@@ -189,7 +190,7 @@ func (m *Mapper) SaveUserProfile(category string, p Profile) error {
 	if err != nil {
 		return fmt.Errorf("encoding profile: %w", err)
 	}
-	if err := config.WriteFileBytesAtomic(filepath.Join(m.userDir, category+".json"), append(data, '\n')); err != nil {
+	if err := fsx.WriteFile(filepath.Join(m.userDir, category+".json"), append(data, '\n')); err != nil {
 		return err
 	}
 	m.reload()
