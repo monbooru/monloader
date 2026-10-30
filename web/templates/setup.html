@@ -2,19 +2,16 @@
 <!DOCTYPE html>
 <html lang="en" data-app="monloader">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{.TitleName}} setup</title>
-  <link rel="icon" type="image/png" href="/static/favicon.png">
-  <link rel="stylesheet" href="/static/shared/base.css">
-  <link rel="stylesheet" href="/static/main.css">
+{{template "webui/head" .}}
   <script src="/static/shared/htmx.min.js"></script>
   <script src="/static/shared/base.js" defer></script>
   <script src="/static/main.js" defer></script>
 </head>
 <body>
-<div id="setup-page">
-  <h1>{{.BooruName}} setup</h1>
+<div id="setup-page"{{if .Mascot}} class="setup-drawn"{{end}}>
+  {{with .Mascot}}<img src="{{.}}" alt="" class="mascot">{{end}}
+  <div>
+  <div class="setup-head"><h1>{{wordmark .BooruName}}</h1><span class="setup-tag">setup</span></div>
   {{if .Err}}<div class="flash flash-err">{{.Err}}</div>{{end}}
 
   <form method="POST" action="/setup">
@@ -60,6 +57,7 @@
 
     <div class="setup-actions"><button type="submit">Open {{.BooruName}}</button></div>
   </form>
+  </div>
 </div>
 </body>
 </html>

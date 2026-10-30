@@ -243,7 +243,6 @@ func Default() *Config {
 		Downloader: DownloaderConfig{
 			Concurrency:          1,
 			MaxItemsPerJob:       200,
-			DefaultFolder:        "downloads",
 			HistoryRetentionDays: 14,
 			SuccessRetentionDays: 3,
 		},

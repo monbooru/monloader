@@ -179,10 +179,13 @@ func (h *Handler) endpoints() []endpoint {
 		},
 		{
 			Method: "DELETE", Path: "/api/v1/queue/{id}",
-			Summary: "Cancel or remove a job", OperationID: "deleteJob",
+			Summary: "Cancel or remove a job's series", OperationID: "deleteJob",
+			Description: "Acts on the job's whole series, the search and its continuations, which share its root. " +
+				"While the job is queued or running, every window queued or running with it is canceled and the finished windows stay; " +
+				"once it has finished, every window of the series is removed.",
 			Params: []param{{Name: "id", In: "path", Required: true, Description: "Job id"}},
 			Responses: []response{
-				{Status: "204", Description: "Canceled (if running) or removed"},
+				{Status: "204", Description: "The series' live windows canceled, or the finished series removed"},
 				{Status: "404", Description: "Job not found", Ref: "Error"},
 			},
 			Handler: h.deleteJob,

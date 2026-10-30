@@ -23,6 +23,7 @@ type ContribSender interface {
 	HashHasRaw(hashHex, tag string) (bool, error)
 	SiblingCurrent(bad, good string) (bool, error)
 	ParentCurrent(child, parent string) (bool, error)
+	Status() ptr.Status
 }
 
 // Rows per POST, matching the hydrus client's upload cadence; a pair
@@ -89,7 +90,11 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 			failStore("job canceled")
 			return ctx.Err()
 		}
-		failAll(outcome.ErrCodePTRAccountRequired, "reading the account: "+err.Error())
+		code := outcome.ErrCodePTRAccountRequired
+		if ptr.IsRetryable(err) {
+			code = outcome.ErrCodePTRUnavailable
+		}
+		failAll(code, "reading the account: "+err.Error())
 		return nil
 	}
 	if acc.Banned {
@@ -110,7 +115,7 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 		return nil
 	}
 
-	survivors, droppedKnown, droppedFiltered, derr := p.reDiffContrib(sender, store, items, filter)
+	survivors, droppedKnown, droppedFiltered, derr := p.reDiffContrib(sender, store, items, filter, sender.Status().CoveredThrough)
 	if derr != nil {
 		failAll(outcome.ErrCodePTRUnavailable, "re-checking against the index: "+derr.Error())
 		return nil
@@ -130,9 +135,9 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 
 // The server's tag filter drops silently, so it is applied here where the
 // drop is counted.
-func (p *Processor) reDiffContrib(sender ContribSender, store *ptr.ContribStore, items []ptr.ContribItem, filter *ptr.TagFilter) (survivors []ptr.ContribItem, droppedKnown, droppedFiltered int, err error) {
+func (p *Processor) reDiffContrib(sender ContribSender, store *ptr.ContribStore, items []ptr.ContribItem, filter *ptr.TagFilter, covered int64) (survivors []ptr.ContribItem, droppedKnown, droppedFiltered int, err error) {
 	for _, it := range items {
-		resolved, derr := p.contribResolved(sender, it)
+		resolved, derr := p.contribResolved(sender, store, it, covered)
 		if derr != nil {
 			return nil, 0, 0, derr
 		}
@@ -252,14 +257,20 @@ func (up *contribUpload) failRemainder(i int, code, reason string) int {
 	return failed
 }
 
-func (p *Processor) contribResolved(sender ContribSender, it ptr.ContribItem) (bool, error) {
+func (p *Processor) contribResolved(sender ContribSender, store *ptr.ContribStore, it ptr.ContribItem, covered int64) (bool, error) {
 	hashHex := hex.EncodeToString(it.Hash)
 	switch it.Kind {
 	case ptr.ContribMappingAdd:
 		return sender.HashHasIdeal(hashHex, it.Tag)
 	case ptr.ContribMappingPetition:
 		has, err := sender.HashHasRaw(hashHex, it.Tag)
-		return !has, err
+		if err != nil || has {
+			return false, err
+		}
+		// An add committed since the index's coverage is live on the
+		// server already, so its rescind still has work to do.
+		live, err := store.MappingAddCommittedSince(it.Tag, it.Hash, covered)
+		return !live, err
 	case ptr.ContribSibling:
 		if cur, err := sender.SiblingCurrent(it.Tag, it.Tag2); err != nil || cur {
 			return cur, err
@@ -406,9 +417,9 @@ func (p *Processor) postContribChunk(ctx context.Context, sender ContribSender, 
 
 func contribSummary(sent map[string]int, droppedKnown, droppedFiltered, failed int) string {
 	line := fmt.Sprintf("committed %d tag adds, %d removal petitions, %d alias and %d implication suggestions",
-		sent[ptr.ContribMappingAdd], sent[ptr.ContribMappingPetition],
-		sent[ptr.ContribSibling]+sent[ptr.ContribSiblingPetition],
-		sent[ptr.ContribParent]+sent[ptr.ContribParentPetition])
+		sent[ptr.ContribMappingAdd],
+		sent[ptr.ContribMappingPetition]+sent[ptr.ContribSiblingPetition]+sent[ptr.ContribParentPetition],
+		sent[ptr.ContribSibling], sent[ptr.ContribParent])
 	if droppedKnown > 0 || droppedFiltered > 0 {
 		line += fmt.Sprintf("; dropped %d (already on the PTR), %d (server tag filter)", droppedKnown, droppedFiltered)
 	}

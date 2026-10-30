@@ -19,8 +19,12 @@ type Theme struct {
 	Path    string
 	Logo    string
 	Favicon string
+	// Mascots maps a face to its mascot-<face>.png.
+	Mascots map[string]string
 	Builtin bool
 }
+
+var Faces = []string{"hello", "lost", "sleep", "panic", "sparkle", "sparkle-head", "sleep-head"}
 
 type Note struct {
 	Warn bool
@@ -32,9 +36,6 @@ func ListThemes(builtins []Theme, dir string) ([]Theme, []Note) {
 	byName := map[string]Theme{}
 	for _, b := range builtins {
 		byName[b.Name] = b
-	}
-	if dir == "" {
-		return orderThemes(builtins, byName), nil
 	}
 	items, err := os.ReadDir(dir)
 	if err != nil {
@@ -61,6 +62,14 @@ func ListThemes(builtins []Theme, dir string) ([]Theme, []Note) {
 				return p
 			}
 			t.Logo, t.Favicon = optional("logo.png"), optional("favicon.png")
+			for _, face := range Faces {
+				if p := optional("mascot-" + face + ".png"); p != "" {
+					if t.Mascots == nil {
+						t.Mascots = map[string]string{}
+					}
+					t.Mascots[face] = p
+				}
+			}
 			byName[t.Name] = t
 			continue
 		}
@@ -108,7 +117,7 @@ func FindTheme(themes []Theme, name string) (t Theme, found bool) {
 }
 
 // SeedFile records the bytes each file was seeded with: a copy still holding
-// them is untouched, so a release may refresh it.
+// them is untouched, so a release may refresh it or drop one it stopped shipping.
 const SeedFile = ".seed"
 
 // A copy the operator deleted is not rebuilt: dir/name is created only while
@@ -123,17 +132,19 @@ func SeedTheme(src fs.FS, srcDir string, files []string, dir, name string) []Not
 			return nil
 		}
 		if err := os.MkdirAll(target, 0o755); err != nil {
-			return []Note{{Warn: true, Text: fmt.Sprintf("themes: could not create %s: %v", dir, err)}}
+			return []Note{{Warn: true, Text: fmt.Sprintf("themes: could not create %s: %v", target, err)}}
 		}
 	}
 	var notes []Note
 	seeded := readSeed(target)
 	changed := false
+	bundled := map[string]bool{}
 	for _, file := range files {
 		body, err := fs.ReadFile(src, srcDir+"/"+file)
 		if err != nil {
 			continue
 		}
+		bundled[file] = true
 		want := sha256Hex(body)
 		path := filepath.Join(target, file)
 		if cur, err := os.ReadFile(path); err == nil {
@@ -156,6 +167,25 @@ func SeedTheme(src fs.FS, srcDir string, files []string, dir, name string) []Not
 			continue
 		}
 		seeded[file], changed = want, true
+	}
+	for _, file := range slices.Sorted(maps.Keys(seeded)) {
+		if bundled[file] {
+			continue
+		}
+		path := filepath.Join(target, file)
+		cur, err := os.ReadFile(path)
+		if err == nil && sha256Hex(cur) != seeded[file] {
+			notes = append(notes, Note{Text: fmt.Sprintf("themes: %s was edited and is kept; the bundled theme no longer ships it", path)})
+			continue
+		}
+		if err == nil {
+			if err := os.Remove(path); err != nil {
+				notes = append(notes, Note{Warn: true, Text: fmt.Sprintf("themes: could not remove %s: %v", path, err)})
+				continue
+			}
+		}
+		delete(seeded, file)
+		changed = true
 	}
 	if changed {
 		var b strings.Builder

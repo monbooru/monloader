@@ -1,6 +1,7 @@
 package session
 
 import (
+	"maps"
 	"sync"
 	"time"
 )
@@ -52,9 +53,5 @@ func (b *Backoff) Sweep() {
 	cutoff := time.Now().Add(-5 * time.Minute)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for ip, a := range b.failures {
-		if a.lastFail.Before(cutoff) {
-			delete(b.failures, ip)
-		}
-	}
+	maps.DeleteFunc(b.failures, func(_ string, a attempt) bool { return a.lastFail.Before(cutoff) })
 }

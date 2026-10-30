@@ -2,14 +2,14 @@
 <div id="auth-tokens"{{if .OOB}} hx-swap-oob="true"{{end}}>
   {{if .Tokens}}
   <div class="table-scroll">
-  <table class="data-table">
+  <table class="data-table stack-table">
     <thead><tr><th>Name</th><th>Created</th><th>Scopes</th><th>Config</th><th class="cell-action">Revoke</th></tr></thead>
     <tbody>
       {{range .Tokens}}
       <tr>
-        <td><strong>{{.Name}}</strong>{{if .Paired}} <span class="status-badge status-ok">paired</span>{{end}}</td>
-        <td>{{.CreatedAt}}</td>
-        <td><span id="token-scopes-{{.ID}}">{{range $i, $s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</span></td>
+        <td class="stack-head"><strong>{{.Name}}</strong>{{if .Paired}} <span class="status-badge status-ok">paired</span>{{end}}</td>
+        <td data-label="Created">{{.CreatedAt}}</td>
+        <td data-label="Scopes"><span id="token-scopes-{{.ID}}">{{range $i, $s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</span></td>
         <td>
           <button type="button" class="btn-sm"
                   hx-get="/settings/auth/tokens/{{.ID}}/privileges"
@@ -33,7 +33,7 @@
   </div>
   {{range .Tokens}}
   <dialog id="token-cfg-{{.ID}}">
-    <h4>{{.Name}} - privileges</h4>
+    <h4 class="dlg-title">{{.Name}} - privileges{{template "webui/dialog_x"}}</h4>
     <div id="token-cfg-{{.ID}}-body">Loading...</div>
   </dialog>
   {{end}}

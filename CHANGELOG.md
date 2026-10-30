@@ -1,5 +1,27 @@
 # Changelog
 
+## [v1.13.3] - 2026-10-30
+### Added
+- Update theme and logo.
+- A waiting browser-extension pairing request shows in the header of every page.
+
+### Changed
+- Action messages show as a status line above the footer.
+- Dialogs have a title bar with an [x] close, a block shadow and a short opening animation.
+- Checkboxes, sliders and focus rings follow the theme's colors.
+- The monospace font ships with the app, so phones and Windows draw JetBrains Mono.
+- On a phone, Settings and PTR tables stack each row, and the add bar and footer are compact.
+- The queue colors enriched, matched and replaced counts as successes, as monsender does.
+
+### Fixed
+- A push with no folder of its own lands in monbooru's received-files folder, not a downloads folder.
+- A replace monbooru refuses displays monbooru's own error message.
+- Rescinding a PTR add not yet in the synced index sends its removal petition.
+- A PTR ban's reason now shows on the PTR page and in a refused send.
+- A send that cannot reach the PTR fails as `ptr_unavailable`, not as a missing account.
+- Contribution summaries count alias and implication petitions right, labeled `->` and `=>` as in monbooru.
+- A cleared watch check queued by hand no longer comes back after a restart.
+
 ## [v1.13.2] - 2026-10-23
 ### Added
 - Theme selector in settings from the themes folder, with a built-in light theme.

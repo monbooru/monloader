@@ -11,12 +11,13 @@
 
 {{define "topbar"}}
   <div id="topbar">
-    <a href="/" id="logo" data-chord="g g"><img src="{{.BooruLogo}}" alt="" class="topbar-logo"><span>{{.BooruName}}</span></a>
+    <a href="/" id="logo" data-chord="g g"><img src="{{.BooruLogo}}" alt="" class="topbar-logo"><span>{{wordmark .BooruName}}</span></a>
     <nav id="nav">
       <a data-chord="g q" href="/queue" class="nav-queue{{if eq .ActiveNav "queue"}} active{{end}}">Queue</a>
       <a data-chord="g w" href="/watches" class="nav-watches{{if eq .ActiveNav "watches"}} active{{end}}">Watched</a>
       <a data-chord="g p" href="/ptr" class="nav-ptr{{if eq .ActiveNav "ptr"}} active{{end}}">PTR</a>
       <a data-chord="g s" href="/settings" class="nav-settings{{if eq .ActiveNav "settings"}} active{{end}}">Settings</a>
+      {{template "webui/pair_notice" .PairNotice}}
     </nav>
     <div id="topbar-right">
       {{template "pause_toggle" .}}
@@ -34,14 +35,14 @@
 {{define "footer"}}
   <footer id="footer">
     <div id="footer-left"></div>
-    <div id="footer-right">{{template "webui/peer_light" .MonbooruLight}}{{if .MonbooruPaired}} &middot; {{end}}<a href="{{.RepoURL}}" target="_blank" rel="noopener">monloader{{if .Build}} ({{.Build}}){{end}}</a> {{.Version}}{{if .GalleryDLVersion}} &middot; <a href="https://github.com/mikf/gallery-dl" target="_blank" rel="noopener">gallery-dl</a> {{.GalleryDLVersion}}{{end}} &middot; <a href="#" id="footer-shortcuts" onclick="openShortcutSheet();return false">shortcuts</a> &middot; <a href="{{.DocURL}}" target="_blank" rel="noopener">help</a> &middot; <a href="/api/v1/docs" target="_blank" rel="noopener">API</a></div>
+    <div id="footer-right">{{template "webui/peer_light" .MonbooruLight}}{{if .MonbooruPaired}} &middot; {{end}}<span class="footer-wide"><a href="{{.RepoURL}}" target="_blank" rel="noopener">monloader{{if .Build}} ({{.Build}}){{end}}</a> {{.Version}}{{if .GalleryDLVersion}} &middot; <a href="https://github.com/mikf/gallery-dl" target="_blank" rel="noopener">gallery-dl</a> {{.GalleryDLVersion}}{{end}} &middot; <a href="#" id="footer-shortcuts" onclick="openShortcutSheet();return false">shortcuts</a> &middot; </span><a href="{{.DocURL}}" target="_blank" rel="noopener">help</a><span class="footer-wide"> &middot; <a href="/api/v1/docs" target="_blank" rel="noopener">API</a></span></div>
   </footer>
 {{end}}
 
 {{define "doc_foot"}}
 {{template "webui/confirm_dialog"}}
 <dialog id="shortcuts-help">
-  <h3>Keyboard Shortcuts</h3>
+  <h3 class="dlg-title">Keyboard Shortcuts{{template "webui/dialog_x"}}</h3>
   <div class="shortcuts-help-grid">
     <section data-surface="anywhere">
       <h4>Anywhere</h4>

@@ -14,6 +14,8 @@ func ContribItemLabel(kind, tag, tag2 string, hash []byte) string {
 			short = " @ " + hex.EncodeToString(hash[:4]) + ".."
 		}
 		return tag + short
+	case ContribSibling, ContribSiblingPetition:
+		return tag + " -> " + tag2
 	default:
 		return tag + " => " + tag2
 	}
@@ -30,9 +32,9 @@ func ContribQueueLabel(kind, tag, tag2 string) string {
 	case ContribSiblingPetition:
 		return "remove alias " + tag + " -> " + tag2
 	case ContribParent:
-		return "implies " + tag + " -> " + tag2
+		return "implies " + tag + " => " + tag2
 	case ContribParentPetition:
-		return "remove implies " + tag + " -> " + tag2
+		return "remove implies " + tag + " => " + tag2
 	}
 	return tag
 }

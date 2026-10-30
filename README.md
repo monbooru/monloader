@@ -1,10 +1,12 @@
 # monloader
 
-Download images from the web into [monbooru](https://github.com/monbooru/monbooru) and backfill tags for the files already in it.
+Download images from the web into [monbooru](https://github.com/monbooru/monbooru), and find tags for the files already in it.
 
-Paste a direct URL, an image or search from an online booru/gallery or [any site supported by gallery-dl](https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md) and monloader fetches the files and per-post metadata, maps it onto monbooru's data model, and pushes each file into a monbooru gallery over the REST API.
+Paste a URL from a booru, a gallery, [any site gallery-dl supports](https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md), or a direct image link: monloader fetches the files with their tags, rating and source, and pushes them into a monbooru gallery. For a file monbooru already holds, it looks up tags by md5 or image similarity (IQDB, SauceNAO) on the boorus, or in an optional local copy of the [Hydrus Public Tag Repository](https://hydrusnetwork.github.io/hydrus/PTR.html).
 
-It also runs in reverse: for a file monbooru already holds, monloader looks up its tags by md5 and by image similarity (iqdb, SauceNAO) across the boorus and/or from an optional local copy of the [Hydrus Public Tag Repository](https://hydrusnetwork.github.io/hydrus/PTR.html), and applies them to the image.
+monloader never touches your files directly: everything goes through monbooru's API, and it can add images and tags but never delete anything.
+
+**[Documentation](https://monbooru.github.io/mondocs/addons/monloader/index.html)** · **[Install](#install)** · **[Releases](https://github.com/monbooru/monloader/releases)** · **[Changelog](CHANGELOG.md)**
 
 <table>
   <tr>
@@ -13,26 +15,28 @@ It also runs in reverse: for a file monbooru already holds, monloader looks up i
   </tr>
 </table>
 
----
-
 ## Features
 
-- **Download images** A direct link to an image, or anything else a gallery-dl extractor matches : booru post, pool, tag search, artist page. 
-- **Pools and manga.** A booru pool's pages import as an ordered collection; a manga or comic gallery bundles into a single `.cbz` for monbooru's reader.
-- **Metadata mapped to monbooru.** Tags by category (artist / character / copyright / meta / ...), rating, and source, normalized across booru families so tags land the way monbooru expects them.
-- **Any gallery-dl site.** 50+ shipped profiles for the booru families and manga/comic sites, and everything else gallery-dl supports works through a generic fallback.
-- **Update gallery-dl.** When a site fix lands in a gallery-dl release, install it (or roll back) without waiting for a new monloader version.
-- **Queue management.** Each download shows whether it was added, was already in your library, got skipped, or failed so you can see at a glance what happened to every item. 
-- **Watch a search.** Save a tag search or an artist page and monloader checks it again on a schedule, downloading only the posts it has not fetched yet.
-- **Find tags by file hash or image similarity.** Paste an image's md5 to import the matching booru post, or have monbooru fetch tags for a file it already holds; monloader walks the sources you pick in order: exact md5 searches, plus iqdb and SauceNAO similarity lookups that find re-encoded copies from the image's thumbnail. An optional local copy of the Hydrus Public Tag Repository adds offline sha256 lookups.
-
----
+- **Download** a booru post, pool, tag search or artist page, or a direct image link
+- **Pools and manga**: a booru pool imports as an ordered collection; a manga or comic gallery becomes one `.cbz` for monbooru's reader
+- **Tags mapped to monbooru**: tags by category (artist, character, copyright, meta...), rating and source, normalized across booru families
+- **50+ site profiles** for boorus and manga/comic sites; every other gallery-dl site works through a generic fallback
+- **Update gallery-dl** from the app, or roll it back, when a site fix lands, without waiting for a monloader release
+- **Queue** that shows whether each item was added, already in your library, skipped, or failed
+- **Watched searches**: save a tag search or an artist page and monloader checks it on a schedule, fetching only new posts
+- **Reverse lookup**: exact md5 searches on the boorus, IQDB and SauceNAO similarity lookups for re-encoded copies, and offline sha256 lookups in an optional local copy of the Hydrus PTR (needs tens of GB of disk)
 
 ## Related applications
 
-monloader is a companion downloader for monbooru. It fetches images from the web and pushes them into your library :
+monloader is a companion downloader for monbooru. It fetches images from the web and pushes them into your library:
 
 ```mermaid
+---
+config:
+  layout: dagre
+  flowchart:
+    wrappingWidth: 200
+---
 flowchart LR
     web["`- Any booru or gallery supported by gallery-dl
 - Direct image URL`"]
@@ -64,41 +68,46 @@ contribute back`"| loader
     class web,ptr src;
 ```
 
-- **[monbooru](https://github.com/monbooru/monbooru)** : self-hosted booru; organizes, tags, and serves your collection.
-- **monloader** : this application; fetches files and per-post metadata (via gallery-dl) and pushes them into a monbooru gallery over the REST API; also answers monbooru's reverse lookups (boorus, IQDB/SauceNAO, Hydrus PTR) and source refetches.
-- **[monsender](https://github.com/monbooru/monsender)** : browser extension; sends the URL of the page you're currently browsing to monloader.
+- **[monbooru](https://github.com/monbooru/monbooru)**: self-hosted booru; organizes, tags, and serves your collection.
+- **monloader**: this application; fetches files and per-post metadata (via gallery-dl) and pushes them into a monbooru gallery over the REST API; also answers monbooru's reverse lookups (boorus, IQDB/SauceNAO, Hydrus PTR) and source refetches.
+- **[monsender](https://github.com/monbooru/monsender)**: browser extension; sends the URL of the page you're browsing to monloader.
 
----
+## Install
 
-## Quick start (Docker)
+monloader runs on Linux (x86_64, arm64) and Windows (x86_64), and needs a running monbooru. Once started, it's at `http://localhost:8456`.
 
-monloader ships in monbooru's `docker/docker-compose.yml` :
+### Docker
 
-1. Start it from monbooru's compose file:
-   ```bash
-   docker compose up -d monloader
-   ```
-2. Open monloader at `http://localhost:8456`, go to **Settings -> pairing**, and click **connect to monbooru** (the default api url in the monbooru section, `http://monbooru:8455`, works on the shared compose network).
-3. In monbooru, approve the pairing request under **Settings -> Plugins**. monloader stores the token monbooru issues; there are no keys to copy by hand.
-4. Back in monloader, pick a **default gallery** and **save**.
-5. Paste a URL into the command bar on the home screen and press Enter.
+monbooru's [`docker-compose.yml`](https://github.com/monbooru/monbooru/blob/main/docker/docker-compose.yml) already includes monloader:
 
-## Quick start (desktop)
+```bash
+docker compose up -d monloader
+```
 
-Download a build for your system from the [releases](https://github.com/monbooru/monloader/releases), unpack it, and run it. It opens a browser at `http://localhost:8456`.
+### Download
 
-On Linux the desktop bundled build also ships as an AppImage and as a Flatpak, each one file.
+Download a build for your system from the [releases](https://github.com/monbooru/monloader/releases), unpack it, and run it.
 
+- **lite** expects gallery-dl to be installed.
+- **bundled** brings its own gallery-dl.
 
-See the [monloader documentation](https://monbooru.github.io/mondocs/addons/monloader/index.html) for help.
+Beside the portable archives, Windows builds also ship as an installer, Linux bundled builds as an AppImage and as a Flatpak, and Arch has the `monloader` AUR package.
 
----
+### Pair it with monbooru
+
+1. In monloader's **Settings**, check the **API URL** under **monbooru**. The default, `http://monbooru:8455`, is right when both run from monbooru's compose file.
+2. Under **Pairing**, click **Connect to monbooru**, then approve the request in monbooru under **Settings → Plugins**.
+3. Back in monloader, pick the **Default gallery** and save.
+
+Then paste a URL into the add bar on the home page.
 
 ## Warning
 
 > **Intended for local network use.** monloader's UI is not designed to be exposed to the public internet.
 
----
+## License
+
+[AGPL-3.0](LICENSE).
 
 ## Acknowledgements
 

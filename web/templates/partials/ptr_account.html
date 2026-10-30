@@ -12,8 +12,8 @@
   {{if .Banned}}<p class="flash-err">This account is banned: {{.BanReason}}</p>{{end}}
   <table class="stats-table">
     <tbody>
-      <tr><th>Type</th><td>{{.Type.Title}}</td></tr>
-      <tr><th>Can</th><td>{{$.Permissions}}</td></tr>
+      <tr><th>Type</th><td class="stats-path">{{.Type.Title}}</td></tr>
+      <tr><th>Can</th><td class="stats-path">{{$.Permissions}}</td></tr>
       <tr><th>Created</th><td>{{humanDate .Created}}</td></tr>
       <tr><th>Janitor message</th><td class="stats-path">{{if .Message}}{{.Message}}{{else}}-{{end}}</td></tr>
     </tbody>

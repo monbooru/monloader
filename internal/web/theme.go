@@ -17,16 +17,44 @@ import (
 	webFS "github.com/monbooru/monloader/web"
 )
 
-const builtinLightDir = "plugins/themes/light"
+const (
+	builtinLightDir       = "plugins/themes/light"
+	builtinLegacyDarkDir  = "plugins/themes/legacy-dark"
+	builtinLegacyLightDir = "plugins/themes/legacy-light"
+)
 
 var builtinThemes = []webui.Theme{
 	{Name: "dark", Builtin: true},
+	{Name: "light", Builtin: true, Path: builtinLightDir + "/theme.css"},
 	{
-		Name: "light", Builtin: true,
-		Path:    builtinLightDir + "/theme.css",
-		Logo:    builtinLightDir + "/logo.png",
-		Favicon: builtinLightDir + "/favicon.png",
+		Name: "legacy-dark", Builtin: true,
+		Path:    builtinLegacyDarkDir + "/theme.css",
+		Logo:    builtinLegacyDarkDir + "/logo.png",
+		Favicon: builtinLegacyDarkDir + "/favicon.png",
 	},
+	{
+		Name: "legacy-light", Builtin: true,
+		Path:    builtinLegacyLightDir + "/theme.css",
+		Logo:    builtinLegacyLightDir + "/logo.png",
+		Favicon: builtinLegacyLightDir + "/favicon.png",
+	},
+}
+
+var builtinArt = map[string]string{"dark": "/static/", "light": "/static/light/"}
+
+var mascotFaces = []string{"lost", "sleep", "panic", "sparkle"}
+
+func themeMascots(t webui.Theme) map[string]string {
+	out := map[string]string{}
+	for _, face := range mascotFaces {
+		switch {
+		case t.Mascots[face] != "":
+			out[face] = "/theme.mascot/" + face
+		case builtinArt[t.Name] != "":
+			out[face] = builtinArt[t.Name] + "mascot-" + face + ".png"
+		}
+	}
+	return out
 }
 
 func (s *Server) themesDir() string {
@@ -41,7 +69,7 @@ func (s *Server) themesDir() string {
 }
 
 func (s *Server) seedThemesDir() {
-	logNotes(webui.SeedTheme(webFS.FS, builtinLightDir, []string{"theme.css", "logo.png", "favicon.png"}, s.themesDir(), "light"))
+	logNotes(webui.SeedTheme(webFS.FS, builtinLightDir, []string{"theme.css"}, s.themesDir(), "light"))
 }
 
 func logNotes(notes []webui.Note) {
@@ -127,6 +155,11 @@ func (s *Server) serveThemeFavicon(w http.ResponseWriter, r *http.Request) {
 	s.serveThemeFile(w, r, t, t.Favicon)
 }
 
+func (s *Server) serveThemeMascot(w http.ResponseWriter, r *http.Request) {
+	t := s.activeTheme()
+	s.serveThemeFile(w, r, t, t.Mascots[r.PathValue("face")])
+}
+
 // An archive gives every theme it unpacks one mtime, so the ETag names the theme.
 func (s *Server) serveThemeFile(w http.ResponseWriter, r *http.Request, t webui.Theme, path string) {
 	if path != "" && !t.Builtin {
@@ -142,13 +175,13 @@ func themeLogoURL(t webui.Theme) string {
 	if t.Logo != "" {
 		return "/theme.logo"
 	}
-	return "/static/logo.png"
+	return cmp.Or(builtinArt[t.Name], "/static/") + "logo.png"
 }
 
 // Versioned: Firefox does not revalidate a favicon, so a fixed URL keeps the first icon seen.
 func themeFaviconURL(t webui.Theme) string {
 	if t.Favicon == "" {
-		return "/static/favicon.png"
+		return cmp.Or(builtinArt[t.Name], "/static/") + "favicon.png"
 	}
 	v := url.QueryEscape(t.Name)
 	if t.Builtin {

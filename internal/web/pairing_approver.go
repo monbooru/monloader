@@ -12,6 +12,7 @@ import (
 	"github.com/monbooru/monloader/internal/shared/logx"
 	"github.com/monbooru/monloader/internal/shared/pairing"
 	"github.com/monbooru/monloader/internal/shared/session"
+	"github.com/monbooru/monloader/internal/shared/webui"
 )
 
 // Any origin is allowed, the extension's included: the operator's approval
@@ -132,17 +133,32 @@ func (s *Server) extPairData(r *http.Request) map[string]any {
 		// grant, not the ask.
 		pending[i].Scopes = grantedScopes(pending[i].Scopes)
 	}
+	n := s.pairNotice()
+	n.OOB = true
 	return map[string]any{
 		"Pending":   pending,
 		"Awaiting":  s.pairs.ListApproved(),
 		"Paired":    s.hasPairedToken("monsender"),
 		"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context())),
+		"Notice":    n,
+		"PairKey":   n.Key(),
 	}
+}
+
+func (s *Server) pairNotice() webui.PairNotice {
+	n := webui.PairNotice{Href: "/settings#pairing"}
+	for _, req := range s.pairs.ListPending() {
+		n.Items = append(n.Items, webui.PairItem{App: req.App, Source: req.Source, ExpiresAt: req.ExpiresAt()})
+	}
+	return n
 }
 
 func (s *Server) monsenderPairingFragment(w http.ResponseWriter, r *http.Request) {
 	data := s.extPairData(r)
 	paired, _ := data["Paired"].(bool)
+	if r.URL.Query().Get("pair") == data["PairKey"] {
+		delete(data, "Notice")
+	}
 	s.render(w, "monsender_pairing", data)
 	// The poll sends the paired state it last rendered; a flip refreshes
 	// the token list too.

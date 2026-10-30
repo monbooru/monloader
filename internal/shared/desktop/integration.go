@@ -97,14 +97,16 @@ func launchTarget() (string, []string) {
 	return exe, []string{"-desktop"}
 }
 
-// LaunchCommand is the Exec line a .desktop entry runs.
-func LaunchCommand() string {
+func launchLine(quote func(string) string) string {
 	exe, args := launchTarget()
 	if exe == "" {
 		return ""
 	}
-	return strings.Join(append([]string{execQuote(exe)}, args...), " ")
+	return strings.Join(append([]string{quote(exe)}, args...), " ")
 }
+
+// LaunchCommand is the Exec line a .desktop entry runs.
+func LaunchCommand() string { return launchLine(execQuote) }
 
 func execQuote(s string) string {
 	if strings.ContainsAny(s, " \t\n\"'\\$`<>~|&;*?#()") {

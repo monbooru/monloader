@@ -3,7 +3,7 @@ function getCSRFToken() {
   return meta ? meta.content : '';
 }
 
-// Nothing animates; htmx would smooth-scroll a boosted swap to the top.
+// A boosted swap jumps to the top; htmx would otherwise smooth-scroll there.
 if (window.htmx) window.htmx.config.scrollBehavior = 'auto';
 
 document.body.addEventListener('htmx:configRequest', function(e) {
@@ -68,6 +68,14 @@ function stashActionFlash(html, kind) {
 // Covers an action's own reload, not a later visit after an action that
 // never navigated.
 var stashStalenessMs = 10000;
+
+document.addEventListener('DOMContentLoaded', function() {
+  var footer = document.getElementById('footer');
+  if (!footer || !window.ResizeObserver) return;
+  new ResizeObserver(function() {
+    document.documentElement.style.setProperty('--footer-h', footer.offsetHeight + 'px');
+  }).observe(footer);
+});
 
 document.addEventListener('DOMContentLoaded', function() {
   if (!document.querySelector('[data-action-flash]')) return;
@@ -372,6 +380,18 @@ function copyToClipboardLegacy(text, done) {
 }
 
 document.addEventListener('click', function (e) {
+  if (e.target.closest('a, button')) return;
+  if (e.target.closest('[data-action-flash] .flash')) e.target.closest('[data-action-flash]').innerHTML = '';
+});
+
+document.addEventListener('click', function (e) {
+  var x = e.target.closest('.dlg-x');
+  if (!x) return;
+  var dlg = x.closest('dialog');
+  if (dlg && dlg.dispatchEvent(new Event('cancel', { cancelable: true }))) dlg.close();
+});
+
+document.addEventListener('click', function (e) {
   var btn = e.target.closest('[data-copy], [data-copy-from]');
   if (!btn) return;
   e.preventDefault();
@@ -431,6 +451,46 @@ function applyPeerGating(scope) {
   scope.querySelectorAll('[data-peer-title]').forEach(gate);
 }
 applyPeerGating(document);
+
+// The tab title carries the notice too: the operator is usually in the
+// peer's tab when its request lands.
+function syncPairTitle() {
+  const notice = document.getElementById('pair-notice');
+  const title = document.title.replace(/^\(!\) /, '');
+  document.title = notice && !notice.hidden ? '(!) ' + title : title;
+}
+syncPairTitle();
+
+// The nav's width moves with its counts, so no breakpoint can promise the
+// notice a place: one left alone on a row of its own, which would add a row
+// to the bar, shortens to [!] and then takes its room from the entries.
+function fitPairNotice() {
+  const notice = document.getElementById('pair-notice');
+  if (!notice || notice.parentElement.id !== 'nav') return;
+  const nav = notice.parentElement;
+  notice.classList.remove('pn-fit');
+  nav.classList.remove('pn-squeeze');
+  if (notice.hidden) return;
+  const alone = () => {
+    const top = notice.getBoundingClientRect().top;
+    return ![...nav.children].some((a) => a !== notice && Math.abs(a.getBoundingClientRect().top - top) < 2);
+  };
+  if (alone()) notice.classList.add('pn-fit');
+  if (alone()) nav.classList.add('pn-squeeze');
+}
+fitPairNotice();
+document.fonts.ready.then(fitPairNotice);
+let fitFrame = 0;
+window.addEventListener('resize', function() {
+  cancelAnimationFrame(fitFrame);
+  fitFrame = requestAnimationFrame(fitPairNotice);
+});
+document.body.addEventListener('htmx:oobAfterSwap', function(e) {
+  if (e.detail && e.detail.target && e.detail.target.id === 'pair-notice') {
+    syncPairTitle();
+    fitPairNotice();
+  }
+});
 
 // History restore swaps with neither target nor xhr.
 document.body.addEventListener('htmx:afterSwap', function(e) {

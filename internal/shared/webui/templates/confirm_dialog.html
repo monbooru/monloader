@@ -1,6 +1,6 @@
 {{define "webui/confirm_dialog"}}
   <dialog id="confirm-dialog">
-    <p id="confirm-dialog-msg"></p>
+    <p class="dlg-title"><span id="confirm-dialog-msg"></span>{{template "webui/dialog_x"}}</p>
     <p id="confirm-dialog-danger" class="confirm-dialog-danger"></p>
     <div class="dialog-actions">
       <button type="button" id="confirm-dialog-ok" class="btn-danger">OK</button>

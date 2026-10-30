@@ -37,15 +37,7 @@ func enableAutostart(h Hook) error {
 // CreateProcess parses this, where a backslash is special only before a
 // quote, so LaunchCommand's .desktop escaping would be wrong here.
 func runValue() string {
-	exe, args := launchTarget()
-	if exe == "" {
-		return ""
-	}
-	out := `"` + exe + `"`
-	for _, a := range args {
-		out += " " + a
-	}
-	return out
+	return launchLine(func(exe string) string { return `"` + exe + `"` })
 }
 
 func disableAutostart(app string) error {

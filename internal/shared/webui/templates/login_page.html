@@ -8,7 +8,7 @@
 <body>
   <div class="login-wrap">
     <div class="login-box">
-      <h1>{{.BooruName}}</h1>
+      <h1>{{wordmark .BooruName}}</h1>
       {{with .Error}}<div class="login-error">{{.}}</div>{{end}}
       {{if not .AuthDisabled}}
       <form method="POST" action="/login">

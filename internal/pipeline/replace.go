@@ -14,6 +14,7 @@ import (
 
 	"github.com/monbooru/monloader/internal/gdl"
 	"github.com/monbooru/monloader/internal/kwdict"
+	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/queue"
 )
@@ -83,12 +84,10 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 	meta := pushMetaFrom(pf, w.Path, p.itemURL(w.Meta, snap.URL, snap.PageURL), w.Meta)
 	pushRes, err := p.client.ReplaceImageFile(ctx, snap.ImageID, w.Path, meta, snap.Gallery)
 	if err != nil {
-		// monbooru already recorded these refusals on its fetch status
-		// with a richer message; a re-report would overwrite it.
-		switch errorCode(err) {
-		case outcome.ErrCodeAlreadyExists, outcome.ErrCodeWrongType:
+		// A re-report would overwrite monbooru's richer message.
+		if monbooru.RecordedByMonbooru(err) {
 			failItem(job, 0, errorCode(err), err.Error())
-		default:
+		} else {
 			p.failEnrichFetch(ctx, job, snap, err)
 		}
 		return nil

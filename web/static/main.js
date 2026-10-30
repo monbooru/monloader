@@ -1,6 +1,6 @@
 document.addEventListener("DOMContentLoaded", function () {
   var bar = document.getElementById("add-input");
-  if (bar) {
+  if (bar && !matchMedia("(pointer: coarse)").matches) {
     bar.focus();
   }
 });

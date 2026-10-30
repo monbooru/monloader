@@ -1,15 +1,15 @@
 {{define "site_search"}}
 <div class="table-scroll">
-<table class="grid-table sites-table search-table">
+<table class="grid-table sites-table search-table stack-table">
   {{if .Rows}}
   <thead><tr><th>Site</th><th>Name</th><th>Profile</th><th>Login</th><th>Action</th></tr></thead>
   <tbody>
   {{range .Rows}}
   <tr>
-    <td>{{.Category}}</td>
-    <td class="field-hint">{{.Name}}</td>
-    <td><span class="status-badge">{{.Family}}</span></td>
-    <td><span class="status-badge">{{.Login}}</span></td>
+    <td class="stack-head">{{.Category}}</td>
+    <td class="field-hint" data-label="Name">{{.Name}}</td>
+    <td data-label="Profile"><span class="status-badge">{{.Family}}</span></td>
+    <td data-label="Login"><span class="status-badge">{{.Login}}</span></td>
     <td>{{if .Configured}}<button type="button" disabled title="Already configured - use its row's edit button">Add</button>{{else}}<button type="button" class="edit-site" data-site="{{.Category}}" title="Set up this site - nothing is stored until you save">Add</button>{{end}}</td>
   </tr>
   {{end}}

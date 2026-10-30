@@ -1,7 +1,7 @@
 {{define "site_dialog"}}
 <form method="POST" action="/settings/sites/{{.Category}}">
   <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-  <p>Edit <strong>{{.Category}}</strong>{{if .Custom}} <span class="status-dim" title="A user profile file overrides the shipped mapping">(custom profile)</span>{{end}}</p>
+  <p class="dlg-title">Edit <strong>{{.Category}}</strong>{{if .Custom}} <span class="dlg-title-sub" title="A user profile file overrides the shipped mapping">(custom profile)</span>{{end}}{{template "webui/dialog_x"}}</p>
   <div class="dialog-tabs">
     <button type="button" class="dialog-tab active" data-panel="sd-monbooru">monbooru</button>
     <button type="button" class="dialog-tab" data-panel="sd-auth-panel">auth</button>

@@ -1,0 +1,1 @@
+{{define "webui/pair_notice"}}<a id="pair-notice" class="pair-notice" href="{{.Href}}"{{if .OOB}} hx-swap-oob="true"{{end}}{{with .Text}} title="{{$.Title}}" aria-label="{{.}}"><span class="pn-long">[! {{.}}]</span><span class="pn-short">[! pair]</span><span class="pn-tiny">[!]</span>{{else}} hidden>{{end}}</a>{{end}}

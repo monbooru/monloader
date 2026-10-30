@@ -5,7 +5,7 @@
     <nav class="settings-nav">
       {{if .DesktopProfile}}<a href="#desktop">Desktop</a>{{end}}
       <a href="#monbooru">monbooru</a>
-      <a href="#pairing">Pairing</a>
+      <a href="#pairing">Pairing<span id="settings-pair-count" class="nav-count">{{with len .PairNotice.Items}} ({{.}}){{end}}</span></a>
       <a href="#auth">Auth</a>
       <a href="#downloads">Downloads</a>
       <a href="#lookup">Lookup</a>
@@ -112,7 +112,7 @@
       <div class="settings-sub">
         <h4>monsender extension</h4>
         <p class="field-hint">Let the browser extension send URLs to monloader.</p>
-        {{template "monsender_pairing" (dict "Pending" .MonsenderPending "Awaiting" .MonsenderAwaiting "Paired" .MonsenderPaired "CSRFToken" .CSRFToken)}}
+        {{template "monsender_pairing" (dict "Pending" .MonsenderPending "Awaiting" .MonsenderAwaiting "Paired" .MonsenderPaired "CSRFToken" .CSRFToken "PairKey" .PairNotice.Key)}}
       </div>
     </div>
   </section>
@@ -152,7 +152,8 @@
           "Hint" (printf "Cap on posts per search; a pool or a manga gallery is fetched whole (default %v)" .Defaults.Downloader.MaxItemsPerJob))}}
         {{template "field" (dict "ID" "dl-folder" "Label" "Default folder" "Name" "default_folder"
           "Value" (or (index .Draft "default_folder") .Cfg.Downloader.DefaultFolder)
-          "Hint" (printf "monbooru subfolder for pushes (default %v)" .Defaults.Downloader.DefaultFolder))}}
+          "Placeholder" "(monbooru's default)"
+          "Hint" "monbooru subfolder for pushes; blank = monbooru's \"Where received files go\"")}}
         {{template "field" (dict "ID" "dl-success-retention" "Label" "Clear succeeded after (days)" "Name" "success_retention_days"
           "Value" (or (index .Draft "success_retention_days") .Cfg.Downloader.SuccessRetentionDays)
           "Hint" (printf "Drop downloads with nothing left to do; 0 = off (default %v)" .Defaults.Downloader.SuccessRetentionDays))}}
@@ -175,16 +176,16 @@
     {{if eq .FlashSection "lookup"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
     {{if .LookupPanel.Chain}}
     <div class="table-scroll">
-    <table class="grid-table sites-table chain-table">
+    <table class="grid-table sites-table chain-table stack-table">
       <thead><tr><th>#</th><th>Source</th><th>Kind</th><th>Credentials</th><th>State</th><th>Action</th></tr></thead>
       <tbody>
       {{range .LookupPanel.Chain}}
       <tr>
-        <td>{{if .Position}}{{.Position}}{{else}}-{{end}}</td>
-        <td>{{.Name}}</td>
-        <td><span class="status-badge">{{if .Similarity}}similarity{{else}}exact md5{{end}}</span></td>
-        <td{{if .Note}} title="{{.Note}}"{{end}}>{{if .Note}}<span class="status-dim">{{.Note}}</span>{{else}}-{{end}}</td>
-        <td class="site-state" id="lk-state-{{.Name}}" title="{{.State}}">{{if .Warn}}<span class="flash-warn">{{.State}}</span>{{else}}<span class="flash-ok">{{.State}}</span>{{end}}</td>
+        <td class="stack-head">{{if .Position}}{{.Position}}{{else}}-{{end}}</td>
+        <td class="stack-head">{{.Name}}</td>
+        <td data-label="Kind"><span class="status-badge">{{if .Similarity}}similarity{{else}}exact md5{{end}}</span></td>
+        <td data-label="Credentials"{{if .Note}} title="{{.Note}}"{{end}}>{{if .Note}}<span class="status-dim">{{.Note}}</span>{{else}}-{{end}}</td>
+        <td class="site-state" id="lk-state-{{.Name}}" title="{{.State}}" data-label="State">{{if .Warn}}<span class="flash-warn">{{.State}}</span>{{else}}<span class="flash-ok">{{.State}}</span>{{end}}</td>
         <td class="site-actions"><span class="actions">
           {{if .Position}}<button type="button" hx-post="/settings/lookup/test/{{.Name}}" hx-target="previous .site-state" hx-swap="innerHTML"
                   hx-on::before-request="this.closest('tr').querySelector('.site-state').innerHTML='<span class=&quot;hint&quot;>testing...</span>'"
@@ -222,7 +223,7 @@
     <dialog id="chain-dialog">
       <form method="POST" action="/settings/lookup/chain" id="chain-form">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <p>Edit the <strong>lookup chain</strong> order</p>
+        <p class="dlg-title">Edit the <strong>lookup chain</strong> order{{template "webui/dialog_x"}}</p>
         <p class="field-hint">Drag a source between the columns, or use its buttons; the queried column is asked top to bottom.</p>
         <div class="chain-cols">
           <div class="chain-col">
@@ -250,7 +251,7 @@
     <dialog id="saucenao-dialog">
       <form method="POST" action="/settings/lookup">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <p>Edit the <strong>saucenao</strong> API key</p>
+        <p class="dlg-title">Edit the <strong>saucenao</strong> API key{{template "webui/dialog_x"}}</p>
         <div class="field"><label for="saucenao-key">API key</label>
           <input id="saucenao-key" type="password" name="api_key" autocomplete="off" placeholder="{{if .LookupPanel.SaucenaoKeySet}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
         <p class="field-hint">From saucenao.com account settings; the service is skipped until one is set. Queries upload the image's thumbnail to saucenao.com.</p>

@@ -171,6 +171,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /theme.css", s.serveThemeCSS)
 	mux.HandleFunc("GET /theme.logo", s.serveThemeLogo)
 	mux.HandleFunc("GET /theme.favicon", s.serveThemeFavicon)
+	mux.HandleFunc("GET /theme.mascot/{face}", s.serveThemeMascot)
 	mux.HandleFunc("POST /settings/theme", s.settingsThemePost)
 	// Browsers request /favicon.ico whatever the page links.
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
@@ -303,17 +304,18 @@ func (s *Server) hostMiddleware(next http.Handler) http.Handler {
 
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
-		"humanSince":  humanSince,
-		"humanDue":    humanDue,
-		"humanAgo":    humanAgo,
-		"humanDate":   humanDate,
-		"stampLocal":  stampLocal,
-		"join":        strings.Join,
-		"itemCap":     func() int { return maxQueueItems },
-		"moreSummary": moreSummary,
-		"itemView":    itemView,
-		"clientMeta":  clientMeta,
-		"docPage":     docPage,
+		"humanSince":   humanSince,
+		"humanDue":     humanDue,
+		"humanAgo":     humanAgo,
+		"humanDate":    humanDate,
+		"stampLocal":   stampLocal,
+		"join":         strings.Join,
+		"itemCap":      func() int { return maxQueueItems },
+		"moreSummary":  moreSummary,
+		"itemView":     itemView,
+		"clientMeta":   clientMeta,
+		"jobKindLabel": jobKindLabel,
+		"docPage":      docPage,
 	}
 }
 
@@ -322,6 +324,16 @@ const (
 	connChecking = "checking"
 	connUnpaired = "unpaired"
 )
+
+func landingFace(conn string) string {
+	switch conn {
+	case webui.ConnOK, connChecking:
+		return "sparkle"
+	case webui.ConnUnconfigured, connUnpaired, webui.ConnPaused:
+		return "sleep"
+	}
+	return "panic"
+}
 
 // Empty while the first probe is pending, so a page does not flash disabled.
 func monbooruOffReason(conn string) string {
@@ -451,11 +463,14 @@ func (s *Server) base(r *http.Request, nav, title string) map[string]any {
 		"BooruName":          s.booruName(),
 		"BooruLogo":          themeLogoURL(theme),
 		"BooruFavicon":       themeFaviconURL(theme),
+		"Mascot":             themeMascots(theme),
+		"LandingFace":        landingFace(conn),
 		"MonbooruLight":      s.monbooruLight(conn, connVer),
 		"Paused":             s.queue.Paused(),
 		"MonbooruPaired":     s.hasPairedToken(contract.AppMonbooru),
 		"MonbooruConfigured": s.monbooruConfigured(),
 		"MonbooruWebURL":     s.monbooruWebBase(),
+		"PairNotice":         s.pairNotice(),
 	}
 }
 

@@ -19,9 +19,14 @@ import (
 const monbooruProbeTimeout = 800 * time.Millisecond
 
 type setupData struct {
-	BooruName    string
-	TitleName    string
-	CSRFToken    string
+	BooruName string
+	TitleName string
+	CSRFToken string
+	// The rest of what webui/head reads.
+	Title        string
+	BooruFavicon string
+	Theme        bool
+	Mascot       string
 	Err          string
 	APIURL       string
 	Found        bool
@@ -74,7 +79,7 @@ func setupExempt(path string) bool {
 	case "/health", "/setup", "/login", "/logout", "/api/v1/openapi.json", "/api/v1/docs", "/theme.css", "/theme.logo", "/theme.favicon":
 		return true
 	}
-	return strings.HasPrefix(path, "/static/")
+	return strings.HasPrefix(path, "/static/") || strings.HasPrefix(path, "/theme.mascot/")
 }
 
 func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +114,15 @@ func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, d setupData
 			d.FoundVersion = inst.Version
 		}
 	}
+	theme := s.activeTheme()
+	d.Title = d.TitleName + " setup"
+	d.BooruFavicon = themeFaviconURL(theme)
+	d.Theme = theme.Path != ""
+	face := "sleep"
+	if d.Found {
+		face = "sparkle"
+	}
+	d.Mascot = themeMascots(theme)[face]
 	s.render(w, "setup", d)
 }
 

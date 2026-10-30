@@ -114,7 +114,12 @@ const (
 	MaxPTRSearchLimit = 50
 )
 
-const SearchContains = "contains"
+// A contains search whose name has no category: prefix to bound it is
+// refused with CodeNamespaceRequired.
+const (
+	SearchContains        = "contains"
+	CodeNamespaceRequired = "namespace_required"
+)
 
 const (
 	ContribMappingAdd      = "mapping_add"

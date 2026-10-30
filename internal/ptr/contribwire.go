@@ -424,13 +424,32 @@ func parseAccountResponse(body []byte) (*Account, error) {
 		case "banned_info":
 			if info, ok := val.([]any); ok && len(info) >= 1 {
 				acc.Banned = true
-				acc.BanReason, _ = info[0].(string)
+				acc.BanReason = banReason(info)
 			}
 		case "message":
 			acc.Message, _ = val.(string)
 		}
 	}
 	return acc, nil
+}
+
+// banned_info is a serialisable list of [reason, created, expires], each
+// item meta-wrapped.
+func banReason(info []any) string {
+	payload, err := envelopePayload(info, typeList)
+	if err != nil {
+		return ""
+	}
+	items, _ := payload.([]any)
+	if len(items) == 0 {
+		return ""
+	}
+	reason, err := metaValue(items[0])
+	if err != nil {
+		return ""
+	}
+	s, _ := reason.(string)
+	return s
 }
 
 // TagFilter is applied before a send because the server drops blocked

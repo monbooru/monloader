@@ -12,7 +12,7 @@ const (
 	errInvalidRequest = contract.CodeInvalidRequest
 	errNotFound       = "not_found"
 	errConflict       = "conflict"
-	errNamespaceReq   = "namespace_required"
+	errNamespaceReq   = contract.CodeNamespaceRequired
 
 	errMonbooruUnconfigured = "monbooru_unconfigured"
 	errMonbooruPaused       = "monbooru_paused"

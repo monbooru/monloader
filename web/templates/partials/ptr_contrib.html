@@ -23,14 +23,14 @@
   {{if .Unsent}}
   <p>{{len .Unsent}} unsent{{if .HasFailed}} (last send failed){{end}}
     {{if not .NotReady}}<button hx-post="/ptr/contrib/retry" hx-target="#ptr-contrib" hx-swap="innerHTML">Retry</button>{{end}}</p>
-  <table class="stats-table contrib-table">
+  <table class="stats-table contrib-table stack-table">
     <tbody>
       {{range .Unsent}}
       <tr>
-        <td>{{.Kind}}</td>
-        <td class="queue-url">{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Label}}</a>{{else}}{{.Label}}{{end}}</td>
-        <td>{{.Origin}}</td>
-        <td>{{if .Error}}<span class="o-failed" title="{{.Error}}">failed</span>{{end}}</td>
+        <td class="stack-head">{{.Kind}}</td>
+        <td class="queue-url" data-label="Item">{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Label}}</a>{{else}}{{.Label}}{{end}}</td>
+        <td data-label="Origin">{{.Origin}}</td>
+        <td data-label="Status">{{if .Error}}<span class="o-failed" title="{{.Error}}">failed</span>{{end}}</td>
         <td><button hx-post="/ptr/contrib/{{.ID}}/rescind" hx-target="#ptr-contrib" hx-swap="innerHTML"
                     title="Rescind: delete before anything is sent">x</button></td>
       </tr>
@@ -39,15 +39,15 @@
   </table>
   {{end}}
   {{if .History}}
-  <table class="stats-table contrib-table">
+  <table class="stats-table contrib-table stack-table">
     <thead><tr><th>Sent</th><th>Kind</th><th>Item</th><th>Outcome</th><th></th></tr></thead>
     <tbody>
       {{range .History}}
       <tr>
-        <td class="ptr-sent">{{.Sent}}</td>
-        <td>{{.Kind}}</td>
-        <td class="queue-url">{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Label}}</a>{{else}}{{.Label}}{{end}}</td>
-        <td>{{.Outcome}}</td>
+        <td class="ptr-sent stack-head">{{.Sent}}</td>
+        <td data-label="Kind">{{.Kind}}</td>
+        <td class="queue-url" data-label="Item">{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Label}}</a>{{else}}{{.Label}}{{end}}</td>
+        <td data-label="Outcome">{{.Outcome}}</td>
         <td>{{if .Rescindable}}<button hx-post="/ptr/contrib/log/{{.ID}}/rescind" hx-target="#ptr-contrib" hx-swap="innerHTML"
                 hx-confirm="Petition this tag add back off the PTR?"
                 title="Asks the janitors to remove it; it does not undo">Rescind (petition)</button>{{end}}</td>

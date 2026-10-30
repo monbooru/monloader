@@ -1,5 +1,5 @@
 {{define "watch_rows"}}
-{{if not .Watches}}<tr><td colspan="7" class="no-results">No watches - paste a search URL above, or use Watch on a queue row.</td></tr>{{end}}
+{{if not .Watches}}<tr><td colspan="7" class="no-results"><div class="mascot-empty">{{with .Mascot.lost}}<img src="{{.}}" alt="" class="mascot">{{end}}<div>No watches - paste a search URL above, or use Watch on a queue row.</div></div></td></tr>{{end}}
 {{$intervals := .Intervals}}
 {{range .Watches}}
 <tr>

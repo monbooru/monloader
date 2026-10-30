@@ -80,13 +80,13 @@ func (s *Store) CheckCSRF(r *http.Request, id string) bool {
 	// Header first: on multipart, FormValue drains up to 32 MiB past any
 	// handler's MaxBytesReader.
 	token := r.Header.Get("X-CSRF-Token")
-	if token == "" && !isMultipart(r) {
+	if token == "" && !IsMultipart(r) {
 		token = r.FormValue("_csrf")
 	}
 	return s.ValidCSRF(id, token) || BrowserSameOrigin(r)
 }
 
-func isMultipart(r *http.Request) bool {
+func IsMultipart(r *http.Request) bool {
 	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	return err == nil && strings.HasPrefix(mt, "multipart/")
 }

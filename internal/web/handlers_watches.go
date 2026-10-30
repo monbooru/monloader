@@ -47,6 +47,7 @@ func (s *Server) watchRows(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) fillWatches(data map[string]any) {
+	data["Mascot"] = themeMascots(s.activeTheme())
 	held := s.monbooruBlocked() != ""
 	watches := s.queue.Watches()
 	rows := make([]watchRow, len(watches))

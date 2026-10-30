@@ -1,0 +1,10 @@
+*
+!go.mod
+!go.sum
+!cmd
+!internal
+!web
+!packaging/release-env.sh
+!VERSION.md
+!REPOSITORY.md
+!DOC.md

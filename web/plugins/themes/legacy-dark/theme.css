@@ -1,0 +1,63 @@
+/* legacy dark theme */
+
+:root {
+  color-scheme: dark;
+
+  --bg:         #0e0e0e;
+  --bg-surface: #1a1818;
+  --bg-input:   #080808;
+  --border:     #2a2828;
+
+  --fg:         #e8e4e2;
+  --fg-dim:     #a09898;
+
+  --accent:     #9d2235;
+  --link:       #ef8f99;
+  --danger:     var(--accent);
+  --on-danger:  var(--fg);
+  --on-accent:  var(--fg);
+  --peer:       var(--monloader);
+
+  --success:    #7fc99a;
+  --warning:    #e8c06a;
+  --error:      #ef8f99;
+
+  --monloader:  #9fa8da;
+  --tagger:     #7cc4b8;
+  --plugin:     #aa66cc;
+
+  --fav:        #e0524d;
+  --remove:     #b5666f;
+  --alternate:  #9b93e0;
+
+  --scrim:      #000;
+  --backdrop:   color-mix(in srgb, var(--scrim) 70%, transparent);
+  --shadow-block: color-mix(in srgb, var(--accent) 55%, #000);
+  --media-bg:   #000;
+
+  --font-mono:  "JetBrains Mono", "Fira Mono", "Courier New", monospace;
+
+  --wordmark-font:     bold 16px var(--font-mono);
+  --wordmark-case:     uppercase;
+  --wordmark-tracking: 2px;
+  --wordmark-accent:   currentColor;
+}
+
+:root[data-app="monloader"] {
+  --bg:         #0d0d0d;
+  --bg-surface: #16161c;
+  --bg-input:   #111118;
+  --border:     #2a2a36;
+  --fg:         #e2e2e8;
+  --fg-dim:     #8888a0;
+  --accent:     #5c6bc0;
+  --link:       #9fa8da;
+  --monbooru:   #ef8f99;
+  --peer:       var(--monbooru);
+  --danger:     #9d2235;
+  --heat-0:     #1b1b25;
+  --heat-1:     #4a5595;
+  --heat-2:     var(--accent);
+  --heat-3:     #7583d8;
+  --heat-4:     #93a0ef;
+}

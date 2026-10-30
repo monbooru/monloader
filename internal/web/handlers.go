@@ -410,6 +410,7 @@ func (s *Server) fillItems(g *jobGroup) {
 }
 
 func (s *Server) fillQueue(r *http.Request, data map[string]any) {
+	data["Mascot"] = themeMascots(s.activeTheme())
 	jobs, _ := s.queue.List(queue.ListOptions{OmitItems: true})
 	groups := groupJobs(jobs)
 	page, totalPages := pageWindow(r, len(groups))
@@ -541,6 +542,12 @@ func (s *Server) renderPauseToggle(w http.ResponseWriter, r *http.Request) {
 func (s *Server) monbooruStatus(w http.ResponseWriter, r *http.Request) {
 	status, version := s.monbooruStatusCached(r.Context())
 	s.renderConnLight(w, status, version)
+	// The light is the one poll every screen runs, so it carries the nav
+	// notice too, swapped only when the pending set moved.
+	if n := s.pairNotice(); r.FormValue("seen") != n.Key() {
+		n.OOB = true
+		s.render(w, "webui/pair_notice", n)
+	}
 }
 
 func (s *Server) monbooruPause(w http.ResponseWriter, r *http.Request) {
@@ -581,6 +588,7 @@ func (s *Server) monbooruLight(conn, version string) webui.PeerLight {
 		StatusURL: "/internal/monbooru-status",
 		PauseURL:  "/internal/monbooru/pause", ResumeURL: "/internal/monbooru/resume",
 		CheckNow: conn == connChecking, Paired: s.hasPairedToken(contract.AppMonbooru),
+		Seen: s.pairNotice().Key(),
 	}
 }
 

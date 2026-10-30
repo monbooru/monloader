@@ -160,7 +160,7 @@ func (q *Queue) CheckWatch(id int64, background bool) (int64, error) {
 	}
 	j := q.enqueueLocked(w.URL, Options{Watch: id, Background: background}.WithItems(w.MaxItems))
 	q.mu.Unlock()
-	q.persist(j)
+	q.persistKept(j)
 	return j.ID, nil
 }
 

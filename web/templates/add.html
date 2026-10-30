@@ -3,8 +3,8 @@
 {{template "monbooru_banner" .}}
 {{template "queue_paused" .}}
 <main id="landing">
-  <img src="{{.BooruLogo}}" alt="" class="landing-logo">
-  <h1>{{.BooruName}}</h1>
+  {{with index .Mascot .LandingFace}}<img src="{{.}}" alt="" class="mascot">{{else}}<img src="{{.BooruLogo}}" alt="" class="landing-logo">{{end}}
+  <h1>{{wordmark .BooruName}}</h1>
   <form id="add-form" class="add-form" hx-post="/" hx-target="#add-flash" hx-swap="innerHTML">
     <div class="add-row">
       <div class="search-input-wrap">
@@ -25,6 +25,7 @@
     <a href="/settings">[settings]</a>
     {{if .MonbooruWebURL}}<a href="{{.MonbooruWebURL}}">[go to monbooru]</a>{{end}}
   </div>
+  {{template "webui/pair_notice" .PairNotice}}
 </main>
 {{template "footer" .}}
 {{template "doc_foot" .}}{{end}}

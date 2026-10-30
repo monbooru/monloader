@@ -1,4 +1,4 @@
-/* a simple light theme example */
+/* the shipped light theme */
 
 :root {
   color-scheme: light;
@@ -11,10 +11,11 @@
   --fg:         #1a1916;
   --fg-dim:     #58524b;
 
-  --accent:     #cb4567;
-  --link:       #2f59ba;
+  --accent:     #b12937;
+  --link:       #9d2235;
   --danger:     #b12937;
   --on-danger:  var(--bg);
+  --on-accent:  var(--bg);
 
   --success:    #1d6b40;
   --warning:    #84540b;
@@ -29,6 +30,8 @@
   --alternate:  #5c4dbb;
 
   --scrim:      #cfcbc2;
+  --backdrop:   color-mix(in srgb, var(--fg) 45%, transparent);
+  --shadow-block: color-mix(in srgb, var(--fg) 30%, transparent);
   --media-bg:   #e0ddd6;
 
   --nav-images:      #b12937;

@@ -41,6 +41,9 @@ type Request struct {
 
 func (r *Request) request() *Request { return r }
 
+// ExpiresAt is when a request still pending is swept.
+func (r Request) ExpiresAt() time.Time { return r.CreatedAt.Add(pendingTTL) }
+
 type requestPtr[T any] interface {
 	*T
 	request() *Request

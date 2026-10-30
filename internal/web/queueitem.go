@@ -93,6 +93,31 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 	return d
 }
 
+// A metadata job is monbooru's refresh and a replace its upgrade, so the
+// badge uses monbooru's words.
+func jobKindLabel(j *queue.Job) string {
+	switch j.Kind {
+	case "":
+		return "download"
+	case queue.KindLookup:
+		if j.Backend == queue.BackendAll {
+			return "lookup"
+		}
+		return "lookup:" + j.Backend
+	case queue.KindHashImport:
+		return "import"
+	case queue.KindContrib:
+		return "contrib:ptr"
+	case queue.KindPTRLookup:
+		return "lookup:ptr"
+	case queue.KindReplace:
+		return "upgrade"
+	case queue.KindMetadata:
+		return "refresh"
+	}
+	return string(j.Kind)
+}
+
 func clientMeta(j *queue.Job) string {
 	var parts []string
 	if len(j.Tags) > 0 {

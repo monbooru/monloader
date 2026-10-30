@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -158,15 +159,24 @@ func (c *Client) PushImageFile(ctx context.Context, path string, meta PushMeta, 
 	return c.streamUpload(ctx, path, c.imagesEndpoint(gallery), meta, c.sendPush)
 }
 
+// The replace answer names no hash, so the stored one is read back.
 func (c *Client) ReplaceImageFile(ctx context.Context, imageID int64, path string, meta PushMeta, gallery string) (*Result, error) {
-	return c.streamUpload(ctx, path, c.imageEndpoint(imageID, "file", gallery), meta,
+	res, err := c.streamUpload(ctx, path, c.imageEndpoint(imageID, "file", gallery), meta,
 		func(ctx context.Context, endpoint, contentType string, body io.Reader) (*Result, error) {
 			return c.sendReplace(ctx, endpoint, contentType, body, imageID)
 		})
+	if err != nil {
+		return res, err
+	}
+	if sha, shaErr := c.ImageSHA256(ctx, imageID, gallery); shaErr == nil && sha != "" {
+		res.SHA256 = sha
+	}
+	return res, nil
 }
 
-// The hash comes from the same read as the upload, so the permalink
-// describes the pushed bytes, and the pipe keeps the file out of memory.
+// The pipe keeps the file out of memory. The local hash is only a fallback
+// for an answer that names none: monbooru stores a JPEG it rescued under
+// another hash than the bytes sent.
 func (c *Client) streamUpload(ctx context.Context, path, endpoint string, meta PushMeta,
 	send func(ctx context.Context, endpoint, contentType string, body io.Reader) (*Result, error)) (*Result, error) {
 	// Opened here, not in the goroutine: a failure there would reach the
@@ -192,12 +202,25 @@ func (c *Client) streamUpload(ctx context.Context, path, endpoint string, meta P
 	}
 	// A success means monbooru read the whole body, so the hash has seen
 	// every byte.
-	res.SHA256 = hex.EncodeToString(h.Sum(nil))
+	if res.SHA256 == "" {
+		res.SHA256 = hex.EncodeToString(h.Sum(nil))
+	}
 	return res, nil
 }
 
-// A 409's refusal passes through as-is: monbooru has already recorded it
-// on its fetch status.
+// recordedError is a refusal monbooru already wrote to the image's fetch
+// status, with a richer message than a re-report would carry.
+type recordedError struct{ *outcome.CodedError }
+
+func (e recordedError) Unwrap() error { return e.CodedError }
+
+func RecordedByMonbooru(err error) bool {
+	var r recordedError
+	return errors.As(err, &r)
+}
+
+// monbooru records every replace refusal it answers with 409, 413 or 415;
+// its other errors leave the fetch status to the caller.
 func (c *Client) sendReplace(ctx context.Context, endpoint, contentType string, body io.Reader, imageID int64) (*Result, error) {
 	resp, respBody, err := c.postMultipart(ctx, endpoint, contentType, body)
 	if err != nil {
@@ -212,9 +235,11 @@ func (c *Client) sendReplace(ctx context.Context, endpoint, contentType string, 
 		if code != outcome.ErrCodeAlreadyExists && code != outcome.ErrCodeWrongType {
 			code = outcome.ErrCodeMonbooruRejected
 		}
-		return nil, &outcome.CodedError{Code: code, Msg: msg}
+		return nil, recordedError{&outcome.CodedError{Code: code, Msg: msg}}
 	case http.StatusRequestEntityTooLarge:
-		return nil, &outcome.CodedError{Code: outcome.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}
+		return nil, recordedError{&outcome.CodedError{Code: outcome.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}}
+	case http.StatusUnsupportedMediaType:
+		return nil, recordedError{&outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(respBody, resp.Status)}}
 	default:
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(respBody, resp.Status)}
 	}
@@ -368,11 +393,11 @@ func (c *Client) sendPush(ctx context.Context, endpoint, contentType string, bod
 	}
 	switch resp.StatusCode {
 	case http.StatusCreated:
-		id, warnings, _ := parseImageResult(respBody)
-		return &Result{Outcome: outcome.Created, MonbooruID: id, TagWarnings: warnings}, nil
+		id, sha, warnings, _ := parseImageResult(respBody)
+		return &Result{Outcome: outcome.Created, MonbooruID: id, SHA256: sha, TagWarnings: warnings}, nil
 	case http.StatusOK:
-		id, warnings, merge := parseImageResult(respBody)
-		return &Result{Outcome: outcome.Duplicate, MonbooruID: id, TagWarnings: warnings, MergeNote: merge}, nil
+		id, sha, warnings, merge := parseImageResult(respBody)
+		return &Result{Outcome: outcome.Duplicate, MonbooruID: id, SHA256: sha, TagWarnings: warnings, MergeNote: merge}, nil
 	case http.StatusRequestEntityTooLarge:
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}
 	default:
@@ -483,10 +508,10 @@ func writeMetaFields(w *multipart.Writer, meta PushMeta) error {
 }
 
 // The body is a bare image object or an envelope keyed by "image".
-func parseImageResult(data []byte) (id int64, warnings []string, merge string) {
+func parseImageResult(data []byte) (id int64, sha string, warnings []string, merge string) {
 	var env map[string]json.RawMessage
 	if err := json.Unmarshal(data, &env); err != nil {
-		return 0, nil, ""
+		return 0, "", nil, ""
 	}
 	imgRaw, enveloped := env["image"]
 	if enveloped {
@@ -498,10 +523,11 @@ func parseImageResult(data []byte) (id int64, warnings []string, merge string) {
 		imgRaw = data
 	}
 	var img struct {
-		ID int64 `json:"id"`
+		ID     int64  `json:"id"`
+		SHA256 string `json:"sha256"`
 	}
 	_ = json.Unmarshal(imgRaw, &img)
-	return img.ID, warnings, merge
+	return img.ID, img.SHA256, warnings, merge
 }
 
 // tags_removed is what an older monbooru sends for tags it deleted outright.

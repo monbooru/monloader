@@ -1,0 +1,71 @@
+/* legacy light theme */
+
+:root {
+  color-scheme: light;
+
+  --bg:         #f7f5f0;
+  --bg-surface: #eae8e2;
+  --bg-input:   #fefdfa;
+  --border:     #b4afa7;
+
+  --fg:         #1a1916;
+  --fg-dim:     #58524b;
+
+  --accent:     #cb4567;
+  --link:       #2f59ba;
+  --danger:     #b12937;
+  --on-danger:  var(--bg);
+  --on-accent:  var(--bg);
+
+  --wordmark-font:     bold 16px var(--font-mono);
+  --wordmark-case:     uppercase;
+  --wordmark-tracking: 2px;
+  --wordmark-accent:   currentColor;
+
+  --success:    #1d6b40;
+  --warning:    #84540b;
+  --error:      #b12937;
+
+  --monloader:  #1e6393;
+  --tagger:     #136a64;
+  --plugin:     #813cb5;
+
+  --fav:        #ad2959;
+  --remove:     #8e4953;
+  --alternate:  #5c4dbb;
+
+  --scrim:      #cfcbc2;
+  --backdrop:   color-mix(in srgb, var(--fg) 45%, transparent);
+  --shadow-block: color-mix(in srgb, var(--fg) 30%, transparent);
+  --media-bg:   #e0ddd6;
+
+  --nav-images:      #b12937;
+  --nav-inbox:       #8f4c1b;
+  --nav-categories:  #755a0d;
+  --nav-tags:        #226c3a;
+  --nav-collections: #136a64;
+  --nav-relations:   #1e6393;
+  --nav-settings:    #813cb5;
+
+  --cat-3d90e3: #2b5ea4;
+  --cat-00aa00: #226c3a;
+  --cat-cc0000: #b12937;
+  --cat-aa00aa: #883aac;
+  --cat-ffaa00: #7a580e;
+  --cat-996666: #82505b;
+  --cat-7d4fbf: #6945c4;
+  --cat-b85c9e: #983a7d;
+  --cat-4a8fa8: #2b657b;
+  --cat-ed5d1f: #944923;
+}
+
+:root[data-app="monloader"] {
+  --accent:     #3f51b5;
+  --link:       #303f9f;
+  --monbooru:   #a3243b;
+  --heat-0:     #e4e2dc;
+  --heat-1:     #c5cae9;
+  --heat-2:     #7986cb;
+  --heat-3:     #3f51b5;
+  --heat-4:     #283593;
+}
