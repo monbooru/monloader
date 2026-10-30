@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.13.4] - 2026-10-30
+### Fixed
+- Fix the Windows build CI.
+
 ## [v1.13.3] - 2026-10-30
 ### Added
 - Update theme and logo.

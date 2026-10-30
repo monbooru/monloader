@@ -17,7 +17,7 @@ cp -r "$staged" "$payload"
 mkdir -p dist
 
 image=amake/innosetup:latest@sha256:e003376ba818547275fe10c95e2a29be0f2d12d45e9eb8f205b6672dc5685bb1
-cid=$(docker create -w /work "$image" "/DMyAppVersion=${VERSION#v}" "/DMyAppTools=$shape" "packaging/windows/$APP.iss")
+cid=$(docker create --security-opt seccomp=unconfined -w /work "$image" "/DMyAppVersion=${VERSION#v}" "/DMyAppTools=$shape" "packaging/windows/$APP.iss")
 stage=$(mktemp -d)
 trap 'docker rm -f "$cid" >/dev/null 2>&1 || true; rm -rf "$stage"' EXIT
 
