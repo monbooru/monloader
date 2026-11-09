@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/kwdict"
 )
 
 // A booru family decides its rating semantics (the `s` overload) and its
@@ -55,7 +57,7 @@ type Profile struct {
 	Example   string `json:"example,omitempty"`
 	// File CDNs and mirror instances beyond the post-URL host. They label
 	// a bare file link as this site, and a registrable domain covers its
-	// subdomains for clients that suffix-match.
+	// subdomains.
 	Hosts             []string          `json:"hosts,omitempty"`
 	CategoryOverrides map[string]string `json:"category_overrides,omitempty"`
 	RatingOverrides   map[string]string `json:"rating_overrides,omitempty"`
@@ -166,15 +168,33 @@ func (m *Mapper) PostURLFor(category, id string) string {
 	if !ok || p.PostURL == "" || id == "" {
 		return ""
 	}
-	return strings.ReplaceAll(p.PostURL, "{id}", id)
+	return fillTemplate(p.PostURL, map[string]any{"id": id})
+}
+
+var templateKeywordRE = regexp.MustCompile(`\{[^{}]+\}`)
+
+// A missing keyword yields "": a half-filled URL links nowhere, and every
+// caller has something better to fall back on. {id} takes the id's fallbacks.
+func fillTemplate(template string, meta map[string]any) string {
+	missing := false
+	filled := templateKeywordRE.ReplaceAllStringFunc(template, func(placeholder string) string {
+		keyword := placeholder[1 : len(placeholder)-1]
+		value := kwdict.Path(meta, keyword)
+		if keyword == "id" {
+			value = kwdict.ID(meta)
+		}
+		missing = missing || value == ""
+		return url.PathEscape(value)
+	})
+	if missing {
+		return ""
+	}
+	return filled
 }
 
 func hostIndex(profiles map[string]Profile) map[string]string {
 	idx := map[string]string{}
 	for category, p := range profiles {
-		if p.PostURL == "" {
-			continue
-		}
 		if u, err := url.Parse(p.PostURL); err == nil && u.Host != "" {
 			idx[normalizeHost(u.Host)] = category
 		}
@@ -216,7 +236,8 @@ func (m *Mapper) CanonicalPostURL(rawURL string) (site, canonical string, ok boo
 	if id == "" || !allDigits(id) {
 		return "", "", false
 	}
-	return category, m.PostURLFor(category, id), true
+	canonical = m.PostURLFor(category, id)
+	return category, canonical, canonical != ""
 }
 
 var postPathMarkers = map[string]bool{"posts": true, "post": true, "show": true, "view": true}
@@ -291,7 +312,7 @@ func needsNotesFamily(family string) bool {
 func (m *Mapper) curatedWhere(pred func(Profile) bool) []string {
 	var out []string
 	for category, p := range m.view().profiles {
-		if pred(p) {
+		if category != config.SitePTR && pred(p) {
 			out = append(out, category)
 		}
 	}
@@ -311,6 +332,46 @@ func (m *Mapper) FlatTagSites() []string {
 // and notes; e621 only for notes, one extra request per noted post.
 func (m *Mapper) MetadataSites() []string {
 	return m.curatedWhere(func(p Profile) bool { return p.Family == FamilyDanbooru || p.Family == FamilyE621 })
+}
+
+func (m *Mapper) UserAgentSites() map[string][]string {
+	out := map[string][]string{}
+	for category, p := range m.view().profiles {
+		if p.Family == FamilyDanbooru {
+			out[category] = profileHosts(p)
+		}
+	}
+	return out
+}
+
+// DefaultAgent names what gallery-dl sends a site with no user agent set. Only
+// the booru families are known; other categories can pick their own.
+func DefaultAgent(p Profile) string {
+	switch p.Family {
+	case FamilyDanbooru:
+		return "+gallery-dl"
+	case FamilyE621:
+		return "gallery-dl (by mikf)"
+	case FamilyGeneric:
+		return "gallery-dl's default"
+	}
+	return "+firefox"
+}
+
+func (m *Mapper) SiteHosts() map[string][]string {
+	out := map[string][]string{}
+	for category, p := range m.view().profiles {
+		out[category] = profileHosts(p)
+	}
+	return out
+}
+
+func profileHosts(p Profile) []string {
+	hosts := slices.Clone(p.Hosts)
+	if u, err := url.Parse(p.PostURL); err == nil && u.Host != "" {
+		hosts = append(hosts, u.Host)
+	}
+	return hosts
 }
 
 // The gelbooru and moebooru families parse notes from the page their

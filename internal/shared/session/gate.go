@@ -13,7 +13,6 @@ const Anon = "anon"
 
 type ctxKey struct{}
 
-// FromContext is the session Gate put on the request.
 func FromContext(ctx context.Context) string {
 	v, _ := ctx.Value(ctxKey{}).(string)
 	return v

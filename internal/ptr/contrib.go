@@ -144,12 +144,11 @@ func (e *Engine) Contrib() *ContribStore {
 var errIndexUnavailable = errors.New("the ptr index is not available")
 
 func (e *Engine) indexStore() (*Store, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.store == nil {
+	store := e.currentStore()
+	if store == nil {
 		return nil, errIndexUnavailable
 	}
-	return e.store, nil
+	return store, nil
 }
 
 func onIndex[T any](e *Engine, fn func(*Store) (T, error)) (T, error) {
@@ -195,12 +194,6 @@ func (e *Engine) ParentCurrent(child, parent string) (bool, error) {
 
 func (e *Engine) ParentEdgeCovered(child, parent string) (bool, error) {
 	return onIndex(e, func(s *Store) (bool, error) { return s.ParentEdgeCovered(child, parent) })
-}
-
-func (e *Engine) Syncing() bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.state == StateSyncing
 }
 
 func (e *Engine) Provisional() bool {
@@ -257,11 +250,11 @@ func (e *Engine) RefreshAccount(ctx context.Context) (*Account, error) {
 	return e.fetchAccount(ctx, true)
 }
 
-// A denial is invisible in the protocol, so rows are only ever stamped
-// approved or removed.
+// A denial is invisible in the protocol, so a petition or suggestion is only
+// ever stamped approved or removed.
 func (e *Engine) trackContribOutcomes() {
 	e.mu.Lock()
-	store, contrib := e.store, e.contrib
+	store, contrib, covered := e.store, e.contrib, e.covered
 	e.mu.Unlock()
 	if store == nil || contrib == nil {
 		return
@@ -272,30 +265,52 @@ func (e *Engine) trackContribOutcomes() {
 		return
 	}
 	for _, row := range rows {
-		var outcome string
+		var cur bool
 		switch row.Kind {
-		case ContribSibling:
-			if cur, err := store.SiblingCurrent(row.Tag, row.Tag2); err == nil && cur {
-				outcome = OutcomeApproved
-			}
-		case ContribParent:
-			if cur, err := store.ParentCurrent(row.Tag, row.Tag2); err == nil && cur {
-				outcome = OutcomeApproved
-			}
+		case ContribSibling, ContribSiblingPetition:
+			cur, err = store.SiblingCurrent(row.Tag, row.Tag2)
+		case ContribParent, ContribParentPetition:
+			cur, err = store.ParentCurrent(row.Tag, row.Tag2)
 		case ContribMappingPetition:
-			if cur, err := store.HashHasRaw(hex.EncodeToString(row.Hash), row.Tag); err == nil && !cur {
-				outcome = OutcomeRemoved
+			cur, err = store.HashHasRaw(hex.EncodeToString(row.Hash), row.Tag)
+			if err == nil && !cur {
+				// An add committed past coverage is live on the server, whatever the index says.
+				cur, err = contrib.MappingAddCommittedSince(row.Tag, row.Hash, covered)
 			}
-		case ContribSiblingPetition:
-			if cur, err := store.SiblingCurrent(row.Tag, row.Tag2); err == nil && !cur {
-				outcome = OutcomeRemoved
-			}
-		case ContribParentPetition:
-			if cur, err := store.ParentCurrent(row.Tag, row.Tag2); err == nil && !cur {
-				outcome = OutcomeRemoved
-			}
+		default:
+			continue
 		}
-		if outcome == "" {
+		suggestion := row.Kind == ContribSibling || row.Kind == ContribParent
+		if err != nil || cur != suggestion {
+			continue
+		}
+		outcome := OutcomeRemoved
+		if suggestion {
+			outcome = OutcomeApproved
+		}
+		if err := contrib.SetOutcome(row.ID, outcome); err != nil {
+			logx.Warnf("ptr: stamping outcome on ledger row %d: %v", row.ID, err)
+		}
+	}
+	settleCoveredAdds(store, contrib, covered)
+}
+
+func settleCoveredAdds(store *Store, contrib *ContribStore, covered int64) {
+	rows, err := contrib.CoveredAddRows(covered)
+	if err != nil {
+		logx.Warnf("ptr: reading covered mapping adds: %v", err)
+		return
+	}
+	for _, row := range rows {
+		has, err := store.HashHasRaw(hex.EncodeToString(row.Hash), row.Tag)
+		if err != nil {
+			continue
+		}
+		outcome := OutcomeNotTaken
+		if has {
+			outcome = OutcomeApplied
+		}
+		if outcome == row.Outcome {
 			continue
 		}
 		if err := contrib.SetOutcome(row.ID, outcome); err != nil {

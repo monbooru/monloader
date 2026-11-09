@@ -102,10 +102,7 @@ func InstallDir() string {
 }
 
 func Sandboxed() bool {
-	if os.Getenv("FLATPAK_ID") != "" {
-		return true
-	}
-	return IsFile("/.flatpak-info")
+	return os.Getenv("FLATPAK_ID") != "" || IsFile("/.flatpak-info")
 }
 
 func PicturesDir() string {

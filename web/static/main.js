@@ -24,6 +24,15 @@ function restoreItemsPick() {
   });
 }
 document.addEventListener("DOMContentLoaded", restoreItemsPick);
+
+// The full prompt is cut off at this width, where the field takes a line of its own.
+document.addEventListener("DOMContentLoaded", function () {
+  if (matchMedia("(max-width: 600px)").matches) {
+    document.querySelectorAll("input[data-short-placeholder]").forEach(function (input) {
+      input.placeholder = input.dataset.shortPlaceholder;
+    });
+  }
+});
 document.addEventListener("reset", function () { setTimeout(restoreItemsPick, 0); }, true);
 document.addEventListener("change", function (e) {
   if (e.target.matches(".add-row select[name=items]")) {
@@ -45,6 +54,9 @@ function loadClosedJobs() {
 }
 var closedJobs = loadClosedJobs();
 var expandedMore = new Set();
+function expandedMoreRoots() {
+  return Array.from(expandedMore).join(",");
+}
 function applyJobStates() {
   closedJobs.forEach(function (id) {
     var d = document.querySelector('#queue-rows details[data-job="' + id + '"]');
@@ -78,6 +90,12 @@ document.addEventListener("toggle", function (e) {
     if (owner) {
       if (d.open) {
         expandedMore.add(owner.dataset.job);
+        // A live row's poll sends these items only once this is open.
+        var rows = document.getElementById("queue-rows");
+        var body = d.querySelector(".job-items");
+        if (rows && body && !body.children.length) {
+          htmx.trigger(rows, "more-opened");
+        }
       } else {
         expandedMore.delete(owner.dataset.job);
       }
@@ -86,10 +104,35 @@ document.addEventListener("toggle", function (e) {
 }, true);
 document.addEventListener("DOMContentLoaded", applyJobStates);
 document.body.addEventListener("htmx:afterSwap", function (e) {
-  if (e.target && e.target.id === "queue-rows") {
+  if (e.target && (e.target.id === "queue-rows" || e.target.classList.contains("job-items"))) {
     applyJobStates();
   }
 });
+
+// A swap collapses a text selection, and a row's controls have no id for htmx
+// to give focus back to. :focus-visible, so a mouse click on a row does not
+// freeze its own progress.
+function pollHeld(sel) {
+  if (confirmOpen()) {
+    return true;
+  }
+  var box = document.querySelector(sel);
+  if (!box) {
+    return false;
+  }
+  var picked = window.getSelection();
+  if (picked && !picked.isCollapsed && box.contains(picked.anchorNode)) {
+    return true;
+  }
+  return box.querySelector(":focus-visible") !== null;
+}
+
+var bannerSteps = {
+  unconfigured: ["/settings#monbooru", "Set its address in Settings"],
+  unpaired: ["/settings#pairing", "Pair it in Settings"],
+  rejected: ["/settings#pairing", "Pair again in Settings"],
+  down: ["/settings#monbooru", "Check the address in Settings"],
+};
 
 function applyMonbooruBanner() {
   var light = document.getElementById("peer-light");
@@ -108,6 +151,10 @@ function applyMonbooruBanner() {
   var fix = document.getElementById("monbooru-banner-fix");
   if (fix) {
     fix.hidden = light.dataset.conn === "paused";
+    var step = bannerSteps[light.dataset.conn] || bannerSteps.down;
+    var link = fix.querySelector("a");
+    link.href = step[0];
+    link.textContent = step[1];
   }
 }
 document.addEventListener("DOMContentLoaded", applyMonbooruBanner);
@@ -130,6 +177,20 @@ function applyPauseState() {
 document.addEventListener("DOMContentLoaded", applyPauseState);
 document.body.addEventListener("htmx:afterSwap", applyPauseState);
 
+// htmx swaps no error status, so a refused action would say nothing. A poll
+// fails on every tick of an outage, and base.js has the session's refusals.
+document.body.addEventListener("htmx:responseError", function (e) {
+  var xhr = e.detail.xhr;
+  var trigger = e.detail.elt && e.detail.elt.getAttribute && e.detail.elt.getAttribute("hx-trigger");
+  if (!xhr || xhr.status === 401 || xhr.status === 403 || (trigger && trigger.indexOf("every") !== -1)) {
+    return;
+  }
+  var el = showPageNotice(xhr.responseText.trim() || "The server refused that (" + xhr.status + ").");
+  if (el) {
+    el.dataset.session = "1";
+  }
+});
+
 // Bound once on the body: htmx swaps the targets in and out.
 function onClick(selector, fn) {
   document.body.addEventListener("click", function (e) {
@@ -141,9 +202,7 @@ function onClick(selector, fn) {
 }
 
 onClick(".edit-site", function (btn) {
-  htmx.ajax("GET", "/settings/sites/" + encodeURIComponent(btn.dataset.site) + "/dialog", "#site-dialog-body").then(function () {
-    document.getElementById("site-edit-dialog").showModal();
-  });
+  htmx.ajax("GET", "/settings/sites/" + encodeURIComponent(btn.dataset.site) + "/dialog", "#site-dialog-body");
 });
 
 // A refused save renders the dialog with the page; reopen it on what was typed.
@@ -152,7 +211,48 @@ document.addEventListener("DOMContentLoaded", function () {
   if (body && body.firstElementChild) {
     document.getElementById("site-edit-dialog").showModal();
     applyAuthFields(document.getElementById("sd-auth").value);
+    var tab = body.querySelector('.dialog-tab[data-panel="' + body.firstElementChild.dataset.refusedTab + '"]');
+    if (tab) {
+      tab.click();
+    }
   }
+});
+
+// ?site=X&tab=mapping&q=tag opens X's dialog on that panel, scrolled to the
+// tag rules, with the rule naming q focused or a new row filled for it.
+document.addEventListener("DOMContentLoaded", function () {
+  var params = new URLSearchParams(location.search);
+  var site = params.get("site");
+  if (location.pathname !== "/settings" || !site) {
+    return;
+  }
+  var tab = params.get("tab");
+  var q = params.get("q");
+  document.body.addEventListener("htmx:afterSwap", function onSwap(e) {
+    if (e.target.id !== "site-dialog-body") {
+      return;
+    }
+    document.body.removeEventListener("htmx:afterSwap", onSwap);
+    var btn = tab && e.target.querySelector('.dialog-tab[data-panel="sd-' + tab + '"]');
+    if (btn) {
+      btn.click();
+    }
+    var rules = tab === "mapping" && q && document.getElementById("sd-rules");
+    if (!rules) {
+      return;
+    }
+    var from = Array.prototype.find.call(rules.querySelectorAll('input[name="rule_from"]'), function (i) {
+      return i.value === q;
+    });
+    if (!from) {
+      rules.appendChild(rules.querySelector("template").content.cloneNode(true));
+      from = rules.lastElementChild.querySelector('input[name="rule_from"]');
+      from.value = q;
+    }
+    rules.scrollIntoView({ block: "center" });
+    from.closest(".maprow").querySelector('input[name="rule_to"]').focus();
+  });
+  htmx.ajax("GET", "/settings/sites/" + encodeURIComponent(site) + "/dialog", "#site-dialog-body");
 });
 
 // A refusal re-renders without a #section anchor, leaving its flash below
@@ -169,19 +269,18 @@ document.addEventListener("DOMContentLoaded", function () {
 
 
 onClick(".item-debug", function (btn) {
-  htmx.ajax("GET", "/internal/item-debug?url=" + encodeURIComponent(btn.dataset.url), "#debug-log-body").then(function () {
-    document.getElementById("item-debug-dialog").showModal();
-  });
+  htmx.ajax("GET", "/internal/item-debug?url=" + encodeURIComponent(btn.dataset.url), "#debug-log-body");
 });
 
 function applyAuthFields(kind) {
+  var family = document.getElementById("sd-family").value;
   var show = {
     "auth-none": kind === "none",
     "auth-oauth": kind === "oauth",
     "auth-username": kind === "api_optional" || kind === "username_password",
     "auth-password": kind === "username_password",
     "auth-apikey": kind === "api_optional" || kind === "api_required",
-    "auth-userid": kind === "api_required",
+    "auth-userid": kind === "api_required" || family === "danbooru",
     "auth-cookies": kind === "cookies",
   };
   Object.keys(show).forEach(function (cls) {
@@ -191,16 +290,27 @@ function applyAuthFields(kind) {
   });
 }
 document.body.addEventListener("change", function (e) {
-  if (e.target.id === "sd-auth") {
-    applyAuthFields(e.target.value);
+  if (e.target.id === "sd-auth" || e.target.id === "sd-family") {
+    applyAuthFields(document.getElementById("sd-auth").value);
   }
 });
+// htmx.ajax resolves on a failed fetch too, so a dialog opens only once its body
+// swapped, or a failure would show the last site's form under a Save for it.
+function openOnSwap(target) {
+  var dialog = target.closest("dialog");
+  if (dialog && !dialog.open) {
+    dialog.showModal();
+  }
+}
 document.body.addEventListener("htmx:afterSwap", function (e) {
   if (e.target.id === "site-dialog-body") {
+    openOnSwap(e.target);
     var auth = document.getElementById("sd-auth");
     if (auth) {
       applyAuthFields(auth.value);
     }
+  } else if (e.target.id === "debug-log-body") {
+    openOnSwap(e.target);
   }
 });
 

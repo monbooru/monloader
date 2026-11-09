@@ -22,8 +22,8 @@ const (
 	StateDisabled State = "disabled"
 	StateSyncing  State = "syncing"
 	StateReady    State = contract.PTRReady
-	StatePaused   State = "paused"
-	StateError    State = "error"
+	StatePaused   State = contract.PTRPaused
+	StateError    State = contract.PTRError
 )
 
 const gib = 1 << 30
@@ -98,6 +98,11 @@ type Engine struct {
 	accountAt     time.Time
 	contrib       *ContribStore
 	tagFilter     *TagFilter
+	// The entry being applied, kept across a retry since a blob is
+	// content-addressed: one timeout must not refetch the rest from a donated
+	// server. Only the sync goroutine touches these.
+	fetched      map[string][]byte
+	fetchedEntry uint64
 }
 
 func NewEngine(cfg config.PTRConfig) *Engine {
@@ -112,33 +117,42 @@ func NewEngine(cfg config.PTRConfig) *Engine {
 	}
 }
 
+// Start opens the index off the boot path: WAL recovery after a kill can outlast
+// the healthcheck that would restart the app. lifecycleMu is taken here so a
+// Disable right after Start waits for the open instead of running ahead of it.
 func (e *Engine) Start(ctx context.Context) {
 	e.baseCtx = ctx
-	if e.cfg.Enabled {
-		if err := e.Enable(); err != nil {
+	if !e.cfg.Enabled {
+		return
+	}
+	e.lifecycleMu.Lock()
+	go func() {
+		defer e.lifecycleMu.Unlock()
+		if err := e.enableLocked(); err != nil {
 			logx.Warnf("ptr: could not start sync: %v", err)
 			e.setState(StateError, err.Error())
 		}
-	}
+	}()
 }
 
 func (e *Engine) Enable() error {
 	e.lifecycleMu.Lock()
 	defer e.lifecycleMu.Unlock()
+	return e.enableLocked()
+}
 
-	e.mu.Lock()
-	if e.store != nil {
-		e.mu.Unlock()
+func (e *Engine) enableLocked() error {
+	if e.currentStore() != nil {
 		return nil
 	}
-	e.mu.Unlock()
 
 	if err := CheckDataPath(e.cfg.DataPath); err != nil {
 		return err
 	}
-	// Only the initial build needs the floor; a resume is past the big
-	// download.
-	if !IndexExists(e.cfg.DataPath) {
+	// Only the initial build needs the floor, and a half-built index or a
+	// leftover empty file is still inside it.
+	existed := IndexExists(e.cfg.DataPath)
+	if !existed {
 		if err := e.checkFreeSpace(); err != nil {
 			return err
 		}
@@ -157,18 +171,23 @@ func (e *Engine) Enable() error {
 		_ = store.Close()
 		return err
 	}
+	// A complete index opens ready: refusing lookups while this pass
+	// polls for news would fail the work a restart just restored.
+	complete, err := store.EverReady()
+	if err != nil {
+		logx.Warnf("ptr: reading the caught-up mark failed: %v", err)
+	} else if existed && !complete {
+		if err := e.checkFreeSpace(); err != nil {
+			_ = store.Close()
+			return err
+		}
+	}
 	contrib, err := OpenContribStore(e.cfg.DataPath)
 	if err != nil {
 		// Contributions degrade without their store; the sync must not.
 		logx.Warnf("ptr: contribution store unavailable: %v", err)
 	}
 
-	// A complete index opens ready: refusing lookups while this pass
-	// polls for news would fail the work a restart just restored.
-	complete, err := store.EverReady()
-	if err != nil {
-		logx.Warnf("ptr: reading the caught-up mark failed: %v", err)
-	}
 	state := StateSyncing
 	if complete {
 		state = StateReady
@@ -193,16 +212,20 @@ func (e *Engine) Enable() error {
 }
 
 func (e *Engine) checkFreeSpace() error {
-	if e.cfg.MinFreeGB <= 0 {
+	e.mu.Lock()
+	floor := e.cfg.MinFreeGB
+	e.mu.Unlock()
+	if floor <= 0 {
 		return nil
 	}
 	_, free, err := desktop.DiskUsage(e.cfg.DataPath)
 	if err != nil {
 		return fmt.Errorf("checking free space on %s: %w", e.cfg.DataPath, err)
 	}
-	if free < uint64(e.cfg.MinFreeGB)*gib {
+	// What is already built counts, or a resume could never pass the floor it started under.
+	if free+uint64(indexDiskBytes(e.cfg.DataPath)) < uint64(floor)*gib {
 		return fmt.Errorf("only %.1f GiB free on %s, below the %d GiB floor for the initial sync",
-			float64(free)/gib, e.cfg.DataPath, e.cfg.MinFreeGB)
+			float64(free)/gib, e.cfg.DataPath, floor)
 	}
 	return nil
 }
@@ -288,10 +311,7 @@ func (e *Engine) Resume() {
 // Retry re-opens the index after a boot-time open failure, which leaves
 // no loop to nudge.
 func (e *Engine) Retry() {
-	e.mu.Lock()
-	closed := e.store == nil
-	e.mu.Unlock()
-	if closed {
+	if e.currentStore() == nil {
 		if err := e.Enable(); err != nil {
 			e.setState(StateError, err.Error())
 		}
@@ -311,9 +331,7 @@ func (e *Engine) nudgeLocked() {
 }
 
 func (e *Engine) Enabled() bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.store != nil
+	return e.currentStore() != nil
 }
 
 func (e *Engine) Status() Status {
@@ -374,8 +392,25 @@ func (e *Engine) SetDataPath(path string) bool {
 	return true
 }
 
+// SetMinFreeGB takes only mu: lifecycleMu would stall a save for a slow Enable.
+func (e *Engine) SetMinFreeGB(gb int) {
+	e.mu.Lock()
+	e.cfg.MinFreeGB = gb
+	e.mu.Unlock()
+}
+
+func (e *Engine) SetFetchSleep(seconds float64) {
+	e.client.setFetchSleep(time.Duration(seconds * float64(time.Second)))
+}
+
 // SetAddress repoints the sync while no index is open; it reports whether
 // the running sync already uses addr.
+func (e *Engine) Address() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cfg.Address
+}
+
 func (e *Engine) SetAddress(addr string) bool {
 	e.lifecycleMu.Lock()
 	defer e.lifecycleMu.Unlock()
@@ -415,6 +450,7 @@ func (e *Engine) SearchTags(ctx context.Context, ranges []TagRange, scanCap int)
 
 func (e *Engine) loop(ctx context.Context, store *Store, done chan struct{}) {
 	defer close(done)
+	defer func() { e.fetched = nil }()
 	// Before the census seed, so the page never shows update 0 against a
 	// populated index while it runs.
 	e.seedPosition(store)
@@ -425,11 +461,13 @@ func (e *Engine) loop(ctx context.Context, store *Store, done chan struct{}) {
 	}
 	e.loadCounts(store)
 	seeded := false
+	failures, failedAtBytes := 0, e.downloadedBytes()
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		if e.isPaused() {
+			e.fetched = nil
 			e.setState(StatePaused, "")
 			if !e.waitWake(ctx, e.readyPoll) {
 				return
@@ -454,7 +492,12 @@ func (e *Engine) loop(ctx context.Context, store *Store, done chan struct{}) {
 		case err != nil:
 			e.setState(StateError, err.Error())
 			logx.Warnf("ptr: sync pass failed: %v", err)
-			backoff := e.retryBackoff
+			// Bytes arriving since the last failure mean the server is up.
+			if bytes := e.downloadedBytes(); bytes != failedAtBytes {
+				failures, failedAtBytes = 0, bytes
+			}
+			backoff := retryWait(e.retryBackoff, failures)
+			failures++
 			if !IsRetryable(err) {
 				// A permanent refusal will not heal: wait for a manual
 				// retry rather than hammer the repository.
@@ -464,6 +507,7 @@ func (e *Engine) loop(ctx context.Context, store *Store, done chan struct{}) {
 				return
 			}
 		default:
+			failures = 0
 			if err := store.MarkReady(); err != nil {
 				logx.Warnf("ptr: recording the caught-up mark failed: %v", err)
 			}
@@ -614,10 +658,37 @@ const (
 	maxEntryBytes = 1 << 30
 )
 
-func (e *Engine) applyEntry(ctx context.Context, store *Store, entry updateEntry) error {
+const maxRetryBackoff = 30 * time.Minute
+
+// Doubles from base, so an outage of hours does not log every 30 seconds.
+func retryWait(base time.Duration, failures int) time.Duration {
+	wait := base
+	for range failures {
+		if wait *= 2; wait >= maxRetryBackoff {
+			return maxRetryBackoff
+		}
+	}
+	return wait
+}
+
+func (e *Engine) downloadedBytes() int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.progress.DownloadedBytes
+}
+
+func (e *Engine) applyEntry(ctx context.Context, store *Store, entry updateEntry) (err error) {
 	if len(entry.Hashes) > maxEntryBlobs {
 		return fmt.Errorf("update %d lists %d blobs, over the %d cap", entry.Index, len(entry.Hashes), maxEntryBlobs)
 	}
+	if e.fetchedEntry != entry.Index || e.fetched == nil {
+		e.fetched, e.fetchedEntry = map[string][]byte{}, entry.Index
+	}
+	defer func() {
+		if err == nil || !IsRetryable(err) {
+			e.fetched = nil
+		}
+	}()
 	blobs := make([][]byte, 0, len(entry.Hashes))
 	var fetchDur time.Duration
 	var buffered int64
@@ -626,23 +697,27 @@ func (e *Engine) applyEntry(ctx context.Context, store *Store, entry updateEntry
 		if e.isPaused() {
 			return errPaused
 		}
-		fetchStart := time.Now()
-		raw, err := e.client.updateRaw(ctx, h)
-		d := time.Since(fetchStart)
-		if err != nil {
-			return err
+		raw, cached := e.fetched[h]
+		if !cached {
+			fetchStart := time.Now()
+			raw, err = e.client.updateRaw(ctx, h)
+			d := time.Since(fetchStart)
+			if err != nil {
+				return err
+			}
+			e.fetched[h] = raw
+			fetchDur += d
+			// Per blob, not per entry: a many-blob entry fetches for minutes.
+			e.mu.Lock()
+			e.progress.DownloadedBytes += int64(len(raw))
+			e.passBytes += int64(len(raw))
+			e.passFetchDur += d
+			e.mu.Unlock()
 		}
 		if buffered += int64(len(raw)); buffered > e.entryBytes {
 			return fmt.Errorf("update %d buffers over the %d byte cap", entry.Index, e.entryBytes)
 		}
 		blobs = append(blobs, raw)
-		fetchDur += d
-		// Per blob, not per entry: a many-blob entry fetches for minutes.
-		e.mu.Lock()
-		e.progress.DownloadedBytes += int64(len(raw))
-		e.passBytes += int64(len(raw))
-		e.passFetchDur += d
-		e.mu.Unlock()
 	}
 	replayStart := time.Now()
 	counts, rows, err := store.Replay(ctx, entry.Index, entry.End, blobs, e.blobApplied)

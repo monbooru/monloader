@@ -44,8 +44,10 @@ type PTRLookupRequest struct {
 }
 
 type PTRLookupResponse struct {
-	Index   uint64              `json:"index"`
-	Results map[string][]string `json:"results"`
+	Index              uint64              `json:"index"`
+	Results            map[string][]string `json:"results"`
+	WithheldTags       map[string][]string `json:"withheld_tags,omitempty"`
+	WithheldCategories []string            `json:"withheld_categories,omitempty"`
 }
 
 type PTRTagsRequest struct {
@@ -176,6 +178,11 @@ type PostFields struct {
 	PostHeight int    `json:"post_height,omitempty"`
 	PostSize   int64  `json:"post_size,omitempty"`
 	PostExt    string `json:"post_ext,omitempty"`
+	// Categories left out of Tags by choice: not listing their tags says
+	// nothing about the post.
+	WithheldCategories []string `json:"withheld_categories,omitempty"`
+	// The same for single tags the post still lists.
+	WithheldTags []string `json:"withheld_tags,omitempty"`
 }
 
 type EnrichRequest struct {
@@ -185,10 +192,13 @@ type EnrichRequest struct {
 	Similarity float64 `json:"similarity,omitempty"`
 }
 
-// On a push, Tags and Notes travel as JSON.
+// On a push, Tags, Notes, WithheldCategories and WithheldTags travel as JSON. So
+// does client_tags, a sender's own tags, attributed to via rather than the
+// source so a refetch of that source does not read them as dropped.
 const (
 	FieldFile                      = "file"
 	FieldTags                      = "tags"
+	FieldClientTags                = "client_tags"
 	FieldVia                       = "via"
 	FieldFolder                    = "folder"
 	FieldSource                    = "source"
@@ -201,6 +211,8 @@ const (
 	FieldOriginal                  = "original"
 	FieldParentURL                 = "parent_url"
 	FieldNotes                     = "notes"
+	FieldWithheldCategories        = "withheld_categories"
+	FieldWithheldTags              = "withheld_tags"
 	FieldCollection                = "collection"
 	FieldCollectionOrder           = "collection_order"
 	FieldPostWidth                 = "post_width"

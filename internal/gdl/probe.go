@@ -16,32 +16,33 @@ func (t *Tool) Probe(ctx context.Context, exampleURL string) (ProbeResult, error
 }
 
 func (t *Tool) probe(ctx context.Context, exampleURL string) (ProbeResult, error) {
-	args := t.configArgs()
-	args = append(args, "-j", "--range", "1-1", "--", exampleURL)
+	args := append(t.configArgs(), "-j", "--range", "1-1", "--", exampleURL)
 	res, err := t.run(ctx, args...)
 	if err != nil {
 		return ProbeResult{Status: ProbeFailed, Detail: err.Error()}, nil
 	}
 	if res.exitCode != 0 {
-		return probeFromError(classifyError(res.exitCode, res.stderr)), nil
+		return ProbeFromError(t.runError(res.exitCode, res.stderr)), nil
 	}
 	if _, perr := parseResolve(res.stdout); perr != nil {
 		var ge *outcome.CodedError
 		if errors.As(perr, &ge) {
-			return probeFromError(ge), nil
+			return ProbeFromError(ge), nil
 		}
 		return ProbeResult{Status: ProbeFailed, Detail: perr.Error()}, nil
 	}
 	return ProbeResult{Status: ProbeOK}, nil
 }
 
-func probeFromError(e *outcome.CodedError) ProbeResult {
+func ProbeFromError(e *outcome.CodedError) ProbeResult {
 	status := ProbeFailed
 	switch e.Code {
 	case outcome.ErrCodeAuthRequired:
 		status = ProbeAuthRequired
 	case outcome.ErrCodeBlocked:
 		status = ProbeBlocked
+	case outcome.ErrCodeRateLimited:
+		status = ProbeRateLimited
 	}
 	return ProbeResult{Status: status, Detail: e.Msg}
 }

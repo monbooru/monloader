@@ -1,0 +1,19 @@
+{{define "tag_flow"}}
+<ol class="tag-flow">
+  {{if .Site}}
+  <li class="on flow-1"><span class="flow-name">1 mappings</span><span class="flow-sub">{{if .PTR}}ptr{{else}}this site{{end}}</span></li>
+  <li class="on flow-2"><span class="flow-name">2 blacklist</span><span class="flow-sub">{{if .PTR}}ptr only{{else}}+ global{{end}}</span></li>
+  {{if not .PTR}}<li class="flow-gate">download</li>{{end}}
+  <li><a class="flow-name" href="/settings#rules" onclick="document.getElementById('site-edit-dialog').close()">3 categories kept</a><span class="flow-sub">global, in Rules</span></li>
+  <li class="flow-gate">monbooru</li>
+  {{else}}
+  <li><a class="flow-name" href="#sites">1 mappings</a><span class="flow-sub">per site, translate ratings, categories and tags</span></li>
+  <li class="on flow-2"><span class="flow-name">2 blacklist</span><span class="flow-sub">global, skips posts including certain tags</span></li>
+  <li class="flow-gate">download</li>
+  <li class="on flow-3"><span class="flow-name">3 categories kept</span><span class="flow-sub">global, drops the other categories</span></li>
+  <li class="flow-gate">push</li>
+  <li class="flow-gallery">{{if .MonbooruURL}}<a class="flow-name" href="{{.MonbooruURL}}/tags" target="_blank" rel="noopener">4 aliases · 5 rejected · 6 implications</a>{{else}}<span class="flow-name">4 aliases · 5 rejected · 6 implications</span>{{end}}<span class="flow-sub">in monbooru, per gallery</span></li>
+  <li class="flow-gate">image</li>
+  {{end}}
+</ol>
+{{end}}

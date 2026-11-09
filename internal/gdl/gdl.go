@@ -41,9 +41,22 @@ type QueueItem struct {
 // In practice a URL yields Items (a booru search) or Queue (a forum
 // thread, a manga title), not both.
 type ResolveResult struct {
-	Items    []Item
-	Queue    []QueueItem
-	Category string
+	Items       []Item
+	Queue       []QueueItem
+	Category    string
+	Subcategory string
+	// What ended the listing after these were listed.
+	Err error
+}
+
+// IsListing is for a manga site's handoffs. mangadex's list and author read
+// like listings too, but hand off whole titles rather than books.
+func IsListing(subcategory string) bool {
+	switch subcategory {
+	case "search", "tag", "favorite", "index":
+		return true
+	}
+	return false
 }
 
 type Downloaded struct {
@@ -67,6 +80,7 @@ const (
 	ProbeOK           ProbeStatus = "ok"
 	ProbeAuthRequired ProbeStatus = "auth_required"
 	ProbeBlocked      ProbeStatus = "blocked"
+	ProbeRateLimited  ProbeStatus = "rate_limited"
 	ProbeFailed       ProbeStatus = "failed"
 )
 
@@ -78,33 +92,34 @@ type ProbeResult struct {
 type Runner interface {
 	Resolve(ctx context.Context, url, rng string, deep bool) (ResolveResult, error)
 	FetchMeta(ctx context.Context, url string) (map[string]any, error)
-	Download(ctx context.Context, url, rng, workDir string, archive Archive, onFile func(int, Downloaded), deep bool) ([]Downloaded, error)
+	FirstPost(ctx context.Context, url string) (map[string]any, error)
+	Download(ctx context.Context, url, rng, workDir string, archive Archive, onFile func(Downloaded), deep bool) ([]Downloaded, error)
 	ListExtractors(ctx context.Context) ([]Extractor, error)
 	Probe(ctx context.Context, exampleURL string) (ProbeResult, error)
 	DebugLog(ctx context.Context, url, workRoot string) (log string, noExtractor bool, err error)
 	Version(ctx context.Context) string
+	SetSiteLists(lists SiteLists)
+	// ExtractorInfo names what would handle a URL, without a network call.
+	ExtractorInfo(ctx context.Context, url string) (category, subcategory string)
 }
 
 // Tool resolves the binary on every run, so a managed install takes over
 // without a restart.
 type Tool struct {
-	cfg           *config.Config
-	mu            sync.RWMutex
-	managedRoot   string
-	secrets       func() []config.Secret
-	flatTagSites  []string
-	notesSites    []string
-	metadataSites []string
+	cfg         *config.Provider
+	mu          sync.RWMutex
+	managedRoot string
+	lists       SiteLists
 }
 
-func New(cfg *config.Config, flatTagSites, metadataSites, notesSites []string) *Tool {
-	return &Tool{cfg: cfg, flatTagSites: flatTagSites, notesSites: notesSites, metadataSites: metadataSites}
+func New(cfg *config.Provider, lists SiteLists) *Tool {
+	return &Tool{cfg: cfg, lists: lists}
 }
 
-func (t *Tool) SetSiteLists(flatTagSites, metadataSites, notesSites []string) {
+func (t *Tool) SetSiteLists(lists SiteLists) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.flatTagSites, t.metadataSites, t.notesSites = flatTagSites, metadataSites, notesSites
+	t.lists = lists
 }
 
 func (t *Tool) SetManagedRoot(root string) {
@@ -113,24 +128,10 @@ func (t *Tool) SetManagedRoot(root string) {
 	t.managedRoot = root
 }
 
-// The config Tool was built with predates any credential saved since.
-func (t *Tool) SetSecrets(secrets func() []config.Secret) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.secrets = secrets
-}
-
 // gallery-dl's HTTP errors quote the request URL, and the gelbooru family
 // sends its api_key and user_id in the query string.
 func (t *Tool) redactText(text string) string {
-	t.mu.RLock()
-	secrets := t.secrets
-	t.mu.RUnlock()
-	list := t.cfg.Secrets()
-	if secrets != nil {
-		list = secrets()
-	}
-	text, _ = config.RedactSecrets(text, list)
+	text, _ = config.RedactSecrets(text, t.cfg.Current().Secrets())
 	return text
 }
 
@@ -146,13 +147,13 @@ func (t *Tool) binary() string {
 	t.mu.RLock()
 	root := t.managedRoot
 	t.mu.RUnlock()
-	return EffectiveBinary(t.cfg, root)
+	return EffectiveBinary(t.cfg.Current(), root)
 }
 
-func (t *Tool) siteLists() (flatTagSites, metadataSites, notesSites []string) {
+func (t *Tool) siteLists() SiteLists {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.flatTagSites, t.metadataSites, t.notesSites
+	return t.lists
 }
 
 var _ Runner = (*Tool)(nil)
@@ -196,15 +197,18 @@ func exitStatus(err error) (int, error) {
 	return 0, err
 }
 
+// A personal ~/.config/gallery-dl/config.json would merge under the managed
+// file, its archive and logins included, so the default files stay unread.
 func (t *Tool) configArgs() []string {
-	p := t.cfg.GalleryDL.ConfigPath
+	args := []string{"--config-ignore"}
+	p := t.cfg.Current().GalleryDL.ConfigPath
 	if p == "" {
-		return nil
+		return args
 	}
 	if _, err := os.Stat(p); err != nil {
-		return nil
+		return args
 	}
-	return []string{"-c", p}
+	return append(args, "-c", p)
 }
 
 // --chapter-range bounds a dispatcher's queued children, --range the files.
@@ -218,19 +222,54 @@ func rangeArgs(rng string, deep bool) []string {
 	return []string{"--range", rng}
 }
 
+// --range bounds files, not handoffs, so a search would walk its whole listing
+// before its first gallery. The caller slices its offset from the listing's
+// start, and the one handoff past the window is what says more is left.
+func handoffArgs(rng string) []string {
+	_, end, ok := strings.Cut(rng, "-")
+	if !ok {
+		return nil
+	}
+	n, err := strconv.Atoi(end)
+	if err != nil {
+		return nil
+	}
+	return []string{"--chapter-range", "1-" + strconv.Itoa(n+1)}
+}
+
 // The resolve pass needs only ids and URLs, so each enrichment option left on
 // would waste requests. -o beats the managed config's per-extractor value.
-func resolveOffArgs(flatTagSites, metadataSites, notesSites []string) []string {
+func resolveOffArgs(lists SiteLists) []string {
 	var args []string
 	off := func(sites []string, opt string) {
 		for _, s := range sites {
 			args = append(args, "-o", "extractor."+s+"."+opt+"=false")
 		}
 	}
-	off(flatTagSites, "tags")
-	off(metadataSites, "metadata")
-	off(notesSites, "notes")
+	off(lists.FlatTag, "tags")
+	off(lists.Metadata, "metadata")
+	off(lists.Notes, "notes")
 	return args
+}
+
+// PositionRange renders ascending positions as --range wants them:
+// 1-4,6,9-20. gallery-dl applies it before the archive check, so a position
+// left out is neither fetched nor recorded.
+func PositionRange(positions []int) string {
+	var parts []string
+	for i := 0; i < len(positions); {
+		j := i
+		for j+1 < len(positions) && positions[j+1] == positions[j]+1 {
+			j++
+		}
+		if j == i {
+			parts = append(parts, strconv.Itoa(positions[i]))
+		} else {
+			parts = append(parts, strconv.Itoa(positions[i])+"-"+strconv.Itoa(positions[j]))
+		}
+		i = j + 1
+	}
+	return strings.Join(parts, ",")
 }
 
 type Archive int
@@ -240,8 +279,9 @@ const (
 	// An empty -o archive= makes gallery-dl open no archive, so recorded
 	// posts are not skipped and nothing new is recorded.
 	ArchiveBypass
-	// Stops after catchUpSkips recorded posts in a row, which in a
-	// newest-first listing is where the previous fetch left off.
+	// Stops after catchUpSkips recorded posts in a row, where a newest-first
+	// listing reaches the previous fetch. Not skip=abort: that replaces the
+	// managed skip=enumerate, which keeps a second file of one name.
 	ArchiveCatchUp
 )
 
@@ -252,11 +292,8 @@ const catchUpSkips = 20
 func downloadArgs(workDir, rng, url string, archive Archive, deep bool) []string {
 	args := []string{"-D", workDir}
 	args = append(args, rangeArgs(rng, deep)...)
-	switch archive {
-	case ArchiveBypass:
+	if archive == ArchiveBypass {
 		args = append(args, "-o", "archive=")
-	case ArchiveCatchUp:
-		args = append(args, "-o", "skip=abort:"+strconv.Itoa(catchUpSkips))
 	}
 	return append(args, "--", url)
 }
@@ -270,14 +307,15 @@ func (t *Tool) runOut(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	if res.exitCode != 0 {
-		return nil, classifyError(res.exitCode, res.stderr)
+		return nil, t.runError(res.exitCode, res.stderr)
 	}
 	return res.stdout, nil
 }
 
 func (t *Tool) Resolve(ctx context.Context, url, rng string, deep bool) (ResolveResult, error) {
 	res, err := t.resolve(ctx, url, rng, deep)
-	return res, t.redact(err)
+	res.Err = t.summarized(res.Err)
+	return res, t.summarized(err)
 }
 
 func (t *Tool) resolve(ctx context.Context, url, rng string, deep bool) (ResolveResult, error) {
@@ -289,36 +327,57 @@ func (t *Tool) resolve(ctx context.Context, url, rng string, deep bool) (Resolve
 	}
 	args = append(args, mode)
 	args = append(args, rangeArgs(rng, deep)...)
+	if !deep {
+		args = append(args, handoffArgs(rng)...)
+	}
 	args = append(args, "--", url)
-	res, err := t.run(ctx, args...)
-	if ctx.Err() != nil {
-		return ResolveResult{}, &outcome.CodedError{Code: outcome.ErrCodeCanceled, Msg: ctx.Err().Error()}
-	}
+	out, err := t.runOut(ctx, args...)
 	if err != nil {
-		return ResolveResult{}, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
-	}
-	if res.exitCode != 0 {
-		cerr := classifyError(res.exitCode, res.stderr)
-		if cerr.Code == outcome.ErrCodeUnsupportedURL {
+		var ce *outcome.CodedError
+		if errors.As(err, &ce) && ce.Code == outcome.ErrCodeUnsupportedURL {
 			if items, ok := directlinkResolve(ctx, url); ok {
 				return ResolveResult{Items: items}, nil
 			}
 		}
-		return ResolveResult{}, cerr
+		return ResolveResult{}, err
 	}
-	return parseResolve(res.stdout)
+	return parseResolve(out)
 }
 
 // FetchMeta keeps the enrichment options on: the full metadata is what it
 // is for.
 func (t *Tool) FetchMeta(ctx context.Context, url string) (map[string]any, error) {
-	out, err := t.runOut(ctx, append(t.configArgs(), "-j", "--", url)...)
+	return t.fetchFirst(ctx, "-j", "--", url)
+}
+
+// FirstPost is FetchMeta for a URL that may list many posts, which FetchMeta
+// would walk to the end.
+func (t *Tool) FirstPost(ctx context.Context, url string) (map[string]any, error) {
+	meta, err := t.fetchFirst(ctx, "-j", "--range", "1-1", "--chapter-range", "1-1", "--", url)
+	var ce *outcome.CodedError
+	if errors.As(err, &ce) && ce.Msg == noPostMsg {
+		if _, sub := t.ExtractorInfo(ctx, url); sub == "post" {
+			return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: NoFileMsg}
+		}
+	}
+	return meta, err
+}
+
+func (t *Tool) fetchFirst(ctx context.Context, args ...string) (map[string]any, error) {
+	out, err := t.runOut(ctx, append(t.configArgs(), args...)...)
 	if err != nil {
 		return nil, t.redact(err)
 	}
 	meta, err := firstPostMeta(out)
 	return meta, t.redact(err)
 }
+
+const (
+	// NoFileMsg names a post gallery-dl resolves to nothing: its extractor skips
+	// a post with no file silently.
+	NoFileMsg = "the post offers no file - it may be restricted or need an account"
+	noPostMsg = "no post metadata in gallery-dl output"
+)
 
 func firstPostMeta(data []byte) (map[string]any, error) {
 	res, err := parseResolve(data)
@@ -330,25 +389,30 @@ func firstPostMeta(data []byte) (map[string]any, error) {
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: err.Error()}
 	}
 	if len(res.Items) == 0 {
-		return nil, &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: "no post metadata in gallery-dl output"}
+		if len(res.Queue) > 0 {
+			return nil, &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: "this URL lists galleries or chapters, with no post of its own: paste one of them"}
+		}
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: noPostMsg}
 	}
 	return res.Items[0].Meta, nil
 }
 
 // The download always follows Message.Queue handoffs; deep only moves the
 // window to --chapter-range.
-func (t *Tool) Download(ctx context.Context, url, rng, workDir string, archive Archive, onFile func(int, Downloaded), deep bool) ([]Downloaded, error) {
+func (t *Tool) Download(ctx context.Context, url, rng, workDir string, archive Archive, onFile func(Downloaded), deep bool) ([]Downloaded, error) {
 	dls, err := t.download(ctx, url, rng, workDir, archive, onFile, deep)
 	return dls, t.redact(err)
 }
 
-func (t *Tool) download(ctx context.Context, url, rng, workDir string, archive Archive, onFile func(int, Downloaded), deep bool) ([]Downloaded, error) {
+func (t *Tool) download(ctx context.Context, url, rng, workDir string, archive Archive, onFile func(Downloaded), deep bool) ([]Downloaded, error) {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	args := append(t.configArgs(), downloadArgs(workDir, rng, url, archive, deep)...)
 	bin := t.binary()
-	cmd := exec.CommandContext(ctx, bin, args...)
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	cmd := exec.CommandContext(runCtx, bin, args...)
 	cmd.WaitDelay = waitDelay
 	killGroupOnCancel(cmd)
 	desktop.HideConsole(cmd)
@@ -361,13 +425,29 @@ func (t *Tool) download(ctx context.Context, url, rng, workDir string, archive A
 	if err := cmd.Start(); err != nil {
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: fmt.Errorf("running %s: %w", bin, err).Error()}
 	}
+	caughtUp := false
+	onSkips := func(inARow int) {
+		if archive == ArchiveCatchUp && inARow >= catchUpSkips {
+			caughtUp = true
+			stop()
+		}
+	}
 	// Drained to EOF before Wait, as StdoutPipe requires.
-	results := reportDownloads(stdout, workDir, onFile)
+	results, readErr := reportDownloads(stdout, workDir, onFile, onSkips)
 	exit, runErr := exitStatus(cmd.Wait())
 	// A canceled job kills the subprocess, which must not read as a
 	// download failure.
 	if ctx.Err() != nil {
 		return results, &outcome.CodedError{Code: outcome.ErrCodeCanceled, Msg: ctx.Err().Error()}
+	}
+	if readErr != nil {
+		return results, readErr
+	}
+	if caughtUp {
+		if stderr := strings.TrimSpace(errBuf.String()); strings.Contains(stderr, "[error]") {
+			return results, t.runError(exit, stderr)
+		}
+		return results, nil
 	}
 	if runErr != nil {
 		// Results go back with the error: the pipeline pushes what landed
@@ -375,8 +455,7 @@ func (t *Tool) download(ctx context.Context, url, rng, workDir string, archive A
 		return results, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: runErr.Error()}
 	}
 	if exit != 0 {
-		cerr := classifyError(exit, strings.TrimSpace(errBuf.String()))
-		cerr.Msg = t.stderrSummary(cerr.Msg)
+		cerr := t.runError(exit, strings.TrimSpace(errBuf.String()))
 		if cerr.Code == outcome.ErrCodeUnsupportedURL {
 			if dls, ok, derr := directlinkDownload(ctx, url, workDir, onFile); ok {
 				return dls, derr
@@ -385,6 +464,34 @@ func (t *Tool) download(ctx context.Context, url, rng, workDir string, archive A
 		return results, cerr
 	}
 	return results, nil
+}
+
+// CaughtUp says a catch-up run stopped at its last entry, short of any rows past it.
+func CaughtUp(downloaded []Downloaded) bool {
+	if len(downloaded) < catchUpSkips {
+		return false
+	}
+	for _, d := range downloaded[len(downloaded)-catchUpSkips:] {
+		if !d.Skipped {
+			return false
+		}
+	}
+	return true
+}
+
+// Classified on the whole of stderr, which the summary then cuts to one line.
+func (t *Tool) runError(exit int, stderr string) *outcome.CodedError {
+	cerr := classifyError(exit, stderr)
+	cerr.Msg = t.stderrSummary(cerr.Msg)
+	return cerr
+}
+
+func (t *Tool) summarized(err error) error {
+	var ce *outcome.CodedError
+	if !errors.As(err, &ce) {
+		return err
+	}
+	return &outcome.CodedError{Code: ce.Code, Msg: t.stderrSummary(ce.Msg)}
 }
 
 const maxErrorMessage = 300
@@ -407,11 +514,12 @@ func (t *Tool) stderrSummary(stderr string) string {
 	return strings.ToValidUTF8(msg[:maxErrorMessage], "") + "..."
 }
 
-// gallery-dl prints an archive skip as "# <path>"; the .json sidecar is on
-// disk by the time a path prints, a skip's included. A failed download
-// prints nothing; an unusable line takes an entry so the pipeline can fail it.
-func reportDownloads(r io.Reader, workDir string, onFile func(int, Downloaded)) []Downloaded {
+// gallery-dl prints an archive skip as "# <path>", and a path only once its .json
+// sidecar is on disk. A failed download prints nothing; an unusable line takes an
+// entry so the pipeline can fail it. onSkips hears the length of the current skip run.
+func reportDownloads(r io.Reader, workDir string, onFile func(Downloaded), onSkips func(int)) ([]Downloaded, error) {
 	var out []Downloaded
+	inARow := 0
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -425,8 +533,13 @@ func reportDownloads(r io.Reader, workDir string, onFile func(int, Downloaded)) 
 				d.Meta, _ = readMeta(path)
 			}
 			out = append(out, d)
+			inARow++
+			if onSkips != nil {
+				onSkips(inARow)
+			}
 			continue
 		}
+		inARow = 0
 		// The managed config pins the directory and gallery-dl sanitizes
 		// names, but a path from the subprocess's stdout is still not
 		// trusted.
@@ -443,7 +556,7 @@ func reportDownloads(r io.Reader, workDir string, onFile func(int, Downloaded)) 
 		}
 		d := Downloaded{Path: line, Meta: meta}
 		if onFile != nil {
-			onFile(len(out), d)
+			onFile(d)
 		}
 		out = append(out, d)
 	}
@@ -452,8 +565,36 @@ func reportDownloads(r io.Reader, workDir string, onFile func(int, Downloaded)) 
 		// An over-long line stops the scanner; left unread, the pipe fills
 		// and gallery-dl blocks writing, which Wait would then wait out.
 		_, _ = io.Copy(io.Discard, r)
+		// Not a skip: whatever landed past this line is in the archive unpushed.
+		return out, &outcome.CodedError{Code: outcome.ErrCodeMappingFailed, Msg: "gallery-dl printed a line too long to read"}
 	}
-	return out
+	return out, nil
+}
+
+func (t *Tool) ExtractorInfo(ctx context.Context, url string) (category, subcategory string) {
+	out, err := t.runOut(ctx, append(t.configArgs(), "-E", "--", url)...)
+	if err != nil {
+		return "", ""
+	}
+	return parseExtractorInfo(out)
+}
+
+// The value line under gallery-dl's -E header: "danbooru" / "post" / "Danbooru"
+func parseExtractorInfo(out []byte) (category, subcategory string) {
+	_, rest, ok := strings.Cut(string(out), "Category / Subcategory")
+	if !ok {
+		return "", ""
+	}
+	_, rest, ok = strings.Cut(rest, "\n")
+	if !ok {
+		return "", ""
+	}
+	line, _, _ := strings.Cut(rest, "\n")
+	parts := strings.Split(line, " / ")
+	if len(parts) < 2 {
+		return "", ""
+	}
+	return strings.Trim(strings.TrimSpace(parts[0]), `"`), strings.Trim(strings.TrimSpace(parts[1]), `"`)
 }
 
 func (t *Tool) Version(ctx context.Context) string {
@@ -522,12 +663,16 @@ func parseResolve(data []byte) (ResolveResult, error) {
 	if len(res.Items) == 0 && len(res.Queue) == 0 && gdlErr != nil {
 		return ResolveResult{}, gdlErr
 	}
+	if gdlErr != nil {
+		res.Err = gdlErr
+	}
 	return res, nil
 }
 
 func (r *ResolveResult) setCategory(meta map[string]any) {
 	if r.Category == "" {
 		r.Category = kwdict.String(meta, "category")
+		r.Subcategory = kwdict.String(meta, "subcategory")
 	}
 }
 
@@ -555,9 +700,6 @@ func itemFromMeta(meta map[string]any) Item {
 }
 
 func within(dir, path string) bool {
-	if dir == "" {
-		return true
-	}
 	rel, err := filepath.Rel(dir, path)
 	return err == nil && filepath.IsLocal(rel)
 }

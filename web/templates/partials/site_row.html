@@ -1,15 +1,16 @@
 {{define "site_row"}}
 <tr>
-  <td class="stack-head">{{.Category}}{{if .CustomProfile}}<span class="status-dim" title="A user profile file overrides the shipped mapping"> (custom profile)</span>{{end}}</td>
-  <td data-label="Login">{{if .NeedsCred}}<span class="status-badge status-warn">{{.Login}} !</span>{{else}}<span class="status-badge">{{.Login}}</span>{{end}}</td>
-  <td class="status-dim" title="{{.AuthSet}}" data-label="Auth">{{.AuthSet}}</td>
-  <td data-label="Gallery">{{if and .Site .Site.Gallery}}{{.Site.Gallery}}{{else}}<span class="status-dim">(default)</span>{{end}}</td>
-  <td class="site-state" id="state-{{.Category}}" data-label="State">{{if not .LastReached.IsZero}}<span class="site-last" title="Last reached {{stampLocal .LastReached}}">last ok {{humanSince .LastReached}}</span>{{end}}</td>
+  <td class="stack-head">{{.Category}}{{if and .CustomProfile (not .PTR)}}<span class="status-dim" title="A user profile file overrides the shipped mapping"> (custom profile)</span>{{end}}{{if .BlacklistRules}}<span class="status-dim" title="Rules on this site's own blacklist"> (blacklist +{{.BlacklistRules}})</span>{{end}}</td>
+  <td data-label="Login">{{if .PTR}}<span class="status-dim">-</span>{{else if .NeedsCred}}<span class="status-badge status-warn">{{.Login}} !</span>{{else}}<span class="status-badge">{{.Login}}</span>{{end}}</td>
+  <td class="status-dim" title="{{.AuthSet}}" data-label="Credentials">{{.AuthSet}}</td>
+  <td data-label="Gallery">{{if .PTR}}<span class="status-dim">-</span>{{else if and .Site .Site.Gallery}}{{.Site.Gallery}}{{else}}<span class="status-dim">(default)</span>{{end}}</td>
+  <td class="site-state" id="state-{{.Category}}" data-label="State">{{if .PTR}}<span class="ptr-state-{{.PTRState}}">{{.PTRState}}</span>{{else if not .LastReached.IsZero}}<span class="site-last" title="Last reached {{stampLocal .LastReached}}">last ok {{humanSince .LastReached}}</span>{{end}}</td>
   <td class="site-actions"><span class="actions">
-    <button type="button" hx-post="/settings/sites/{{.Category}}/test" hx-target="previous .site-state" hx-swap="innerHTML"
-            hx-on::before-request="this.closest('tr').querySelector('.site-state').innerHTML='<span class=&quot;hint&quot;>testing...</span>'">Test</button>
+    {{if .PTR}}<button type="button" class="action-spacer" tabindex="-1" aria-hidden="true">Test</button>
+    {{else}}<button type="button" hx-post="/settings/sites/{{.Category}}/test" hx-target="previous .site-state" hx-swap="innerHTML"
+            hx-on::before-request="this.closest('tr').querySelector('.site-state').innerHTML='<span class=&quot;field-hint&quot;>testing...</span>'">Test</button>{{end}}
     {{template "site_edit_btn" (dict "Row" . "Label" "Edit")}}
-    {{template "postbtn" dict "Action" (printf "/settings/sites/%s/reset" .Category) "CSRF" .CSRFToken "Label" "Remove" "Title" "Drop this site's credentials, gallery, cookies path, options and mapping overrides"}}
+    {{if .PTR}}{{if or .Site .CustomProfile}}{{template "postbtn" dict "Action" (printf "/settings/sites/%s/reset" .Category) "CSRF" .CSRFToken "Label" "Remove" "Title" "Remove the PTR's mappings and blacklist" "Confirm" "Remove the PTR's mappings and blacklist?" "ConfirmOK" "Remove" "ConfirmDanger" "Tags already applied stay."}}{{end}}{{else if or .Site .CustomProfile}}{{template "postbtn" dict "Action" (printf "/settings/sites/%s/reset" .Category) "CSRF" .CSRFToken "Label" "Remove" "Title" "Remove this site's settings and custom profile" "Confirm" (printf "Remove %s's settings?" .Category) "ConfirmOK" "Remove" "ConfirmDanger" "Its credentials, gallery, cookies, options, blacklist and custom profile go. The downloads stay."}}{{end}}
   </span></td>
 </tr>
 {{end}}

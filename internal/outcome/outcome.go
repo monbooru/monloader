@@ -16,6 +16,7 @@ const (
 	Replaced           Outcome = contract.OutcomeReplaced
 	SkippedArchive     Outcome = contract.OutcomeSkippedArchive
 	SkippedUnsupported Outcome = contract.OutcomeSkippedUnsupported
+	SkippedBlacklist   Outcome = contract.OutcomeSkippedBlacklist
 	Failed             Outcome = contract.OutcomeFailed
 )
 

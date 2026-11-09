@@ -20,7 +20,6 @@ func NewBackoff() *Backoff {
 	return &Backoff{failures: map[string]attempt{}}
 }
 
-// Wait returns how long ip must still wait before its next attempt; 0 lets it in.
 func (b *Backoff) Wait(ip string) time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()

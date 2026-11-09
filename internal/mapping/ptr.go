@@ -1,11 +1,96 @@
 package mapping
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 
+	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/ptr"
 )
+
+// MapPTR takes a hash's raw tags through the PTR's own mappings, then the
+// global category drop. Contributions and the tag graph read MapPTRTag instead:
+// a local rule must not change how a tag is spelled to the public repository.
+func (m *Mapper) MapPTR(raw []string) []string {
+	tags, _ := m.MapPTRWithheld(raw)
+	return tags
+}
+
+// MapPTRWithheld also names what the PTR's row held back, under the category it
+// would otherwise land in. A namespace nothing routes was never going to land.
+func (m *Mapper) MapPTRWithheld(raw []string) (tags, withheld []string) {
+	profile := m.profileFor(config.SitePTR)
+	drop := m.cfg.Current().Tags.DropCategories
+	for _, tag := range raw {
+		mapped := m.ptrMapped(profile, tag)
+		s := applyTagRule(profile.TagRules, mapped)
+		switch {
+		case s != "":
+			if !categoryDropped(drop, s) {
+				tags = append(tags, s)
+			}
+		case cmp.Or(mapped, MapPTRTag(tag)) != "":
+			withheld = append(withheld, cmp.Or(mapped, MapPTRTag(tag)))
+		}
+	}
+	slices.Sort(tags)
+	slices.Sort(withheld)
+	return slices.Compact(tags), slices.Compact(withheld)
+}
+
+// PTRBlacklisted reads only the PTR's own list: the global one exists to stop
+// downloads, and these images are already in the library.
+func (m *Mapper) PTRBlacklisted(raw []string) (note string, blacklisted bool) {
+	site := m.cfg.Current().FindSite(config.SitePTR)
+	if site == nil {
+		return "", false
+	}
+	rules := parseBlacklistRules(site.Name, site.Blacklist)
+	if len(rules) == 0 {
+		return "", false
+	}
+	profile := m.profileFor(config.SitePTR)
+	var tags []postTag
+	var rating string
+	for _, tag := range raw {
+		mapped := m.ptrMapped(profile, tag)
+		if level, ok := strings.CutPrefix(mapped, "rating:"); ok {
+			// monbooru lands the highest of the ratings a push lists.
+			rating = Stricter(rating, level)
+			continue
+		}
+		for _, read := range append(blacklistReads(profile, mapped), MapPTRTag(tag)) {
+			if read != "" {
+				tags = append(tags, splitPostTag(read))
+			}
+		}
+	}
+	rule, hit := firstBlacklistRule(rules, tags, rating, false)
+	if !hit {
+		return "", false
+	}
+	return rule.note(), true
+}
+
+// Bare tags answer to the namespace "general" in the category map.
+func (m *Mapper) ptrMapped(profile Profile, tag string) string {
+	ns, sub, hasNS := strings.Cut(tag, ":")
+	if !hasNS || sub == "" || (ns == "" && strings.HasPrefix(sub, ":")) {
+		ns, sub = "general", strings.TrimPrefix(tag, ":")
+	}
+	ns = strings.ToLower(ns)
+	if to, ok := m.categoryOverride(config.SitePTR, profile, ns); ok {
+		return normalizeTag(formatTag(to, sub))
+	}
+	if ns == "rating" {
+		if level := m.ratingFor(config.SitePTR, profile, sub); level != "" {
+			return "rating:" + level
+		}
+		return ""
+	}
+	return MapPTRTag(tag)
+}
 
 func MapPTRTags(tags []string) []string {
 	var out []string
@@ -24,6 +109,9 @@ func MapPTRTag(tag string) string {
 	ns, sub, hasNS := strings.Cut(tag, ":")
 	if !hasNS || sub == "" {
 		return normalizeTag(tag)
+	}
+	if ns == "" && strings.HasPrefix(sub, ":") {
+		return normalizeTag(sub) // hydrus escapes the bare tag :d as ::d
 	}
 	cat, keep, rating := ptrNamespace(strings.ToLower(ns))
 	switch {
@@ -88,7 +176,7 @@ type PTRSpelling struct {
 
 func PTRSpellingsFor(monbooruTag string) []PTRSpelling {
 	cat, name, hasCat := strings.Cut(monbooruTag, ":")
-	if !hasCat {
+	if !hasCat || cat == "" {
 		return spellings("", monbooruTag)
 	}
 	var out []PTRSpelling
@@ -103,16 +191,23 @@ func PTRSpellingsFor(monbooruTag string) []PTRSpelling {
 	return out
 }
 
-// The forms double per underscore; a name long enough to pass the bound
-// is past what a booru spelling mixes anyway.
-const maxSubtagForms = 8
+// The forms double per underscore; a name with more than this many is past
+// what a booru spelling mixes anyway.
+const maxSubtagMixes = 3
+
+func escapeLeadingColon(tag string) string {
+	if strings.HasPrefix(tag, ":") {
+		return ":" + tag
+	}
+	return tag
+}
 
 func spellings(ns, name string) []PTRSpelling {
 	forms := subtagForms(name)
 	out := make([]PTRSpelling, 0, len(forms))
 	for _, f := range forms {
 		if ns == "" {
-			out = append(out, PTRSpelling{Full: f, Subtag: f})
+			out = append(out, PTRSpelling{Full: escapeLeadingColon(f), Subtag: f})
 			continue
 		}
 		out = append(out, PTRSpelling{Full: ns + ":" + f, Namespace: ns + ":", Subtag: f})
@@ -135,7 +230,7 @@ func subtagForms(name string) []string {
 	}
 	spaced := strings.ReplaceAll(name, "_", " ")
 	forms := []string{name, spaced}
-	if 1<<len(at) > maxSubtagForms {
+	if len(at) > maxSubtagMixes {
 		return forms
 	}
 	// Bit i spaces the i-th underscore; all-clear and all-set are the two
@@ -185,8 +280,8 @@ func (c ContribTag) Eligible() bool { return c.PTR != "" }
 // change is refused with a note.
 func ContribTagFor(monbooruTag string) ContribTag {
 	cat, name, hasCat := strings.Cut(monbooruTag, ":")
-	if !hasCat {
-		cat, name = "", monbooruTag
+	if !hasCat || cat == "" {
+		cat, name, hasCat = "", monbooruTag, false
 	}
 	ns := ""
 	switch {
@@ -214,7 +309,7 @@ func ContribTagFor(monbooruTag string) ContribTag {
 		return ContribTag{Note: "unsupported namespace"}
 	}
 	sub := strings.ReplaceAll(name, "_", " ")
-	candidate := sub
+	candidate := escapeLeadingColon(sub)
 	if ns != "" {
 		candidate = ns + ":" + sub
 	}

@@ -1,17 +1,17 @@
 {{define "queue_rows"}}
-{{if not .Groups}}<tr><td colspan="7" class="no-results"><div class="mascot-empty">{{with .Mascot.sleep}}<img src="{{.}}" alt="" class="mascot">{{end}}<div>Queue is empty. (－ω－) zzZ<p class="field-hint">Paste a URL on the add page, or send one from monsender.</p></div></div></td></tr>{{end}}
+{{if not .Groups}}<tr><td colspan="7" class="no-results"><div class="mascot-empty">{{with .Mascot.sleep}}<img src="{{.}}" alt="" class="mascot">{{end}}<div>Queue is empty. (－ω－) zzZ<p class="field-hint">Paste a URL above, or send one from monsender.</p></div></div></td></tr>{{end}}
 {{range .Groups}}
 <tr class="job-row">
   <td class="st-{{.Worst.Status}}">{{.Worst.Status}}<span class="st-kaomoji" aria-hidden="true"></span><span class="job-time" title="{{stampLocal .Worst.StatusChangedAt}}">{{humanSince .Worst.StatusChangedAt}}</span>{{if .Watched}}<span class="job-lane">watched</span>{{end}}</td>
-  <td class="queue-url">{{.Lead.Subject}}{{if .Lead.URL}} <a class="queue-view" href="{{.Lead.URL}}" target="_blank" rel="noopener" title="Open the source in a new tab">view</a>{{end}}{{with clientMeta .Lead}} <span class="queue-sent" title="{{.}}">sent</span>{{end}}</td>
-  <td>{{$kind := jobKindLabel .Lead}}<span class="status-badge job-kind" title="{{$kind}} job">{{$kind}}</span>{{with .Lead.LookupClass}}<span class="job-lane">{{.}}</span>{{end}}</td>
+  <td class="queue-url">{{.Lead.Subject}}{{if .Lead.URL}} <a class="queue-view" href="{{.Lead.URL}}" target="_blank" rel="noopener">source</a>{{end}}{{with clientMeta .Lead}} <span class="queue-sent" title="{{.}}">sent</span>{{end}}</td>
+  <td>{{$kind := jobKindLabel .Lead}}<span class="status-badge job-kind">{{$kind}}</span>{{with .Lead.LookupClass}}<span class="job-lane">{{.}}</span>{{end}}</td>
   <td class="queue-site" title="{{.Lead.Site}}">{{.Lead.Site}}</td>
-  <td class="queue-gallery" title="{{.Lead.Gallery}}">{{.Lead.Gallery}}</td>
+  <td class="queue-gallery" title="{{.Lead.Gallery}}">{{if .Lead.Gallery}}{{.Lead.Gallery}}{{else if eq .Lead.Kind ""}}<span class="status-dim">(default)</span>{{end}}</td>
   <td class="queue-summary">
     {{if and (eq .Summary.Total 0) .Lead.ErrorCode}}
-    <span class="o-failed" title="{{.Lead.Error}}">{{.Lead.ErrorCode}}</span>{{with .Reason}}<span class="job-reason" title="{{.}}">{{.}}</span>{{end}}
+    <span class="o-failed" title="{{.Lead.Error}}">{{errorLabel .Lead.ErrorCode}}</span>{{with .Reason}}<span class="job-reason" title="{{.}}">{{.}}</span>{{end}}
     {{else if and (eq .Summary.Total 0) (eq .Worst.Status "succeeded")}}
-    <span class="field-hint">no posts matched</span>
+    <span class="field-hint" title="The site may also hide posts that need a login.">no posts matched</span>
     {{else if and (eq .Summary.Total 0) (eq .Worst.Status "interrupted")}}
     <span class="field-hint" title="The process stopped before this job recorded what it had resolved">contents unknown</span>
     {{else}}
@@ -20,12 +20,13 @@
     {{if .Summary.Enriched}}<span class="o-enriched">{{.Summary.Enriched}} enriched</span>{{end}}
     {{if .Summary.Matched}}<span class="o-matched">{{.Summary.Matched}} matched</span>{{end}}
     {{if .Summary.Replaced}}<span class="o-replaced">{{.Summary.Replaced}} replaced</span>{{end}}
-    {{if .Summary.Skipped}}<span class="o-skipped_archive">{{.Summary.Skipped}} skipped</span>{{end}}
+    {{$archive := .Summary.Archived}}{{with sub .Summary.Skipped .Summary.Blacklisted}}<span class="o-skipped_archive"{{if gt $archive 0}} title="Already fetched by an earlier run, which may not have reached monbooru. Force download fetches them again."{{end}}>{{.}} skipped</span>{{end}}
+    {{if .Summary.Blacklisted}}<span class="o-skipped_blacklist">{{.Summary.Blacklisted}} blacklisted</span>{{end}}
     {{if .Summary.Failed}}<span class="o-failed">{{.Summary.Failed}} failed</span>{{end}}
     {{if .Summary.Canceled}}<span class="o-canceled">{{.Summary.Canceled}} canceled</span>{{end}}
-    <span>{{.Summary.Total}} total</span>
-    {{if .Continue}}<span class="o-capped" title="The first {{.Summary.Total}} were fetched; get more for the next">more available</span>{{end}}
-    {{if .Lead.ErrorCode}}<span class="o-failed" title="{{.Lead.Error}}">{{.Lead.ErrorCode}}</span>{{with .Reason}}<span class="job-reason" title="{{.}}">{{.}}</span>{{end}}{{end}}
+    {{if .ShowTotal}}<span>{{.Summary.Total}} total</span>{{end}}
+    {{if .Continue}}<span class="o-capped" title="Stopped at {{.Summary.Total}} post{{if ne .Summary.Total 1}}s{{end}}. The search has more.">more available</span>{{end}}
+    {{if .Lead.ErrorCode}}<span class="o-failed" title="{{.Lead.Error}}">{{errorLabel .Lead.ErrorCode}}</span>{{with .Reason}}<span class="job-reason" title="{{.}}">{{.}}</span>{{end}}{{end}}
     {{end}}
   </td>
   <td>
@@ -35,23 +36,26 @@
       {{else}}
         {{$next := .NextWindow}}{{with .Continue}}
         <button data-peer-title="" hx-post="/queue/{{.ID}}/continue"
-                title="Download the next {{$next}} items">Get next {{$next}}</button>
+                title="Download the next {{$next}} posts">Get next {{$next}}</button>
         <button data-peer-title="" hx-post="/queue/{{.ID}}/continue-all"
-                hx-confirm="Fetch all remaining items? This can take a while."
+                hx-confirm="Fetch all remaining posts?"
+                data-confirm-ok="Get all"
+                data-confirm-danger="This can take a while."
                 title="Keep fetching until the search runs out">Get all</button>
         {{end}}
         {{if ne .Worst.Status "succeeded"}}
-        <button data-peer-title="" hx-post="/queue/{{.Worst.ID}}/retry">{{if eq .Worst.Status "interrupted"}}Requeue{{else}}Retry{{end}}</button>
+        <button data-peer-title="" hx-post="/queue/{{.Worst.ID}}/retry">Retry</button>
         {{end}}
-        {{if gt .ArchiveSkips 0}}
+        {{/* Only archive skips: re-downloading a type monbooru cannot ingest changes nothing. */}}
+        {{if gt .Summary.Archived 0}}
         <button data-peer-title="" hx-post="/queue/{{.Lead.ID}}/retry?force=1"
-                title="Re-download, ignoring the gallery-dl archive">Force download</button>
+                title="Download again, even though an earlier run already fetched it">Force download</button>
         {{end}}
         {{if and .Watchable (not .Watched)}}<button hx-post="/queue/{{.Lead.ID}}/watch" title="Check this search again on a schedule">Watch</button>{{end}}
         <button hx-delete="/queue/{{.Lead.ID}}"
-                hx-confirm="{{if gt .Windows 1}}Remove this search and all {{.Windows}} of its windows from the history?{{else}}Remove this job from the history?{{end}}"
+                hx-confirm="{{if gt (len .IDs) 1}}Remove this search and all {{len .IDs}} of its windows?{{else}}Remove this job?{{end}}"
                 data-confirm-ok="Remove"
-                data-confirm-danger="Removes the row from this list; whatever it pushed to monbooru stays.">Remove</button>
+                data-confirm-danger="Its images stay in monbooru.{{if ne .Worst.Status "succeeded"}} If you add it again it may read as already fetched: use Force download.{{end}}">Remove</button>
       {{end}}
     </span>
   </td>
@@ -60,9 +64,9 @@
 {{$active := .Live}}
 <tr class="items-row">
   <td colspan="7">
-    <details data-job="{{.Root}}" open{{if not $active}} id="job-{{.Root}}" hx-preserve="true" hx-get="/internal/queue-rows/{{.Root}}/items" hx-trigger="load once" hx-target="find .job-items" hx-swap="innerHTML"{{end}}>
-      <summary>{{.Count}} item{{if ne .Count 1}}s{{end}}{{$ph := .Phase}}{{if $ph}} <span class="job-phase job-phase-{{$ph}}">{{if eq $ph "downloading"}}downloading...{{else if eq $ph "pushing"}}pushing...{{else}}finished{{end}}</span>{{end}}</summary>
-      <div class="job-items">{{if $active}}{{template "queue_items_capped" (dict "Items" .Items "MonbooruURL" $.MonbooruURL "Site" .Lead.Site "ImageID" .Lead.ImageID "Kind" .Lead.Kind "JobURL" .Lead.URL "PageURL" .Lead.PageURL)}}{{end}}</div>
+    <details data-job="{{.Root}}" open{{if not $active}} id="job-{{.Root}}-{{.Count}}" hx-preserve="true" hx-get="/internal/queue-rows/{{.Root}}/items" hx-trigger="load once" hx-target="find .job-items" hx-swap="innerHTML"{{end}}>
+      <summary>{{.Count}} item{{if ne .Count 1}}s{{end}}{{$ph := .Phase}}{{if ne $ph "finished"}} <span class="job-phase job-phase-{{$ph}}">{{if eq $ph "downloading"}}downloading...{{else}}sending...{{end}}</span>{{end}}</summary>
+      <div class="job-items">{{if $active}}{{template "queue_items_capped" (dict "Items" .Items "More" .More "MonbooruURL" $.MonbooruURL "Site" .Lead.Site "ImageID" .Lead.ImageID "Kind" .Lead.Kind "JobURL" .Lead.URL "PageURL" .Lead.PageURL)}}{{end}}</div>
     </details>
   </td>
 </tr>

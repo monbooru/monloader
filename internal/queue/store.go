@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,6 +42,13 @@ CREATE TABLE IF NOT EXISTS watches (
     max_items      INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL,
     last           TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS landed_books (
+    url TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS blacklisted_books (
+    url  TEXT PRIMARY KEY,
+    meta TEXT NOT NULL
 );
 `
 
@@ -89,6 +97,7 @@ func (s *Store) Close() error { return s.db.Close() }
 // them but a reloaded job needs them.
 type storedJob struct {
 	Job             jobState  `json:"job"`
+	Subcategory     string    `json:"subcategory,omitempty"`
 	Offset          int       `json:"offset,omitempty"`
 	Auto            bool      `json:"auto,omitempty"`
 	Priority        bool      `json:"priority,omitempty"`
@@ -96,6 +105,8 @@ type storedJob struct {
 	Budgeted        bool      `json:"budgeted,omitempty"`
 	Watch           int64     `json:"watch,omitempty"`
 	Target          int       `json:"target,omitempty"`
+	ForceTo         int       `json:"force_to,omitempty"`
+	ListedTo        int       `json:"listed_to,omitempty"`
 	ContribIDs      []int64   `json:"contrib_ids,omitempty"`
 	ContribBacklog  bool      `json:"contrib_backlog,omitempty"`
 	StatusChangedAt time.Time `json:"status_changed_at"`
@@ -103,18 +114,18 @@ type storedJob struct {
 
 const jobIDHighWater = "job_id_high_water"
 
+const bumpHighWater = `INSERT INTO counters (name, day, n) VALUES (?, '', ?)
+	 ON CONFLICT(name) DO UPDATE SET n = max(n, excluded.n)`
+
 func (s *Store) HighestJobID() (int64, error) {
-	var n int64
-	err := s.db.QueryRow(`SELECT n FROM counters WHERE name = ?`, jobIDHighWater).Scan(&n)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	return n, err
+	_, n, err := s.LoadCounter(jobIDHighWater)
+	return int64(n), err
 }
 
 func (s *Store) SaveJob(j *Job) error {
 	rec := storedJob{
 		Job:             j.jobState,
+		Subcategory:     j.Subcategory,
 		Offset:          j.Offset,
 		Auto:            j.Auto,
 		Priority:        j.Priority,
@@ -122,6 +133,8 @@ func (s *Store) SaveJob(j *Job) error {
 		Budgeted:        j.Budgeted,
 		Watch:           j.Watch,
 		Target:          j.Target,
+		ForceTo:         j.ForceTo,
+		ListedTo:        j.ListedTo,
 		ContribIDs:      j.ContribIDs,
 		ContribBacklog:  j.ContribBacklog,
 		StatusChangedAt: j.StatusChangedAt,
@@ -141,24 +154,30 @@ func (s *Store) SaveJob(j *Job) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(
-		`INSERT INTO counters (name, day, n) VALUES (?, '', ?)
-		 ON CONFLICT(name) DO UPDATE SET n = max(n, excluded.n)`,
-		jobIDHighWater, j.ID)
+	_, err = s.db.Exec(bumpHighWater, jobIDHighWater, j.ID)
 	return err
 }
 
+// SQLite refuses a statement with more than 32766 variables.
+const deleteChunk = 5000
+
 func (s *Store) DeleteJobs(ids []int64) error {
-	if len(ids) == 0 {
-		return nil
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
 	}
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
+	defer func() { _ = tx.Rollback() }()
+	for chunk := range slices.Chunk(ids, deleteChunk) {
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		if _, err := tx.Exec(`DELETE FROM jobs WHERE id IN (`+placeholders+`)`, args...); err != nil {
+			return err
+		}
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-	_, err := s.db.Exec(`DELETE FROM jobs WHERE id IN (`+placeholders+`)`, args...)
-	return err
+	return tx.Commit()
 }
 
 func (s *Store) LoadCounter(name string) (day string, n int, err error) {
@@ -198,6 +217,7 @@ func (s *Store) LoadJobs() ([]*Job, error) {
 			continue
 		}
 		st := rec.Job
+		st.Subcategory = rec.Subcategory
 		st.Offset = rec.Offset
 		st.Auto = rec.Auto
 		st.Priority = rec.Priority
@@ -205,6 +225,8 @@ func (s *Store) LoadJobs() ([]*Job, error) {
 		st.Budgeted = rec.Budgeted
 		st.Watch = rec.Watch
 		st.Target = rec.Target
+		st.ForceTo = rec.ForceTo
+		st.ListedTo = rec.ListedTo
 		st.ContribIDs = rec.ContribIDs
 		st.ContribBacklog = rec.ContribBacklog
 		st.StatusChangedAt = rec.StatusChangedAt
@@ -213,6 +235,40 @@ func (s *Store) LoadJobs() ([]*Job, error) {
 		out = append(out, &Job{jobState: st, done: make(chan struct{}), seq: seq})
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) BookLanded(url string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM landed_books WHERE url = ?`, url).Scan(&n)
+	return n > 0, err
+}
+
+func (s *Store) MarkBookLanded(url string) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO landed_books (url) VALUES (?)`, url)
+	return err
+}
+
+// BlacklistedBook answers a nil meta for a book never recorded.
+func (s *Store) BlacklistedBook(url string) (map[string]any, error) {
+	var data string
+	err := s.db.QueryRow(`SELECT meta FROM blacklisted_books WHERE url = ?`, url).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var meta map[string]any
+	return meta, json.Unmarshal([]byte(data), &meta)
+}
+
+func (s *Store) MarkBookBlacklisted(url string, meta map[string]any) error {
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT OR REPLACE INTO blacklisted_books (url, meta) VALUES (?, ?)`, url, string(data))
+	return err
 }
 
 func (s *Store) InsertWatch(url string, intervalHours, maxItems int, createdAt time.Time, last WatchCheck) (int64, error) {
@@ -266,10 +322,7 @@ func (s *Store) DeleteWatch(id int64) error {
 	if _, err := tx.Exec(`DELETE FROM watches WHERE id = ?`, id); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(
-		`INSERT INTO counters (name, day, n) VALUES (?, '', ?)
-		 ON CONFLICT(name) DO UPDATE SET n = max(n, excluded.n)`,
-		watchIDHighWater, id); err != nil {
+	if _, err := tx.Exec(bumpHighWater, watchIDHighWater, id); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -12,7 +12,6 @@ import (
 	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/shared/desktop"
 	"github.com/monbooru/monloader/internal/shared/logx"
-	"github.com/monbooru/monloader/internal/shared/session"
 )
 
 // A loopback probe: the process answers at once or is not there.
@@ -20,7 +19,6 @@ const monbooruProbeTimeout = 800 * time.Millisecond
 
 type setupData struct {
 	BooruName string
-	TitleName string
 	CSRFToken string
 	// The rest of what webui/head reads.
 	Title        string
@@ -59,7 +57,7 @@ func (s *Server) SetupMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			api.SetCORS(w, r)
-			pairError(w, http.StatusConflict, api.ErrSetupRequired, "monloader has not been set up yet - finish the first-run setup in its window")
+			contract.WriteError(w, http.StatusConflict, api.ErrSetupRequired, "monloader has not been set up yet - finish the first-run setup in its window")
 			return
 		}
 		if r.Header.Get("HX-Request") == "true" {
@@ -104,8 +102,7 @@ func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, d setupData
 	}
 	d.Port = port
 	d.BooruName = s.booruName()
-	d.TitleName = s.titleName()
-	d.CSRFToken = s.sessions.CSRFToken(session.FromContext(r.Context()))
+	d.CSRFToken = s.csrf(r)
 	d.Paired = s.hasPairedToken(contract.AppMonbooru)
 	d.Integration = s.desktopIntegration()
 	if d.APIURL != "" {
@@ -115,7 +112,7 @@ func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, d setupData
 		}
 	}
 	theme := s.activeTheme()
-	d.Title = d.TitleName + " setup"
+	d.Title = s.titleName() + " setup"
 	d.BooruFavicon = themeFaviconURL(theme)
 	d.Theme = theme.Path != ""
 	face := "sleep"
@@ -165,7 +162,7 @@ func (s *Server) setupPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.updateConfig(func(c *config.Config) error {
+	err := s.cfg.Update(func(c *config.Config) error {
 		c.Monbooru.APIURL = form.APIURL
 		_, port, splitErr := net.SplitHostPort(c.Server.BindAddress)
 		if splitErr != nil {
@@ -195,7 +192,7 @@ func (s *Server) setupPost(w http.ResponseWriter, r *http.Request) {
 	if form.Pair && form.APIURL != "" && !s.hasPairedToken(contract.AppMonbooru) {
 		if err := s.startMonbooruPairing(r.Context()); err != nil {
 			logx.Warnf("setup: could not ask monbooru to pair: %v", err)
-			done = "/settings?kind=err&section=monbooru&msg=" +
+			done = "/settings?kind=err&section=pairing&msg=" +
 				url.QueryEscape("Setup finished, but the pairing request failed: "+err.Error()) + "#pairing"
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
@@ -30,8 +31,23 @@ type WatchCheck struct {
 	Created     int       `json:"created,omitempty"`
 	Duplicate   int       `json:"duplicate,omitempty"`
 	Total       int       `json:"total,omitempty"`
+	Blacklisted int       `json:"blacklisted,omitempty"`
 	ErrorCode   string    `json:"error_code,omitempty"`
 	Error       string    `json:"error,omitempty"`
+	// Owed: posts of this check reached gallery-dl's archive but not monbooru,
+	// so a plain next check would read them as already fetched. OwedTo is how
+	// far down the listing they reach.
+	Owed   bool `json:"owed,omitempty"`
+	OwedTo int  `json:"owed_to,omitempty"`
+	// More: the listing runs past what checks have reached, so a check that
+	// finds nothing new is not up to date.
+	More bool `json:"more,omitempty"`
+}
+
+// A check still marked live has died with the process, as an interrupted one
+// did: either may have landed a post it never pushed.
+func (c WatchCheck) needsBypass() bool {
+	return c.Owed || c.Status == JobInterrupted || c.Status == JobRunning
 }
 
 type Watch struct {
@@ -68,7 +84,8 @@ func (q *Queue) Watches() []Watch {
 }
 
 // from is the finished job the watch was started from, which counts as its
-// first check; nil leaves the watch due at once.
+// first check; nil leaves the watch due at once, owing what the url's last run
+// never pushed.
 func (q *Queue) AddWatch(url string, intervalHours, maxItems int, from *Job) (int64, error) {
 	if q.store == nil {
 		return 0, ErrNoWatchStore
@@ -79,6 +96,15 @@ func (q *Queue) AddWatch(url string, intervalHours, maxItems int, from *Job) (in
 		// clicked on.
 		q.mu.Lock()
 		last = checkOfSeries(q.seriesSnapshotsLocked(from.seriesKey(), from))
+		last.OwedTo = q.seriesOwedToLocked(from)
+		last.Owed = last.OwedTo > 0
+		q.mu.Unlock()
+	} else {
+		q.mu.Lock()
+		if run := q.lastRunLocked(url); run != nil {
+			last.OwedTo = q.seriesOwedToLocked(run)
+			last.Owed = last.OwedTo > 0
+		}
 		q.mu.Unlock()
 	}
 	now := q.now()
@@ -138,10 +164,7 @@ func (q *Queue) RemoveWatch(id int64) error {
 			evicted = append(evicted, q.cancelPendingLocked(j)...)
 		}
 	})
-	for _, j := range queued {
-		q.settleCanceled(j, nil)
-	}
-	q.persistDelete(evicted)
+	q.releaseDropped(queued, evicted)
 	return err
 }
 
@@ -158,7 +181,11 @@ func (q *Queue) CheckWatch(id int64, background bool) (int64, error) {
 		q.mu.Unlock()
 		return 0, ErrWatchLive
 	}
-	j := q.enqueueLocked(w.URL, Options{Watch: id, Background: background}.WithItems(w.MaxItems))
+	opts := Options{Watch: id, Background: background}
+	if w.Last.needsBypass() {
+		opts.Force, opts.ForceTo = true, max(w.Last.OwedTo, 1)
+	}
+	j := q.enqueueLocked(w.URL, opts.WithItems(w.MaxItems))
 	q.mu.Unlock()
 	q.persistKept(j)
 	return j.ID, nil
@@ -223,7 +250,10 @@ func (q *Queue) stampWatch(j *Job) {
 		return
 	}
 	q.updateWatchCheck(s.Watch, func(c *WatchCheck) {
-		*c = WatchCheck{CheckedAt: s.StartedAt, JobID: s.ID, Site: c.Site, Status: s.Status}
+		if s.ID < c.JobID {
+			return
+		}
+		*c = WatchCheck{CheckedAt: s.StartedAt, JobID: s.ID, Site: c.Site, Status: s.Status, Owed: c.needsBypass(), OwedTo: c.OwedTo, More: c.More}
 	})
 }
 
@@ -236,7 +266,10 @@ func (q *Queue) stampCanceledCheck(j *Job) {
 		return
 	}
 	q.updateWatchCheck(s.Watch, func(c *WatchCheck) {
-		*c = WatchCheck{CheckedAt: s.FinishedAt, JobID: s.ID, Site: c.Site, Status: JobCanceled}
+		if s.ID < c.JobID {
+			return
+		}
+		*c = WatchCheck{CheckedAt: s.FinishedAt, JobID: s.ID, Site: c.Site, Status: JobCanceled, Owed: c.needsBypass(), OwedTo: c.OwedTo, More: c.More}
 	})
 }
 
@@ -249,15 +282,26 @@ func (q *Queue) recordWatch(j *Job) {
 	}
 	q.mu.Lock()
 	windows := q.seriesSnapshotsLocked(s.seriesKey(), s)
+	owedTo := q.seriesOwedToLocked(j)
+	rootGone := s.ID != s.seriesKey() && q.index[s.seriesKey()] == nil
 	q.mu.Unlock()
+	if j.forceCutShort() {
+		owedTo = max(owedTo, s.ForceTo)
+	}
 	q.updateWatchCheck(s.Watch, func(c *WatchCheck) {
 		// A retry made after a newer check is not that check's.
 		if c.JobID != s.seriesKey() {
 			return
 		}
-		checkedAt := c.CheckedAt
+		// A window that has left the index can no longer report its own debt.
+		if rootGone {
+			owedTo = max(owedTo, c.OwedTo)
+		}
+		checkedAt, more := c.CheckedAt, c.More
 		*c = checkOfSeries(windows)
 		c.CheckedAt = checkedAt
+		c.Owed, c.OwedTo = owedTo > 0, owedTo
+		c.More = seriesReachesMore(windows, more)
 	})
 }
 
@@ -273,13 +317,72 @@ func (q *Queue) seriesSnapshotsLocked(root int64, self *Job) []*Job {
 	return out
 }
 
+// j stands in for its own entry.
+func (q *Queue) seriesOwedToLocked(j *Job) int {
+	root := j.seriesKey()
+	var to int
+	if j.owesArchivedPost() {
+		to = j.windowEnd()
+	}
+	for id, other := range q.index {
+		if id != j.ID && other.seriesKey() == root && other.owesArchivedPost() {
+			to = max(to, other.windowEnd())
+		}
+	}
+	return to
+}
+
+// A file that failed to download is not in the archive, so the next check fetches
+// it anyway; these failed after it landed. A forced run owes only what the outage
+// kept back, or a repeating refusal would re-fetch its window on every check.
+func (j *Job) owesArchivedPost() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.owesArchivedPostLocked()
+}
+
+func (j *Job) owesArchivedPostLocked() bool {
+	if j.Status == JobInterrupted {
+		return true
+	}
+	return slices.ContainsFunc(j.Items, func(it Item) bool {
+		switch it.ErrorCode {
+		case outcome.ErrCodeMonbooruUnreachable, outcome.ErrCodeCanceled:
+			return true
+		case outcome.ErrCodeMonbooruRejected, outcome.ErrCodeMappingFailed:
+			return !j.Force
+		}
+		return false
+	})
+}
+
+// A forced window that ran nothing or that a stop cut off has paid back none of what
+// lies past it; a capped one has windows to go. A window monbooru refused whole ends
+// the debt, or a repeating refusal would hold every check on its first window.
+func (j *Job) forceCutShort() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	switch {
+	case !j.Force || j.ForceTo == 0:
+		return false
+	case j.Status == JobSucceeded || j.Status == JobPartial:
+		return j.Capped && j.capEndLocked() < j.ForceTo
+	}
+	return len(j.Items) == 0 || j.owesArchivedPostLocked()
+}
+
 // Only finished windows count; the first that did not succeed names the
 // check's status.
 func checkOfSeries(windows []*Job) WatchCheck {
 	slices.SortFunc(windows, func(a, b *Job) int { return cmp.Compare(a.ID, b.ID) })
-	c := checkOf(windows[0])
-	c.Created, c.Duplicate, c.Total = 0, 0, 0
-	c.Status, c.ErrorCode, c.Error = JobSucceeded, "", ""
+	first := windows[0]
+	c := WatchCheck{
+		CheckedAt:   cmp.Or(first.StartedAt, first.FinishedAt),
+		JobID:       first.seriesKey(),
+		Site:        first.Site,
+		Subcategory: first.Subcategory,
+		Status:      JobSucceeded,
+	}
 	for _, w := range windows {
 		if w.Status == JobQueued || w.Status == JobRunning {
 			continue
@@ -287,6 +390,7 @@ func checkOfSeries(windows []*Job) WatchCheck {
 		c.Created += w.Summary.Created
 		c.Duplicate += w.Summary.Duplicate
 		c.Total += w.Summary.Total
+		c.Blacklisted += w.Summary.Blacklisted
 		if c.Status == JobSucceeded && w.Status != JobSucceeded {
 			c.Status, c.ErrorCode, c.Error = w.Status, w.ErrorCode, w.Error
 		}
@@ -294,7 +398,22 @@ func checkOfSeries(windows []*Job) WatchCheck {
 	return c
 }
 
+// Only the furthest window says: earlier ones stay capped until the series settles.
+// A cap cleared by reaching a known post still has the listing running on past it.
+func seriesReachesMore(windows []*Job, more bool) bool {
+	furthest := slices.MaxFunc(windows, func(a, b *Job) int { return cmp.Compare(a.ID, b.ID) })
+	switch {
+	case furthest.Capped:
+		return true
+	case furthest.Cap == 0 && (furthest.Status == JobSucceeded || furthest.Status == JobPartial):
+		return false
+	}
+	return more
+}
+
 func (q *Queue) updateWatchCheck(id int64, update func(*WatchCheck)) {
+	q.watchWrite.Lock()
+	defer q.watchWrite.Unlock()
 	q.mu.Lock()
 	w := q.findWatchLocked(id)
 	if w == nil {
@@ -312,29 +431,26 @@ func (q *Queue) updateWatchCheck(id int64, update func(*WatchCheck)) {
 	}
 }
 
-func checkOf(s *Job) WatchCheck {
-	return WatchCheck{
-		CheckedAt:   cmp.Or(s.StartedAt, s.FinishedAt),
-		JobID:       s.ID,
-		Site:        s.Site,
-		Subcategory: s.Subcategory,
-		Status:      s.Status,
-		Created:     s.Summary.Created,
-		Duplicate:   s.Summary.Duplicate,
-		Total:       s.Summary.Total,
-		ErrorCode:   s.ErrorCode,
-		Error:       s.Error,
-	}
-}
-
-// A check that reached a post the archive holds has caught up with the
-// last one; only an all-new window may have more past it.
+// A check that reached a post the archive holds has caught up; only an all-new window
+// may have more past it. A forced window is paying back what lies further down, so it
+// stays capped short of what was owed, or so a plain window finds out if the pick goes further.
 func (j *Job) settleWatchCap() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.Watch != 0 && j.Capped && j.Summary.Archived > 0 {
+	if j.Watch != 0 && j.Capped && ((j.Summary.Archived > 0 && !j.Force) || j.forceSettledLocked() || j.onlyBlacklistedLocked()) {
 		j.Capped = false
 	}
+}
+
+func (j *Job) forceSettledLocked() bool {
+	end := j.capEndLocked()
+	return j.Force && end >= j.ForceTo && !j.Auto && j.Target <= end
+}
+
+// A chain still has to walk past a blacklisted window.
+func (j *Job) onlyBlacklistedLocked() bool {
+	s := j.Summary
+	return s.Total > 0 && s.Blacklisted == s.Total && j.Root == j.ID && !j.Auto && j.Target <= s.Total
 }
 
 // A check that found nothing leaves no row: its result is on the watch. A

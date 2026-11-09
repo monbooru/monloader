@@ -3,7 +3,7 @@
 <div class="content-scroll">
 <main id="content" class="ptr-shell">
   <h2>Public Tag Repository</h2>
-  <p class="field-hint">Download a local copy of the Hydrus PTR. Off by default; when enabled it allows monloader to answer SHA-256 lookups offline.</p>
+  <p class="field-hint">An offline copy of Hydrus's shared tag database. monbooru can ask it for an image's tags without contacting any site.</p>
   {{if .Flash}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
   <div id="ptr-body"{{if eq .PTR.Status.State "syncing"}} hx-get="/internal/ptr-status" hx-trigger="every 2s" hx-swap="innerHTML"{{end}}>
     {{template "ptr_body" .}}
@@ -18,16 +18,16 @@
 {{template "doc_foot" .}}{{end}}
 
 {{define "ptr_body"}}{{with .PTR}}
-{{if .PathMissing}}<p class="flash-warn">{{if .DataPath}}The data path {{.DataPath}} does not exist.{{else}}No data path is set.{{end}} Change it in the Settings. In docker, mount a volume there before enabling.</p>{{end}}
+{{if .PathMissing}}<p class="flash-warn">{{if .DataPath}}The data path {{.DataPath}} does not exist.{{else}}No data path is set.{{end}} Change it in <a href="/settings#ptr">Settings</a>, or in Docker mount a volume there.</p>{{end}}
 {{if eq .Status.State "disabled"}}
 <section class="settings-section">
-  <div class="settings-section-header"><h3>Disabled</h3></div>
+  <div class="settings-section-header"><h3>PTR is off</h3></div>
   {{$label := "Enable PTR sync"}}
   {{if .HasIndex}}
   {{$label = "Resume PTR sync"}}
   <p>The index is still on disk. Enabling picks the sync up where it stopped; deleting it is in <a href="/settings#ptr">Settings</a>.</p>
   {{else}}
-  <p>Enabling downloads the repository's full tag history and keeps a local index (tens of GB).<br>You can download a <a href="{{docPage "guides/ptr.html#starting-from-a-snapshot"}}" target="_blank" rel="noopener">pre-synced snapshot</a> to skip most of that download.</p>
+  <p>Enabling downloads the full tag history and keeps a local index of about 80 GB.<br>You can download a <a href="{{docPage "guides/ptr.html#starting-from-a-snapshot"}}" target="_blank" rel="noopener">pre-synced snapshot</a> to skip most of that download.</p>
   {{end}}
   <table class="stats-table">
     <tbody>
@@ -43,7 +43,7 @@
   <div class="settings-section-header"><h3>Status: <span class="ptr-state ptr-state-{{.Status.State}}">{{.Status.State}}</span></h3></div>
   {{if eq .Status.State "syncing"}}
   <p class="field-hint">The initial sync downloads the full tag history and takes days (weeks on an HDD).<br>You can download a <a href="{{docPage "guides/ptr.html#starting-from-a-snapshot"}}" target="_blank" rel="noopener">pre-synced snapshot</a> to skip most of that download.</p>
-  <p>update {{.Status.Progress.UpdateIndex}}{{if .Status.Progress.UpdateCount}} / {{.Status.Progress.UpdateCount}}{{end}} &middot; {{humanBytes .Status.Progress.DownloadedBytes}} downloaded this session{{if .Status.Progress.DownloadRate}} &middot; {{humanBytes .Status.Progress.DownloadRate}}/s network{{end}}{{if .Status.Progress.ProcessRate}} &middot; {{.Status.Progress.ProcessRate}} rows/s{{end}}{{if .Status.Progress.LastAppliedAt}} &middot; last update applied {{humanAgo .Status.Progress.LastAppliedAt}}{{end}}</p>
+  <p>Update {{.Status.Progress.UpdateIndex}}{{if .Status.Progress.UpdateCount}} of {{.Status.Progress.UpdateCount}}{{end}} &middot; {{humanBytes .Status.Progress.DownloadedBytes}} downloaded{{if .Status.Progress.DownloadRate}} &middot; {{humanBytes .Status.Progress.DownloadRate}}/s{{end}}{{if .Status.Progress.ProcessRate}} &middot; {{.Status.Progress.ProcessRate}} rows/s{{end}}{{if .Status.Progress.LastAppliedAt}} &middot; last applied {{humanAgo .Status.Progress.LastAppliedAt}}{{end}}</p>
   <div class="ptr-progress">
     <div class="ptr-bar"><div class="ptr-bar-fill" style="width:{{.Percent}}%"></div></div>
     {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "Pause"}}
@@ -63,7 +63,7 @@
   </div>
   {{else}}
   <div class="ptr-line">
-    <p>caught up{{if .Status.NextUpdateDue}} &middot; next update {{humanDue .Status.NextUpdateDue}}{{end}}.</p>
+    <p>Up to date{{if .Status.NextUpdateDue}} &middot; next update {{humanDue .Status.NextUpdateDue}}{{end}}.</p>
     {{template "postbtn" dict "Action" "/ptr/pause" "CSRF" .CSRFToken "Label" "Pause"}}
   </div>
   {{end}}

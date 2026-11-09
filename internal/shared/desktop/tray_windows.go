@@ -44,7 +44,7 @@ const (
 	wmClose        = 0x0010
 	wmLButtonUp    = 0x0202
 	wmRButtonUp    = 0x0205
-	wmTrayCallback = 0x0400 + 1 // WM_APP + 1
+	wmTrayCallback = 0x0400 + 1 // WM_USER + 1
 
 	nimAdd     = 0x0000
 	nimDelete  = 0x0002

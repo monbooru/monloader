@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,16 +38,18 @@ type PushMeta struct {
 	CollectionOrder int
 	Via             string
 	Folder          string
+	ClientTags      []string
 }
 
 type NoteBox = contract.NoteBox
 
 type Result struct {
-	Outcome     outcome.Outcome
-	MonbooruID  int64
-	SHA256      string
-	TagWarnings []string
-	MergeNote   string
+	Outcome      outcome.Outcome
+	MonbooruID   int64
+	SHA256       string
+	TagWarnings  []string
+	RejectedTags []string
+	MergeNote    string
 }
 
 type Gallery = contract.Gallery
@@ -54,21 +57,29 @@ type Gallery = contract.Gallery
 // Client reads the API URL and token on every request, so a settings save
 // lands without a restart.
 type Client struct {
-	cfg  *config.Provider
-	http *http.Client
+	cfg    *config.Provider
+	http   *http.Client
+	upload *http.Client
 }
 
-// The client timeout is only a backstop for a wedged connection; the
-// caller's context bounds each request. A redirect is refused: Go would
-// re-send a POST as a GET, which monbooru answers 200 for a replace, and
-// carry the bearer token to the new host.
+// Monbooru hashes and ingests the whole file before it answers.
+const pushAnswerTimeout = 10 * time.Minute
+
+// A redirect is refused: Go would re-send a POST as a GET, which monbooru
+// answers 200 for a replace, and carry the bearer token to the new host.
+func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+// http's timeout is only a backstop for a wedged connection. upload has none,
+// since it would run through the body and fail a large file on a slow link on
+// every retry; its transport bounds the dial and monbooru's answer instead.
 func New(cfg *config.Provider) *Client {
-	return &Client{cfg: cfg, http: &http.Client{
-		Timeout: 10 * time.Minute,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = pushAnswerTimeout
+	return &Client{
+		cfg:    cfg,
+		http:   &http.Client{Timeout: 10 * time.Minute, CheckRedirect: refuseRedirect},
+		upload: &http.Client{Transport: transport, CheckRedirect: refuseRedirect},
+	}
 }
 
 func (c *Client) base() string {
@@ -77,12 +88,6 @@ func (c *Client) base() string {
 
 func (c *Client) token() string {
 	return c.cfg.Current().Monbooru.APIToken
-}
-
-func (c *Client) authHeader(req *http.Request) {
-	if tok := c.token(); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
 }
 
 const maxResponseBytes = 16 << 20
@@ -141,9 +146,11 @@ func (c *Client) postMultipart(ctx context.Context, endpoint, contentType string
 		return nil, nil, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: err.Error()}
 	}
 	req.Header.Set("Content-Type", contentType)
-	c.authHeader(req)
+	if tok := c.token(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 
-	resp, err := c.http.Do(req)
+	resp, err := c.upload.Do(req)
 	if err != nil {
 		return nil, nil, transportError(ctx, err)
 	}
@@ -156,7 +163,7 @@ func (c *Client) postMultipart(ctx context.Context, endpoint, contentType string
 }
 
 func (c *Client) PushImageFile(ctx context.Context, path string, meta PushMeta, gallery string) (*Result, error) {
-	return c.streamUpload(ctx, path, c.imagesEndpoint(gallery), meta, c.sendPush)
+	return c.streamUpload(ctx, path, withGallery(c.base()+"/api/v1/images", gallery), meta, c.sendPush)
 }
 
 // The replace answer names no hash, so the stored one is read back.
@@ -179,6 +186,7 @@ func (c *Client) ReplaceImageFile(ctx context.Context, imageID int64, path strin
 // another hash than the bytes sent.
 func (c *Client) streamUpload(ctx context.Context, path, endpoint string, meta PushMeta,
 	send func(ctx context.Context, endpoint, contentType string, body io.Reader) (*Result, error)) (*Result, error) {
+	meta.WithheldCategories = c.cfg.Current().Tags.DropCategories
 	// Opened here, not in the goroutine: a failure there would reach the
 	// transport and be coded as a monbooru outage.
 	f, err := os.Open(path)
@@ -228,8 +236,11 @@ func (c *Client) sendReplace(ctx context.Context, endpoint, contentType string, 
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
-		_, warnings := enrichResult(respBody)
-		return &Result{Outcome: outcome.Replaced, MonbooruID: imageID, MergeNote: replaceNote(respBody), TagWarnings: warnings}, nil
+		if !json.Valid(respBody) {
+			return nil, notJSON(resp.Status)
+		}
+		_, warnings, rejected := enrichResult(respBody)
+		return &Result{Outcome: outcome.Replaced, MonbooruID: imageID, MergeNote: replaceNote(respBody), TagWarnings: warnings, RejectedTags: rejected}, nil
 	case http.StatusConflict:
 		msg, code := apiErr(respBody, resp.Status)
 		if code != outcome.ErrCodeAlreadyExists && code != outcome.ErrCodeWrongType {
@@ -268,15 +279,16 @@ type EnrichPayload = contract.EnrichRequest
 // A 409 means the post no longer serves the same file, so nothing changed,
 // unless it is a desktop monbooru's setup_required.
 func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string, payload EnrichPayload) (*Result, error) {
-	payload.Source = trimToLen(payload.Source, maxSourceLen)
-	payload.PostID = trimToLen(payload.PostID, maxPostIDLen)
-	payload.URL = trimToLen(payload.URL, maxURLLen)
-	payload.Commentary = trimToLen(payload.Commentary, maxCommentaryLen)
-	payload.CommentaryTranslated = trimToLen(payload.CommentaryTranslated, maxCommentaryLen)
-	payload.CommentaryDText = trimToLen(payload.CommentaryDText, maxCommentaryDTextLen)
-	payload.CommentaryTranslatedDText = trimToLen(payload.CommentaryTranslatedDText, maxCommentaryDTextLen)
-	payload.Original = trimToLen(payload.Original, maxOriginalLen)
-	payload.ParentURL = trimToLen(payload.ParentURL, maxURLLen)
+	payload.WithheldCategories = c.cfg.Current().Tags.DropCategories
+	payload.Source = trimToLen(payload.Source, contract.MaxSourceLabel)
+	payload.PostID = trimToLen(payload.PostID, contract.MaxPostID)
+	payload.URL = trimToLen(payload.URL, contract.MaxURL)
+	payload.Commentary = trimToLen(payload.Commentary, contract.MaxCommentary)
+	payload.CommentaryTranslated = trimToLen(payload.CommentaryTranslated, contract.MaxCommentary)
+	payload.CommentaryDText = trimToLen(payload.CommentaryDText, contract.MaxDText)
+	payload.CommentaryTranslatedDText = trimToLen(payload.CommentaryTranslatedDText, contract.MaxDText)
+	payload.Original = trimToLen(payload.Original, contract.MaxOriginal)
+	payload.ParentURL = trimToLen(payload.ParentURL, contract.MaxURL)
 	payload.PostExt = dropOverLen(payload.PostExt, contract.MaxPostExt)
 	payload.SourceMD5 = dropOverLen(payload.SourceMD5, contract.MaxMD5)
 	buf, err := json.Marshal(payload)
@@ -290,8 +302,11 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
-		note, warnings := enrichResult(respBody)
-		return &Result{Outcome: outcome.Enriched, MonbooruID: imageID, MergeNote: note, TagWarnings: warnings}, nil
+		if !json.Valid(respBody) {
+			return nil, notJSON(resp.Status)
+		}
+		note, warnings, rejected := enrichResult(respBody)
+		return &Result{Outcome: outcome.Enriched, MonbooruID: imageID, MergeNote: note, TagWarnings: warnings, RejectedTags: rejected}, nil
 	case http.StatusConflict:
 		msg, code := apiErr(respBody, resp.Status)
 		if code == contract.CodeSetupRequired {
@@ -304,15 +319,19 @@ func (c *Client) EnrichImage(ctx context.Context, imageID int64, gallery string,
 }
 
 // The warnings are what tells a partly applied lookup from a full one.
-func enrichResult(data []byte) (note string, warnings []string) {
+func enrichResult(data []byte) (note string, warnings, rejected []string) {
 	var env struct {
 		Merge       json.RawMessage `json:"merge"`
 		TagWarnings []string        `json:"tag_warnings"`
 	}
 	if json.Unmarshal(data, &env) != nil {
-		return "", nil
+		return "", nil, nil
 	}
-	return mergeNote(env.Merge), env.TagWarnings
+	var merge struct {
+		RejectedTags []string `json:"rejected_tags"`
+	}
+	_ = json.Unmarshal(env.Merge, &merge)
+	return mergeNote(env.Merge), env.TagWarnings, merge.RejectedTags
 }
 
 // For a fetch that failed before EnrichImage ran; without it monbooru's
@@ -344,7 +363,7 @@ func (c *Client) getOK(ctx context.Context, endpoint string) ([]byte, error) {
 		return nil, transportError(ctx, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, rejected(body, resp.Status)
+		return nil, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(body, resp.Status)}
 	}
 	return body, nil
 }
@@ -371,10 +390,6 @@ func (c *Client) ImageSHA256(ctx context.Context, imageID int64, gallery string)
 	return img.SHA256, nil
 }
 
-func (c *Client) imagesEndpoint(gallery string) string {
-	return withGallery(c.base()+"/api/v1/images", gallery)
-}
-
 func (c *Client) imageEndpoint(imageID int64, suffix, gallery string) string {
 	return withGallery(c.base()+"/api/v1/images/"+strconv.FormatInt(imageID, 10)+"/"+suffix, gallery)
 }
@@ -392,12 +407,15 @@ func (c *Client) sendPush(ctx context.Context, endpoint, contentType string, bod
 		return nil, err
 	}
 	switch resp.StatusCode {
-	case http.StatusCreated:
-		id, sha, warnings, _ := parseImageResult(respBody)
-		return &Result{Outcome: outcome.Created, MonbooruID: id, SHA256: sha, TagWarnings: warnings}, nil
-	case http.StatusOK:
-		id, sha, warnings, merge := parseImageResult(respBody)
-		return &Result{Outcome: outcome.Duplicate, MonbooruID: id, SHA256: sha, TagWarnings: warnings, MergeNote: merge}, nil
+	case http.StatusCreated, http.StatusOK:
+		id, sha, warnings, rejected, merge := parseImageResult(respBody)
+		if id == 0 {
+			return nil, noImageID(resp.Status)
+		}
+		if resp.StatusCode == http.StatusCreated {
+			return &Result{Outcome: outcome.Created, MonbooruID: id, SHA256: sha, TagWarnings: warnings, RejectedTags: rejected}, nil
+		}
+		return &Result{Outcome: outcome.Duplicate, MonbooruID: id, SHA256: sha, TagWarnings: warnings, RejectedTags: rejected, MergeNote: merge}, nil
 	case http.StatusRequestEntityTooLarge:
 		return nil, &outcome.CodedError{Code: outcome.ErrCodeFileTooLarge, Msg: apiErrMessage(respBody, resp.Status)}
 	default:
@@ -406,7 +424,11 @@ func (c *Client) sendPush(ctx context.Context, endpoint, contentType string, bod
 }
 
 func streamFileMultipart(w *multipart.Writer, src io.Reader, meta PushMeta, hash io.Writer) error {
-	if err := writeFilePart(w, meta.Filename, io.TeeReader(src, hash)); err != nil {
+	fw, err := w.CreateFormFile(contract.FieldFile, cmp.Or(meta.Filename, "upload"))
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(fw, io.TeeReader(src, hash)); err != nil {
 		return err
 	}
 	if err := writeMetaFields(w, meta); err != nil {
@@ -415,29 +437,8 @@ func streamFileMultipart(w *multipart.Writer, src io.Reader, meta PushMeta, hash
 	return w.Close()
 }
 
-func writeFilePart(w *multipart.Writer, filename string, src io.Reader) error {
-	if filename == "" {
-		filename = "upload"
-	}
-	fw, err := w.CreateFormFile(contract.FieldFile, filename)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(fw, src)
-	return err
-}
-
 // monbooru rejects longer values, so they are trimmed before the push; a
 // directlink's URL can pass 2048. The caps count characters, not bytes.
-const (
-	maxSourceLen          = contract.MaxSourceLabel
-	maxPostIDLen          = contract.MaxPostID
-	maxURLLen             = contract.MaxURL
-	maxCommentaryLen      = contract.MaxCommentary
-	maxCommentaryDTextLen = contract.MaxDText
-	maxOriginalLen        = contract.MaxOriginal
-)
-
 func trimToLen(s string, limit int) string {
 	for i := range s {
 		if limit == 0 {
@@ -475,18 +476,31 @@ func writeMetaFields(w *multipart.Writer, meta PushMeta) error {
 	}
 	field(contract.FieldVia, meta.Via)
 	field(contract.FieldFolder, meta.Folder)
-	field(contract.FieldSource, trimToLen(meta.Source, maxSourceLen))
-	field(contract.FieldPostID, trimToLen(meta.PostID, maxPostIDLen))
-	field(contract.FieldURL, trimToLen(meta.URL, maxURLLen))
-	field(contract.FieldCommentary, trimToLen(meta.Commentary, maxCommentaryLen))
-	field(contract.FieldCommentaryTranslated, trimToLen(meta.CommentaryTranslated, maxCommentaryLen))
-	field(contract.FieldCommentaryDText, trimToLen(meta.CommentaryDText, maxCommentaryDTextLen))
-	field(contract.FieldCommentaryTranslatedDText, trimToLen(meta.CommentaryTranslatedDText, maxCommentaryDTextLen))
-	field(contract.FieldOriginal, trimToLen(meta.Original, maxOriginalLen))
-	field(contract.FieldParentURL, trimToLen(meta.ParentURL, maxURLLen))
+	field(contract.FieldSource, trimToLen(meta.Source, contract.MaxSourceLabel))
+	field(contract.FieldPostID, trimToLen(meta.PostID, contract.MaxPostID))
+	field(contract.FieldURL, trimToLen(meta.URL, contract.MaxURL))
+	field(contract.FieldCommentary, trimToLen(meta.Commentary, contract.MaxCommentary))
+	field(contract.FieldCommentaryTranslated, trimToLen(meta.CommentaryTranslated, contract.MaxCommentary))
+	field(contract.FieldCommentaryDText, trimToLen(meta.CommentaryDText, contract.MaxDText))
+	field(contract.FieldCommentaryTranslatedDText, trimToLen(meta.CommentaryTranslatedDText, contract.MaxDText))
+	field(contract.FieldOriginal, trimToLen(meta.Original, contract.MaxOriginal))
+	field(contract.FieldParentURL, trimToLen(meta.ParentURL, contract.MaxURL))
 	if len(meta.Notes) > 0 {
 		if notesJSON, jerr := json.Marshal(meta.Notes); jerr == nil {
 			field(contract.FieldNotes, string(notesJSON))
+		}
+	}
+	for name, values := range map[string][]string{
+		contract.FieldClientTags:         meta.ClientTags,
+		contract.FieldWithheldCategories: meta.WithheldCategories,
+		contract.FieldWithheldTags:       meta.WithheldTags,
+	} {
+		if len(values) > 0 {
+			withheldJSON, jerr := json.Marshal(values)
+			if jerr != nil {
+				return jerr
+			}
+			field(name, string(withheldJSON))
 		}
 	}
 	field(contract.FieldCollection, trimToLen(meta.Collection, contract.MaxCollection))
@@ -507,17 +521,28 @@ func writeMetaFields(w *multipart.Writer, meta PushMeta) error {
 	return err
 }
 
+// A portal or a proxy answers a push 200 with a page of its own; read as stored,
+// the post would be gone from scratch with nothing reporting the loss.
+func noImageID(status string) *outcome.CodedError {
+	return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: "monbooru answered " + status + " with no image id - check the API URL"}
+}
+
+func notJSON(status string) *outcome.CodedError {
+	return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: "monbooru answered " + status + " with no JSON body - check the API URL"}
+}
+
 // The body is a bare image object or an envelope keyed by "image".
-func parseImageResult(data []byte) (id int64, sha string, warnings []string, merge string) {
+func parseImageResult(data []byte) (id int64, sha string, warnings, rejected []string, merge string) {
 	var env map[string]json.RawMessage
 	if err := json.Unmarshal(data, &env); err != nil {
-		return 0, "", nil, ""
+		return 0, "", nil, nil, ""
 	}
 	imgRaw, enveloped := env["image"]
 	if enveloped {
 		// A missing key is a nil RawMessage, which fails to unmarshal and
 		// leaves both empty.
 		_ = json.Unmarshal(env["tag_warnings"], &warnings)
+		_ = json.Unmarshal(env["rejected_tags"], &rejected)
 		merge = mergeNote(env["merge"])
 	} else {
 		imgRaw = data
@@ -527,7 +552,7 @@ func parseImageResult(data []byte) (id int64, sha string, warnings []string, mer
 		SHA256 string `json:"sha256"`
 	}
 	_ = json.Unmarshal(imgRaw, &img)
-	return img.ID, img.SHA256, warnings, merge
+	return img.ID, img.SHA256, warnings, rejected, merge
 }
 
 // tags_removed is what an older monbooru sends for tags it deleted outright.
@@ -557,10 +582,6 @@ func mergeNote(raw json.RawMessage) string {
 	return strings.Join(parts, ", ")
 }
 
-func rejected(body []byte, status string) *outcome.CodedError {
-	return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(body, status)}
-}
-
 func apiErr(body []byte, status string) (msg, code string) {
 	var e contract.Error
 	if json.Unmarshal(body, &e) != nil {
@@ -586,6 +607,53 @@ func (c *Client) ListGalleries(ctx context.Context) ([]Gallery, error) {
 	return galleries, nil
 }
 
+// CustomCategories is the union over every gallery: monbooru keeps a catalog
+// per gallery. One gallery that does not answer costs only its own list, so
+// complete says whether the union is the whole truth.
+func (c *Client) CustomCategories(ctx context.Context) (names []string, complete bool, err error) {
+	galleries, err := c.ListGalleries(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	answered := 0
+	var firstErr error
+	for _, g := range galleries {
+		found, err := c.galleryCategories(ctx, g.Name)
+		if err != nil {
+			firstErr = cmp.Or(firstErr, err)
+			continue
+		}
+		answered++
+		names = append(names, found...)
+	}
+	if answered == 0 && firstErr != nil {
+		return nil, false, firstErr
+	}
+	slices.Sort(names)
+	return slices.Compact(names), answered > 0 && firstErr == nil, nil
+}
+
+func (c *Client) galleryCategories(ctx context.Context, gallery string) ([]string, error) {
+	body, err := c.getOK(ctx, c.base()+"/api/v1/categories?gallery="+url.QueryEscape(gallery))
+	if err != nil {
+		return nil, err
+	}
+	var categories []struct {
+		Name      string `json:"name"`
+		IsBuiltin bool   `json:"is_builtin"`
+	}
+	if err := json.Unmarshal(body, &categories); err != nil {
+		return nil, fmt.Errorf("decoding categories: %w", err)
+	}
+	var names []string
+	for _, cat := range categories {
+		if !cat.IsBuiltin {
+			names = append(names, cat.Name)
+		}
+	}
+	return names, nil
+}
+
 // The version is "" from an older monbooru that omits it.
 func (c *Client) TestConnection(ctx context.Context) (string, error) {
 	body, err := c.getOK(ctx, c.base()+"/api/v1/")
@@ -597,6 +665,19 @@ func (c *Client) TestConnection(ctx context.Context) (string, error) {
 	}
 	_ = json.Unmarshal(body, &info)
 	return info.Version, nil
+}
+
+const reachTimeout = 10 * time.Second
+
+// Reachable fails only when nothing answers at monbooru's address: what an
+// answer says is for the request that needs it.
+func (c *Client) Reachable(ctx context.Context) error {
+	probe, cancel := context.WithTimeout(ctx, reachTimeout)
+	defer cancel()
+	if _, _, err := c.do(probe, http.MethodGet, c.base()+"/health", "", nil, ""); err != nil {
+		return transportError(ctx, err)
+	}
+	return nil
 }
 
 func (c *Client) Health(ctx context.Context) contract.Health {

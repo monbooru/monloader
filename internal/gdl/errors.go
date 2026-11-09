@@ -1,15 +1,37 @@
 package gdl
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/monbooru/monloader/internal/outcome"
 )
 
+var urlInStderr = regexp.MustCompile(`https?://[^\s']*`)
+
+// One stray word in a warning or a URL must not recode a run's failed items, but
+// a failed file's [error] line names no cause, so downloader warnings, socket errors
+// and bot walls count too. With no such line (no-extractor), the whole text counts.
+func errorText(stderr string) string {
+	var lines []string
+	for line := range strings.Lines(strings.ToLower(stderr)) {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "[error]") || strings.Contains(line, "[downloader") || strings.Contains(line, "[errno") ||
+			strings.HasSuffix(line, "] cloudflare challenge") || strings.HasSuffix(line, "] cloudflare captcha") ||
+			strings.HasSuffix(line, "] ddos-guard challenge") {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return urlInStderr.ReplaceAllString(strings.ToLower(stderr), "")
+	}
+	return urlInStderr.ReplaceAllString(strings.Join(lines, "\n"), "")
+}
+
 // gallery-dl's exit codes shift across releases, so this keys on stderr text.
 func classifyError(exitCode int, stderr string) *outcome.CodedError {
-	low := strings.ToLower(stderr)
+	low := errorText(stderr)
 	switch {
 	case containsAny(low, "no suitable extractor", "unsupported url", "no extractor found"):
 		return &outcome.CodedError{Code: outcome.ErrCodeUnsupportedURL, Msg: stderr}

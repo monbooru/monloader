@@ -35,7 +35,6 @@ func ListDirs(path string, limit int) (dirs []Dir, truncated bool, err error) {
 		}
 		dirs = append(dirs, Dir{Name: e.Name(), Path: full})
 	}
-	// Sorted before the cap, so the listing is the folder's alphabetical head.
 	slices.SortFunc(dirs, func(a, b Dir) int {
 		return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 	})

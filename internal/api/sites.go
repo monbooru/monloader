@@ -2,8 +2,10 @@ package api
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -102,36 +104,40 @@ func (h *Handler) testSite(w http.ResponseWriter, r *http.Request) {
 			URL string `json:"url"`
 		}
 		err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(&body)
-		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		if err != nil && !errors.Is(err, io.EOF) {
 			contract.RefuseJSONBody(w, err, maxRequestBody)
 			return
 		}
-		if err == nil {
-			probeURL = strings.TrimSpace(body.URL)
-		}
+		probeURL = strings.TrimSpace(body.URL)
 	}
+	probeURL = config.NormalizeURL(probeURL)
 	if probeURL != "" && !config.IsHTTPURL(probeURL) {
 		// It becomes a gallery-dl argument, where a leading dash would
 		// read as an option.
 		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "url must be an http(s) URL")
 		return
 	}
+	example := h.mapper.ExampleURL(name, h.catalog.ExampleFor(name))
 	if probeURL == "" {
-		probeURL = h.mapper.ExampleURL(name, h.catalog.ExampleFor(name))
+		probeURL = example
 	}
 	if probeURL == "" {
 		contract.WriteError(w, http.StatusNotFound, errNotFound, "no example URL for site "+name+"; supply a url")
 		return
 	}
 
-	res, err := h.runner.Probe(r.Context(), probeURL)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	res, err := h.runner.Probe(ctx, probeURL)
 	if err != nil {
 		contract.WriteError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
 	out := siteProbe{ProbeResult: res}
 	if res.Status == gdl.ProbeOK {
-		h.siteState.Reached(name, time.Now())
+		if example != "" {
+			h.siteState.Reached(name, time.Now())
+		}
 	} else if v := h.siteView(name); v.NeedsCredential {
 		out.MissingCredential = v.Login
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -78,6 +79,7 @@ func main() {
 
 	var seed func(*config.Config)
 	var profile internalweb.Desktop
+	portableBase := ""
 	var layout desktop.Layout
 	// Outside the desktop profile, state sits beside the config: the
 	// container has one volume.
@@ -92,7 +94,7 @@ func main() {
 		*configPath = layout.ConfigPath
 		profile = internalweb.Desktop{Active: true, LogDir: layout.LogDir}
 		if layout.Portable {
-			profile.PortableBase = layout.ConfigDir
+			portableBase = layout.ConfigDir
 		}
 		// Before config load, so every fatal below reaches the file too.
 		if f, err := desktop.OpenLog(layout.LogDir, appName); err != nil {
@@ -115,11 +117,7 @@ func main() {
 	_, statErr := os.Stat(*configPath)
 	freshConfig := os.IsNotExist(statErr)
 
-	load := config.LoadWithDefaults
-	if layout.Portable {
-		load = config.LoadPortable
-	}
-	cfg, err := load(*configPath, seed)
+	cfg, err := config.Load(*configPath, portableBase, seed)
 	if err != nil {
 		fatalf("loading config: %v", err)
 	}
@@ -145,22 +143,23 @@ func main() {
 		}
 		fatalf("HTTP server: %v", err)
 	}
-	if *desktopMode {
-		ptrFolder(cfg, layout, *configPath, stateDir)
-	}
-
 	provider := config.NewProvider(cfg)
+	provider.Persist(*configPath, portableBase)
+	if *desktopMode {
+		ptrFolder(provider, *configPath, stateDir)
+		cfg = provider.Current()
+	}
 
 	mapper, err := mapping.New(provider, filepath.Join(filepath.Dir(*configPath), "profiles"))
 	if err != nil {
 		fatalf("loading mappings: %v", err)
 	}
 
-	runner := gdl.New(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites())
+	lists := gdl.ListsFrom(mapper)
+	runner := gdl.New(provider, lists)
 	managedRoot := gdl.ManagedRoot(stateDir)
 	runner.SetManagedRoot(managedRoot)
-	runner.SetSecrets(func() []config.Secret { return provider.Current().Secrets() })
-	if err := gdl.WriteManagedConfig(cfg, mapper.FlatTagSites(), mapper.MetadataSites(), mapper.NotesSites(), mapper.SiteOptions()); err != nil {
+	if err := gdl.WriteManagedConfig(cfg, lists); err != nil {
 		logx.Warnf("could not write the managed gallery-dl config: %v", err)
 	}
 
@@ -191,7 +190,7 @@ func main() {
 	sim := similarity.New(provider, mapper.CanonicalPostURL, mapper.PostURLFor)
 	proc := pipeline.New(runner, mapper, client, provider, workRoot, siteState, ptrEngine, sim)
 
-	q := queue.New(proc, cfg.Downloader.Concurrency, 100)
+	q := queue.New(proc, cfg.Downloader.Concurrency, 0)
 	q.SetRetention(cfg.Downloader.HistoryRetention())
 	q.SetSuccessRetention(cfg.Downloader.SuccessRetention())
 	q.SetLookupBudget(cfg.Lookup.ScheduledDailyBudget)
@@ -199,15 +198,13 @@ func main() {
 		logx.Warnf("queue history store unavailable, falling back to in-memory only: %v", err)
 	} else {
 		q.UseStore(qs)
+		proc.UseStore(qs)
 		defer func() { _ = qs.Close() }()
 	}
 	q.Start()
 	watchCtx, stopWatches := context.WithCancel(context.Background())
 	defer stopWatches()
-	go q.RunWatches(watchCtx, func() bool {
-		m := provider.Current().Monbooru
-		return m.APIURL == "" || m.Paused
-	})
+	go q.RunWatches(watchCtx, func() bool { return provider.Current().Monbooru.Held() })
 
 	srv, err := internalweb.NewServer(provider, *configPath, stateDir, workRoot, q, client, runner, mapper, catalog, siteState, ptrEngine, sim, profile)
 	if err != nil {
@@ -249,8 +246,19 @@ func main() {
 		}
 		if srv.TrayEnabled() {
 			trayCtx, stopTray := context.WithCancel(context.Background())
-			defer stopTray()
-			go runTray(trayCtx, srv, cfg.Server.BindAddress)
+			trayDone := make(chan struct{})
+			// The icon stays on screen until the tray's own loop removes it.
+			defer func() {
+				stopTray()
+				select {
+				case <-trayDone:
+				case <-time.After(time.Second):
+				}
+			}()
+			go func() {
+				defer close(trayDone)
+				runTray(trayCtx, srv, cfg.Server.BindAddress)
+			}()
 		}
 	}
 
@@ -292,7 +300,7 @@ func resolveWorkRoot(desktopMode bool) string {
 	// /work is a container convention; on a workstation it would be
 	// somebody else's directory. So is a fixed name under a shared /tmp,
 	// which another local user could pre-create and read or swap files in.
-	if !desktopMode {
+	if !desktopMode && inContainer() {
 		if fi, err := os.Stat(workMount); err == nil && fi.IsDir() {
 			if f, err := os.CreateTemp(workMount, ".probe"); err == nil {
 				name := f.Name()
@@ -302,9 +310,7 @@ func resolveWorkRoot(desktopMode bool) string {
 			}
 		}
 		// The image's /tmp is its own writable layer, shared with no one.
-		if inContainer() {
-			return filepath.Join(os.TempDir(), "monloader-work")
-		}
+		return filepath.Join(os.TempDir(), "monloader-work")
 	}
 	if dir, err := os.UserCacheDir(); err == nil {
 		return filepath.Join(dir, "monloader", "work")
@@ -315,15 +321,17 @@ func resolveWorkRoot(desktopMode bool) string {
 	return filepath.Join(os.TempDir(), "monloader-work")
 }
 
-// Without the queue store job ids restart at 1, so a crashed run's
-// leftover job dir would be bundled into a new job. The contents go, not
-// the directory: /work may be a tmpfs mount.
+// Without the queue store job ids restart at 1, so a crashed run's leftover
+// job dir would be bundled into a new job. Only the contents this app made
+// go: /work may be a tmpfs mount and the root may hold someone else's files.
 func clearWorkRoot(root string) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		_ = os.RemoveAll(filepath.Join(root, e.Name()))
+		if strings.HasPrefix(e.Name(), "job-") || strings.HasPrefix(e.Name(), "debug-") {
+			_ = os.RemoveAll(filepath.Join(root, e.Name()))
+		}
 	}
 }

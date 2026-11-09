@@ -1,8 +1,8 @@
 package ptr
 
 import (
+	"context"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -38,6 +38,7 @@ const (
 	OutcomeApproved  = "approved"
 	OutcomeRemoved   = "removed"
 	OutcomeRescinded = "rescinded"
+	OutcomeNotTaken  = "not_taken"
 )
 
 // A year plus the six days the activity panel's Sunday-aligned first
@@ -162,7 +163,7 @@ func (s *ContribStore) claimWhere(where string, args ...any) ([]ContribItem, err
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	items, err := queryAll(tx, (*ContribItem).fields,
+	items, err := queryAll(context.Background(), tx, (*ContribItem).fields,
 		`SELECT `+contribItemCols+` FROM contrib_items WHERE `+where+` ORDER BY id`, args...)
 	if err != nil {
 		return nil, err
@@ -202,7 +203,7 @@ func (s *ContribStore) Complete(it ContribItem) (logID int64, err error) {
 	defer func() { _ = tx.Rollback() }()
 	outcome, outcomeAt := "", sql.Null[int64]{}
 	if it.Kind == ContribMappingAdd {
-		// Mapping adds apply immediately server-side; nothing to wait for.
+		// The server answers before it filters; the outcome pass settles a dropped add.
 		outcome = OutcomeApplied
 		outcomeAt = sql.Null[int64]{V: time.Now().Unix(), Valid: true}
 	}
@@ -213,6 +214,14 @@ func (s *ContribStore) Complete(it ContribItem) (logID int64, err error) {
 	)
 	if err != nil {
 		return 0, err
+	}
+	if it.Kind == ContribMappingPetition {
+		if _, err := tx.Exec(
+			`UPDATE contrib_log SET outcome = ?, outcome_at = ? WHERE kind = ? AND tag = ? AND hash = ? AND outcome = ?`,
+			OutcomeRescinded, time.Now().Unix(), ContribMappingAdd, it.Tag, it.Hash, OutcomeApplied,
+		); err != nil {
+			return 0, err
+		}
 	}
 	if _, err := tx.Exec(`DELETE FROM contrib_items WHERE id = ?`, it.ID); err != nil {
 		return 0, err
@@ -259,7 +268,7 @@ func (s *ContribStore) RescindAll() (int, error) {
 // Unsent leaves out rows mid-send, as Counts does, so the list and the
 // count agree during a send.
 func (s *ContribStore) Unsent() ([]ContribItem, error) {
-	return queryAll(s.db, (*ContribItem).fields,
+	return queryAll(context.Background(), s.db, (*ContribItem).fields,
 		`SELECT `+contribItemCols+` FROM contrib_items WHERE status != 'sending' ORDER BY id`)
 }
 
@@ -268,10 +277,6 @@ func (s *ContribStore) Counts() (unsent, failed int, err error) {
 		`SELECT COUNT(*), COALESCE(SUM(status = 'failed'), 0) FROM contrib_items WHERE status != 'sending'`,
 	).Scan(&unsent, &failed)
 	return unsent, failed, err
-}
-
-func (s *ContribStore) LogRows(limit int) ([]ContribLogRow, error) {
-	return s.LogPage(limit, 0)
 }
 
 // LogDaily buckets in Go, not SQL, so a day follows the process timezone
@@ -306,7 +311,7 @@ func (r *ContribLogRow) fields() []any {
 }
 
 func (s *ContribStore) LogPage(limit, offset int) ([]ContribLogRow, error) {
-	return queryAll(s.db, (*ContribLogRow).fields,
+	return queryAll(context.Background(), s.db, (*ContribLogRow).fields,
 		`SELECT `+contribLogCols+` FROM contrib_log ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
 }
 
@@ -332,19 +337,19 @@ func (s *ContribStore) SetOutcome(id int64, outcome string) error {
 // PendingLog sees suggestions in the janitor queue, which the index
 // cannot; without it the same pair would re-stage forever.
 func (s *ContribStore) PendingLog(kind, tag, tag2 string) (bool, error) {
-	return s.countPositive(
+	return countPositive(s.db,
 		`SELECT COUNT(*) FROM contrib_log WHERE kind = ? AND tag = ? AND tag2 = ? AND outcome = ''`,
 		kind, tag, tag2)
 }
 
-func (s *ContribStore) countPositive(query string, args ...any) (bool, error) {
+func countPositive(q rowQuerier, query string, args ...any) (bool, error) {
 	var n int
-	err := s.db.QueryRow(query, args...).Scan(&n)
+	err := q.QueryRow(query, args...).Scan(&n)
 	return n > 0, err
 }
 
 func (s *ContribStore) PendingMappingPetition(tag string, hash []byte) (bool, error) {
-	return s.countPositive(
+	return countPositive(s.db,
 		`SELECT (SELECT COUNT(*) FROM contrib_items WHERE kind = ? AND tag = ? AND hash = ?)
 		      + (SELECT COUNT(*) FROM contrib_log   WHERE kind = ? AND tag = ? AND hash = ? AND outcome = '')`,
 		ContribMappingPetition, tag, hash, ContribMappingPetition, tag, hash)
@@ -353,13 +358,21 @@ func (s *ContribStore) PendingMappingPetition(tag string, hash []byte) (bool, er
 // MappingAddCommittedSince covers a committed add until coverage passes
 // it: the add reaches the index only with a later update.
 func (s *ContribStore) MappingAddCommittedSince(tag string, hash []byte, since int64) (bool, error) {
-	return s.countPositive(
+	return countPositive(s.db,
 		`SELECT COUNT(*) FROM contrib_log WHERE kind = ? AND tag = ? AND hash = ? AND committed_at > ?`,
 		ContribMappingAdd, tag, hash, since)
 }
 
+// MappingAddNotTaken says the index passed a committed add without taking it:
+// hydrus drops an add on a mapping in its deleted table and still answers 200.
+func (s *ContribStore) MappingAddNotTaken(tag string, hash []byte) (bool, error) {
+	return countPositive(s.db,
+		`SELECT COUNT(*) FROM contrib_log WHERE kind = ? AND tag = ? AND hash = ? AND outcome = ?`,
+		ContribMappingAdd, tag, hash, OutcomeNotTaken)
+}
+
 func (s *ContribStore) UnsentByKindTag(kind, tag string, hash []byte) (bool, error) {
-	return s.countPositive(
+	return countPositive(s.db,
 		`SELECT COUNT(*) FROM contrib_items WHERE kind = ? AND tag = ? AND hash = ?`,
 		kind, tag, hash)
 }
@@ -371,12 +384,12 @@ func (it *ContribItem) fields() []any {
 }
 
 type rowsQuerier interface {
-	Query(query string, args ...any) (*sql.Rows, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // fields names where each selected column lands, in SELECT order.
-func queryAll[T any](q rowsQuerier, fields func(*T) []any, query string, args ...any) ([]T, error) {
-	rows, err := q.Query(query, args...)
+func queryAll[T any](ctx context.Context, q rowsQuerier, fields func(*T) []any, query string, args ...any) ([]T, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -390,198 +403,6 @@ func queryAll[T any](q rowsQuerier, fields func(*T) []any, query string, args ..
 		out = append(out, v)
 	}
 	return out, rows.Err()
-}
-
-// No unique index on the spelling: if the repository publishes two ids
-// for one tag, the pick must still be stable.
-func (idx *Store) tagIDByName(tag string) (uint64, bool, error) {
-	return scanOne[uint64](idx.db.QueryRow(`SELECT tag_id FROM tags WHERE tag = ? ORDER BY tag_id LIMIT 1`, tag))
-}
-
-func (idx *Store) hashIDByHex(hashHex string) (uint64, bool, error) {
-	raw, err := hexDecode32(hashHex)
-	if err != nil {
-		return 0, false, nil
-	}
-	return scanOne[uint64](idx.db.QueryRow(`SELECT hash_id FROM hashes WHERE hash = ?`, raw))
-}
-
-// HashHasIdeal compares on the display view, as hydrus does: a tag shown
-// through a sibling or parent is already there, and re-sending it adds a
-// redundant mapping.
-func (idx *Store) HashHasIdeal(hashHex, tag string) (bool, error) {
-	has, err := idx.HashHasIdeals(hashHex, []string{tag})
-	return has[tag], err
-}
-
-func (idx *Store) HashHasIdeals(hashHex string, tags []string) (map[string]bool, error) {
-	has := make(map[string]bool, len(tags))
-	hashID, ok, err := idx.hashIDByHex(hashHex)
-	if err != nil || !ok {
-		return has, err
-	}
-	displayed, err := idx.displayIdeals(hashID)
-	if err != nil {
-		return nil, err
-	}
-	for _, tag := range tags {
-		tagID, ok, err := idx.tagIDByName(tag)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-		wantIdeal, err := idx.resolveSibling(tagID)
-		if err != nil {
-			return nil, err
-		}
-		has[tag] = displayed[wantIdeal]
-	}
-	return has, nil
-}
-
-func (idx *Store) IdealTag(tag string) (string, bool, error) {
-	id, ok, err := idx.tagIDByName(tag)
-	if err != nil || !ok {
-		return "", false, err
-	}
-	idealID, err := idx.resolveSibling(id)
-	if err != nil {
-		return "", false, err
-	}
-	name, err := idx.tagName(idealID)
-	if err != nil || name == "" {
-		return "", false, err
-	}
-	return name, true, nil
-}
-
-// HashHasRaw skips sibling and parent resolution: a removal petition must
-// name the exact raw mapping.
-func (idx *Store) HashHasRaw(hashHex, tag string) (bool, error) {
-	tagID, ok, err := idx.tagIDByName(tag)
-	if err != nil || !ok {
-		return false, err
-	}
-	hashID, ok, err := idx.hashIDByHex(hashHex)
-	if err != nil || !ok {
-		return false, err
-	}
-	var n int
-	err = idx.db.QueryRow(
-		`SELECT COUNT(*) FROM mappings WHERE hash_id = ? AND tag_id = ?`,
-		hashID, tagID,
-	).Scan(&n)
-	return n > 0, err
-}
-
-func (idx *Store) RawTagsForHash(hashHex string) ([]string, error) {
-	hashID, ok, err := idx.hashIDByHex(hashHex)
-	if err != nil || !ok {
-		return nil, err
-	}
-	tagIDs, err := idx.tagIDsForHash(hashID)
-	if err != nil {
-		return nil, err
-	}
-	set := map[uint64]bool{}
-	for _, id := range tagIDs {
-		set[id] = true
-	}
-	return idx.tagNames(set)
-}
-
-func (idx *Store) SiblingCurrent(bad, good string) (bool, error) {
-	return idx.pairCurrent(`SELECT COUNT(*) FROM siblings WHERE bad_tag_id = ? AND good_tag_id = ?`, bad, good)
-}
-
-func (idx *Store) ParentCurrent(child, parent string) (bool, error) {
-	return idx.pairCurrent(`SELECT COUNT(*) FROM parents WHERE child_tag_id = ? AND parent_tag_id = ?`, child, parent)
-}
-
-// ParentEdgeCovered counts an edge on any spelling of either side, or one
-// derived through a chain; a petition needs the exact stored pair
-// ParentCurrent checks.
-func (idx *Store) ParentEdgeCovered(child, parent string) (bool, error) {
-	childID, ok, err := idx.tagIDByName(child)
-	if err != nil || !ok {
-		return false, err
-	}
-	parentID, ok, err := idx.tagIDByName(parent)
-	if err != nil || !ok {
-		return false, err
-	}
-	frontier, err := idx.clusterOf(childID)
-	if err != nil {
-		return false, err
-	}
-	parentCluster, err := idx.clusterOf(parentID)
-	if err != nil {
-		return false, err
-	}
-	wanted := make(map[uint64]bool, len(parentCluster))
-	for _, p := range parentCluster {
-		wanted[p] = true
-	}
-	seen := make(map[uint64]bool, len(frontier))
-	for _, c := range frontier {
-		seen[c] = true
-	}
-	for depth := 0; depth < maxGraphDepth && len(frontier) > 0; depth++ {
-		var next []uint64
-		for _, c := range frontier {
-			parents, err := idx.parentsOf(c)
-			if err != nil {
-				return false, err
-			}
-			for _, p := range parents {
-				if wanted[p] {
-					return true, nil
-				}
-				if seen[p] {
-					continue
-				}
-				cluster, err := idx.clusterOf(p)
-				if err != nil {
-					return false, err
-				}
-				for _, m := range cluster {
-					if !seen[m] {
-						seen[m] = true
-						next = append(next, m)
-					}
-				}
-			}
-		}
-		frontier = next
-	}
-	return false, nil
-}
-
-func (idx *Store) pairCurrent(countQuery, a, b string) (bool, error) {
-	aID, ok, err := idx.tagIDByName(a)
-	if err != nil || !ok {
-		return false, err
-	}
-	bID, ok, err := idx.tagIDByName(b)
-	if err != nil || !ok {
-		return false, err
-	}
-	var n int
-	err = idx.db.QueryRow(countQuery, aID, bID).Scan(&n)
-	return n > 0, err
-}
-
-func hexDecode32(hashHex string) ([]byte, error) {
-	raw, err := hex.DecodeString(hashHex)
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) != 32 {
-		return nil, fmt.Errorf("hash is %d bytes, want 32", len(raw))
-	}
-	return raw, nil
 }
 
 func (s *ContribStore) Drop(id int64) error {
@@ -600,7 +421,22 @@ func (s *ContribStore) StagedID(kind, tag, tag2 string, hash []byte) (int64, boo
 	))
 }
 
+// CoveredAddRows lists the adds the index should already show. A settled row
+// stays listed, since committed_at is this machine's clock and the coverage the
+// server's.
+func (s *ContribStore) CoveredAddRows(covered int64) ([]ContribLogRow, error) {
+	return queryAll(context.Background(), s.db, (*ContribLogRow).fields,
+		`SELECT `+contribLogCols+` FROM contrib_log WHERE kind = ? AND outcome IN (?, ?) AND committed_at <= ? ORDER BY id`,
+		ContribMappingAdd, OutcomeApplied, OutcomeNotTaken, covered)
+}
+
+// SetReason leaves a row mid-send alone: its reason already left with the post.
+func (s *ContribStore) SetReason(id int64, reason string) error {
+	_, err := s.db.Exec(`UPDATE contrib_items SET reason = ? WHERE id = ? AND status != 'sending'`, reason, id)
+	return err
+}
+
 func (s *ContribStore) PendingOutcomeRows() ([]ContribLogRow, error) {
-	return queryAll(s.db, (*ContribLogRow).fields,
+	return queryAll(context.Background(), s.db, (*ContribLogRow).fields,
 		`SELECT `+contribLogCols+` FROM contrib_log WHERE outcome = '' AND kind != ? ORDER BY id`, ContribMappingAdd)
 }

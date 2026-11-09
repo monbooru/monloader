@@ -6,16 +6,16 @@
       <label for="mb-default-gallery">Default gallery</label>
       {{if .Galleries}}
       <select id="mb-default-gallery" name="default_gallery">
-        <option value=""{{if not .DefaultGallery}} selected{{end}}>(none - monbooru's active gallery)</option>
+        <option value=""{{if not .DefaultGallery}} selected{{end}}>monbooru's active gallery</option>
         {{if .GalleryMissing}}<option value="{{.DefaultGallery}}" selected>{{.DefaultGallery}} (not in monbooru)</option>{{end}}
-        {{range .Galleries}}<option value="{{.Name}}" {{if eq .Name $.DefaultGallery}}selected{{end}}>{{.Name}} ({{.Images}} img)</option>{{end}}
+        {{range .Galleries}}<option value="{{.Name}}" {{if eq .Name $.DefaultGallery}}selected{{end}}>{{.Name}} ({{.Images}} images)</option>{{end}}
       </select>
       {{else}}
       <input id="mb-default-gallery" type="text" name="default_gallery" value="{{.DefaultGallery}}">
       <span class="field-hint">(galleries unavailable; monbooru unreachable)</span>
       {{end}}
       {{if .GalleryWarn}}<span class="hint-warn">{{.GalleryWarn}}</span>{{end}}
-      <span class="field-hint">Where downloads land unless a site sets its own target gallery. A download picks its gallery when it starts, so a change here also moves whatever is still queued.</span>
+      <span class="field-hint">Where downloads go unless a site has its own gallery. Jobs still queued follow a change here.</span>
     </div>
     <div class="field"></div>
   </div>

@@ -6,6 +6,7 @@ PublishPort=127.0.0.1:8456:8456
 Network=monbooru.network
 
 NoNewPrivileges=true
+UserNS=keep-id:uid=1000,gid=1000
 DropCapability=ALL
 
 Volume=/path/to/monloader/config:/config

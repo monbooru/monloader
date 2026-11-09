@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -17,10 +18,13 @@ type Instance struct {
 
 const maxHealthBody = 4 << 10
 
+// A proxy would answer for a LAN address and read as a running instance.
+var probeTransport = &http.Transport{DisableKeepAlives: true}
+
 // Probe reports found false only when nothing answered, the one case where
 // binding is safe.
 func Probe(addr string, timeout time.Duration) (inst Instance, found bool) {
-	client := &http.Client{Timeout: timeout}
+	client := &http.Client{Timeout: timeout, Transport: probeTransport}
 	resp, err := client.Get("http://" + addr + "/health")
 	if err != nil {
 		return Instance{}, false
@@ -49,9 +53,9 @@ func LoopbackAddr(addr string) string {
 	return net.JoinHostPort(host, port)
 }
 
-// LocalRequest reports a request from this machine's own browser. A proxy
-// header refuses it, since behind a same-host proxy every peer is loopback,
-// and so does a non-loopback Host: a page rebound to 127.0.0.1 sends one.
+// LocalRequest is false on a proxy header, since behind a same-host proxy every peer
+// is loopback, and on a non-loopback Host or a browser's Origin or Referer naming one,
+// which a default proxy does not rewrite. A plain GET through such a proxy still passes.
 func LocalRequest(r *http.Request) bool {
 	if !IsLoopbackAddr(r.Host) {
 		return false
@@ -61,13 +65,47 @@ func LocalRequest(r *http.Request) bool {
 			return false
 		}
 	}
+	for _, h := range []string{"Origin", "Referer"} {
+		if v := r.Header.Get(h); v != "" && !originIsLoopback(v) {
+			return false
+		}
+	}
 	return IsLoopbackAddr(r.RemoteAddr)
 }
 
+func originIsLoopback(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Host != "" && IsLoopbackAddr(u.Host)
+}
+
 // A page that rebinds its own name to 127.0.0.1 sends that name, and with
-// no password it would otherwise drive every route.
+// no password it would otherwise drive every route. A network bind serves LAN names
+// too, so it refuses only a name public DNS could answer, and never on the API, whose
+// bearer token a rebinding page does not hold.
 func ForeignHost(r *http.Request, bindAddr, baseURL string) bool {
-	return IsLoopbackAddr(bindAddr) && !IsLoopbackAddr(r.Host) && !sameHost(r.Host, baseURL)
+	if IsLoopbackAddr(r.Host) || sameHost(r.Host, baseURL) {
+		return false
+	}
+	if IsLoopbackAddr(bindAddr) {
+		return true
+	}
+	return publicName(r.Host) && r.URL.Path != "/health" && !strings.HasPrefix(r.URL.Path, "/api/v1/")
+}
+
+var privateSuffixes = []string{
+	".localhost", ".local", ".lan", ".home", ".internal", ".intranet", ".corp", ".home.arpa", ".ts.net",
+}
+
+func publicName(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if net.ParseIP(host) != nil || !strings.Contains(host, ".") {
+		return false
+	}
+	return !slices.ContainsFunc(privateSuffixes, func(s string) bool { return strings.HasSuffix(host, s) })
 }
 
 func sameHost(host, baseURL string) bool {

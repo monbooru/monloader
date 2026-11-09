@@ -16,11 +16,7 @@ import (
 
 const maxWaitSeconds = 60
 
-const (
-	maxOptionTags       = 64
-	maxOptionCommentary = contract.MaxCommentary
-	maxOptionSource     = contract.MaxSourceLabel
-)
+const maxOptionTags = 64
 
 type enqueueRequest struct {
 	URL     string `json:"url"`
@@ -37,13 +33,18 @@ type enqueueRequest struct {
 }
 
 func (h *Handler) monbooruReady(w http.ResponseWriter) bool {
-	cfg := h.cfg.Current()
-	if cfg.Monbooru.APIURL == "" {
+	m := h.cfg.Current().Monbooru
+	if m.APIURL == "" {
 		contract.WriteError(w, http.StatusConflict, errMonbooruUnconfigured,
 			"monbooru is not configured - set its connection in monloader's settings")
 		return false
 	}
-	if cfg.Monbooru.Paused {
+	if m.Unconfigured() {
+		contract.WriteError(w, http.StatusConflict, errMonbooruUnconfigured,
+			"monbooru is not paired - connect it in monloader's settings")
+		return false
+	}
+	if m.Paused {
 		contract.WriteError(w, http.StatusConflict, errMonbooruPaused,
 			"the monbooru link is paused - resume it from the light in monloader's footer")
 		return false
@@ -59,7 +60,7 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 	if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
 		return
 	}
-	body.URL = strings.TrimSpace(body.URL)
+	body.URL = config.NormalizeURL(strings.TrimSpace(body.URL))
 	if body.URL == "" {
 		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "url is required")
 		return
@@ -99,15 +100,15 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		opts.Tags = body.Options.Tags
-		if utf8.RuneCountInString(body.Options.Commentary) > maxOptionCommentary {
+		if utf8.RuneCountInString(body.Options.Commentary) > contract.MaxCommentary {
 			contract.WriteError(w, http.StatusBadRequest, errInvalidRequest,
-				"commentary must be "+strconv.Itoa(maxOptionCommentary)+" characters or less")
+				"commentary must be "+strconv.Itoa(contract.MaxCommentary)+" characters or less")
 			return
 		}
 		opts.Commentary = body.Options.Commentary
-		if utf8.RuneCountInString(body.Options.Source) > maxOptionSource {
+		if utf8.RuneCountInString(body.Options.Source) > contract.MaxSourceLabel {
 			contract.WriteError(w, http.StatusBadRequest, errInvalidRequest,
-				"source must be "+strconv.Itoa(maxOptionSource)+" characters or less")
+				"source must be "+strconv.Itoa(contract.MaxSourceLabel)+" characters or less")
 			return
 		}
 		opts.Source = body.Options.Source
@@ -144,36 +145,27 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 	contract.WriteJSON(w, http.StatusAccepted, contract.JobAccepted{JobID: id})
 }
 
-type imageJobRequest = contract.ImageJobRequest
-
-func (h *Handler) enqueueImageJob(w http.ResponseWriter, r *http.Request, enqueue func(imageID int64, gallery, url string) int64) {
-	var body imageJobRequest
-	if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
-		return
+func enqueueImageJob(enqueue func(imageID int64, gallery, url string) int64) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body contract.ImageJobRequest
+		if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
+			return
+		}
+		if body.ImageID <= 0 {
+			contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "image_id is required")
+			return
+		}
+		body.URL = config.NormalizeURL(strings.TrimSpace(body.URL))
+		if !config.IsHTTPURL(body.URL) {
+			contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "url must be an http(s) URL")
+			return
+		}
+		contract.WriteJSON(w, http.StatusAccepted, contract.JobAccepted{JobID: enqueue(body.ImageID, body.Gallery, body.URL)})
 	}
-	if body.ImageID <= 0 {
-		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "image_id is required")
-		return
-	}
-	if !config.IsHTTPURL(body.URL) {
-		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "url must be an http(s) URL")
-		return
-	}
-	contract.WriteJSON(w, http.StatusAccepted, contract.JobAccepted{JobID: enqueue(body.ImageID, body.Gallery, body.URL)})
 }
-
-func (h *Handler) metadata(w http.ResponseWriter, r *http.Request) {
-	h.enqueueImageJob(w, r, h.queue.EnqueueMetadata)
-}
-
-func (h *Handler) replace(w http.ResponseWriter, r *http.Request) {
-	h.enqueueImageJob(w, r, h.queue.EnqueueReplace)
-}
-
-type lookupRequest = contract.LookupRequest
 
 func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
-	var body lookupRequest
+	var body contract.LookupRequest
 	if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
 		return
 	}
@@ -192,12 +184,7 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 			contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "the ptr backend needs a 64-hex sha256")
 			return
 		}
-		if h.ptr == nil || !h.ptr.Enabled() {
-			contract.WriteError(w, http.StatusConflict, errPTRUnavailable, "the ptr lookup backend is disabled")
-			return
-		}
-		if !h.ptr.CaughtUp() {
-			contract.WriteError(w, http.StatusConflict, errPTRSyncing, "the ptr index is not fully synced yet")
+		if !h.ptrReady(w) {
 			return
 		}
 	case queue.BackendAll:
@@ -207,7 +194,7 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request) {
 			contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "the all backend needs a 32-hex md5")
 			return
 		}
-		if h.ptr != nil && h.ptr.Enabled() && !config.IsHexHash(body.SHA256, 64) {
+		if h.ptr.Enabled() && !config.IsHexHash(body.SHA256, 64) {
 			contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "the all backend needs a 64-hex sha256 while the ptr is enabled")
 			return
 		}
@@ -236,7 +223,7 @@ func (h *Handler) lookupStatus(w http.ResponseWriter, r *http.Request) {
 	sources := h.mapper.LookupChain()
 	chain := make([]string, 0, len(sources))
 	for _, src := range sources {
-		if h.host.Queryable == nil || h.host.Queryable(src) {
+		if h.mapper.SourceQueryable(src, h.host.SimMissing) {
 			chain = append(chain, src.Name)
 		}
 	}
@@ -281,14 +268,11 @@ func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) pauseQueue(w http.ResponseWriter, r *http.Request) {
-	h.queue.Pause()
-	contract.WriteJSON(w, http.StatusOK, map[string]any{"paused": true})
-}
-
-func (h *Handler) resumeQueue(w http.ResponseWriter, r *http.Request) {
-	h.queue.Resume()
-	contract.WriteJSON(w, http.StatusOK, map[string]any{"paused": false})
+func setPaused(op func(), paused bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		op()
+		contract.WriteJSON(w, http.StatusOK, map[string]any{"paused": paused})
+	}
 }
 
 func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
@@ -306,38 +290,32 @@ func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
 
 // Every action queues work, so each is held while monbooru is not ready;
 // the gate goes ahead of the id parse.
-func (h *Handler) jobAction(w http.ResponseWriter, r *http.Request, action func(id int64) (int64, error)) {
-	if !h.monbooruReady(w) {
-		return
-	}
-	id, ok := contract.PathInt64(w, r, "id")
-	if !ok {
-		return
-	}
-	jobID, err := action(id)
-	if err != nil {
-		if errors.Is(err, queue.ErrNotFound) {
-			contract.WriteError(w, http.StatusNotFound, errNotFound, "job not found")
+func (h *Handler) jobAction(action func(id int64) (int64, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !h.monbooruReady(w) {
 			return
 		}
-		contract.WriteError(w, http.StatusConflict, errConflict, err.Error())
-		return
+		id, ok := contract.PathInt64(w, r, "id")
+		if !ok {
+			return
+		}
+		jobID, err := action(id)
+		if err != nil {
+			if errors.Is(err, queue.ErrNotFound) {
+				contract.WriteError(w, http.StatusNotFound, errNotFound, "job not found")
+				return
+			}
+			contract.WriteError(w, http.StatusConflict, errConflict, err.Error())
+			return
+		}
+		contract.WriteJSON(w, http.StatusAccepted, contract.JobAccepted{JobID: jobID})
 	}
-	contract.WriteJSON(w, http.StatusAccepted, contract.JobAccepted{JobID: jobID})
 }
 
 func (h *Handler) retryJob(w http.ResponseWriter, r *http.Request) {
-	h.jobAction(w, r, func(id int64) (int64, error) {
+	h.jobAction(func(id int64) (int64, error) {
 		return id, h.queue.Retry(id, r.URL.Query().Get("force") == "1")
-	})
-}
-
-func (h *Handler) continueJob(w http.ResponseWriter, r *http.Request) {
-	h.jobAction(w, r, h.queue.Continue)
-}
-
-func (h *Handler) continueAllJob(w http.ResponseWriter, r *http.Request) {
-	h.jobAction(w, r, h.queue.ContinueAll)
+	})(w, r)
 }
 
 // The whole continue-series goes, so clearing a collapsed row drops every

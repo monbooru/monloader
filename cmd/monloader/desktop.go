@@ -78,8 +78,8 @@ func inContainer() bool {
 
 // Created, not only named: the sync refuses a missing folder. Saved too:
 // a start refuses a config with the sync on and no path.
-func ptrFolder(cfg *config.Config, l desktop.Layout, configPath, dataDir string) {
-	if cfg.PTR.DataPath != "" {
+func ptrFolder(cfg *config.Provider, configPath, dataDir string) {
+	if cfg.Current().PTR.DataPath != "" {
 		return
 	}
 	dir := filepath.Join(dataDir, "ptr")
@@ -87,25 +87,9 @@ func ptrFolder(cfg *config.Config, l desktop.Layout, configPath, dataDir string)
 		logx.Warnf("could not create the ptr folder %s: %v", dir, err)
 		return
 	}
-	// The file's copy travels with a portable folder; the running config
-	// keeps the absolute path.
-	base := ""
-	if l.Portable {
-		base = l.ConfigDir
-	}
-	persist, err := config.LoadFromFileIn(configPath, base)
-	if err == nil {
-		persist.PTR.DataPath = dir
-		// The load resolved every path against base; saved as loaded, the
-		// gallery-dl ones would pin the folder where it first ran.
-		config.RelativizeIn(persist, base)
-		err = config.Save(persist, configPath)
-	}
-	if err != nil {
+	if err := cfg.Update(func(c *config.Config) error { c.PTR.DataPath = dir; return nil }); err != nil {
 		logx.Warnf("could not record the ptr folder in %s: %v", configPath, err)
-		return
 	}
-	cfg.PTR.DataPath = dir
 }
 
 // A shortcut launch on Windows has no console, so a startup failure must

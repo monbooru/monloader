@@ -1,19 +1,18 @@
 {{define "monsender_pairing"}}
-<div id="monsender-pairing"{{if not .Paired}} hx-get="/internal/monsender-pairing?paired={{.Paired}}&pair={{.PairKey}}" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
-  {{$csrf := .CSRFToken}}
+<div id="monsender-pairing"{{if not .Paired}} hx-get="/internal/monsender-pairing?paired={{.Paired}}&pair={{.PairKey}}" hx-trigger="every 3s [!confirmOpen()]" hx-swap="outerHTML"{{end}}>
   {{if .Pending}}
   <div class="pairing-pending">
-  <p class="pairing-pending-msg">The monsender extension is requesting to pair. Approve or deny below.</p>
+  <p class="pairing-pending-msg">monsender wants to pair.</p>
   <div class="table-scroll">
-  <table class="data-table">
+  <table class="data-table stack-table">
     <thead><tr><th>App</th><th>Source</th><th>Scopes</th><th>Expires</th><th class="cell-action">Approve</th><th class="cell-action">Deny</th></tr></thead>
     <tbody>
       {{range .Pending}}
       <tr>
-        <td>{{.App}}</td>
-        <td>{{.Source}}</td>
-        <td>{{range $i, $s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</td>
-        <td>{{minutesLeft .ExpiresAt}}</td>
+        <td class="stack-head">{{.App}}</td>
+        <td data-label="Source">{{.Source}}</td>
+        <td data-label="Scopes">{{range $i, $s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</td>
+        <td data-label="Expires">{{minutesLeft .ExpiresAt}}</td>
         <td class="cell-action"><form hx-post="/settings/auth/pair/{{.ID}}/approve" hx-target="#monsender-pairing" hx-swap="outerHTML" style="display:inline"><button type="submit" class="btn-sm btn-success">Approve</button></form></td>
         <td class="cell-action"><form hx-post="/settings/auth/pair/{{.ID}}/deny" hx-target="#monsender-pairing" hx-swap="outerHTML" style="display:inline"><button type="submit" class="btn-sm">Deny</button></form></td>
       </tr>
@@ -32,10 +31,11 @@
     </form>
   </p>
   {{else if .Awaiting}}
-  {{range .Awaiting}}<p class="field-hint">approved - waiting for {{.App}} to collect its token</p>{{end}}
-  {{else}}
+  {{range .Awaiting}}<p class="field-hint">Approved. Waiting for {{.App}} to finish.</p>{{end}}
+  {{else if not .Pending}}
   <p class="field-hint">To set up the monsender extension: in the extension click "connect to monloader", then approve the request here.</p>
   {{end}}
+  {{with .Message}}<span class="field-hint">{{.}}</span>{{end}}
 </div>
 {{with .Notice}}{{template "webui/pair_notice" .}}<span id="settings-pair-count" class="nav-count" hx-swap-oob="true">{{with len .Items}} ({{.}}){{end}}</span>{{end}}
 {{end}}

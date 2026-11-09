@@ -9,16 +9,15 @@
 </div>
 {{if .NoExtractor}}<p class="field-hint">gallery-dl matches no extractor for this URL. monloader fetched the file itself, which is why the item imported - what follows is that refusal, not what happened.</p>{{end}}
 <pre id="debug-log-text" class="debug-log">{{.Log}}</pre>
-<p class="field-hint">{{if .Redacted}}{{.Redacted}} value{{if ne .Redacted 1}}s{{end}} removed. {{end}}URLs and headers may carry private information.</p>
+<p class="field-hint">{{if .Redacted}}{{.Redacted}} secret{{if ne .Redacted 1}}s{{end}} removed. {{end}}Check URLs and headers before sharing.</p>
 {{else}}
-<p>No debug log for this item yet.</p>
 <p class="field-hint">{{.URL}}</p>
 <form hx-post="/internal/item-debug" hx-target="#debug-log-body" hx-swap="innerHTML" hx-indicator="#debug-log-running" hx-disabled-elt="find button">
   <input type="hidden" name="url" value="{{.URL}}">
-  <button type="submit">Run this post again with debug</button>
+  <button type="submit">Run with debug log</button>
   <span id="debug-log-running" class="htmx-indicator field-hint">fetching the post...</span>
 </form>
-<p class="field-hint">Re-runs this one post with gallery-dl's debug logging on. Nothing is pushed to monbooru.</p>
+<p class="field-hint">Fetches this post again to capture gallery-dl's log. Nothing goes to monbooru.</p>
 {{end}}
 <div class="dialog-actions">
   <button type="button" onclick="this.closest('dialog').close()">Close</button>

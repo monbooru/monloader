@@ -1,19 +1,21 @@
 package gdl
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io"
-	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/monbooru/monloader/internal/kwdict"
 	"github.com/monbooru/monloader/internal/outcome"
+	"github.com/monbooru/monloader/internal/shared/fsx"
 )
 
 // gallery-dl's directlink extractor needs a known media extension in the
@@ -34,9 +36,47 @@ func directRequest(ctx context.Context, method, rawURL string) (*http.Request, e
 	return req, nil
 }
 
-// The ceiling only catches a stuck connection; a job cancel comes through
-// the request context.
-var directFetchClient = &http.Client{Timeout: 10 * time.Minute}
+// No whole-request timeout: it would cut a large file on a slow link. A stuck
+// connection is directFetchStall's, and a job cancel comes through the request context.
+var directFetchClient = &http.Client{}
+
+var directFetchStall = time.Minute
+
+var errDirectFetchStalled = errors.New("the file's host stopped sending")
+
+// A resolve accepted this URL before the download pass got here, so a failure is
+// the fetch's, not the URL's.
+func directFetchFailed(ctx context.Context, msg string) *outcome.CodedError {
+	if errors.Is(context.Cause(ctx), errDirectFetchStalled) {
+		msg = errDirectFetchStalled.Error()
+	}
+	return &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: msg}
+}
+
+type stallReader struct {
+	r     io.Reader
+	timer *time.Timer
+}
+
+func (s stallReader) Read(b []byte) (int, error) {
+	n, err := s.r.Read(b)
+	if n > 0 {
+		s.timer.Reset(directFetchStall)
+	}
+	return n, err
+}
+
+// Past this an over-long CDN segment would fail the create, at the 255-byte
+// limit most filesystems set.
+const maxDirectName = 200
+
+func directFileName(meta map[string]any) string {
+	name := cmp.Or(fsx.SanitizeFilename(kwdict.String(meta, "filename")), "file")
+	if len(name) > maxDirectName {
+		name = strings.ToValidUTF8(name[:maxDirectName], "")
+	}
+	return name
+}
 
 // Nothing else stops a hostile host from filling the RAM-backed /work.
 // Sized to monbooru's default per-file ceiling.
@@ -44,42 +84,20 @@ var directFetchMaxBytes int64 = 2 << 30
 
 var errDirectFetchTooLarge = errors.New("file exceeds the directlink size cap")
 
-// Shorter than the client's ceiling, so a black-hole host cannot stall a
-// worker on the probe.
+// So a black-hole host cannot stall a worker on the probe.
 var directProbeTimeout = 15 * time.Second
 
-// The formats gallery-dl's directlink extractor knows by extension, plus
-// JPEG XL, which it does not: a .jxl link falls back to this fetch.
 var mediaExtensions = map[string]string{
-	"image/jpeg":       "jpg",
-	"image/pjpeg":      "jpg",
-	"image/png":        "png",
-	"image/apng":       "png",
-	"image/gif":        "gif",
-	"image/webp":       "webp",
-	"image/avif":       "avif",
-	"image/jxl":        "jxl",
-	"image/bmp":        "bmp",
-	"image/x-ms-bmp":   "bmp",
-	"image/svg+xml":    "svg",
-	"image/heic":       "heic",
-	"image/heif":       "heif",
-	"image/tiff":       "tiff",
-	"video/mp4":        "mp4",
-	"video/x-m4v":      "m4v",
-	"video/quicktime":  "mov",
-	"video/webm":       "webm",
-	"video/x-matroska": "mkv",
-	"video/ogg":        "ogv",
-}
-
-func mediaExtension(contentType string) (string, bool) {
-	mt, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return "", false
-	}
-	ext, ok := mediaExtensions[mt]
-	return ext, ok
+	"image/jpeg":  "jpg",
+	"image/pjpeg": "jpg",
+	"image/png":   "png",
+	"image/apng":  "png",
+	"image/gif":   "gif",
+	"image/webp":  "webp",
+	"image/avif":  "avif",
+	"image/jxl":   "jxl",
+	"video/mp4":   "mp4",
+	"video/webm":  "webm",
 }
 
 func directlinkResolve(ctx context.Context, rawURL string) ([]Item, bool) {
@@ -97,22 +115,26 @@ func directlinkResolve(ctx context.Context, rawURL string) ([]Item, bool) {
 	return []Item{itemFromMeta(directlinkMeta(u))}, true
 }
 
-func directlinkDownload(ctx context.Context, rawURL, workDir string, onFile func(int, Downloaded)) ([]Downloaded, bool, error) {
+func directlinkDownload(ctx context.Context, rawURL, workDir string, onFile func(Downloaded)) ([]Downloaded, bool, error) {
 	u, ok := parseHTTPURL(rawURL)
 	if !ok {
 		return nil, false, nil
 	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	stall := time.AfterFunc(directFetchStall, func() { cancel(errDirectFetchStalled) })
+	defer stall.Stop()
 	req, err := directRequest(ctx, http.MethodGet, rawURL)
 	if err != nil {
 		return nil, false, nil
 	}
 	resp, err := directFetchClient.Do(req)
 	if err != nil {
-		return nil, false, nil
+		return nil, true, directFetchFailed(ctx, err.Error())
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, false, nil
+		return nil, true, directFetchFailed(ctx, "the file's host answered "+resp.Status)
 	}
 	ext, ok := ingestableMedia(resp.Header.Get("Content-Type"))
 	if !ok {
@@ -120,22 +142,17 @@ func directlinkDownload(ctx context.Context, rawURL, workDir string, onFile func
 	}
 
 	meta := directlinkMeta(u)
-	name := kwdict.String(meta, "filename")
-	if name == "" {
-		name = "file"
-	}
-	path := filepath.Join(workDir, name+"."+ext)
-	if err := writeFile(path, resp.Body); err != nil {
-		code := outcome.ErrCodeDownloadFailed
+	path := filepath.Join(workDir, directFileName(meta)+"."+ext)
+	if err := writeFile(path, stallReader{resp.Body, stall}); err != nil {
 		if errors.Is(err, errDirectFetchTooLarge) {
-			code = outcome.ErrCodeFileTooLarge
+			return nil, true, &outcome.CodedError{Code: outcome.ErrCodeFileTooLarge, Msg: err.Error()}
 		}
-		return nil, true, &outcome.CodedError{Code: code, Msg: err.Error()}
+		return nil, true, directFetchFailed(ctx, err.Error())
 	}
 
 	d := Downloaded{Path: path, Meta: meta}
 	if onFile != nil {
-		onFile(0, d)
+		onFile(d)
 	}
 	return []Downloaded{d}, true, nil
 }
@@ -149,16 +166,10 @@ func writeFile(path string, r io.Reader) error {
 	if err == nil && n > directFetchMaxBytes {
 		err = errDirectFetchTooLarge
 	}
-	if err != nil {
-		f.Close()
+	if err = cmp.Or(err, f.Close()); err != nil {
 		os.Remove(path)
-		return err
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return err
-	}
-	return nil
+	return err
 }
 
 func probeContentType(ctx context.Context, rawURL string) (string, bool) {
@@ -195,16 +206,15 @@ func probeContentTypeGET(ctx context.Context, rawURL string) (string, bool) {
 	return resp.Header.Get("Content-Type"), true
 }
 
-// The metadata gallery-dl's directlink extractor would give u, but with
-// the extension empty so the mapper rebuilds the submitted URL instead of
-// appending one.
+// The metadata gallery-dl's directlink extractor would give u, with the whole
+// name in filename.
 func directlinkMeta(u *url.URL) map[string]any {
-	dir, file := splitPath(strings.TrimPrefix(u.EscapedPath(), "/"))
+	dir, file := path.Split(strings.TrimPrefix(u.EscapedPath(), "/"))
 	meta := map[string]any{
 		"category":    directlinkCategory,
 		"subcategory": registrableSuffix(u.Host),
 		"domain":      u.Host,
-		"path":        dir,
+		"path":        strings.TrimSuffix(dir, "/"),
 		"filename":    file,
 		"extension":   "",
 	}
@@ -215,13 +225,6 @@ func directlinkMeta(u *url.URL) map[string]any {
 		meta["fragment"] = frag
 	}
 	return meta
-}
-
-func splitPath(p string) (dir, file string) {
-	if i := strings.LastIndex(p, "/"); i >= 0 {
-		return p[:i], p[i+1:]
-	}
-	return "", p
 }
 
 // The last two labels, as gallery-dl derives the directlink subcategory.

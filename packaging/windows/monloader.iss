@@ -3,14 +3,6 @@
 #define MyAppPublisher "monbooru"
 #define MyAppURL "https://github.com/monbooru/monloader"
 
-#ifndef MyAppVersion
-  #define MyAppVersion "0.0.0"
-#endif
-
-#ifndef MyAppTools
-  #define MyAppTools "bundled"
-#endif
-
 [Setup]
 AppId={{B2F3BE18-1C24-5C94-8D9C-1F09E7061D2B}
 AppName={#MyAppName}
@@ -40,7 +32,6 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "payload\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\icons\monloader.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "-desktop"; IconFilename: "{app}\monloader.ico"

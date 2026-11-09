@@ -3,8 +3,8 @@ package web
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,9 +14,9 @@ import (
 
 	"github.com/monbooru/monloader/internal/api"
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/contrib"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/shared/logx"
-	"github.com/monbooru/monloader/internal/shared/session"
 )
 
 type ptrEngine interface {
@@ -32,7 +32,10 @@ type ptrEngine interface {
 	SetAccessKey(key string)
 	DataPath() string
 	SetDataPath(path string) bool
+	Address() string
 	SetAddress(addr string) bool
+	SetMinFreeGB(gb int)
+	SetFetchSleep(seconds float64)
 	ContribAccount(ctx context.Context) (*ptr.Account, error)
 }
 
@@ -59,16 +62,15 @@ func (s *Server) ptrData(r *http.Request) ptrView {
 	path := s.ptr.DataPath()
 	v := ptrView{
 		Status:    st,
-		Address:   cfg.Address,
+		Address:   s.ptr.Address(),
 		DataPath:  path,
 		HasIndex:  ptr.IndexExists(path),
 		FreeBytes: ptr.FreeBytes(path),
 		MinFreeGB: cfg.MinFreeGB,
-		CSRFToken: s.sessions.CSRFToken(session.FromContext(r.Context())),
+		CSRFToken: s.csrf(r),
 	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		v.PathMissing = true
-	}
+	_, statErr := os.Stat(path)
+	v.PathMissing = os.IsNotExist(statErr)
 	v.BelowFloor = !v.HasIndex && v.MinFreeGB > 0 && v.FreeBytes > 0 && v.FreeBytes < int64(v.MinFreeGB)<<30
 	// Blobs weight updates by volume; the update count is the fallback
 	// without a blob census.
@@ -120,7 +122,7 @@ func (s *Server) applyPTREnabled(on bool) error {
 	} else {
 		s.ptr.Disable()
 	}
-	err := s.updateConfig(func(c *config.Config) error {
+	err := s.cfg.Update(func(c *config.Config) error {
 		c.PTR.Enabled = on
 		if resume {
 			c.PTR.Paused = false
@@ -133,39 +135,61 @@ func (s *Server) applyPTREnabled(on bool) error {
 	return nil
 }
 
-func (s *Server) ptrPause(w http.ResponseWriter, r *http.Request) {
-	s.ptr.Pause()
-	s.persistPTRPaused(true)
-	s.ptrRedirect(w, r, "ok", "ptr sync paused")
-}
-
-func (s *Server) ptrResume(w http.ResponseWriter, r *http.Request) {
-	s.ptr.Resume()
-	s.persistPTRPaused(false)
-	s.ptrRedirect(w, r, "ok", "ptr sync resumed")
-}
-
-func (s *Server) persistPTRPaused(paused bool) {
-	if err := s.updateConfig(func(c *config.Config) error { c.PTR.Paused = paused; return nil }); err != nil {
-		logx.Warnf("ptr: could not persist the pause: %v", err)
+func (s *Server) ptrHold(act func(), paused bool, msg string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		act()
+		if err := s.cfg.Update(func(c *config.Config) error { c.PTR.Paused = paused; return nil }); err != nil {
+			logx.Warnf("ptr: could not persist the pause: %v", err)
+		}
+		s.ptrRedirect(w, r, "ok", msg)
 	}
 }
 
+// The button shows only in the error state, so a stale tab can reach this after
+// a disable or a delete, where a retry would sync from zero.
 func (s *Server) ptrRetry(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.Current().PTR.Enabled {
+		s.ptrRedirect(w, r, "err", "The PTR lookup is off - enable it to sync.")
+		return
+	}
 	s.ptr.Retry()
 	s.ptrRedirect(w, r, "ok", "retrying ptr sync")
 }
 
-// The engine snapshots its config at boot; only the key, the enabled box
-// and, while no index is open, the data path and the address apply at once.
+// While an index is open, the data path and the address wait for a restart.
 func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "Bad form data.")
-		return
-	}
 	path := strings.TrimSpace(r.FormValue("data_path"))
 	if path == "" {
 		s.refuseSave(w, r, "Data path required.")
+		return
+	}
+	// An absent field keeps its stored value; a posted one that does not
+	// parse, blank included, is refused by name.
+	var bad []string
+	var edits []func(*config.Config)
+	if r.Form.Has("address") {
+		if v := strings.TrimSpace(r.FormValue("address")); config.IsHTTPURL(v) {
+			edits = append(edits, func(c *config.Config) { c.PTR.Address = v })
+		} else {
+			bad = append(bad, "address must be an http(s) URL")
+		}
+	}
+	if r.Form.Has("fetch_sleep") {
+		if f, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("fetch_sleep")), 64); err == nil && f >= 0 && !math.IsInf(f, 0) {
+			edits = append(edits, func(c *config.Config) { c.PTR.FetchSleep = f })
+		} else {
+			bad = append(bad, "delay between updates must be a number of 0 or more")
+		}
+	}
+	if r.Form.Has("min_free_gb") {
+		if n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("min_free_gb"))); err == nil && n >= 0 {
+			edits = append(edits, func(c *config.Config) { c.PTR.MinFreeGB = n })
+		} else {
+			bad = append(bad, "free space needed must be a whole number of 0 or more")
+		}
+	}
+	if len(bad) > 0 {
+		s.refuseSave(w, r, strings.Join(bad, "; ")+" - nothing was saved.")
 		return
 	}
 	// A running sync is not repointed, so the engine never checks the new
@@ -177,19 +201,13 @@ func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	err := s.updateConfig(func(c *config.Config) error {
+	err := s.cfg.Update(func(c *config.Config) error {
 		c.PTR.DataPath = path
-		if v := strings.TrimSpace(r.FormValue("address")); v != "" {
-			c.PTR.Address = v
-		}
 		if v := strings.TrimSpace(r.FormValue("access_key")); v != "" {
 			c.PTR.AccessKey = v
 		}
-		if f, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("fetch_sleep")), 64); err == nil && f >= 0 {
-			c.PTR.FetchSleep = f
-		}
-		if n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("min_free_gb"))); err == nil && n >= 0 {
-			c.PTR.MinFreeGB = n
+		for _, edit := range edits {
+			edit(c)
 		}
 		return nil
 	})
@@ -197,14 +215,11 @@ func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
 		s.refuseSave(w, r, "Could not save: "+err.Error())
 		return
 	}
-	s.ptr.SetAccessKey(s.cfg.Current().PTR.AccessKey)
-	// Repointed before the enable, which would otherwise sync from the
-	// address the engine booted with.
 	var later []string
-	if !s.ptr.SetDataPath(path) {
+	if s.ptr.DataPath() != path {
 		later = append(later, "data path")
 	}
-	if !s.ptr.SetAddress(s.cfg.Current().PTR.Address) {
+	if s.ptr.Address() != s.cfg.Current().PTR.Address {
 		later = append(later, "address")
 	}
 	if err := s.applyPTREnabled(enabled); err != nil {
@@ -212,19 +227,19 @@ func (s *Server) savePTR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(later) > 0 {
-		s.redirectFlash(w, r, "ok", "Saved. The new "+strings.Join(later, " and ")+" applies after a restart, since the sync is running.")
+		verb := "applies"
+		if len(later) > 1 {
+			verb = "apply"
+		}
+		s.redirectFlash(w, r, "ok", "Saved. The new "+strings.Join(later, " and ")+" "+verb+" after a restart, since an index is open.")
 		return
 	}
 	s.redirectFlash(w, r, "ok", "Saved.")
 }
 
 func (s *Server) ptrClearKey(w http.ResponseWriter, r *http.Request) {
-	if err := s.updateConfig(func(c *config.Config) error { c.PTR.AccessKey = ""; return nil }); err != nil {
-		s.redirectFlash(w, r, "err", "Could not save: "+err.Error())
-		return
-	}
-	s.ptr.SetAccessKey("")
-	s.redirectFlash(w, r, "ok", "PTR access key cleared.")
+	err := s.cfg.Update(func(c *config.Config) error { c.PTR.AccessKey = ""; return nil })
+	s.saveFlash(w, r, err, "PTR access key cleared.")
 }
 
 // Posted from settings, so the flash returns there, not to the ptr page.
@@ -233,7 +248,7 @@ func (s *Server) ptrDelete(w http.ResponseWriter, r *http.Request) {
 		s.redirectFlash(w, r, "err", "Could not delete: "+err.Error())
 		return
 	}
-	if err := s.updateConfig(func(c *config.Config) error { c.PTR.Enabled = false; return nil }); err != nil {
+	if err := s.cfg.Update(func(c *config.Config) error { c.PTR.Enabled = false; return nil }); err != nil {
 		logx.Warnf("ptr: deleted but could not persist the flag: %v", err)
 	}
 	s.redirectFlash(w, r, "ok", "PTR index deleted.")
@@ -241,37 +256,6 @@ func (s *Server) ptrDelete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) ptrRedirect(w http.ResponseWriter, r *http.Request, kind, msg string) {
 	http.Redirect(w, r, "/ptr?kind="+kind+"&msg="+url.QueryEscape(msg), http.StatusSeeOther)
-}
-
-func humanDate(unix int64) string {
-	if unix <= 0 {
-		return ""
-	}
-	return time.Unix(unix, 0).In(time.Local).Format("2006-01-02")
-}
-
-func humanAgo(unix int64) string {
-	if unix <= 0 {
-		return ""
-	}
-	return humanSince(time.Unix(unix, 0))
-}
-
-func humanDue(unix int64) string {
-	if unix <= 0 {
-		return ""
-	}
-	d := time.Until(time.Unix(unix, 0))
-	switch {
-	case d < 0:
-		return "due now"
-	case d < time.Hour:
-		return "in " + strconv.Itoa(int(d.Minutes())) + "m"
-	case d < 24*time.Hour:
-		return "in " + strconv.Itoa(int(d.Hours())) + "h"
-	default:
-		return "in " + strconv.Itoa(int(d.Hours())/24) + "d"
-	}
 }
 
 type ptrAccountView struct {
@@ -283,14 +267,11 @@ type ptrAccountView struct {
 }
 
 func permissionWords(acc *ptr.Account) string {
-	if acc == nil {
-		return ""
-	}
 	var parts []string
 	if acc.Type.CanCreateMappings() {
 		parts = append(parts, "add tags")
 	}
-	if acc.Type.CanPetition() {
+	if acc.Type.CanSend(ptr.ContribSibling) || acc.Type.CanSend(ptr.ContribParent) {
 		parts = append(parts, "suggest / petition aliases and implications")
 	}
 	if len(parts) == 0 {
@@ -335,17 +316,14 @@ func (s *Server) ptrAccountCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	key, err := s.ptr.CreateContribAccount(ctx)
-	if err != nil {
-		s.render(w, "ptr_account", s.ptrAccountData(r, createAccountMessage(err)))
-		return
-	}
-	if err := s.updateConfig(func(c *config.Config) error {
-		c.PTR.AccessKey = key
-		return nil
-	}); err != nil {
-		s.render(w, "ptr_account", s.ptrAccountData(r,
-			"account created but saving the key failed: "+err.Error()+" - reveal and back it up before restarting"))
+	failure := contrib.CreateAccount(ctx, s.ptr, func(key string) error {
+		return s.cfg.Update(func(c *config.Config) error {
+			c.PTR.AccessKey = key
+			return nil
+		})
+	})
+	if failure != nil {
+		s.render(w, "ptr_account", s.ptrAccountData(r, failure.Msg))
 		return
 	}
 	s.render(w, "ptr_account", s.ptrAccountData(r, ""))
@@ -356,15 +334,6 @@ func (s *Server) ptrAccountCreate(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "ptr_contrib", contrib)
 }
 
-// A 400 is the repository's velocity refusal.
-func createAccountMessage(err error) string {
-	var serr *ptr.ServerError
-	if errors.As(err, &serr) && serr.Status == 400 {
-		return "The repository is not taking new accounts right now, try again later."
-	}
-	return err.Error()
-}
-
 // The one place the personal key renders; settings shows only set / not set.
 func (s *Server) ptrRevealKey(w http.ResponseWriter, r *http.Request) {
 	key := s.ptr.AccessKey()
@@ -372,6 +341,7 @@ func (s *Server) ptrRevealKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "No personal key.", http.StatusNotFound)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "ptr_account_key", key)
 }
 
@@ -391,7 +361,6 @@ type ptrContribItemView struct {
 type ptrContribView struct {
 	OOB         bool
 	NoAccount   bool
-	Syncing     bool
 	NotReady    bool
 	SendRunning bool
 	Activity    ptrActivityView
@@ -457,11 +426,11 @@ func ptrActivity(daily map[string]int, now time.Time) ptrActivityView {
 
 var contribKindLabels = map[string]string{
 	ptr.ContribMappingAdd:      "add",
-	ptr.ContribMappingPetition: "petition",
-	ptr.ContribSibling:         "sibling",
-	ptr.ContribParent:          "parent",
-	ptr.ContribSiblingPetition: "sibling petition",
-	ptr.ContribParentPetition:  "parent petition",
+	ptr.ContribMappingPetition: "tag removal",
+	ptr.ContribSibling:         "alias",
+	ptr.ContribParent:          "implication",
+	ptr.ContribSiblingPetition: "alias removal",
+	ptr.ContribParentPetition:  "implication removal",
 }
 
 func contribKindLabel(kind string) string {
@@ -471,6 +440,9 @@ func contribKindLabel(kind string) string {
 // A denial is invisible in the protocol, so a long pending age is all
 // anyone can know.
 func contribOutcomeLabel(outcome string, committedAt int64) string {
+	if outcome == ptr.OutcomeNotTaken {
+		return "not taken"
+	}
 	if outcome != "" {
 		return outcome
 	}
@@ -490,7 +462,6 @@ func contribItemView(mbBase string, id int64, kind, tag, tag2 string, hash []byt
 func (s *Server) ptrContribData(r *http.Request, retryErr string) ptrContribView {
 	v := ptrContribView{
 		NoAccount: !s.ptr.HasPersonalKey(),
-		Syncing:   s.ptr.Syncing(),
 		NotReady:  !s.ptr.CaughtUp(),
 		RetryErr:  retryErr,
 	}
@@ -541,7 +512,7 @@ func (s *Server) ptrContribFragment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ptrContribRetry(w http.ResponseWriter, r *http.Request) {
-	if refusal := api.ContribSendRefusal(r.Context(), s.ptr); refusal != nil {
+	if refusal := contrib.SendRefusal(r.Context(), s.ptr); refusal != nil {
 		s.render(w, "ptr_contrib", s.ptrContribData(r, refusal.Msg))
 		return
 	}
@@ -587,10 +558,10 @@ func (s *Server) ptrContribLogRescind(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) rescindCommittedAdd(ctx context.Context, store *ptr.ContribStore, logID int64) string {
-	if refusal := api.ContribSendRefusal(ctx, s.ptr); refusal != nil {
+	if refusal := contrib.SendRefusal(ctx, s.ptr); refusal != nil {
 		return refusal.Msg
 	}
-	itemID, rerr := api.RescindCommittedAdd(s.ptr, store, logID)
+	itemID, rerr := contrib.RescindCommittedAdd(s.ptr, store, logID)
 	if rerr != nil {
 		return rerr.Msg
 	}

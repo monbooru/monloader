@@ -1,8 +1,9 @@
 {{define "sites_table"}}
 <h3 class="sites-group">{{.Heading}}</h3>
+{{with .Hint}}<p class="field-hint">{{.}} Storage and sync are in <a href="#ptr">PTR</a>.</p>{{end}}
 <div class="table-scroll">
 <table class="grid-table sites-table stack-table">
-  <thead><tr><th>Site</th><th>Login</th><th>Auth</th><th>Gallery</th><th>State</th><th>Action</th></tr></thead>
+  <thead><tr><th>Site</th><th>Login</th><th>Credentials</th><th>Gallery</th><th>State</th><th>Action</th></tr></thead>
   <tbody>
   {{range .Rows}}{{template "site_row" .}}{{end}}
   </tbody>

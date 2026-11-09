@@ -1,6 +1,9 @@
 package api
 
 import (
+	"net/http"
+
+	"github.com/monbooru/monloader/internal/contrib"
 	"github.com/monbooru/monloader/internal/outcome"
 
 	"github.com/monbooru/monloader/internal/shared/contract"
@@ -10,7 +13,7 @@ import (
 // text quotes them, so never respell one.
 const (
 	errInvalidRequest = contract.CodeInvalidRequest
-	errNotFound       = "not_found"
+	errNotFound       = contrib.CodeNotFound
 	errConflict       = "conflict"
 	errNamespaceReq   = contract.CodeNamespaceRequired
 
@@ -21,19 +24,23 @@ const (
 	errAccountExists        = "account_exists"
 	errPTRVelocity          = "ptr_velocity"
 	errPTRError             = "ptr_error"
-	errNotRescindable       = "not_rescindable"
 
 	// Shared with the item codes: a lookup or a contribution send refused
 	// up front and one that fails mid-job report the same string.
-	errPTRUnavailable     = outcome.ErrCodePTRUnavailable
-	errPTRSyncing         = outcome.ErrCodePTRSyncing
-	errPTRAccountRequired = outcome.ErrCodePTRAccountRequired
-	errPTRBanned          = outcome.ErrCodePTRBanned
+	errPTRUnavailable = outcome.ErrCodePTRUnavailable
+	errPTRSyncing     = outcome.ErrCodePTRSyncing
 
-	errInternal   = "internal_error"
+	errInternal   = contrib.CodeInternal
 	errSaveFailed = "save_failed"
 )
+
+// ErrAlreadyPaired refuses a pairing request from an app that holds a token.
+const ErrAlreadyPaired = "already_paired"
 
 // ErrSetupRequired is answered by the web first-run gate, in front of every
 // route here.
 const ErrSetupRequired = contract.CodeSetupRequired
+
+func NotFound(w http.ResponseWriter) {
+	contract.WriteError(w, http.StatusNotFound, errNotFound, "not found")
+}

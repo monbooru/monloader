@@ -9,19 +9,19 @@
       <div class="search-input-wrap">
         <input type="text" name="url" autocomplete="off"{{if .WatchStore}} data-peer-title=""{{end}}{{if not (and .WatchStore .MonbooruConfigured)}} disabled{{end}} placeholder="Paste a search URL to watch">
       </div>
-      <select name="items" aria-label="Items to fetch" title="How many posts to fetch">{{template "items_options" .ItemChoices}}</select>
+      <select name="items" aria-label="Posts to fetch" title="How many posts each check fetches">{{template "items_options" .ItemChoices}}</select>
       <select name="interval_hours" aria-label="Check every">{{range .Intervals}}<option value="{{.Hours}}"{{if eq .Hours $.DefaultWatchHours}} selected{{end}}>{{.Label}}</option>{{end}}</select>
       <button type="submit"{{if .WatchStore}} data-peer-title=""{{end}}{{if not (and .WatchStore .MonbooruConfigured)}} disabled{{end}}>Watch</button>
     </div>
   </form>
-  <div id="watch-flash" class="field-hint">{{if not .WatchStore}}<span class="flash-err">Watches need the queue store, which is not writable.</span>{{end}}</div>
+  <div id="watch-flash" class="field-hint">{{if not .WatchStore}}<span class="flash-err">Watches can't be saved: monloader's data folder is not writable.</span>{{end}}</div>
   <div class="table-scroll">
   <table class="data-table watch-table">
     <thead>
-      <tr><th>Last check</th><th>URL</th><th>Site</th><th>Items</th><th>Every</th><th>Next</th><th></th></tr>
+      <tr><th>Last check</th><th>URL</th><th>Site</th><th>Fetch</th><th>Schedule</th><th>Next</th><th></th></tr>
     </thead>
     <!-- A focused select pauses the poll, which would otherwise close it mid-pick. -->
-    <tbody id="watch-rows" hx-get="/internal/watch-rows" hx-trigger="load, every 2s [!confirmOpen() && document.activeElement.tagName !== 'SELECT']"
+    <tbody id="watch-rows" hx-get="/internal/watch-rows" hx-trigger="load, every 2s [!pollHeld('#watch-rows') && document.activeElement.tagName !== 'SELECT']"
            hx-target="#watch-rows" hx-swap="innerHTML">
       {{template "watch_rows" .}}
     </tbody>

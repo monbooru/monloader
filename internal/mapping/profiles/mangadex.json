@@ -2,6 +2,9 @@
   "family": "generic",
   "kind": "manga",
   "auth": "none",
+  "category_overrides": {
+    "group": "meta"
+  },
   "example": "https://mangadex.org/title/e3e2c204-ccc4-4061-b9e0-526a8b47d652",
   "rating_overrides": {
     "erotica": "questionable",

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"errors"
 	"net/http"
 	"slices"
@@ -8,9 +9,9 @@ import (
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/gdl"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/queue"
-	"github.com/monbooru/monloader/internal/shared/session"
 )
 
 type watchInterval struct {
@@ -19,7 +20,7 @@ type watchInterval struct {
 }
 
 var watchIntervals = []watchInterval{
-	{0, "manual"}, {6, "6h"}, {12, "12h"}, {24, "daily"}, {72, "3 days"}, {168, "weekly"},
+	{0, "manual"}, {6, "every 6h"}, {12, "every 12h"}, {24, "daily"}, {72, "every 3 days"}, {168, "weekly"},
 }
 
 const defaultWatchHours = 24
@@ -41,7 +42,7 @@ func (s *Server) watchesScreen(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) watchRows(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context()))}
+	data := map[string]any{}
 	s.fillWatches(data)
 	s.render(w, "watch_rows", data)
 }
@@ -66,17 +67,17 @@ func newWatchRow(wt queue.Watch, held bool) watchRow {
 	last := wt.Last
 	switch {
 	case wt.Live:
-		row.Result, row.ResultClass = "checking...", "hint"
+		row.Result, row.ResultClass = "checking...", "field-hint"
 	case last.JobID == 0:
-		row.Result, row.ResultClass = "-", "hint"
+		row.Result, row.ResultClass = "-", "field-hint"
 	case last.Status == queue.JobQueued || last.Status == queue.JobRunning:
 		row.Result = string(queue.JobInterrupted)
 	case last.ErrorCode != "":
-		row.Result, row.ResultTitle = last.ErrorCode, last.Error
+		row.Result, row.ResultTitle = errorLabel(last.ErrorCode), last.Error
 	case last.Status != queue.JobSucceeded:
 		row.Result = string(last.Status)
 	case last.Total == 0:
-		row.Result = "no posts matched"
+		row.Result, row.ResultTitle = "no posts matched", "The site may also hide posts that need a login."
 	// gallery-dl's one-post extractors are all subcategory "post"; any
 	// other, or none recorded, could be a search that matched one.
 	case last.Subcategory == "post":
@@ -84,17 +85,28 @@ func newWatchRow(wt queue.Watch, held bool) watchRow {
 		row.ResultTitle = "This URL resolves to one post, so a check never finds anything new."
 	case last.Created > 0:
 		row.Result, row.ResultClass = strconv.Itoa(last.Created)+" new", "o-created"
+	case last.Blacklisted == last.Total:
+		row.Result, row.ResultClass = "only blacklisted posts", "field-hint"
+		row.ResultTitle = "Every post checked matches a blacklist rule. Raise the limit to look further back."
 	default:
-		row.Result, row.ResultClass = "nothing new", "hint"
+		row.Result, row.ResultClass = "nothing new", "field-hint"
 		if last.Duplicate > 0 {
 			row.ResultTitle = strconv.Itoa(last.Duplicate) + " already in monbooru"
 		}
+	}
+	if last.More && !wt.Live && last.Status == queue.JobSucceeded {
+		row.Result += " - more past the limit"
+		row.ResultTitle = cmp.Or(row.ResultTitle, "The site lists more posts than this watch fetches. Raise its limit to reach them.")
+	}
+	if last.Owed && !wt.Live {
+		row.Result += " - fetched again next check"
+		row.ResultTitle = cmp.Or(row.ResultTitle, "Some posts did not reach monbooru. The next check fetches them again, past gallery-dl's archive.")
 	}
 	switch {
 	case wt.Live:
 		row.Next = "-"
 	case wt.IntervalHours == 0:
-		row.Next = "manual"
+		row.Next = "-"
 	case held:
 		row.Next = "held"
 	default:
@@ -112,9 +124,7 @@ func validWatchHours(v string) (int, bool) {
 }
 
 func watchFlash(w http.ResponseWriter, msg string) {
-	w.Header().Set("HX-Retarget", "#watch-flash")
-	w.Header().Set("HX-Reswap", "innerHTML")
-	flashFragment(w, "err", msg)
+	retargetFlash(w, "#watch-flash", msg)
 }
 
 func watchErrMsg(err error) string {
@@ -132,7 +142,7 @@ func (s *Server) addWatch(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", msg)
 		return
 	}
-	target := strings.TrimSpace(r.FormValue("url"))
+	target := config.NormalizeURL(strings.TrimSpace(r.FormValue("url")))
 	if !config.IsHTTPURL(target) {
 		flashFragment(w, "err", "Enter a valid http(s) URL.")
 		return
@@ -144,7 +154,7 @@ func (s *Server) addWatch(w http.ResponseWriter, r *http.Request) {
 	}
 	items, ok := parseItems(r.FormValue("items"))
 	if !ok {
-		flashFragment(w, "err", "Pick how many items to fetch.")
+		flashFragment(w, "err", "Pick how many posts to fetch.")
 		return
 	}
 	id, err := s.queue.AddWatch(target, hours, items, nil)
@@ -188,7 +198,7 @@ func (s *Server) setWatchInterval(w http.ResponseWriter, r *http.Request) {
 func (s *Server) setWatchItems(w http.ResponseWriter, r *http.Request) {
 	items, ok := parseItems(r.FormValue("items"))
 	if !ok {
-		watchFlash(w, "Pick how many items to fetch.")
+		watchFlash(w, "Pick how many posts to fetch.")
 		return
 	}
 	s.watchAction(w, r, func(id int64) error { return s.queue.SetWatchItems(id, items) })
@@ -221,15 +231,19 @@ func (s *Server) watchAction(w http.ResponseWriter, r *http.Request, act func(id
 // A single post has nothing new to find, and a manga title or gallery
 // would be fetched whole on every check. A window of a series or a capped
 // one is a search whatever it held; a row that never resolved could be
-// either, and a search that matched nothing resolved with a success.
+// either, and a search that matched nothing resolved with a success. A
+// manga site's listing says what it is outright.
 func (s *Server) watchableJob(j *queue.Job, total int) bool {
 	if j.Status == queue.JobQueued || j.Status == queue.JobRunning {
 		return false
 	}
-	search := (j.Root != 0 && j.Root != j.ID) || j.Capped || total > 1 ||
+	manga := s.mapper.KindOf(j.Site) == mapping.KindManga
+	if manga && !gdl.IsListing(j.Subcategory) {
+		return false
+	}
+	search := manga || (j.Root != 0 && j.Root != j.ID) || j.Capped || total > 1 ||
 		(total == 0 && j.Status == queue.JobSucceeded)
-	return j.Kind == "" && config.IsHTTPURL(j.URL) && search &&
-		s.mapper.KindOf(j.Site) != mapping.KindManga
+	return j.Kind == "" && config.IsHTTPURL(j.URL) && search
 }
 
 // A watch made from a row keeps the count the row was fetched with.

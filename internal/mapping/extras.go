@@ -1,6 +1,9 @@
 package mapping
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // Extras is a client's metadata for a submission; every item the job
 // pushes carries it.
@@ -28,20 +31,21 @@ func MergeExtras(pf PushFields, e Extras, sourceClaimed bool) PushFields {
 	if e.Source != "" && !sourceClaimed {
 		pf.Source = e.Source
 	}
-	pf.Tags = appendExtraTags(pf.Tags, e.Tags)
+	pf.ClientTags = clientTags(e.Tags, pf.Rating != "")
 	return pf
 }
 
-// tag_rules are skipped on purpose: they correct one site's spellings,
-// not a sender's.
-func appendExtraTags(tags, extra []string) []string {
-	if len(extra) == 0 {
-		return tags
-	}
-	for _, raw := range extra {
-		if t := normalizeTag(raw); t != "" {
-			tags = append(tags, t)
+// tag_rules are skipped on purpose: they correct one site's spellings, not a
+// sender's. What a post says of its own rating wins, since monbooru's rating
+// ceiling hangs on it.
+func clientTags(raw []string, rated bool) []string {
+	var tags []string
+	for _, r := range raw {
+		t := normalizeTag(r)
+		if t == "" || (rated && strings.HasPrefix(t, "rating:")) {
+			continue
 		}
+		tags = append(tags, t)
 	}
 	slices.Sort(tags)
 	return slices.Compact(tags)

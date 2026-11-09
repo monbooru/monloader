@@ -8,7 +8,7 @@
       {{range .Tokens}}
       <tr>
         <td class="stack-head"><strong>{{.Name}}</strong>{{if .Paired}} <span class="status-badge status-ok">paired</span>{{end}}</td>
-        <td data-label="Created">{{.CreatedAt}}</td>
+        <td data-label="Created">{{dateOnly .CreatedAt}}</td>
         <td data-label="Scopes"><span id="token-scopes-{{.ID}}">{{range $i, $s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</span></td>
         <td>
           <button type="button" class="btn-sm"

@@ -2,13 +2,14 @@ package mapping
 
 import (
 	"cmp"
+	"fmt"
 	"html"
 	"maps"
-	"net/url"
 	"reflect"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/monbooru/monloader/internal/config"
@@ -24,35 +25,17 @@ const Via = contract.Via
 // URL with no booru behind it.
 const CategoryDirectlink = "directlink"
 
-// PushFields carries the rating twice: in Tags, and bare in Rating for
-// the cbz strictest-wins rule.
+// PushFields carries the rating twice: in Tags, and bare in Rating for the cbz
+// strictest-wins rule. The pipeline fills in URL and PostID.
 type PushFields struct {
-	Tags                 []string
-	Rating               string
-	Source               string
-	Via                  string
-	Collection           string
-	CollectionOrder      int
-	Commentary           string
-	CommentaryTranslated string
-	// The DText the source published, which monbooru converts; an older
-	// monbooru reads the plain fields above.
-	CommentaryDText           string
-	CommentaryTranslatedDText string
-	Original                  string
-	ParentURL                 string
-	Notes                     []NoteBox
-	PostWidth, PostHeight     int
-	PostSize                  int64
-	PostExt                   string
-}
-
-// NoteBox coordinates are original-image pixels. monbooru converts
-// BodyHTML and falls back to Body.
-type NoteBox struct {
-	X, Y, W, H int
-	Body       string
-	BodyHTML   string
+	contract.PostFields
+	Rating          string
+	Via             string
+	Collection      string
+	CollectionOrder int
+	ClientTags      []string
+	// Said on the item: monbooru reads such a tag's prefix as part of its name.
+	UnknownTargets []string
 }
 
 // Mapper reads the config provider on every call, so a settings save
@@ -64,6 +47,9 @@ type Mapper struct {
 	// Swapped whole on a profile save, so a reader never sees a
 	// half-rebuilt map.
 	ps atomic.Pointer[profileSet]
+	// A typo in the file is only knowable once monbooru has answered, since
+	// a custom category is as good a target or rule as a built-in one.
+	overridesChecked sync.Once
 }
 
 type profileSet struct {
@@ -88,8 +74,13 @@ func New(cfg *config.Provider, profilesDir string) (*Mapper, error) {
 			logx.Warnf("rating override %s %q -> %q names no rating level (%s); it is skipped", o.Site, o.From, o.To, strings.Join(RatingLevels, ", "))
 		}
 	}
+	for _, name := range cfg.Current().Tags.DropCategories {
+		if name == "" || !validCategoryTarget(name) {
+			logx.Warnf("tags.drop_categories names %q, no tag category (%s); it is skipped", name, strings.Join(TagCategories, ", "))
+		}
+	}
 	for _, o := range cfg.Current().TagOverrides {
-		if o.To != "" && !validTagCategories[o.To] {
+		if !validCategoryTarget(o.To) {
 			logx.Warnf("tag override %s %q -> %q names no tag category (%s); it is skipped", o.Site, o.From, o.To, strings.Join(TagCategories, ", "))
 		}
 	}
@@ -102,6 +93,118 @@ func New(cfg *config.Provider, profilesDir string) (*Mapper, error) {
 }
 
 func (m *Mapper) view() *profileSet { return m.ps.Load() }
+
+// Only once a list has been read: before that nothing is known about a name.
+func unknownTargets(profile Profile, tags []string) []string {
+	customCategoriesMu.RLock()
+	learned := customCategoriesLearned
+	customCategoriesMu.RUnlock()
+	if !learned {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	note := func(target string) {
+		if target == "" || isTagCategory(target) || seen[target] {
+			return
+		}
+		if slices.ContainsFunc(tags, func(tag string) bool {
+			return strings.HasPrefix(tag, target+":") || strings.Contains(tag, ":"+target+":")
+		}) {
+			seen[target] = true
+			out = append(out, fmt.Sprintf("category %q is not in monbooru, so its tags land as general tags named %s:...", target, target))
+		}
+	}
+	for _, to := range profile.CategoryOverrides {
+		note(to)
+	}
+	for _, to := range profile.TagRules {
+		if prefix, _, found := strings.Cut(to, ":"); found {
+			note(prefix)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// CategoryListMissing is whether a rule names a category that is not a built-in
+// while no complete list was ever learned: mapped now, a blacklist rule would fail open
+// and a target would misfile its tags.
+func (m *Mapper) CategoryListMissing() bool {
+	customCategoriesMu.RLock()
+	learned := customCategoriesLearned
+	customCategoriesMu.RUnlock()
+	if learned {
+		return false
+	}
+	cfg := m.cfg.Current()
+	unknown := func(target string) bool { return target != "" && !isTagCategory(target) }
+	if slices.ContainsFunc(cfg.TagOverrides, func(o config.TagOverride) bool { return unknown(o.To) }) {
+		return true
+	}
+	badRule := func(line string) bool {
+		_, bad := parseBlacklistRule(line)
+		return bad != ""
+	}
+	if slices.ContainsFunc(cfg.Tags.Blacklist, badRule) {
+		return true
+	}
+	for _, site := range cfg.Sites {
+		if slices.ContainsFunc(site.Blacklist, badRule) {
+			return true
+		}
+	}
+	for _, p := range m.view().profiles {
+		for _, to := range p.CategoryOverrides {
+			if unknown(to) {
+				return true
+			}
+		}
+		for _, to := range p.TagRules {
+			if prefix, _, found := strings.Cut(to, ":"); found && unknown(prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// LearnCustomCategories takes every gallery's list: a site's target gallery can
+// change between jobs. A complete list replaces what was known, so a renamed or
+// deleted category stops reading as there; a partial one only adds.
+func (m *Mapper) LearnCustomCategories(names []string, complete bool) {
+	customCategoriesMu.Lock()
+	if complete {
+		clear(customCategories)
+	}
+	for _, name := range names {
+		customCategories[name] = true
+	}
+	customCategoriesLearned = customCategoriesLearned || complete
+	customCategoriesMu.Unlock()
+	if !complete {
+		return
+	}
+	m.overridesChecked.Do(func() {
+		cfg := m.cfg.Current()
+		for _, o := range cfg.TagOverrides {
+			if o.To != "" && validCategoryTarget(o.To) && !isTagCategory(o.To) {
+				logx.Warnf("tag override %s %q -> %q names no category monbooru has; it is skipped", o.Site, o.From, o.To)
+			}
+		}
+		warn := func(where string, lines []string) {
+			for _, line := range lines {
+				if _, bad := parseBlacklistRule(line); bad != "" {
+					logx.Warnf("%s blacklist rule %q: %q is not a tag, a category:name or a rating; the rule is skipped", where, line, bad)
+				}
+			}
+		}
+		warn("the global", cfg.Tags.Blacklist)
+		for _, site := range cfg.Sites {
+			warn(site.Name+"'s", site.Blacklist)
+		}
+	})
+}
 
 func (m *Mapper) reload() {
 	profiles := maps.Clone(m.builtin)
@@ -119,6 +222,24 @@ func (m *Mapper) reload() {
 type LookupSource struct {
 	Name       string
 	Similarity bool
+}
+
+func (m *Mapper) MissingCredential(site string) (string, bool) {
+	prof, ok := m.Lookup(site)
+	if !ok {
+		return "", false
+	}
+	return RequiredCredential(prof.Auth, m.cfg.Current().FindSite(site))
+}
+
+func (m *Mapper) SourceQueryable(src LookupSource, simMissing func(string) (string, bool)) bool {
+	var missing bool
+	if src.Similarity {
+		_, missing = simMissing(src.Name)
+	} else {
+		_, missing = m.MissingCredential(src.Name)
+	}
+	return !missing
 }
 
 // A source without an order is never queried: opting in is as explicit as
@@ -201,8 +322,8 @@ func (m *Mapper) sourceLabel(name string) (label string, claimed bool) {
 		}
 	}
 	category, ok := v.hostSite[host]
-	if !ok {
-		category, ok = v.aliasSite[host]
+	for cand := host; !ok && cand != ""; cand = parentDomain(cand) {
+		category, ok = v.aliasSite[cand]
 	}
 	if ok {
 		if site := cfg.FindSite(category); site != nil && site.Label != "" {
@@ -214,16 +335,10 @@ func (m *Mapper) sourceLabel(name string) (label string, claimed bool) {
 }
 
 func hostWithoutPort(host string) string {
-	i := strings.LastIndex(host, ":")
-	if i < 0 || strings.Contains(host[i+1:], "]") {
-		return host
+	if i := strings.LastIndex(host, ":"); i >= 0 && (i == len(host)-1 || allDigits(host[i+1:])) {
+		return host[:i]
 	}
-	for _, r := range host[i+1:] {
-		if r < '0' || r > '9' {
-			return host
-		}
-	}
-	return host[:i]
+	return host
 }
 
 func parentDomain(host string) string {
@@ -238,79 +353,38 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	category := kwdict.String(meta, "category")
 	profile := m.profileFor(category)
 
-	pf := PushFields{
-		Source: m.SourceLabel(category),
-		Via:    Via,
-	}
+	pf := PushFields{PostFields: contract.PostFields{Source: m.SourceLabel(category)}, Via: Via}
 	if category == CategoryDirectlink {
 		pf.Source = m.SourceLabel(kwdict.String(meta, "domain"))
 	}
 
 	var tags []string
-	// monbooru keeps the first rating tag of a push, so only pf.Rating's goes.
-	add := func(s string) {
-		if s = applyTagRule(profile.TagRules, normalizeTag(s)); s != "" && !strings.HasPrefix(s, "rating:") {
+	drop := m.cfg.Current().Tags.DropCategories
+	var withheld []string
+	add := func(_, s string) {
+		listed := normalizeTag(s)
+		s = applyTagRule(profile.TagRules, listed)
+		if s == "" && listed != "" {
+			withheld = append(withheld, listed)
+		}
+		if sentTag(drop, s) {
 			tags = append(tags, s)
 		}
 	}
+	dropped := func(_, s string) { withheld = append(withheld, normalizeTag(s)) }
 
-	suffixes := tagSuffixes(meta)
-	// An opt-in extra such as pixiv's tags_bookmark is no category split:
-	// the post's own flat list stays its tags.
-	if meta["tags"] != nil && !m.anyCategorySuffix(category, profile, suffixes) {
-		suffixes = nil
-	}
-	if len(suffixes) > 0 {
-		for _, suffix := range suffixes {
-			cat, keep := m.categoryFor(category, profile, suffix)
-			if !keep {
-				continue
-			}
-			for _, name := range parseTagField(meta["tags_"+suffix]) {
-				add(formatTag(cat, name))
-			}
-		}
-	} else {
-		// A flat tag list lands as general, except entries with a recognized
-		// namespace prefix (zerochan's "Character:name", philomena boorus).
-		for _, name := range parseTagField(flatTags(meta)) {
-			if profile.Family == FamilyPhilomena && philomenaRatingTag(name) {
-				continue // lifted to the rating field below, not a content tag
-			}
-			if cat, n, ok := splitNamespace(name); ok {
-				add(formatTag(cat, n))
-			} else {
-				add(name)
-			}
-		}
-	}
+	m.eachTag(category, profile, meta, add, dropped)
 
-	if profile.Kind == KindManga {
-		for _, f := range mangaTagFields {
-			for _, name := range parseNameField(meta[f.field]) {
-				add(formatTag(f.category, name))
-			}
-		}
-	}
-
-	// Philomena boorus carry no rating field; the rating is a tag.
-	raw := kwdict.String(meta, "rating")
-	if raw == "" && profile.Family == FamilyPhilomena {
-		raw = philomenaRating(meta)
-	}
-	if raw == "" {
-		// civitai's numeric nsfwLevel means nothing until a profile's
-		// rating overrides name each level.
-		file, _ := meta["file"].(map[string]any)
-		raw = kwdict.String(file, "nsfwLevel")
-	}
-	pf.Rating = m.ratingFor(category, profile, raw)
+	pf.Rating = m.postRating(category, profile, meta)
 	if pf.Rating != "" {
 		tags = append(tags, "rating:"+pf.Rating)
 	}
 
 	slices.Sort(tags)
 	pf.Tags = slices.Compact(tags)
+	slices.Sort(withheld)
+	pf.WithheldTags = slices.Compact(withheld)
+	pf.UnknownTargets = unknownTargets(profile, pf.Tags)
 
 	if kwdict.String(meta, "subcategory") == "pool" {
 		pf.Collection = PoolName(meta)
@@ -330,24 +404,141 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	return pf
 }
 
-// civitai nests an image's tags under file when it comes from a post.
+// eachTag hands over every listed tag with its field, as category:name where the
+// category is known and before any tag rule. dropped gets the tags of a category
+// the site's map drops, under the category they would land in.
+func (m *Mapper) eachTag(category string, profile Profile, meta map[string]any, visit, dropped func(field, tag string)) {
+	named := func(next func(field, tag string)) func(field, tag string) {
+		return func(field, tag string) {
+			if normalizeTag(tag) != "" {
+				next(field, tag)
+			}
+		}
+	}
+	visit, dropped = named(visit), named(dropped)
+	suffixes := tagSuffixes(meta)
+	// A post whose only suffix is an opt-in extra keeps its own flat list.
+	flat := (len(suffixes) == 0 || meta["tags"] != nil) &&
+		!slices.ContainsFunc(suffixes, func(suffix string) bool { return !extraTagSuffixes[suffix] })
+	for _, suffix := range suffixes {
+		if _, overridden := m.categoryOverride(category, profile, suffix); flat && !overridden {
+			continue
+		}
+		cat, keep := m.categoryFor(category, profile, suffix)
+		if !keep {
+			if base, ok := baseCategory(suffix); ok {
+				for _, name := range parseTagField(meta["tags_"+suffix]) {
+					dropped("tags_"+suffix, formatTag(base, name))
+				}
+			}
+			continue
+		}
+		for _, name := range parseTagField(meta["tags_"+suffix]) {
+			visit("tags_"+suffix, formatTag(cat, name))
+		}
+	}
+	if flat {
+		// A flat tag list lands as general, except entries with a recognized
+		// namespace prefix (zerochan's "Character:name", philomena boorus).
+		for _, name := range parseTagField(flatTags(meta)) {
+			if profile.Family == FamilyPhilomena && philomenaRatingTag(name) {
+				continue // lifted to the rating field below, not a content tag
+			}
+			key, base, sub := "general", "general", name
+			ns, rest, _ := strings.Cut(name, ":")
+			ns = strings.ToLower(ns)
+			if cat, n, ok := splitNamespace(name); ok {
+				key, base, sub = ns, cat, n
+			} else if _, row := m.categoryOverride(category, profile, ns); row && rest != "" {
+				key, sub = ns, rest
+			}
+			m.fileTag(category, profile, "tags", key, base, sub, visit, dropped)
+		}
+	}
+
+	if profile.Kind == KindManga {
+		for _, f := range mangaTagFields {
+			for _, name := range parseNameField(meta[f.field]) {
+				m.fileTag(category, profile, f.field, f.field, f.category, name, visit, dropped)
+			}
+		}
+	}
+}
+
+func (m *Mapper) fileTag(site string, profile Profile, field, key, base, name string, visit, dropped func(field, tag string)) {
+	to, ok := m.categoryOverride(site, profile, key)
+	switch {
+	case !ok:
+		visit(field, formatTag(base, name))
+	case to == "":
+		dropped(field, formatTag(base, name))
+	default:
+		visit(field, formatTag(to, name))
+	}
+}
+
+func (m *Mapper) postRating(category string, profile Profile, meta map[string]any) string {
+	return m.ratingFor(category, profile, listedRating(profile, meta))
+}
+
+func listedRating(profile Profile, meta map[string]any) string {
+	// Philomena boorus carry no rating field; the rating is a tag.
+	raw := kwdict.String(meta, "rating")
+	if raw == "" && profile.Family == FamilyPhilomena {
+		raw = philomenaRating(meta)
+	}
+	if raw == "" {
+		// civitai's numeric nsfwLevel means nothing until a profile's
+		// rating overrides name each level.
+		file, _ := meta["file"].(map[string]any)
+		raw = kwdict.String(file, "nsfwLevel")
+	}
+	return raw
+}
+
+func categoryDropped(drop []string, tag string) bool { return droppedCategory(drop, tag) != "" }
+
+// An unrated image shows under every rating ceiling, so the rating is
+// never dropped.
+func droppedCategory(drop []string, tag string) string {
+	if len(drop) == 0 || strings.HasPrefix(tag, "rating:") {
+		return ""
+	}
+	category := "general"
+	if prefix, _, found := strings.Cut(tag, ":"); found && (isTagCategory(prefix) || slices.Contains(drop, prefix)) {
+		category = prefix
+	}
+	if !slices.Contains(drop, category) {
+		return ""
+	}
+	return category
+}
+
+// monbooru lets a later rating tag of a push replace an earlier one, so only the
+// mapped rating's goes, not one a tag rule made.
+func sentTag(drop []string, tag string) bool {
+	return tag != "" && !strings.HasPrefix(tag, "rating:") && !categoryDropped(drop, tag)
+}
+
+// civitai nests an image's tags under file when it comes from a post;
+// bluesky's only tags are the hashtags gallery-dl parses out of its facets.
 func flatTags(meta map[string]any) any {
 	if v := meta["tags"]; v != nil {
 		return v
 	}
 	file, _ := meta["file"].(map[string]any)
-	return file["tags"]
+	if v := file["tags"]; v != nil {
+		return v
+	}
+	return meta["hashtags"]
 }
 
 // Anything missing stays zero, and monbooru keeps what it already had.
 func postFileFor(meta map[string]any) (w, h int, size int64, ext string) {
-	w, h = kwdict.Int(meta, "width"), kwdict.Int(meta, "height")
-	for _, key := range []string{"file_size", "filesize", "size"} {
-		if n := kwdict.Int(meta, key); n > 0 {
-			size = int64(n)
-			break
-		}
-	}
+	file, _ := meta["file"].(map[string]any)
+	w = cmp.Or(kwdict.Int(meta, "width"), kwdict.Int(meta, "image_width"), kwdict.Int(file, "width"))
+	h = cmp.Or(kwdict.Int(meta, "height"), kwdict.Int(meta, "image_height"), kwdict.Int(file, "height"))
+	size = int64(cmp.Or(kwdict.Int(meta, "file_size"), kwdict.Int(meta, "filesize"), kwdict.Int(meta, "size"), kwdict.Int(file, "size")))
 	return w, h, size, strings.ToLower(strings.TrimPrefix(kwdict.String(meta, "extension"), "."))
 }
 
@@ -435,7 +626,7 @@ func joinLines(title, desc string) string {
 
 // Note sources share danbooru's field names; only danbooru and e621 send
 // is_active, the others send active notes only.
-func notesFor(profile Profile, meta map[string]any) []NoteBox {
+func notesFor(profile Profile, meta map[string]any) []contract.NoteBox {
 	if profile.Family != FamilyDanbooru && profile.Family != FamilyE621 &&
 		!needsNotesFamily(profile.Family) && !profile.HasNotes {
 		return nil
@@ -444,7 +635,7 @@ func notesFor(profile Profile, meta map[string]any) []NoteBox {
 	if !ok {
 		return nil
 	}
-	var out []NoteBox
+	var out []contract.NoteBox
 	for _, item := range raw {
 		n, ok := item.(map[string]any)
 		if !ok {
@@ -458,7 +649,7 @@ func notesFor(profile Profile, meta map[string]any) []NoteBox {
 		if body == "" {
 			continue
 		}
-		out = append(out, NoteBox{
+		out = append(out, contract.NoteBox{
 			X: kwdict.Int(n, "x"), Y: kwdict.Int(n, "y"),
 			W: kwdict.Int(n, "width"), H: kwdict.Int(n, "height"),
 			Body: body, BodyHTML: markupHTML(raw, body),
@@ -534,55 +725,57 @@ func PoolName(meta map[string]any) string {
 	return ""
 }
 
-// Without a template or an id the permalink metadata is used, so a bulk job's
+// Without a template or an id the post's own link metadata is used, so a bulk job's
 // items link to their own posts rather than the submitted listing.
 func (m *Mapper) PostURL(meta map[string]any) string {
-	category := kwdict.String(meta, "category")
-	if category == CategoryDirectlink {
-		return directlinkURL(meta)
-	}
-	profile := m.profileFor(category)
-	if id := kwdict.ID(meta); profile.PostURL != "" && id != "" {
-		return strings.ReplaceAll(profile.PostURL, "{id}", id)
+	if u := fillTemplate(m.profileFor(kwdict.String(meta, "category")).PostURL, meta); u != "" {
+		return u
 	}
 	return permalinkURL(meta)
 }
 
-// Some extractors put a site-relative path or free text in permalink.
+// Some extractors put a site-relative path or free text in these.
 func permalinkURL(meta map[string]any) string {
-	raw := strings.TrimSpace(kwdict.String(meta, "permalink"))
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return ""
+	for _, key := range []string{"permalink", "post_url"} {
+		if raw := strings.TrimSpace(kwdict.String(meta, key)); config.IsHTTPURL(raw) {
+			return raw
+		}
 	}
-	return raw
+	return ""
 }
 
 func (m *Mapper) categoryFor(site string, profile Profile, suffix string) (string, bool) {
-	for _, o := range m.cfg.Current().TagOverrides {
-		if o.Site == site && o.From == suffix && validTagCategories[o.To] {
-			return o.To, o.To != ""
-		}
-	}
-	if to, ok := profile.CategoryOverrides[suffix]; ok {
+	if to, ok := m.categoryOverride(site, profile, suffix); ok {
 		return to, to != ""
 	}
 	return baseCategory(suffix)
 }
 
-func (m *Mapper) anyCategorySuffix(site string, profile Profile, suffixes []string) bool {
-	for _, suffix := range suffixes {
-		if _, ok := baseCategories[suffix]; ok {
-			return true
-		}
-		if _, ok := profile.CategoryOverrides[suffix]; ok {
-			return true
-		}
-		if slices.ContainsFunc(m.cfg.Current().TagOverrides, func(o config.TagOverride) bool { return o.Site == site && o.From == suffix }) {
-			return true
+// ok reports an override exists; a blank to means it drops the tags.
+func (m *Mapper) categoryOverride(site string, profile Profile, suffix string) (to string, ok bool) {
+	for _, o := range m.cfg.Current().TagOverrides {
+		if o.Site == site && o.From == suffix && (o.To == "" || isTagCategory(o.To)) {
+			return o.To, true
 		}
 	}
-	return false
+	to, ok = profile.CategoryOverrides[suffix]
+	return to, ok
+}
+
+// ActiveOverrides lists the toml overrides that win over a site's profile.
+func (m *Mapper) ActiveOverrides(site string) (tags []config.TagOverride, ratings []config.RatingOverride) {
+	cfg := m.cfg.Current()
+	for _, o := range cfg.TagOverrides {
+		if o.Site == site && (o.To == "" || isTagCategory(o.To)) {
+			tags = append(tags, o)
+		}
+	}
+	for _, o := range cfg.RatingOverrides {
+		if o.Site == site && validRatings[o.To] {
+			ratings = append(ratings, o)
+		}
+	}
+	return tags, ratings
 }
 
 func (m *Mapper) ratingFor(site string, profile Profile, raw string) string {
@@ -591,8 +784,8 @@ func (m *Mapper) ratingFor(site string, profile Profile, raw string) string {
 			return o.To
 		}
 	}
-	if profile.RatingOverrides != nil {
-		if to, ok := profile.RatingOverrides[strings.ToLower(strings.TrimSpace(raw))]; ok {
+	for from, to := range profile.RatingOverrides {
+		if strings.EqualFold(from, strings.TrimSpace(raw)) {
 			return to
 		}
 	}
@@ -602,42 +795,14 @@ func (m *Mapper) ratingFor(site string, profile Profile, raw string) string {
 	return profile.DefaultRating
 }
 
-// SuspectFlattenedTags flags a categorizing site's item with no tags_<x>
-// fields: the fingerprint of a gallery-dl bump that would flatten every
-// tag into general.
+const FlattenedTagsMsg = "the post came with no per-category tags - the site's page or gallery-dl's tag fields may have changed, so nothing was sent"
+
+// SuspectFlattenedTags flags a categorizing site's post with tags but no
+// tags_<x> fields: the fingerprint of a gallery-dl bump or a post page with no
+// tag list, which would flatten every tag into general.
 func (m *Mapper) SuspectFlattenedTags(meta map[string]any) bool {
 	p := m.profileFor(kwdict.String(meta, "category"))
 	categorized := p.Family == FamilyDanbooru || p.Family == FamilyE621 ||
 		needsTagsFamily(p.Family) || p.NeedsTags
-	return categorized && len(tagSuffixes(meta)) == 0
-}
-
-// The scheme is not among the parts gallery-dl exposes, so https is assumed.
-func directlinkURL(meta map[string]any) string {
-	domain := kwdict.String(meta, "domain")
-	if domain == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("https://")
-	b.WriteString(domain)
-	if path := kwdict.String(meta, "path"); path != "" {
-		b.WriteByte('/')
-		b.WriteString(path)
-	}
-	b.WriteByte('/')
-	b.WriteString(kwdict.String(meta, "filename"))
-	if ext := kwdict.String(meta, "extension"); ext != "" {
-		b.WriteByte('.')
-		b.WriteString(ext)
-	}
-	if q := kwdict.String(meta, "query"); q != "" {
-		b.WriteByte('?')
-		b.WriteString(q)
-	}
-	if frag := kwdict.String(meta, "fragment"); frag != "" {
-		b.WriteByte('#')
-		b.WriteString(frag)
-	}
-	return b.String()
+	return categorized && len(tagSuffixes(meta)) == 0 && len(parseTagField(flatTags(meta))) > 0
 }

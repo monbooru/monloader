@@ -1,7 +1,6 @@
 package gdl
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -40,11 +39,6 @@ var standaloneAssets = map[string]standaloneAsset{
 	"windows/386":   {Remote: "gallery-dl_x86.exe", Local: "gallery-dl.exe"},
 }
 
-func standaloneForHost() (standaloneAsset, bool) {
-	a, ok := standaloneAssets[runtime.GOOS+"/"+runtime.GOARCH]
-	return a, ok
-}
-
 // The real binary is about 25 MB; the cap keeps a replaced URL from
 // filling the volume that holds the queue and every credential.
 const maxStandaloneBytes int64 = 128 << 20
@@ -64,7 +58,6 @@ func installStandalone(ctx context.Context, root, version string, asset standalo
 	if err := downloadVerified(ctx, releaseBase+version+"/"+asset.Remote, dst, want, report); err != nil {
 		return "", err
 	}
-	report("installing", 70)
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(dst, 0o755); err != nil {
 			return "", err
@@ -83,9 +76,8 @@ func publishedSHA256(ctx context.Context, version, name string) (string, error) 
 		}
 		return "", fmt.Errorf("reading the release checksums: %w", err)
 	}
-	scan := bufio.NewScanner(strings.NewReader(string(body)))
-	for scan.Scan() {
-		digest, file, ok := strings.Cut(strings.TrimSpace(scan.Text()), "  ")
+	for line := range strings.Lines(string(body)) {
+		digest, file, ok := strings.Cut(strings.TrimSpace(line), "  ")
 		if ok && file == name {
 			return digest, nil
 		}
@@ -121,9 +113,6 @@ func downloadVerified(ctx context.Context, url, dst, want string, report Install
 		r:      io.LimitReader(resp.Body, maxStandaloneBytes+1),
 		total:  resp.ContentLength,
 		report: report,
-		label:  "downloading gallery-dl",
-		from:   20,
-		to:     60,
 	})
 	closeErr := tmp.Close()
 	switch {
@@ -142,23 +131,21 @@ func downloadVerified(ctx context.Context, url, dst, want string, report Install
 }
 
 type progressReader struct {
-	r        io.Reader
-	total    int64
-	read     int64
-	report   InstallProgress
-	label    string
-	from, to int
-	last     int
+	r      io.Reader
+	total  int64
+	read   int64
+	report InstallProgress
+	last   int
 }
 
 func (p *progressReader) Read(b []byte) (int, error) {
 	n, err := p.r.Read(b)
 	p.read += int64(n)
 	if p.total > 0 && p.report != nil {
-		pct := p.from + int(int64(p.to-p.from)*p.read/p.total)
+		pct := 20 + int(40*p.read/p.total)
 		if pct > p.last {
 			p.last = pct
-			p.report(p.label, pct)
+			p.report("downloading gallery-dl", pct)
 		}
 	}
 	return n, err

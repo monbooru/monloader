@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,7 +32,6 @@ type chainRow struct {
 	Note       string
 	State      string
 	Warn       bool
-	CSRFToken  string
 	Site       *siteRow
 }
 
@@ -62,7 +62,7 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 		view.SaucenaoLimited = until.Unix()
 	}
 	for i, src := range s.mapper.LookupChain() {
-		row := chainRow{Position: i + 1, Name: src.Name, Similarity: src.Similarity, State: "ready", CSRFToken: csrf}
+		row := chainRow{Position: i + 1, Name: src.Name, Similarity: src.Similarity, State: "ready"}
 		if src.Similarity {
 			label, missing := s.sim.Missing(src.Name)
 			if site := similarity.CredentialSite(src.Name); site != "" {
@@ -70,9 +70,9 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 				edit := s.siteRows([]string{site}, csrf)[0]
 				row.Site = &edit
 			} else if missing {
-				row.Note = "api key: not set"
+				row.Note = "API key: not set"
 			} else {
-				row.Note = "api key: set"
+				row.Note = "API key: set"
 			}
 			if missing {
 				row.State, row.Warn = "needs "+label, true
@@ -80,8 +80,8 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 				row.State, row.Warn = "rate limited", true
 			}
 		} else {
-			if label, needs := s.siteNeedsCredential(src.Name); needs {
-				row.State, row.Warn = "needs "+label, true
+			if v := s.siteView(src.Name); v.NeedsCredential {
+				row.State, row.Warn = "needs "+authLabel(v.Auth), true
 			}
 			edit := s.siteRows([]string{src.Name}, csrf)[0]
 			row.Site = &edit
@@ -95,7 +95,7 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 			edit := s.siteRows([]string{site.Name}, csrf)[0]
 			view.Chain = append(view.Chain, chainRow{
 				Name: site.Name, Note: "the profile carries no md5 search template",
-				State: "no md5 template", Warn: true, CSRFToken: csrf, Site: &edit,
+				State: "no md5 template", Warn: true, Site: &edit,
 			})
 		}
 	}
@@ -123,18 +123,9 @@ func (s *Server) lookupPanel(csrf string) lookupPanelView {
 	return view
 }
 
-func (s *Server) siteNeedsCredential(site string) (string, bool) {
-	v := s.siteView(site)
-	return v.Login, v.NeedsCredential
-}
-
 // The section's row and the saucenao key dialog both post here, so a
 // field applies only when sent; a blank key keeps the stored one.
 func (s *Server) saveLookup(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "Bad form data.")
-		return
-	}
 	minSim := 0
 	if r.Form.Has("min_similarity") {
 		n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("min_similarity")))
@@ -149,12 +140,12 @@ func (s *Server) saveLookup(w http.ResponseWriter, r *http.Request) {
 	if scheduled {
 		n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("scheduled_daily_budget")))
 		if err != nil || n < 0 {
-			s.refuseSave(w, r, "The daily budget must be zero or more images.")
+			s.refuseSave(w, r, "Nightly lookups per day must be zero or more images.")
 			return
 		}
 		budget = n
 	}
-	err := s.updateConfig(func(c *config.Config) error {
+	err := s.cfg.Update(func(c *config.Config) error {
 		if minSim > 0 {
 			c.Lookup.MinSimilarity = minSim
 		}
@@ -166,19 +157,15 @@ func (s *Server) saveLookup(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
-	if err != nil {
-		s.redirectFlash(w, r, "err", "Could not save: "+err.Error())
-		return
-	}
-	s.queue.SetLookupBudget(s.cfg.Current().Lookup.ScheduledDailyBudget)
-	s.redirectFlash(w, r, "ok", "Saved.")
+	s.finishSave(w, r, err)
+}
+
+func (s *Server) clearSaucenaoKey(w http.ResponseWriter, r *http.Request) {
+	err := s.cfg.Update(func(c *config.Config) error { c.Lookup.Saucenao.APIKey = ""; return nil })
+	s.saveFlash(w, r, err, "SauceNAO key cleared.")
 }
 
 func (s *Server) saveLookupChain(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "Bad form data.")
-		return
-	}
 	orders := map[string]int{}
 	for field := range r.Form {
 		name, ok := strings.CutPrefix(field, "order-")
@@ -196,7 +183,7 @@ func (s *Server) saveLookupChain(w http.ResponseWriter, r *http.Request) {
 		}
 		orders[name] = order
 	}
-	err := s.updateConfig(func(c *config.Config) error {
+	err := s.cfg.Update(func(c *config.Config) error {
 		for name, order := range orders {
 			if svc := c.Lookup.Service(name); svc != nil {
 				svc.Order = order
@@ -214,11 +201,7 @@ func (s *Server) saveLookupChain(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
-	if err != nil {
-		s.redirectFlash(w, r, "err", "Could not save: "+err.Error())
-		return
-	}
-	s.redirectFlash(w, r, "ok", "Saved.")
+	s.saveFlash(w, r, err, "Saved.")
 }
 
 func (s *Server) testLookupSource(w http.ResponseWriter, r *http.Request) {
@@ -237,8 +220,8 @@ func (s *Server) testLookupSite(w http.ResponseWriter, r *http.Request, site str
 		http.NotFound(w, r)
 		return
 	}
-	if label, needs := s.siteNeedsCredential(site); needs {
-		siteState(w, "warn", "needs "+label, "", time.Time{})
+	if v := s.siteView(site); v.NeedsCredential {
+		siteState(w, "warn", "needs "+authLabel(v.Auth), "", time.Time{})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -291,4 +274,16 @@ func (s *Server) testSimilarityService(w http.ResponseWriter, r *http.Request, s
 		msg = "ok, " + strconv.Itoa(res.DailyRemaining) + " queries left today"
 	}
 	siteState(w, "ok", msg, "", time.Time{})
+}
+
+func parseLookupOrder(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("lookup order must be a positive number or blank")
+	}
+	return n, nil
 }

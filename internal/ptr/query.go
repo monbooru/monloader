@@ -2,6 +2,7 @@ package ptr
 
 import (
 	"context"
+	"encoding/hex"
 	"maps"
 	"slices"
 	"strings"
@@ -13,8 +14,8 @@ const maxGraphDepth = 64
 // fans out a pair preview on the caller's side.
 const maxImpliedBy = 200
 
-// TagsForHash answers raw hydrus tags; mapping them to monbooru
-// categories is the caller's job.
+// TagsForHash answers the display view in hydrus spelling; mapping it to
+// monbooru categories is the caller's job.
 func (s *Store) TagsForHash(hashHex string) (tags []string, ok bool, err error) {
 	hashID, ok, err := s.hashIDByHex(hashHex)
 	if err != nil || !ok {
@@ -24,7 +25,7 @@ func (s *Store) TagsForHash(hashHex string) (tags []string, ok bool, err error) 
 	if err != nil {
 		return nil, false, err
 	}
-	names, err := s.tagNames(closed)
+	names, err := s.tagNames(slices.Collect(maps.Keys(closed)))
 	if err != nil {
 		return nil, false, err
 	}
@@ -32,7 +33,7 @@ func (s *Store) TagsForHash(hashHex string) (tags []string, ok bool, err error) 
 }
 
 func (s *Store) queryUint64s(query string, arg int64) ([]uint64, error) {
-	return queryAll(s.db, func(id *uint64) []any { return []any{id} }, query, arg)
+	return queryAll(context.Background(), s.db, func(id *uint64) []any { return []any{id} }, query, arg)
 }
 
 func (s *Store) tagIDsForHash(hashID uint64) ([]uint64, error) {
@@ -40,30 +41,39 @@ func (s *Store) tagIDsForHash(hashID uint64) ([]uint64, error) {
 }
 
 // Only a missing row ends the chain: a failed query must not pass as an
-// unresolved alias.
+// unresolved alias. A loop answers its lowest id, so every spelling in it agrees.
 func (s *Store) resolveSibling(id uint64) (uint64, error) {
-	seen := map[uint64]bool{id: true}
+	path := []uint64{id}
 	for i := 0; i < maxGraphDepth; i++ {
 		good, ok, err := scanOne[uint64](s.db.QueryRow(`SELECT good_tag_id FROM siblings WHERE bad_tag_id=?`, int64(id)))
 		if err != nil {
 			return 0, err
 		}
-		if !ok || seen[good] {
+		if !ok {
 			return id, nil
 		}
-		seen[good] = true
+		if at := slices.Index(path, good); at >= 0 {
+			return slices.Min(path[at:]), nil
+		}
+		path = append(path, good)
 		id = good
 	}
 	return id, nil
 }
 
+// The seed and the frontier hold ideals, and a parent edge can sit on any of
+// an ideal's spellings.
 func (s *Store) parentClosure(seed map[uint64]bool) (map[uint64]bool, error) {
 	out := maps.Clone(seed)
 	frontier := slices.Collect(maps.Keys(seed))
 	for depth := 0; depth < maxGraphDepth && len(frontier) > 0; depth++ {
 		var next []uint64
 		for _, id := range frontier {
-			parents, err := s.parentsOf(id)
+			aliases, err := s.aliasesOf(id)
+			if err != nil {
+				return nil, err
+			}
+			parents, err := s.relationsOfCluster(append(aliases, id), s.parentsOf)
 			if err != nil {
 				return nil, err
 			}
@@ -110,9 +120,9 @@ func (s *Store) tagName(id uint64) (string, error) {
 	return name, err
 }
 
-func (s *Store) tagNames(ids map[uint64]bool) ([]string, error) {
+func (s *Store) tagNames(ids []uint64) ([]string, error) {
 	out := make([]string, 0, len(ids))
-	for id := range ids {
+	for _, id := range ids {
 		name, ok, err := scanOne[string](s.db.QueryRow(`SELECT tag FROM tags WHERE tag_id=?`, int64(id)))
 		if err != nil {
 			return nil, err
@@ -154,11 +164,11 @@ func (s *Store) SearchTags(ctx context.Context, ranges []TagRange, scanCap int) 
 		if err := ctx.Err(); err != nil {
 			return nil, false, err
 		}
-		rows, n, err := s.scanRange(ctx, rng, scanCap)
+		rows, err := s.scanRange(ctx, rng, scanCap)
 		if err != nil {
 			return nil, false, err
 		}
-		truncated = truncated || n >= scanCap
+		truncated = truncated || len(rows) >= scanCap
 		for _, row := range rows {
 			if seen[row.id] {
 				continue
@@ -189,12 +199,14 @@ func (s *Store) SearchTags(ctx context.Context, ranges []TagRange, scanCap int) 
 	return matches, truncated, nil
 }
 
-// LIMIT bounds the rows answered, not the rows LIKE walks past; only ctx
-// stops an abandoned walk on the pool lookups share.
-func (s *Store) scanRange(ctx context.Context, rng TagRange, cap int) (out []struct {
+type tagRow struct {
 	id   uint64
 	name string
-}, n int, err error) {
+}
+
+// LIMIT bounds the rows answered, not the rows LIKE walks past; only ctx
+// stops an abandoned walk on the pool lookups share.
+func (s *Store) scanRange(ctx context.Context, rng TagRange, cap int) ([]tagRow, error) {
 	query := `SELECT tag_id, tag FROM tags WHERE tag >= ?`
 	args := []any{rng.Prefix}
 	if end := prefixEnd(rng.Prefix); end != "" {
@@ -220,22 +232,7 @@ func (s *Store) scanRange(ctx context.Context, rng TagRange, cap int) (out []str
 	query += ` ORDER BY tag LIMIT ?`
 	args = append(args, cap)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var r struct {
-			id   uint64
-			name string
-		}
-		if err := rows.Scan(&r.id, &r.name); err != nil {
-			return nil, 0, err
-		}
-		out = append(out, r)
-	}
-	return out, len(out), rows.Err()
+	return queryAll(ctx, s.db, func(r *tagRow) []any { return []any{&r.id, &r.name} }, query, args...)
 }
 
 func (s *Store) tagMatch(idealID uint64) (TagMatch, error) {
@@ -350,19 +347,14 @@ func (s *Store) tagInfo(name string) (TagInfo, error) {
 	}
 	// Declared edges only, not the closure: the caller mirrors these and
 	// would offer undeclared ones back as contributions.
-	cluster, err := s.clusterOf(id)
-	if err != nil {
-		return TagInfo{}, err
-	}
-	info.Implications, info.ImpliedBy, err = s.clusterRelations(idealID, cluster)
+	info.Implications, info.ImpliedBy, err = s.clusterRelations(idealID, append(aliasIDs, idealID))
 	if err != nil {
 		return TagInfo{}, err
 	}
 	return info, nil
 }
 
-// A relation can sit on any spelling, so every relation question asks
-// over the whole cluster.
+// A covered edge can sit on any spelling, so it asks over the whole cluster.
 func (s *Store) clusterOf(id uint64) ([]uint64, error) {
 	ideal, err := s.resolveSibling(id)
 	if err != nil {
@@ -419,7 +411,198 @@ func (s *Store) childrenOf(parentID uint64) ([]uint64, error) {
 	return s.queryUint64s(`SELECT child_tag_id FROM parents WHERE parent_tag_id=? ORDER BY child_tag_id`, int64(parentID))
 }
 
-// One step only: the PTR's sibling chains are shallow in practice.
+// Every spelling a chain leads to goodID, however many steps back: about 5% of
+// the PTR's sibling rows point at a tag that is itself an alias.
 func (s *Store) aliasesOf(goodID uint64) ([]uint64, error) {
-	return s.queryUint64s(`SELECT bad_tag_id FROM siblings WHERE good_tag_id=?`, int64(goodID))
+	seen := map[uint64]bool{goodID: true}
+	var out []uint64
+	frontier := []uint64{goodID}
+	for depth := 0; depth < maxGraphDepth && len(frontier) > 0; depth++ {
+		var next []uint64
+		for _, id := range frontier {
+			bad, err := s.queryUint64s(`SELECT bad_tag_id FROM siblings WHERE good_tag_id=?`, int64(id))
+			if err != nil {
+				return nil, err
+			}
+			for _, b := range bad {
+				if !seen[b] {
+					seen[b] = true
+					out = append(out, b)
+					next = append(next, b)
+				}
+			}
+		}
+		frontier = next
+	}
+	return out, nil
+}
+
+// No unique index on the spelling: if the repository publishes two ids
+// for one tag, the pick must still be stable.
+func (s *Store) tagIDByName(tag string) (uint64, bool, error) {
+	return scanOne[uint64](s.db.QueryRow(`SELECT tag_id FROM tags WHERE tag = ? ORDER BY tag_id LIMIT 1`, tag))
+}
+
+func (s *Store) hashIDByHex(hashHex string) (uint64, bool, error) {
+	raw, err := hex.DecodeString(hashHex)
+	if err != nil || len(raw) != 32 {
+		return 0, false, nil
+	}
+	return scanOne[uint64](s.db.QueryRow(`SELECT hash_id FROM hashes WHERE hash = ?`, raw))
+}
+
+// HashHasIdeal compares on the display view, as hydrus does: a tag shown
+// through a sibling or parent is already there, and re-sending it adds a
+// redundant mapping.
+func (s *Store) HashHasIdeal(hashHex, tag string) (bool, error) {
+	has, err := s.HashHasIdeals(hashHex, []string{tag})
+	return has[tag], err
+}
+
+func (s *Store) HashHasIdeals(hashHex string, tags []string) (map[string]bool, error) {
+	has := make(map[string]bool, len(tags))
+	hashID, ok, err := s.hashIDByHex(hashHex)
+	if err != nil || !ok {
+		return has, err
+	}
+	displayed, err := s.displayIdeals(hashID)
+	if err != nil {
+		return nil, err
+	}
+	for _, tag := range tags {
+		tagID, ok, err := s.tagIDByName(tag)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		wantIdeal, err := s.resolveSibling(tagID)
+		if err != nil {
+			return nil, err
+		}
+		has[tag] = displayed[wantIdeal]
+	}
+	return has, nil
+}
+
+func (s *Store) IdealTag(tag string) (string, bool, error) {
+	id, ok, err := s.tagIDByName(tag)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	idealID, err := s.resolveSibling(id)
+	if err != nil {
+		return "", false, err
+	}
+	name, err := s.tagName(idealID)
+	if err != nil || name == "" {
+		return "", false, err
+	}
+	return name, true, nil
+}
+
+// HashHasRaw skips sibling and parent resolution: a removal petition must
+// name the exact raw mapping.
+func (s *Store) HashHasRaw(hashHex, tag string) (bool, error) {
+	tagID, ok, err := s.tagIDByName(tag)
+	if err != nil || !ok {
+		return false, err
+	}
+	hashID, ok, err := s.hashIDByHex(hashHex)
+	if err != nil || !ok {
+		return false, err
+	}
+	return countPositive(s.db, `SELECT COUNT(*) FROM mappings WHERE hash_id = ? AND tag_id = ?`, hashID, tagID)
+}
+
+func (s *Store) RawTagsForHash(hashHex string) ([]string, error) {
+	hashID, ok, err := s.hashIDByHex(hashHex)
+	if err != nil || !ok {
+		return nil, err
+	}
+	tagIDs, err := s.tagIDsForHash(hashID)
+	if err != nil {
+		return nil, err
+	}
+	return s.tagNames(tagIDs)
+}
+
+func (s *Store) SiblingCurrent(bad, good string) (bool, error) {
+	return s.pairCurrent(`SELECT COUNT(*) FROM siblings WHERE bad_tag_id = ? AND good_tag_id = ?`, bad, good)
+}
+
+func (s *Store) ParentCurrent(child, parent string) (bool, error) {
+	return s.pairCurrent(`SELECT COUNT(*) FROM parents WHERE child_tag_id = ? AND parent_tag_id = ?`, child, parent)
+}
+
+// ParentEdgeCovered counts an edge on any spelling of either side, or one
+// derived through a chain; a petition needs the exact stored pair
+// ParentCurrent checks.
+func (s *Store) ParentEdgeCovered(child, parent string) (bool, error) {
+	childID, ok, err := s.tagIDByName(child)
+	if err != nil || !ok {
+		return false, err
+	}
+	parentID, ok, err := s.tagIDByName(parent)
+	if err != nil || !ok {
+		return false, err
+	}
+	frontier, err := s.clusterOf(childID)
+	if err != nil {
+		return false, err
+	}
+	parentCluster, err := s.clusterOf(parentID)
+	if err != nil {
+		return false, err
+	}
+	wanted := make(map[uint64]bool, len(parentCluster))
+	for _, p := range parentCluster {
+		wanted[p] = true
+	}
+	seen := make(map[uint64]bool, len(frontier))
+	for _, c := range frontier {
+		seen[c] = true
+	}
+	for depth := 0; depth < maxGraphDepth && len(frontier) > 0; depth++ {
+		var next []uint64
+		for _, c := range frontier {
+			parents, err := s.parentsOf(c)
+			if err != nil {
+				return false, err
+			}
+			for _, p := range parents {
+				if wanted[p] {
+					return true, nil
+				}
+				if seen[p] {
+					continue
+				}
+				cluster, err := s.clusterOf(p)
+				if err != nil {
+					return false, err
+				}
+				for _, m := range cluster {
+					if !seen[m] {
+						seen[m] = true
+						next = append(next, m)
+					}
+				}
+			}
+		}
+		frontier = next
+	}
+	return false, nil
+}
+
+func (s *Store) pairCurrent(countQuery, a, b string) (bool, error) {
+	aID, ok, err := s.tagIDByName(a)
+	if err != nil || !ok {
+		return false, err
+	}
+	bID, ok, err := s.tagIDByName(b)
+	if err != nil || !ok {
+		return false, err
+	}
+	return countPositive(s.db, countQuery, aID, bID)
 }

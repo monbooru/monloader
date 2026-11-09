@@ -216,7 +216,7 @@ func (s *Server) settingsThemePost(w http.ResponseWriter, r *http.Request) {
 		themeRefused(w, "No theme named "+name+".")
 		return
 	}
-	if err := s.updateConfig(func(c *config.Config) error {
+	if err := s.cfg.Update(func(c *config.Config) error {
 		c.Server.Theme = name
 		return nil
 	}); err != nil {
@@ -230,7 +230,5 @@ func (s *Server) settingsThemePost(w http.ResponseWriter, r *http.Request) {
 
 // The cluster's buttons swap nothing, and htmx drops an error status.
 func themeRefused(w http.ResponseWriter, msg string) {
-	w.Header().Set("HX-Retarget", "#theme-flash")
-	w.Header().Set("HX-Reswap", "innerHTML")
-	flashFragment(w, "err", msg)
+	retargetFlash(w, "#theme-flash", msg)
 }

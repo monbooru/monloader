@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,7 +16,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/monbooru/monloader/internal/shared/desktop"
 	"github.com/monbooru/monloader/internal/shared/fsx"
@@ -181,7 +181,7 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 	report("resolving the release", 5)
 
 	installed := ""
-	asset, ok := standaloneForHost()
+	asset, ok := standaloneAssets[runtime.GOOS+"/"+runtime.GOARCH]
 	if ok {
 		path, err := installStandalone(ctx, root, version, asset, report)
 		switch {
@@ -190,7 +190,7 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 		case errors.Is(err, errNoAsset):
 			ok = false
 		default:
-			removeIfUnrunnable(ctx, root)
+			removeIfUnrunnable(root)
 			return fmt.Errorf("could not install gallery-dl %s: %s", version, err)
 		}
 	}
@@ -202,7 +202,7 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 	}
 
 	report("checking the new binary", 80)
-	if got := BinaryVersion(ctx, installed); got == "" {
+	if !runnable(installed) {
 		os.RemoveAll(root)
 		return fmt.Errorf("the installed gallery-dl does not run; removed it, the bundled binary is active again")
 	}
@@ -238,26 +238,32 @@ func installVenv(ctx context.Context, root, version string, report InstallProgre
 		killGroupOnCancel(cmd)
 		desktop.HideConsole(cmd)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			os.RemoveAll(root)
+			removeIfUnrunnable(root)
 			return "", fmt.Errorf("creating the venv: %v: %s", err, outputTail(out))
 		}
 	}
 	if err := runPip(ctx, venv, version, report); err != nil {
-		// A failed upgrade usually leaves the previous install working;
-		// only an unrunnable venv goes.
-		if BinaryVersion(ctx, binary) == "" {
-			os.RemoveAll(root)
-		}
+		removeIfUnrunnable(root)
 		return "", fmt.Errorf("pip could not install %s: %s", version, err)
 	}
 	return binary, nil
 }
 
-func removeIfUnrunnable(ctx context.Context, root string) {
-	if p := ManagedBinary(root); p != "" && BinaryVersion(ctx, p) != "" {
+// A failed upgrade usually leaves the previous install working; only an
+// unrunnable one goes.
+func removeIfUnrunnable(root string) {
+	if p := ManagedBinary(root); p != "" && runnable(p) {
 		return
 	}
 	os.RemoveAll(root)
+}
+
+// Its own context: the install's may be what just expired, and a probe on a
+// dead context reads a good binary as broken.
+func runnable(path string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return BinaryVersion(ctx, path) != ""
 }
 
 // Wheels only: an sdist would run its build script during the install,
@@ -294,6 +300,8 @@ func runPip(ctx context.Context, venv, version string, report InstallProgress) e
 			lastLine = line
 		}
 	}
+	// An over-long line stops the scanner, and pip then blocks on a full pipe.
+	_, _ = io.Copy(io.Discard, stdout)
 	if err := cmd.Wait(); err != nil {
 		if stderr.Len() == 0 {
 			stderr.WriteString(lastLine)
@@ -341,11 +349,7 @@ func outputTail(out []byte) string {
 	for i := len(lines) - 1; i >= 0; i-- {
 		if l := strings.TrimSpace(lines[i]); l != "" {
 			if len(l) > 300 {
-				end := 300
-				for end > 0 && !utf8.RuneStart(l[end]) {
-					end--
-				}
-				l = l[:end] + "..."
+				l = strings.ToValidUTF8(l[:300], "") + "..."
 			}
 			return l
 		}

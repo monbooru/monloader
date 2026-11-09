@@ -59,7 +59,6 @@ type prop struct {
 	Ref                     string
 	Items                   *prop
 	Props                   []prop
-	Required                []string
 }
 
 type apiSchema struct {
@@ -113,7 +112,7 @@ func (h *Handler) endpoints() []endpoint {
 			Request: &reqBody{
 				Required: []string{"url"},
 				Props: []prop{
-					{Name: "url", Type: "string", Description: "A booru post, pool, tag-search, or artist URL gallery-dl supports; or \"md5:<32 hex>\" to find and import the post carrying that file hash via the lookup walk. Surrounding whitespace is trimmed and the md5: prefix is matched case-insensitively; a bare hash is not accepted here"},
+					{Name: "url", Type: "string", Description: "A booru post, pool, tag-search, or artist URL gallery-dl supports; or \"md5:<32 hex>\" to find and import the post carrying that file hash via the lookup walk. Surrounding whitespace is trimmed, the scheme and host are lower-cased, and the md5: prefix is matched case-insensitively; a bare hash is not accepted here"},
 					{Name: "options", Type: "object", Props: []prop{
 						{Name: "gallery", Type: "string", Description: "Target monbooru gallery; overrides the per-source default"},
 						{Name: "folder", Type: "string", Description: "Destination subfolder under the gallery; relative, no .. segment"},
@@ -129,7 +128,7 @@ func (h *Handler) endpoints() []endpoint {
 			Responses: []response{
 				{Status: "200", Description: "Resolved job (only when wait elapsed in time)", Ref: "Job"},
 				{Status: "202", Description: "Job accepted; poll GET /api/v1/queue/{id}", Ref: "EnqueueResponse"},
-				{Status: "400", Description: "Missing or non-http(s) url, negative max_items, non-http(s) page_url, or client metadata past its cap", Ref: "Error"},
+				{Status: "400", Description: "Missing or non-http(s) url, a bad md5: hash, a folder that is absolute or climbs with .., negative max_items, non-http(s) page_url, or client metadata past its cap", Ref: "Error"},
 				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
 			},
 			Handler: h.enqueue,
@@ -151,28 +150,29 @@ func (h *Handler) endpoints() []endpoint {
 		{
 			Method: "POST", Path: "/api/v1/queue/pause",
 			Summary: "Pause the queue", OperationID: "pauseQueue",
-			Description: "Hold new downloads globally. A job already running finishes; " +
+			Description: "Hold the queue globally, for every kind of job. A job already running finishes; " +
 				"pending and newly submitted jobs wait until resume.",
 			Responses: []response{
 				{Status: "200", Description: "Queue paused", Ref: "PauseState"},
 			},
-			Handler: h.pauseQueue,
+			Handler: setPaused(h.queue.Pause, true),
 		},
 		{
 			Method: "POST", Path: "/api/v1/queue/resume",
 			Summary: "Resume the queue", OperationID: "resumeQueue",
-			Description: "Lift a pause so held downloads run.",
+			Description: "Lift a pause so held jobs run. Nothing starts while a gallery-dl install holds the queue, which ends on its own.",
 			Responses: []response{
 				{Status: "200", Description: "Queue resumed", Ref: "PauseState"},
 			},
-			Handler: h.resumeQueue,
+			Handler: setPaused(h.queue.Resume, false),
 		},
 		{
 			Method: "GET", Path: "/api/v1/queue/{id}",
 			Summary: "Get a job", OperationID: "getJob",
-			Params: []param{{Name: "id", In: "path", Required: true, Description: "Job id"}},
+			Params: []param{{Name: "id", In: "path", Required: true, Type: "integer", Description: "Job id"}},
 			Responses: []response{
 				{Status: "200", Description: "The job with items and outcomes", Ref: "Job"},
+				{Status: "400", Description: "The id is not an integer", Ref: "Error"},
 				{Status: "404", Description: "Job not found", Ref: "Error"},
 			},
 			Handler: h.getJob,
@@ -181,11 +181,12 @@ func (h *Handler) endpoints() []endpoint {
 			Method: "DELETE", Path: "/api/v1/queue/{id}",
 			Summary: "Cancel or remove a job's series", OperationID: "deleteJob",
 			Description: "Acts on the job's whole series, the search and its continuations, which share its root. " +
-				"While the job is queued or running, every window queued or running with it is canceled and the finished windows stay; " +
-				"once it has finished, every window of the series is removed.",
-			Params: []param{{Name: "id", In: "path", Required: true, Description: "Job id"}},
+				"While the job is queued or running, every window running with it is canceled and every window queued with it is removed, and the finished windows stay; " +
+				"once it has finished, the finished windows are removed, and a window still running is canceled and stays.",
+			Params: []param{{Name: "id", In: "path", Required: true, Type: "integer", Description: "Job id"}},
 			Responses: []response{
-				{Status: "204", Description: "The series' live windows canceled, or the finished series removed"},
+				{Status: "204", Description: "The series' live windows canceled, or its finished windows removed"},
+				{Status: "400", Description: "The id is not an integer", Ref: "Error"},
 				{Status: "404", Description: "Job not found", Ref: "Error"},
 			},
 			Handler: h.deleteJob,
@@ -194,11 +195,12 @@ func (h *Handler) endpoints() []endpoint {
 			Method: "POST", Path: "/api/v1/queue/{id}/retry",
 			Summary: "Retry a finished job", OperationID: "retryJob",
 			Params: []param{
-				{Name: "id", In: "path", Required: true, Description: "Job id"},
+				{Name: "id", In: "path", Required: true, Type: "integer", Description: "Job id"},
 				{Name: "force", In: "query", Type: "integer", Description: "Set to 1 to re-run with the gallery-dl archive bypassed, re-downloading already-fetched posts"},
 			},
 			Responses: []response{
 				{Status: "202", Description: "Re-queued", Ref: "EnqueueResponse"},
+				{Status: "400", Description: "The id is not an integer", Ref: "Error"},
 				{Status: "404", Description: "Job not found", Ref: "Error"},
 				{Status: "409", Description: "Job is not in a retryable state, no monbooru is configured (monbooru_unconfigured), or its link is paused (monbooru_paused)", Ref: "Error"},
 			},
@@ -207,24 +209,26 @@ func (h *Handler) endpoints() []endpoint {
 		{
 			Method: "POST", Path: "/api/v1/queue/{id}/continue",
 			Summary: "Fetch the next window of a capped job", OperationID: "continueJob",
-			Params: []param{{Name: "id", In: "path", Required: true, Description: "Job id"}},
+			Params: []param{{Name: "id", In: "path", Required: true, Type: "integer", Description: "Job id"}},
 			Responses: []response{
 				{Status: "202", Description: "Follow-up job queued for the next window", Ref: "EnqueueResponse"},
+				{Status: "400", Description: "The id is not an integer", Ref: "Error"},
 				{Status: "404", Description: "Job not found", Ref: "Error"},
 				{Status: "409", Description: "Job was not capped so there is no next window, no monbooru is configured (monbooru_unconfigured), or its link is paused (monbooru_paused)", Ref: "Error"},
 			},
-			Handler: h.continueJob,
+			Handler: h.jobAction(h.queue.Continue),
 		},
 		{
 			Method: "POST", Path: "/api/v1/queue/{id}/continue-all",
 			Summary: "Fetch every remaining window of a capped job", OperationID: "continueAllJob",
-			Params: []param{{Name: "id", In: "path", Required: true, Description: "Job id"}},
+			Params: []param{{Name: "id", In: "path", Required: true, Type: "integer", Description: "Job id"}},
 			Responses: []response{
 				{Status: "202", Description: "First follow-up queued; the queue continues until the search runs short", Ref: "EnqueueResponse"},
+				{Status: "400", Description: "The id is not an integer", Ref: "Error"},
 				{Status: "404", Description: "Job not found", Ref: "Error"},
 				{Status: "409", Description: "Job was not capped so there is no next window, no monbooru is configured (monbooru_unconfigured), or its link is paused (monbooru_paused)", Ref: "Error"},
 			},
-			Handler: h.continueAllJob,
+			Handler: h.jobAction(h.queue.ContinueAll),
 		},
 		{
 			Method: "POST", Path: "/api/v1/metadata",
@@ -244,7 +248,7 @@ func (h *Handler) endpoints() []endpoint {
 				{Status: "202", Description: "Refetch queued; poll GET /api/v1/queue/{id}", Ref: "EnqueueResponse"},
 				{Status: "400", Description: "Missing image_id, or a non-http(s) url", Ref: "Error"},
 			},
-			Handler: h.metadata,
+			Handler: enqueueImageJob(h.queue.EnqueueMetadata),
 		},
 		{
 			Method: "POST", Path: "/api/v1/replace",
@@ -266,7 +270,7 @@ func (h *Handler) endpoints() []endpoint {
 				{Status: "202", Description: "Replace queued; poll GET /api/v1/queue/{id}", Ref: "EnqueueResponse"},
 				{Status: "400", Description: "Missing image_id, or a non-http(s) url", Ref: "Error"},
 			},
-			Handler: h.replace,
+			Handler: enqueueImageJob(h.queue.EnqueueReplace),
 		},
 		{
 			Method: "POST", Path: "/api/v1/lookup",
@@ -335,6 +339,7 @@ func (h *Handler) endpoints() []endpoint {
 				{Status: "200", Description: "Per-tag graph answers", Ref: "PTRTagResults"},
 				{Status: "400", Description: "Empty or over-long tag list", Ref: "Error"},
 				{Status: "409", Description: "The PTR index is not available or not fully synced", Ref: "Error"},
+				{Status: "500", Description: "The index could not be read", Ref: "Error"},
 			},
 			Handler: h.ptrTags,
 		},
@@ -354,6 +359,7 @@ func (h *Handler) endpoints() []endpoint {
 				{Status: "200", Description: "Matching clusters, best first", Ref: "PTRTagSearch"},
 				{Status: "400", Description: "Empty q, a limit out of range, or contains with no namespace to bound it", Ref: "Error"},
 				{Status: "409", Description: "The PTR index is not available or not fully synced", Ref: "Error"},
+				{Status: "500", Description: "The index could not be read", Ref: "Error"},
 			},
 			Handler: h.ptrTagSearch,
 		},
@@ -362,7 +368,7 @@ func (h *Handler) endpoints() []endpoint {
 			Summary: "Look a batch of file hashes up in the PTR index", OperationID: "ptrLookup",
 			Description: "Return the tags the local index holds for each file sha256, in monbooru form. " +
 				"Answers in process, so a whole-library sweep costs one call per batch instead of a " +
-				"queued job per image; a hash the index does not hold is absent from the results.",
+				"queued job per image; a hash the index does not hold, or holds nothing usable for, is absent from the results.",
 			Request: &reqBody{
 				Required: []string{"images"},
 				Props: []prop{
@@ -375,6 +381,7 @@ func (h *Handler) endpoints() []endpoint {
 				{Status: "200", Description: "Tags per matched hash, plus the index cursor", Ref: "PTRLookupResults"},
 				{Status: "400", Description: "Empty or over-long image list, or a malformed hash", Ref: "Error"},
 				{Status: "409", Description: "The PTR index is not available or not fully synced", Ref: "Error"},
+				{Status: "500", Description: "The index could not be read", Ref: "Error"},
 			},
 			Handler: h.ptrLookup,
 		},
@@ -427,8 +434,8 @@ func (h *Handler) endpoints() []endpoint {
 			Description: "For a sibling (a=bad, b=good) or parent (a=child, b=parent) pair in monbooru " +
 				"form, report the exact PTR spellings and which direction a contribution takes: suggest " +
 				"(absent from the PTR), petition (current on the PTR), pending (already in the ledger " +
-				"awaiting janitors), conflict (a sibling holds the reverse), covered (both spellings " +
-				"already resolve to one ideal), or ineligible.",
+				"awaiting janitors), conflict (the PTR holds the reverse), covered (a sibling's spellings " +
+				"already resolve to one ideal, or a parent edge already holds), or ineligible.",
 			Request: &reqBody{
 				Required: []string{"kind", "a", "b"},
 				Props: []prop{
@@ -492,14 +499,14 @@ func (h *Handler) endpoints() []endpoint {
 						{Name: "sha256", Type: "string", Description: "the file hash, for the mapping kinds"},
 						{Name: "reason", Type: "string"},
 						{Name: "origin", Type: "string"},
-						{Name: "status", Type: "string", Description: "staged, sending, or failed"},
+						{Name: "status", Type: "string", Description: "staged or failed; an item mid-send is left out"},
 						{Name: "error", Type: "string", Description: "why the last send failed; absent otherwise"},
 						{Name: "created_at", Type: "integer", Description: "unix seconds"},
 					}}},
 					{Name: "counts", Type: "object", Props: []prop{
 						{Name: "by_kind", Type: "object", Description: "unsent items per kind"},
 						{Name: "by_status", Type: "object", Description: "unsent items per status"},
-						{Name: "outcomes", Type: "object", Description: "history rows per janitor outcome, pending included"},
+						{Name: "outcomes", Type: "object", Description: "the newest 100 history rows per janitor outcome, pending included"},
 					}},
 					{Name: "log", Type: "array", Description: "the newest 100 committed items", Items: &prop{Type: "object", Props: []prop{
 						{Name: "id", Type: "integer"},
@@ -509,7 +516,7 @@ func (h *Handler) endpoints() []endpoint {
 						{Name: "sha256", Type: "string"},
 						{Name: "reason", Type: "string"},
 						{Name: "committed_at", Type: "integer", Description: "unix seconds"},
-						{Name: "outcome", Type: "string", Description: "applied, approved, removed, or rescinded; absent while pending"},
+						{Name: "outcome", Type: "string", Description: "applied, not_taken, approved, removed, or rescinded; absent while pending"},
 						{Name: "outcome_at", Type: "integer", Description: "unix seconds; absent while pending"},
 					}}},
 				}},
@@ -522,7 +529,7 @@ func (h *Handler) endpoints() []endpoint {
 			Method: "DELETE", Path: "/api/v1/ptr/contrib/{id}",
 			Summary: "Rescind one unsent item", OperationID: "ptrContribRescind",
 			Description: "Delete one staged or failed item exactly - nothing ever left the machine.",
-			Params:      []param{{Name: "id", In: "path", Required: true, Description: "Unsent item id"}},
+			Params:      []param{{Name: "id", In: "path", Required: true, Type: "integer", Description: "Unsent item id"}},
 			Responses: []response{
 				{Status: "204", Description: "Rescinded"},
 				{Status: "400", Description: "The id is not an integer", Ref: "Error"},
@@ -561,7 +568,7 @@ func (h *Handler) endpoints() []endpoint {
 			Description: "Stage and send a removal petition for the same tag and hash with a fixed " +
 				"reason, and mark the ledger row rescinded. Committed suggestions and petitions cannot " +
 				"be withdrawn - the protocol reserves their resolution for janitors.",
-			Params: []param{{Name: "id", In: "path", Required: true, Description: "Ledger row id"}},
+			Params: []param{{Name: "id", In: "path", Required: true, Type: "integer", Description: "Ledger row id"}},
 			Responses: []response{
 				{Status: "202", Description: "The send job id", Ref: "EnqueueResponse"},
 				{Status: "400", Description: "The id is not an integer", Ref: "Error"},
@@ -589,6 +596,7 @@ func (h *Handler) endpoints() []endpoint {
 					{Name: "changed", Type: "integer", Description: "How many settings named the old gallery"},
 				}},
 				{Status: "400", Description: "A name is missing", Ref: "Error"},
+				{Status: "500", Description: "The settings could not be saved (save_failed)", Ref: "Error"},
 			},
 			Handler: h.galleryRename,
 		},
@@ -605,6 +613,39 @@ func (h *Handler) endpoints() []endpoint {
 			Handler: h.listSites,
 		},
 		{
+			Method: "GET", Path: "/api/v1/rules",
+			Summary: "What each site does with a tag", OperationID: "tagRules",
+			Description: "For a monbooru tag, the tag rule, blacklist hit and category map of every configured or used site and the PTR, " +
+				"plus whether the global Rules keep its category: what monbooru's tag page draws.",
+			Params: []param{
+				{Name: "tag", In: "query", Required: true, Description: "The tag's name, as monbooru spells it"},
+				{Name: "category", In: "query", Description: "The tag's monbooru category; general when absent"},
+			},
+			Responses: []response{
+				{Status: "200", Description: "One row per configured or used site, the PTR last", Ref: "TagRules"},
+				{Status: "400", Description: "tag is missing", Ref: "Error"},
+			},
+			Handler: h.tagRules,
+		},
+		{
+			Method: "POST", Path: "/api/v1/rules",
+			Summary: "What each site does with several tags", OperationID: "tagRulesBatch",
+			Description: "The GET answer for each name given, in order, read against one list of sites.",
+			Request: &reqBody{Props: []prop{
+				{Name: "names", Type: "array", Description: "1 to 50 tags", Items: &prop{Type: "object", Props: []prop{
+					{Name: "tag", Type: "string", Description: "The tag's name, as monbooru spells it"},
+					{Name: "category", Type: "string", Description: "The tag's monbooru category; general when absent"},
+				}}},
+			}},
+			Responses: []response{
+				{Status: "200", Description: "One answer per name", Props: []prop{
+					{Name: "results", Type: "array", Items: &prop{Ref: "TagRules"}},
+				}},
+				{Status: "400", Description: "No names, more than 50, a name without a tag, or a body that does not parse", Ref: "Error"},
+			},
+			Handler: h.tagRulesBatch,
+		},
+		{
 			Method: "POST", Path: "/api/v1/sites/{name}/test",
 			Summary: "Probe a site", OperationID: "testSite",
 			Params: []param{
@@ -616,7 +657,7 @@ func (h *Handler) endpoints() []endpoint {
 			}},
 			Responses: []response{
 				{Status: "200", Description: "Probe result", Ref: "ProbeResult"},
-				{Status: "400", Description: "The supplied url is not http(s)", Ref: "Error"},
+				{Status: "400", Description: "The supplied url is not http(s), or the body does not parse", Ref: "Error"},
 				{Status: "404", Description: "Unknown site and no url supplied", Ref: "Error"},
 			},
 			Handler: h.testSite,
@@ -650,7 +691,8 @@ func (h *Handler) endpoints() []endpoint {
 			Method: "GET", Path: "/api/v1/pair/status",
 			Summary: "Poll a pairing request", OperationID: "pairStatus", NoAuth: true,
 			Description: "Reports pending / denied / approved. The first poll after approval mints the " +
-				"client's token and returns the secret once; later polls answer approved with no token.",
+				"client's token, returns the secret once and forgets the request, so a later poll gets 404; " +
+				"a poll racing the claim answers approved with no token.",
 			Params: []param{
 				{Name: "id", In: "query", Required: true, Description: "The request_id from POST /api/v1/pair/request"},
 			},
@@ -660,6 +702,7 @@ func (h *Handler) endpoints() []endpoint {
 					{Name: "token", Type: "string", Description: "The bearer secret, present once, on the first poll after approval"},
 				}},
 				{Status: "404", Description: "Unknown pairing request", Ref: "Error"},
+				{Status: "500", Description: "The token could not be minted (mint_failed); the approval stands, so poll again", Ref: "Error"},
 			},
 			Handler: h.host.Pair.Status,
 		},
@@ -673,6 +716,7 @@ func (h *Handler) endpoints() []endpoint {
 					{Name: "status", Type: "string", Description: "Always \"removed\""},
 				}},
 				{Status: "401", Description: "The Authorization header is missing or is not a pairing token", Ref: "Error"},
+				{Status: "500", Description: "The pairing could not be removed (remove_failed)", Ref: "Error"},
 			},
 			Handler: h.host.Pair.Teardown,
 		},
@@ -719,8 +763,9 @@ var apiSchemas = []apiSchema{
 		{Name: "duplicate", Type: "integer"},
 		{Name: "enriched", Type: "integer", Description: "Source refetches and hash lookups that merged tags into an image monbooru already holds"},
 		{Name: "replaced", Type: "integer", Description: "In-place file replacements of an image monbooru already holds"},
-		{Name: "skipped", Type: "integer", Description: "Posts the gallery-dl archive already had, or files monbooru cannot ingest"},
+		{Name: "skipped", Type: "integer", Description: "Posts the gallery-dl archive already had, files monbooru cannot ingest, or posts a blacklist rule kept out"},
 		{Name: "archived", Type: "integer", Description: "The archive half of skipped: the posts a forced retry can fetch again"},
+		{Name: "blacklisted", Type: "integer", Description: "The rule half of skipped: posts a blacklist rule kept out, which a forced retry skips again"},
 		{Name: "failed", Type: "integer"},
 		{Name: "matched", Type: "integer", Description: "Hashes a batch PTR lookup answered with tags; true past the bound on the items the row keeps"},
 		{Name: "canceled", Type: "integer", Description: "Items aborted by a job cancel, kept out of failed"},
@@ -731,11 +776,13 @@ var apiSchemas = []apiSchema{
 		{Name: "num", Type: "integer", Description: "1-based pool page order"},
 		{Name: "url", Type: "string", Description: "canonical source post page"},
 		{Name: "status", Type: "string", Description: "pending, downloaded, uploaded, done, skipped, failed"},
-		{Name: "outcome", Type: "string", Description: "created, duplicate, enriched, matched, replaced, skipped_archive, skipped_unsupported, failed"},
+		{Name: "outcome", Type: "string", Description: "created, duplicate, enriched, matched, replaced, skipped_archive, skipped_unsupported, skipped_blacklist, failed"},
 		{Name: "monbooru_id", Type: "integer"},
 		{Name: "sha256", Type: "string"},
-		{Name: "tag_warnings", Type: "array", Items: &prop{Type: "string"}, Description: "Tags monbooru rejected on the push; recorded, not fatal"},
-		{Name: "merge_note", Type: "string", Description: "What a duplicate or enrich merge folded into the existing image (e.g. \"+7 tags\")"},
+		{Name: "tag_warnings", Type: "array", Items: &prop{Type: "string"}, Description: "Tags monbooru rejected on the push, and rule targets that name a category it does not have; recorded, not fatal"},
+		{Name: "merge_note", Type: "string", Description: "What a duplicate or enrich merge folded into the existing image (e.g. \"+7 tags\"), or the rule behind skipped_blacklist and its list (\"global rule: guro\", \"danbooru rule: guro\")"},
+		{Name: "tags_sent", Type: "integer", Description: "How many tags the push or enrich sent, the rating counted"},
+		{Name: "held_tags", Type: "array", Items: &prop{Type: "string"}, Description: "What never reached the image, each with its reason: \"lowres (held by your rules)\", \"watermark (rejected by the gallery)\""},
 		{Name: "error_code", Type: "string"},
 		{Name: "error", Type: "string"},
 	}},
@@ -760,7 +807,7 @@ var apiSchemas = []apiSchema{
 		{Name: "force", Type: "boolean", Description: "Last/next run bypasses the gallery-dl archive (set by a forced retry)"},
 		{Name: "summary", Ref: "Summary"},
 		{Name: "note", Type: "string", Description: "The job's result line (a contribution send's commit summary); empty for other kinds"},
-		{Name: "capped", Type: "boolean", Description: "The resolve hit the per-job item cap, so more posts may remain"},
+		{Name: "capped", Type: "boolean", Description: "The resolve hit the per-job item cap, or the listing ended on the job's error_code, so more posts may remain"},
 		{Name: "cap", Type: "integer", Description: "The applied item cap when capped is true"},
 		{Name: "root", Type: "integer", Description: "Originating job of a continue-series; a capped search and its continuations share it. Self for a standalone job"},
 		{Name: "error_code", Type: "string"},
@@ -792,8 +839,26 @@ var apiSchemas = []apiSchema{
 		{Name: "custom_profile", Type: "boolean", Description: "A user profile file overrides the shipped mapping"},
 		{Name: "auth", Type: "string", Description: "none, api_optional, api_required, username_password, cookies, oauth"},
 	}},
+	{Name: "TagRules", Props: []prop{
+		{Name: "tag", Type: "string"},
+		{Name: "category", Type: "string"},
+		{Name: "category_kept", Type: "boolean", Description: "False when the global Rules drop the category after download"},
+		{Name: "sites", Type: "array", Items: &prop{Ref: "TagRule"}},
+	}},
+	{Name: "TagRule", Props: []prop{
+		{Name: "site", Type: "string"},
+		{Name: "kind", Type: "string", Description: "booru, manga, other; lookup for the PTR"},
+		{Name: "builtin", Type: "boolean", Description: "True for a site the history or a watch reached but the settings never set up: its rules are the built-in profile's"},
+		{Name: "rule", Type: "string", Description: "none, drop, rename, move: the site's tag rule on the name"},
+		{Name: "target", Type: "string", Description: "What a rename or move sends instead"},
+		{Name: "blacklist", Type: "string", Description: "global or site when a blacklist rule names the tag, before or after its rule; absent otherwise"},
+		{Name: "blacklist_line", Type: "string", Description: "The blacklist line that names the tag, as written; a line with other tags skips only the posts that also match them"},
+		{Name: "mapped_from", Type: "array", Items: &prop{Type: "string"}, Description: "The site's own categories a category map sends into this category"},
+		{Name: "renamed_from", Type: "array", Items: &prop{Type: "string"}, Description: "The names the site's tag rules turn into this tag"},
+		{Name: "kept", Type: "boolean", Description: "Whether the tag, as this site sends it after its rule, survives the global category drop"},
+	}},
 	{Name: "ProbeResult", Props: []prop{
-		{Name: "status", Type: "string", Description: "ok, auth_required, blocked, failed"},
+		{Name: "status", Type: "string", Description: "ok, auth_required, blocked, rate_limited, failed"},
 		{Name: "detail", Type: "string"},
 		{Name: "missing_credential", Type: "string", Description: "The credential the site requires and the config lacks (\"cookies\", \"api key\"); absent when nothing is missing"},
 	}},
@@ -861,7 +926,9 @@ var apiSchemas = []apiSchema{
 	}},
 	{Name: "PTRLookupResults", Props: []prop{
 		{Name: "index", Type: "integer", Description: "the index's applied-update cursor at answer time"},
-		{Name: "results", Type: "object", Description: "map of a matched sha256 to its monbooru-form tags; a hash the index does not hold is absent"},
+		{Name: "results", Type: "object", Description: "map of a matched sha256 to its monbooru-form tags; a hash the index does not hold, or holds nothing usable for, is absent"},
+		{Name: "withheld_tags", Type: "object", Description: "map of a matched sha256 to the tags the PTR's row held back; they say nothing about whether the hash still lists them"},
+		{Name: "withheld_categories", Type: "array", Items: &prop{Type: "string"}, Description: "the categories Keep categories leaves out of every answer"},
 	}},
 	{Name: "PTRContribPreview", Props: []prop{
 		{Name: "provisional", Type: "boolean", Description: "the index is still syncing; the diff may overstate what is new"},
@@ -976,6 +1043,10 @@ func operationJSON(e endpoint) map[string]any {
 		case len(r.Props) > 0:
 			resp["content"] = map[string]any{"application/json": map[string]any{"schema": objectJSON(nil, r.Props)}}
 		}
+		// Every route's shared refusals can land on a status it lists itself.
+		if prior, ok := responses[r.Status].(map[string]any); ok {
+			resp["description"] = prior["description"].(string) + "; or " + r.Description
+		}
 		responses[r.Status] = resp
 	}
 	op["responses"] = responses
@@ -1009,11 +1080,7 @@ func propJSON(p prop) map[string]any {
 		m["items"] = propJSON(*p.Items)
 	}
 	if len(p.Props) > 0 {
-		obj := objectJSON(p.Required, p.Props)
-		m["properties"] = obj["properties"]
-		if req, ok := obj["required"]; ok {
-			m["required"] = req
-		}
+		m["properties"] = objectJSON(nil, p.Props)["properties"]
 	}
 	return m
 }
@@ -1025,11 +1092,7 @@ func refJSON(name string) map[string]any {
 var anchorReplacer = strings.NewReplacer("/", "-", "{", "", "}", "", ".", "-")
 
 func anchorize(s string) string {
-	r := strings.Trim(anchorReplacer.Replace(strings.ToLower(s)), "-")
-	if r == "" {
-		r = "root"
-	}
-	return r
+	return strings.Trim(anchorReplacer.Replace(strings.ToLower(s)), "-")
 }
 
 func (h *Handler) openAPIJSON(w http.ResponseWriter, r *http.Request) {

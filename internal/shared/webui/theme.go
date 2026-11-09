@@ -206,7 +206,7 @@ func readSeed(dir string) map[string]string {
 		return seeded
 	}
 	for line := range strings.Lines(string(data)) {
-		if sum, name, ok := strings.Cut(strings.TrimSpace(line), "  "); ok {
+		if sum, name, ok := strings.Cut(strings.TrimSpace(line), "  "); ok && filepath.IsLocal(name) {
 			seeded[name] = sum
 		}
 	}

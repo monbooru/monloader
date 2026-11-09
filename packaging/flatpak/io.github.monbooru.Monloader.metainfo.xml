@@ -26,6 +26,17 @@
   <url type="bugtracker">https://github.com/monbooru/monloader/issues</url>
   <url type="help">https://monbooru.github.io/mondocs/addons/monloader/index.html</url>
 
+  <screenshots>
+    <screenshot type="default">
+      <caption>Paste a booru URL or an MD5 hash to download into monbooru</caption>
+      <image>https://raw.githubusercontent.com/monbooru/monloader/main/.github/assets/add.webp</image>
+    </screenshot>
+    <screenshot>
+      <caption>The queue, with what each download added to the gallery</caption>
+      <image>https://raw.githubusercontent.com/monbooru/monloader/main/.github/assets/queue.webp</image>
+    </screenshot>
+  </screenshots>
+
   <content_rating type="oars-1.1"/>
 
   <!-- Filled at build time from VERSION.md and the newest CHANGELOG.md heading. -->

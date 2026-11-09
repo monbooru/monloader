@@ -19,8 +19,8 @@ import (
 )
 
 type client struct {
-	// keyMu guards addr and accessKey: SetAccessKey swaps the key under a
-	// running sync, and the address moves while the sync is off.
+	// keyMu guards addr, accessKey and sleep: a save swaps the key and the
+	// sleep under a running sync, and the address moves while the sync is off.
 	keyMu     sync.RWMutex
 	addr      string
 	accessKey string
@@ -50,6 +50,9 @@ func newClient(cfg config.PTRConfig) *client {
 		sleep:     time.Duration(cfg.FetchSleep * float64(time.Second)),
 		hc: &http.Client{
 			Timeout: 60 * time.Second,
+			// Go strips only Authorization and cookies on a redirect, and the
+			// Hydrus-Key is the account's only credential.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 			Transport: &http.Transport{
 				// The PTR's certificate is self-signed, as hydrus accepts it. The
 				// blob sha256 catches corruption, not an on-path attacker, who
@@ -72,9 +75,9 @@ func (c *client) Metadata(ctx context.Context, since uint64) (*metadataSlice, er
 // updateRaw skips the parse: the sync holds an entry's blobs compressed
 // and inflates one at a time.
 func (c *client) updateRaw(ctx context.Context, hashHex string) ([]byte, error) {
-	if c.sleep > 0 {
+	if sleep := c.fetchSleep(); sleep > 0 {
 		select {
-		case <-time.After(c.sleep):
+		case <-time.After(sleep):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}

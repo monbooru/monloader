@@ -1,9 +1,7 @@
 {{define "ptr_contrib"}}
-<section id="ptr-contrib-card" class="settings-section"{{if .OOB}} hx-swap-oob="true"{{end}} hx-vals='{"page": {{.Page}}}'{{if .SendRunning}} hx-get="/internal/ptr-contrib" hx-trigger="every 2s" hx-target="#ptr-contrib" hx-swap="innerHTML"{{end}}>
+<section id="ptr-contrib-card" class="settings-section"{{if .NoAccount}} hidden{{end}}{{if .OOB}} hx-swap-oob="true"{{end}} hx-vals='{"page": {{.Page}}}'{{if .SendRunning}} hx-get="/internal/ptr-contrib" hx-trigger="every 2s [!confirmOpen()]" hx-target="#ptr-contrib" hx-swap="innerHTML"{{end}}>
   <div class="settings-section-header"><h3>Contributions</h3></div>
-  {{if .NoAccount}}
-  <p class="field-hint">Contributing needs a personal account - see the account card above.</p>
-  {{else}}
+  {{if not .NoAccount}}
   {{if .RetryErr}}<p class="flash-warn">{{.RetryErr}}</p>{{end}}
   {{if .NotReady}}<p class="field-hint">The index is still catching up; contributions can be sent once it is fully synced.</p>{{end}}
   {{if .SendRunning}}<p class="field-hint">A send job is running - progress is on the <a href="/queue">queue</a>.</p>{{end}}
@@ -32,7 +30,7 @@
         <td data-label="Origin">{{.Origin}}</td>
         <td data-label="Status">{{if .Error}}<span class="o-failed" title="{{.Error}}">failed</span>{{end}}</td>
         <td><button hx-post="/ptr/contrib/{{.ID}}/rescind" hx-target="#ptr-contrib" hx-swap="innerHTML"
-                    title="Rescind: delete before anything is sent">x</button></td>
+                    title="Delete: nothing was sent yet">x</button></td>
       </tr>
       {{end}}
     </tbody>
@@ -49,8 +47,8 @@
         <td class="queue-url" data-label="Item">{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Label}}</a>{{else}}{{.Label}}{{end}}</td>
         <td data-label="Outcome">{{.Outcome}}</td>
         <td>{{if .Rescindable}}<button hx-post="/ptr/contrib/log/{{.ID}}/rescind" hx-target="#ptr-contrib" hx-swap="innerHTML"
-                hx-confirm="Petition this tag add back off the PTR?"
-                title="Asks the janitors to remove it; it does not undo">Rescind (petition)</button>{{end}}</td>
+                hx-confirm="Ask the PTR janitors to remove this tag?"
+                title="They decide; it may stay.">Ask to remove</button>{{end}}</td>
       </tr>
       {{end}}
     </tbody>
@@ -63,7 +61,7 @@
   </div>
   {{end}}
   {{else}}{{if not .Unsent}}
-  <p class="field-hint">Contributions are sent from monbooru's image page and tags page; only their record lives here.</p>
+  <p class="field-hint">Send contributions from monbooru's image and tags pages. They are listed here.</p>
   {{end}}{{end}}
   {{end}}
 </section>

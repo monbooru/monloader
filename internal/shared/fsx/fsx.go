@@ -24,7 +24,7 @@ func WriteAtomic(path, pattern string, write func(*os.File) error) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("renaming temp file: %w", err)
 	}

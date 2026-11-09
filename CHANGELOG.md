@@ -1,5 +1,49 @@
 # Changelog
 
+## [v1.14.0] - 2026-11-08
+### Added
+- Blacklist rules, global or per site, to skip a matching post before download. ([#33](https://github.com/monbooru/monloader/issues/33))
+- You can drop whole tag categories so their tags do not reach monbooru. ([#35](https://github.com/monbooru/monloader/issues/35))
+- Category maps and tag rules can target monbooru's custom categories. ([#37](https://github.com/monbooru/monloader/issues/37))
+- A site's user agent can be set in its dialog, as text or a gallery-dl preset. ([#36](https://github.com/monbooru/monloader/issues/36))
+- Settings -> Trace a post shows what each rule does to a post without downloading it; its gallery column needs monbooru v1.24.0 or later.
+- The Rules section shows the tag flow, each step with its scope and timing.
+- The PTR is now a row in Settings -> Sites, so you can set its own mappings and blacklist.
+- A finished item says how many tags it sent and which ones were held back.
+- Bluesky hashtags map to tags.
+- The AppImage can update in place with AppImageUpdate.
+- API: `/api/v1/rules` answers what each site and the PTR do with a tag, and a send can carry `client_tags`.
+
+### Changed
+- Some wording changes across the queue, Settings, the PTR page and the site dialog.
+- Queue rows name outcomes and failures in words, with the error code in the tooltip.
+- Raw gallery-dl options stay hidden in Settings until revealed.
+- A `.zip` a site serves is sent to monbooru instead of skipped.
+- The PTR asks for 90 GB free by default, since the index is now about 80 GB.
+- Better layouts on phones for the add bar, the watches table and the site dialog.
+- Bundled gallery-dl updated to 1.32.19.
+
+### Fixed
+- Bluesky feed and likes URLs resolve to each post's own page. ([#34](https://github.com/monbooru/monloader/issues/34))
+- Danbooru with a user ID sends the user agent Danbooru asks of API clients, file links included. ([#36](https://github.com/monbooru/monloader/issues/36))
+- Watching a search on a manga site lands only the galleries not downloaded yet. ([#38](https://github.com/monbooru/monloader/issues/38))
+- With monbooru v1.24.0, tags a rule drops or a sender adds are no longer flagged stale on a refetch.
+- Posts a watch check downloaded but never sent are fetched again by the next check.
+- Two files with the same name in one job both land.
+- A retry keeps the job's client tags, commentary and source.
+- A job that fails after sending some items reports them in its summary.
+- A post with only flat tags from a categorizing site fails instead of landing them all as general.
+- A desktop install no longer merges a personal gallery-dl config under the managed one.
+- A network bind refuses public host names outside the API.
+- PTR: alias chains resolve from any spelling, and a failing sync backs off instead of refetching every 30 s.
+- A refused site save keeps what was typed and says why inside the dialog.
+
+Thanks to @hypentilation for the suggestion (https://github.com/monbooru/monloader/issues/33).
+Thanks to @sflavelle for the report (https://github.com/monbooru/monloader/issues/34).
+Thanks to @CeareDelafont for the suggestions (https://github.com/monbooru/monloader/issues/35, https://github.com/monbooru/monloader/issues/37).
+Thanks to @maulana-md for the report (https://github.com/monbooru/monloader/issues/36).
+Thanks to @spry-key for the report (https://github.com/monbooru/monloader/issues/38).
+
 ## [v1.13.4] - 2026-10-30
 ### Fixed
 - Fix the Windows build CI.

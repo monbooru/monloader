@@ -67,6 +67,16 @@ func SeedAuthKind(label string) string {
 	return AuthNone
 }
 
+var tagCategoryShapeRE = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
+// By shape alone: a profile must load with monbooru down, and a shared one
+// may name a category this monbooru has yet to create.
+func validCategoryTarget(to string) bool {
+	return validTagCategories[to] || (to != "rating" && tagCategoryShapeRE.MatchString(to))
+}
+
+func ValidTagCategoryName(name string) bool { return name != "" && validCategoryTarget(name) }
+
 func ValidateProfile(p Profile) error {
 	if !validFamilies[p.Family] {
 		return fmt.Errorf("unknown family %q", p.Family)
@@ -77,8 +87,8 @@ func ValidateProfile(p Profile) error {
 	if !validAuths[p.Auth] {
 		return fmt.Errorf("unknown auth kind %q", p.Auth)
 	}
-	if p.PostURL != "" && (!config.IsHTTPURL(p.PostURL) || !strings.Contains(p.PostURL, "{id}")) {
-		return fmt.Errorf("post url template must be an http(s) URL containing {id}")
+	if p.PostURL != "" && (!config.IsHTTPURL(p.PostURL) || !templateKeywordRE.MatchString(p.PostURL)) {
+		return fmt.Errorf("post url template must be an http(s) URL with at least one {placeholder}")
 	}
 	if p.MD5Search != "" && (!config.IsHTTPURL(p.MD5Search) || !strings.Contains(p.MD5Search, "{md5}")) {
 		return fmt.Errorf("md5 search template must be an http(s) URL containing {md5}")
@@ -100,7 +110,7 @@ func ValidateProfile(p Profile) error {
 		}
 	}
 	for from, to := range p.CategoryOverrides {
-		if !validTagCategories[to] {
+		if !validCategoryTarget(to) {
 			return fmt.Errorf("tag category %q maps to unknown category %q", from, to)
 		}
 	}
@@ -108,7 +118,7 @@ func ValidateProfile(p Profile) error {
 		if from == "" || normalizeTag(from) != from {
 			return fmt.Errorf("tag rule %q is not a normalized tag name", from)
 		}
-		if to != "" && (normalizeTag(to) != to || normalizeTag(to) == "") {
+		if to != "" && NormalizeRuleTarget(to) != to {
 			return fmt.Errorf("tag rule %q has a replacement that is not a normalized tag name", from)
 		}
 	}
@@ -163,9 +173,8 @@ func (m *Mapper) CustomCategories() []string {
 	return slices.Sorted(maps.Keys(m.view().custom))
 }
 
-// Saving the shipped profile deletes the file, so "differs from the
-// built-in" needs no bookkeeping.
-func (m *Mapper) SaveUserProfile(category string, p Profile) error {
+// CheckUserProfile answers what SaveUserProfile would refuse, writing nothing.
+func (m *Mapper) CheckUserProfile(category string, p Profile) error {
 	if m.userDir == "" {
 		return fmt.Errorf("no profiles directory configured")
 	}
@@ -179,6 +188,15 @@ func (m *Mapper) SaveUserProfile(category string, p Profile) error {
 		if site := m.cfg.Current().FindSite(category); site != nil && site.LookupOrder > 0 {
 			return fmt.Errorf("site %s is in the lookup chain; remove it there (settings, lookup section) before dropping its md5 search template", category)
 		}
+	}
+	return nil
+}
+
+// Saving the shipped profile deletes the file, so "differs from the
+// built-in" needs no bookkeeping.
+func (m *Mapper) SaveUserProfile(category string, p Profile) error {
+	if err := m.CheckUserProfile(category, p); err != nil {
+		return err
 	}
 	if b, ok := m.builtin[category]; ok && reflect.DeepEqual(p, b) {
 		return m.DeleteUserProfile(category)

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/gdl"
-	"github.com/monbooru/monloader/internal/shared/session"
 )
 
 // A venv plus a pip download: seconds normally, minutes on a slow line.
@@ -45,9 +44,9 @@ type gdlPanel struct {
 	Msg       string
 }
 
-func (s *Server) gdlPanel(ctx context.Context, csrf string) gdlPanel {
+func (s *Server) gdlPanel(csrf string) gdlPanel {
 	root := gdl.ManagedRoot(s.stateDir)
-	s.reconcileGDLCatalog(ctx, root)
+	s.reconcileGDLCatalog(root)
 	p := gdlPanel{
 		ActiveVersion:  s.catalog.Version(),
 		BundledVersion: s.catalog.BundledVersion(),
@@ -76,13 +75,11 @@ func (s *Server) gdlPanel(ctx context.Context, csrf string) gdlPanel {
 // The cached inventory can outlive its binary, e.g. a venv whose python
 // is gone. ManagedActive is only a stat, so checking costs nothing; never
 // probe while an install or a revert holds the directory.
-func (s *Server) reconcileGDLCatalog(ctx context.Context, root string) {
+func (s *Server) reconcileGDLCatalog(root string) {
 	if s.gdlBusy() || s.catalog.Managed() == gdl.ManagedActive(s.cfg.Current(), root) {
 		return
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, gdlProbeTimeout)
-	defer cancel()
-	s.refreshGDLCatalog(probeCtx)
+	s.refreshGDLCatalog()
 }
 
 func gdlInactiveReason(root string) string {
@@ -130,7 +127,7 @@ func (s *Server) gdlDone(kind, msg string) {
 
 // A job must not resolve with one gallery-dl and download with another,
 // and a revert must not delete a directory an install is writing. done
-// resumes the queue unless the operator had paused it, then frees the slot.
+// releases the queue, then frees the slot.
 func (s *Server) gdlSwitchGuard() (done func(), reason string) {
 	s.gdlMu.Lock()
 	if s.gdlBusyLocked() {
@@ -139,14 +136,11 @@ func (s *Server) gdlSwitchGuard() (done func(), reason string) {
 	}
 	s.gdlSwitching = true
 	s.gdlMu.Unlock()
-	// Pause before counting, or an enqueue in between wakes a parked
+	// Hold before counting, or an enqueue in between wakes a parked
 	// worker into a job the count ruled out.
-	wasPaused := s.queue.Paused()
-	s.queue.Pause()
+	s.queue.Hold()
 	done = func() {
-		if !wasPaused {
-			s.queue.Resume()
-		}
+		s.queue.Release()
 		s.gdlMu.Lock()
 		s.gdlSwitching = false
 		s.gdlMu.Unlock()
@@ -203,12 +197,12 @@ func (s *Server) runGDLInstall(version string, done func()) {
 	}
 	if err := installManaged(ctx, s.stateDir, version, s.gdlStep); err != nil {
 		// A failed upgrade may have torn the old install down.
-		s.refreshGDLCatalog(ctx)
+		s.refreshGDLCatalog()
 		finish("err", "Install failed: "+err.Error())
 		return
 	}
 	s.gdlStep("re-reading the extractor list", 92)
-	s.refreshGDLCatalog(ctx)
+	s.refreshGDLCatalog()
 	if !s.catalog.Managed() {
 		finish("warn", "gallery-dl "+version+" installed, but binary_path still names the binary in use.")
 		return
@@ -221,7 +215,7 @@ func (s *Server) gdlStatusFragment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderGDLPanel(w http.ResponseWriter, r *http.Request, kind, msg string) {
-	panel := s.gdlPanel(r.Context(), s.sessions.CSRFToken(session.FromContext(r.Context())))
+	panel := s.gdlPanel(s.csrf(r))
 	if msg != "" {
 		panel.MsgKind, panel.Msg = kind, msg
 	}
@@ -243,12 +237,14 @@ func (s *Server) gdlRevert(w http.ResponseWriter, r *http.Request) {
 		s.redirectFlash(w, r, "err", "Could not remove the managed install: "+err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), gdlProbeTimeout)
-	defer cancel()
-	s.refreshGDLCatalog(ctx)
+	s.refreshGDLCatalog()
 	s.redirectFlash(w, r, "ok", "Reverted to the bundled gallery-dl "+s.catalog.Version()+".")
 }
 
-func (s *Server) refreshGDLCatalog(ctx context.Context) {
+// Its own context: an install that ran out its time or a closed tab must not
+// blank the version until a restart.
+func (s *Server) refreshGDLCatalog() {
+	ctx, cancel := context.WithTimeout(context.Background(), gdlProbeTimeout)
+	defer cancel()
 	s.catalog.Refresh(ctx, s.runner, s.cfg.Current(), gdl.ManagedRoot(s.stateDir))
 }

@@ -1,7 +1,6 @@
 {{define "webui/token_privileges_dialog"}}
 <form hx-post="/settings/auth/tokens/{{.ID}}/privileges"
       hx-target="#flash-token-cfg-{{.ID}}" hx-swap="innerHTML">
-  <p class="field-hint">Privileges this token grants.</p>
   <ul class="check-list">
     {{range .Scopes}}
     <li><label><input type="checkbox" name="scope" value="{{.Name}}"{{if .Checked}} checked{{end}}{{if $.Paired}} disabled{{end}}> {{.Desc}}</label></li>

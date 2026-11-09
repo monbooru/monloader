@@ -20,7 +20,7 @@
       <button type="submit">Install</button>
       {{if .Installed}}<button type="submit" form="gdl-revert-form">Revert</button>{{end}}
     </form>
-    <span class="field-hint">Newer or older; the install is kept with monloader's own data and survives an update.</span>
+    <span class="field-hint">Any release from PyPI. It stays installed across monloader updates.</span>
   </div>
   {{if .Installed}}
   <form method="POST" id="gdl-revert-form" action="/settings/gallerydl/revert" hx-confirm="Remove the installed gallery-dl and return to the bundled {{.BundledVersion}}?" data-confirm-ok="Revert">

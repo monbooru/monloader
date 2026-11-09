@@ -1,11 +1,11 @@
 package web
 
 import (
-	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
 
+	"github.com/monbooru/monloader/internal/api"
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/shared/apitoken"
 	"github.com/monbooru/monloader/internal/shared/contract"
@@ -14,6 +14,8 @@ import (
 	"github.com/monbooru/monloader/internal/shared/session"
 	"github.com/monbooru/monloader/internal/shared/webui"
 )
+
+const appMonsender = "monsender"
 
 // Any origin is allowed, the extension's included: the operator's approval
 // is the real gate.
@@ -28,20 +30,12 @@ func setPairCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Vary", "Origin")
 }
 
-func pairJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+func pairRefuse(w http.ResponseWriter, f *pairing.Refusal) {
+	contract.WriteError(w, f.Status, f.Code, f.Msg)
 }
-
-func pairError(w http.ResponseWriter, status int, code, msg string) {
-	pairJSON(w, status, contract.Error{Error: msg, Code: code})
-}
-
-func pairRefuse(w http.ResponseWriter, f *pairing.Refusal) { pairError(w, f.Status, f.Code, f.Msg) }
 
 func (s *Server) removePairingLocal(peer string) error {
-	return s.updateConfig(func(c *config.Config) error {
+	return s.cfg.Update(func(c *config.Config) error {
 		c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t apitoken.Token) bool { return t.Paired == peer })
 		if peer == contract.AppMonbooru {
 			c.Monbooru.APIToken, c.Monbooru.Paused = "", false
@@ -62,11 +56,11 @@ func (s *Server) extPairTeardown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.removePairingLocal(tok.Paired); err != nil {
-		pairError(w, http.StatusInternalServerError, pairing.CodeRemoveFailed, err.Error())
+		contract.WriteError(w, http.StatusInternalServerError, pairing.CodeRemoveFailed, err.Error())
 		return
 	}
 	logx.Infof("pairing: %s removed the pairing remotely", tok.Paired)
-	pairJSON(w, http.StatusOK, pairing.StatusBody{Status: pairing.Removed})
+	contract.WriteJSON(w, http.StatusOK, pairing.StatusBody{Status: pairing.Removed})
 }
 
 func (s *Server) extPairRequest(w http.ResponseWriter, r *http.Request) {
@@ -77,17 +71,17 @@ func (s *Server) extPairRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !pairing.ValidApp(body.App) {
-		pairError(w, http.StatusBadRequest, pairing.CodeInvalidRequest, "app must match [A-Za-z0-9_-]{1,32}")
+		contract.WriteError(w, http.StatusBadRequest, pairing.CodeInvalidRequest, "app must match [A-Za-z0-9_-]{1,32}")
 		return
 	}
 	// monbooru's pairing has its own flow; an extension approved under
 	// the name would show a phantom connection.
 	if strings.EqualFold(body.App, contract.AppMonbooru) {
-		pairError(w, http.StatusBadRequest, pairing.CodeInvalidRequest, "app name \"monbooru\" is reserved")
+		contract.WriteError(w, http.StatusBadRequest, pairing.CodeInvalidRequest, "app name \"monbooru\" is reserved")
 		return
 	}
 	if s.hasPairedToken(body.App) {
-		pairError(w, http.StatusConflict, "already_paired", "already paired with "+body.App+"; remove the existing pairing first")
+		contract.WriteError(w, http.StatusConflict, api.ErrAlreadyPaired, "already paired with "+body.App+"; remove the existing pairing first")
 		return
 	}
 	accepted, f := s.pairs.Offer(pairing.Request{App: body.App, Source: session.ClientIP(r), Scopes: body.RequestedScopes})
@@ -96,7 +90,7 @@ func (s *Server) extPairRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	logx.Infof("pairing: request from %s", body.App)
-	pairJSON(w, http.StatusOK, accepted)
+	contract.WriteJSON(w, http.StatusOK, accepted)
 }
 
 func (s *Server) extPairStatus(w http.ResponseWriter, r *http.Request) {
@@ -109,13 +103,13 @@ func (s *Server) extPairStatus(w http.ResponseWriter, r *http.Request) {
 	if body.Token != "" {
 		w.Header().Set("Cache-Control", "no-store")
 	}
-	pairJSON(w, http.StatusOK, body)
+	contract.WriteJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) mintExtToken(req pairing.Request) (string, error) {
 	tok, secret := apitoken.New(req.App+" (paired)", grantedScopes(req.Scopes))
 	tok.Paired = req.App
-	if err := s.updateConfig(func(c *config.Config) error {
+	if err := s.cfg.Update(func(c *config.Config) error {
 		c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t apitoken.Token) bool { return t.Paired == req.App })
 		c.Auth.Tokens = append(c.Auth.Tokens, tok)
 		return nil
@@ -126,22 +120,26 @@ func (s *Server) mintExtToken(req pairing.Request) (string, error) {
 	return secret, nil
 }
 
-func (s *Server) extPairData(r *http.Request) map[string]any {
+// The operator approves what the Scopes column shows, so it names the grant,
+// not the ask.
+func (s *Server) pendingPairs() []pairing.Request {
 	pending := s.pairs.ListPending()
 	for i := range pending {
-		// The operator approves what this column shows, so it names the
-		// grant, not the ask.
 		pending[i].Scopes = grantedScopes(pending[i].Scopes)
 	}
+	return pending
+}
+
+func (s *Server) extPairData(r *http.Request) map[string]any {
+	pending := s.pendingPairs()
 	n := s.pairNotice()
 	n.OOB = true
 	return map[string]any{
-		"Pending":   pending,
-		"Awaiting":  s.pairs.ListApproved(),
-		"Paired":    s.hasPairedToken("monsender"),
-		"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context())),
-		"Notice":    n,
-		"PairKey":   n.Key(),
+		"Pending":  pending,
+		"Awaiting": s.pairs.ListApproved(),
+		"Paired":   s.hasPairedToken(appMonsender),
+		"Notice":   n,
+		"PairKey":  n.Key(),
 	}
 }
 
@@ -163,12 +161,11 @@ func (s *Server) monsenderPairingFragment(w http.ResponseWriter, r *http.Request
 	// The poll sends the paired state it last rendered; a flip refreshes
 	// the token list too.
 	if was := r.URL.Query().Get("paired"); was != "" && (was == "true") != paired {
-		s.renderAuthTokensOOB(w, r)
+		s.renderAuthTokensOOB(w)
 	}
 }
 
 func (s *Server) monsenderPairApprove(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
 	if s.pairs.SetState(r.PathValue("id"), pairing.Approved) {
 		logx.Infof("pairing: approved extension request %s", r.PathValue("id"))
 	}
@@ -176,16 +173,25 @@ func (s *Server) monsenderPairApprove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) monsenderPairDeny(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
 	s.pairs.SetState(r.PathValue("id"), pairing.Denied)
 	s.render(w, "monsender_pairing", s.extPairData(r))
 }
 
 func (s *Server) monsenderPairRemove(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
-	if err := s.removePairingLocal("monsender"); err != nil {
+	if err := s.removePairingLocal(appMonsender); err != nil {
 		logx.Errorf("pairing: remove failed: %v", err)
+		data := s.extPairData(r)
+		data["Message"] = "Could not save: " + err.Error()
+		s.render(w, "monsender_pairing", data)
+		return
 	}
 	s.render(w, "monsender_pairing", s.extPairData(r))
-	s.renderAuthTokensOOB(w, r)
+	s.renderAuthTokensOOB(w)
+}
+
+func grantedScopes(requested []string) []string {
+	if sc := apitoken.Filter(requested, config.AllScopes); len(sc) > 0 {
+		return sc
+	}
+	return []string{config.ScopeRead}
 }

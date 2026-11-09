@@ -179,14 +179,12 @@ func checkWritable(dir string) error {
 }
 
 func (s *Store) checkSchemaVersion() error {
-	var v string
-	err := s.db.QueryRow(`SELECT value FROM sync WHERE key='schema'`).Scan(&v)
+	v, ok, err := syncValue(s.db, "schema")
 	switch {
-	case err == sql.ErrNoRows:
-		_, err := s.db.Exec(`INSERT INTO sync(key,value) VALUES('schema',?)`, strconv.Itoa(schemaVersion))
-		return err
 	case err != nil:
 		return err
+	case !ok:
+		return upsertSync(s.db, "schema", strconv.Itoa(schemaVersion))
 	case v != strconv.Itoa(schemaVersion):
 		return errSchemaMismatch
 	}
@@ -194,11 +192,7 @@ func (s *Store) checkSchemaVersion() error {
 }
 
 func (s *Store) Close() error {
-	err := s.db.Close()
-	if rerr := s.replay.Close(); err == nil {
-		err = rerr
-	}
-	return err
+	return errors.Join(s.db.Close(), s.replay.Close())
 }
 
 func syncUint(q rowQuerier, key string) (uint64, bool, error) {
@@ -287,10 +281,21 @@ func (s *Store) Replay(ctx context.Context, index uint64, coveredThrough int64, 
 		return c, rows, err
 	}
 	c.Hashes += defs.hashDelta
+	c.Tags += defs.tagDelta
 	c.Mappings += content.mapDelta
 	rows = defs.rows + content.rows
-	if err = recountTouched(tx, &c, defs, content); err != nil {
-		return c, rows, err
+	// The small tables are re-counted: a sibling upsert's affected rows
+	// cannot tell an insert from a repoint. Hashes, tags and mappings are too large
+	// and move by deltas.
+	if content.touchedSiblings {
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM siblings`).Scan(&c.Siblings); err != nil {
+			return c, rows, err
+		}
+	}
+	if content.touchedParents {
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM parents`).Scan(&c.Parents); err != nil {
+			return c, rows, err
+		}
 	}
 	var buf []byte
 	if buf, err = json.Marshal(c); err != nil {
@@ -302,12 +307,16 @@ func (s *Store) Replay(ctx context.Context, index uint64, coveredThrough int64, 
 	if err = upsertSync(tx, cursorKey, strconv.FormatUint(index, 10)); err != nil {
 		return c, rows, err
 	}
-	blobsApplied, _, err := syncUint(tx, blobsKey)
+	// Absent means the seed has not landed: counting from zero would read as a
+	// census and stop the next boot from seeding.
+	blobsApplied, seeded, err := syncUint(tx, blobsKey)
 	if err != nil {
 		return c, rows, err
 	}
-	if err = upsertSync(tx, blobsKey, strconv.FormatUint(blobsApplied+uint64(len(blobs)), 10)); err != nil {
-		return c, rows, err
+	if seeded {
+		if err = upsertSync(tx, blobsKey, strconv.FormatUint(blobsApplied+uint64(len(blobs)), 10)); err != nil {
+			return c, rows, err
+		}
 	}
 	if coveredThrough > 0 {
 		if err = upsertSync(tx, coveredKey, strconv.FormatInt(coveredThrough, 10)); err != nil {
@@ -318,10 +327,9 @@ func (s *Store) Replay(ctx context.Context, index uint64, coveredThrough int64, 
 }
 
 type replayPass struct {
-	hashDelta, mapDelta, rows int64
-	touchedTags               bool
-	touchedSiblings           bool
-	touchedParents            bool
+	hashDelta, tagDelta, mapDelta, rows int64
+	touchedSiblings                     bool
+	touchedParents                      bool
 }
 
 // Run once per kind: definitions must land before content references their
@@ -347,12 +355,12 @@ func replayKind(ctx context.Context, tx *sql.Tx, blobs [][]byte, want int, appli
 			return p, err
 		}
 		if want == typeDefinitionsUpdate {
-			delta, err := applyDefinitions(tx, up.Definitions)
+			hashes, tags, err := applyDefinitions(tx, up.Definitions)
 			if err != nil {
 				return p, err
 			}
-			p.hashDelta += delta
-			p.touchedTags = p.touchedTags || len(up.Definitions.Tags) > 0
+			p.hashDelta += hashes
+			p.tagDelta += tags
 		} else {
 			delta, err := applyContent(tx, up.Content)
 			if err != nil {
@@ -368,29 +376,6 @@ func replayKind(ctx context.Context, tx *sql.Tx, blobs [][]byte, want int, appli
 		}
 	}
 	return p, nil
-}
-
-// The small tables are re-counted: a sibling upsert's affected rows
-// cannot tell an insert from a repoint. Hashes and mappings are too large
-// and move by deltas.
-func recountTouched(tx *sql.Tx, c *Counts, defs, content replayPass) error {
-	for _, rc := range []struct {
-		touched bool
-		table   string
-		dst     *int64
-	}{
-		{defs.touchedTags, "tags", &c.Tags},
-		{content.touchedSiblings, "siblings", &c.Siblings},
-		{content.touchedParents, "parents", &c.Parents},
-	} {
-		if !rc.touched {
-			continue
-		}
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM ` + rc.table).Scan(rc.dst); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 type rowQuerier interface {
@@ -425,13 +410,12 @@ func (s *Store) StoredCounts() (Counts, error) {
 
 // INSERT OR REPLACE counts a redefined id as new; the delta holds because
 // the repository's definitions are append-only.
-func applyDefinitions(tx *sql.Tx, defs *definitions) (int64, error) {
+func applyDefinitions(tx *sql.Tx, defs *definitions) (hashes, tags int64, err error) {
 	hst, err := tx.Prepare(`INSERT OR REPLACE INTO hashes(hash_id,hash) VALUES(?,?)`)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer hst.Close()
-	var delta int64
 	for id, hexHash := range defs.Hashes {
 		raw, derr := hex.DecodeString(hexHash)
 		if derr != nil || len(raw) != 32 {
@@ -439,23 +423,27 @@ func applyDefinitions(tx *sql.Tx, defs *definitions) (int64, error) {
 		}
 		res, err := hst.Exec(int64(id), raw)
 		if err != nil {
-			return delta, err
+			return hashes, tags, err
 		}
 		if n, err := res.RowsAffected(); err == nil {
-			delta += n
+			hashes += n
 		}
 	}
 	tst, err := tx.Prepare(`INSERT OR REPLACE INTO tags(tag_id,tag) VALUES(?,?)`)
 	if err != nil {
-		return delta, err
+		return hashes, tags, err
 	}
 	defer tst.Close()
 	for id, tag := range defs.Tags {
-		if _, err := tst.Exec(int64(id), tag); err != nil {
-			return delta, err
+		res, err := tst.Exec(int64(id), tag)
+		if err != nil {
+			return hashes, tags, err
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			tags += n
 		}
 	}
-	return delta, nil
+	return hashes, tags, nil
 }
 
 func applyContent(tx *sql.Tx, c *contentRows) (int64, error) {

@@ -20,7 +20,7 @@ func runHealthcheck(argv []string) {
 	_ = fs.Parse(argv)
 
 	url := "http://" + resolveHealthAddr(*configPath) + "/health"
-	resp, err := (&http.Client{Timeout: *timeout}).Get(url)
+	resp, err := (&http.Client{Timeout: *timeout, Transport: &http.Transport{}}).Get(url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
 		os.Exit(1)
@@ -32,7 +32,7 @@ func runHealthcheck(argv []string) {
 	}
 }
 
-// Not config.LoadWithDefaults, which writes a default config where none exists.
+// Not config.Load, which writes a default config where none exists.
 func resolveHealthAddr(configPath string) string {
 	addr := os.Getenv("MONLOADER_SERVER_BIND_ADDRESS")
 	if addr == "" && configPath != "" {

@@ -13,9 +13,9 @@ permissions:
 env:
   GO_VERSION: '1.27.3'
   GO_SHA256_LINUX_AMD64: '65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40'
-  GDL_VERSION: '1.32.17'
-  GDL_SHA256_LINUX_AMD64: 'ccf4d304408a0d57ef78d4ad9221aaad964e36b57466109b48595a52377dcdcc'
-  GDL_SHA256_WINDOWS_AMD64: '77c8f4c6808cf1044a54ec7187b548f5977f7c304d5432b63cf6cfdfe70ffc12'
+  GDL_VERSION: '1.32.19'
+  GDL_SHA256_LINUX_AMD64: '9662483cafa72f51ce4b2153aebd620256a9ab536218674b8794f7b3ece11c29'
+  GDL_SHA256_WINDOWS_AMD64: '4dda3f14efbc8a8e616af1fc7e1e88d795995326b47692453e620117254dec18'
   GDL_LICENSE_SHA256: '8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643'
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -95,7 +95,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -114,7 +114,7 @@ jobs:
 
       - name: Login to GHCR (legacy namespace)
         continue-on-error: true
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: leqwin
@@ -148,7 +148,7 @@ jobs:
           fi
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
@@ -156,32 +156,6 @@ jobs:
 
   binaries:
     name: Binaries
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Go
-        run: ./packaging/install-go.sh "${GO_VERSION}" "${GO_SHA256_LINUX_AMD64}"
-
-      - name: Fetch the bundled gallery-dl
-        run: ./packaging/fetch-tools.sh
-
-      - name: Build
-        run: ./packaging/build-binaries.sh
-
-      - name: Build the AppImage
-        run: ./packaging/build-appimage.sh
-
-      - name: Upload
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: binaries-plain
-          path: dist/*
-          if-no-files-found: error
-
-  windows-installer:
-    name: Windows installer
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -204,11 +178,14 @@ jobs:
           ./packaging/build-installer.sh lite
           ./packaging/build-installer.sh bundled
 
+      - name: Build the AppImage
+        run: ./packaging/build-appimage.sh
+
       - name: Upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: binaries-windows-installer
-          path: dist/monloader_*_setup.exe
+          name: binaries-plain
+          path: dist/*
           if-no-files-found: error
 
   flatpak:
@@ -260,7 +237,7 @@ jobs:
     name: Attach the artifacts to the release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [release, binaries, windows-installer, flatpak]
+    needs: [release, binaries, flatpak]
     steps:
       - name: Download every artifact
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -274,7 +251,7 @@ jobs:
         run: sha256sum -- * > ../SHA256SUMS && mv ../SHA256SUMS .
 
       - name: Attach
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ github.ref_name }}
           files: dist/*

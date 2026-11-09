@@ -4,9 +4,9 @@
 {{range .Watches}}
 <tr>
   <td><span class="{{.ResultClass}}"{{with .ResultTitle}} title="{{.}}"{{end}}>{{.Result}}</span>{{if .Last.CheckedAt.IsZero}}{{else}}<span class="job-time" title="{{stampLocal .Last.CheckedAt}}">{{humanSince .Last.CheckedAt}}</span>{{end}}</td>
-  <td class="queue-url">{{.URL}} <a class="queue-view" href="{{.URL}}" target="_blank" rel="noopener" title="Open the search in a new tab">view</a></td>
+  <td class="queue-url">{{.URL}} <a class="queue-view" href="{{.URL}}" target="_blank" rel="noopener">source</a></td>
   <td class="queue-site" title="{{.Last.Site}}">{{.Last.Site}}</td>
-  <td><select name="items" aria-label="Items to fetch" hx-post="/watches/{{.ID}}/items" hx-trigger="change">{{template "items_options" .Items}}</select></td>
+  <td><select name="items" aria-label="Posts to fetch" hx-post="/watches/{{.ID}}/items" hx-trigger="change">{{template "items_options" .Items}}</select></td>
   <td>{{$hours := .IntervalHours}}<select name="interval_hours" aria-label="Check every" hx-post="/watches/{{.ID}}/interval" hx-trigger="change">{{range $intervals}}<option value="{{.Hours}}"{{if eq .Hours $hours}} selected{{end}}>{{.Label}}</option>{{end}}</select></td>
   <td class="field-hint">{{.Next}}</td>
   <td>

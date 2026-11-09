@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/kwdict"
-	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/queue"
@@ -39,10 +38,6 @@ func (p *Processor) processLookup(ctx context.Context, job, snap *queue.Job) err
 	}
 }
 
-// monbooru matches this name to render the PTR's line apart from the
-// online walk.
-const ptrTrailName = contract.TrailPTR
-
 // A PTR enrich is unverified, so only the caller's image/hash pair ties the
 // tags to the image, and a replace can leave that hash stale. An error or a
 // blank digest from monbooru trusts the pair.
@@ -62,9 +57,9 @@ func (p *Processor) checkLookupHash(ctx context.Context, snap *queue.Job) error 
 
 func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	var trail []string
-	ptrTags, ptrHit, ptrMiss := p.ptrTagsFor(snap.SHA256)
+	ptrFields, ptrHit, ptrMiss := p.ptrFieldsFor(snap.SHA256)
 	if ptrMiss != "" {
-		trail = append(trail, ptrTrailName+": "+ptrMiss)
+		trail = append(trail, contract.TrailPTR+": "+ptrMiss)
 	}
 	meta, hit, chainTrail, err := p.lookupChain(ctx, snap)
 	if err != nil {
@@ -93,7 +88,7 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	var warnings []string
 	if ptrHit {
 		res, enrichErr := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
-			PostFields: monbooru.PostFields{Tags: ptrTags, Source: contract.SourcePTR},
+			PostFields: ptrFields,
 			Verify:     false,
 		})
 		if enrichErr != nil {
@@ -112,7 +107,7 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 	if meta == nil && hit == nil {
 		// Only the PTR matched: its tags landed but no source URL did, so
 		// the trail still reports the misses.
-		p.markEnriched(job, snap, &monbooru.Result{MonbooruID: snap.ImageID, MergeNote: ptrNote, TagWarnings: warnings}, "")
+		p.markEnriched(job, snap, &monbooru.Result{MonbooruID: snap.ImageID, MergeNote: ptrNote, TagWarnings: warnings}, "", monbooru.PostFields{})
 		p.reportPTRTrail(ctx, snap, chainTrail)
 		return nil
 	}
@@ -124,35 +119,53 @@ func (p *Processor) lookupAll(ctx context.Context, job, snap *queue.Job) error {
 		p.markEnriched(job, snap, &monbooru.Result{
 			MonbooruID: snap.ImageID, MergeNote: note,
 			TagWarnings: append(warnings, res.TagWarnings...),
-		}, url)
+		}, url, monbooru.PostFields{})
 	case ptrApplied:
 		// The PTR tags did land, so a PTR-led trail replaces the "no tags
 		// applied" monbooru recorded for the online failure.
-		p.markEnriched(job, snap, &monbooru.Result{MonbooruID: snap.ImageID, MergeNote: ptrNote, TagWarnings: warnings}, "")
+		p.markEnriched(job, snap, &monbooru.Result{MonbooruID: snap.ImageID, MergeNote: ptrNote, TagWarnings: warnings}, "", monbooru.PostFields{})
 		p.reportPTRTrail(ctx, snap, append(chainTrail, site+": "+errorCode(onlineErr)))
 	default:
-		failItem(job, 0, errorCode(onlineErr), onlineErr.Error())
+		p.failOnline(ctx, job, snap, onlineErr)
 	}
 	return nil
 }
 
 // An off backend reports no miss, since the job never promised one; a syncing
 // one is skipped, since a partial tag set reads like the whole truth.
-func (p *Processor) ptrTagsFor(sha256 string) (tags []string, hit bool, miss string) {
-	if p.ptr == nil || !p.ptr.Enabled() || sha256 == "" {
-		return nil, false, ""
+func (p *Processor) ptrFieldsFor(sha256 string) (fields monbooru.PostFields, hit bool, miss string) {
+	if !p.ptr.Enabled() || sha256 == "" {
+		return fields, false, ""
 	}
 	if !p.ptr.CaughtUp() {
-		return nil, false, contract.TrailSkipped + ", still syncing"
+		return fields, false, contract.TrailSkipped + ", still syncing"
 	}
 	rawTags, ok, err := p.ptr.TagsForHash(sha256)
 	switch {
 	case err != nil:
-		return nil, false, err.Error()
+		return fields, false, err.Error()
 	case !ok:
-		return nil, false, "no match"
+		return fields, false, "no match"
 	}
-	return mapping.MapPTRTags(rawTags), true, ""
+	if note, skip := p.mapper.PTRBlacklisted(rawTags); skip {
+		return fields, false, ptrBlacklistedReason(note)
+	}
+	fields = p.ptrFields(rawTags)
+	if len(fields.Tags) == 0 {
+		return fields, false, ptrNoUsableTags
+	}
+	return fields, true, ""
+}
+
+const ptrNoUsableTags = "no usable tags"
+
+func (p *Processor) ptrFields(rawTags []string) monbooru.PostFields {
+	tags, withheld := p.mapper.MapPTRWithheld(rawTags)
+	return monbooru.PostFields{Tags: tags, WithheldTags: withheld, Source: contract.SourcePTR}
+}
+
+func ptrBlacklistedReason(note string) string {
+	return contract.TrailSkipped + ", blacklisted (" + note + ")"
 }
 
 // The caller settles the item, folding in the PTR outcome.
@@ -167,23 +180,25 @@ func (p *Processor) enrichAllOnline(ctx context.Context, job, snap *queue.Job, m
 		job.SetSite(site)
 		labelEnrichPost(job, meta)
 		url := p.mapper.PostURL(meta)
-		res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery,
-			p.mapEnrichPayload(meta, url, claimedMD5(meta, snap.MD5, sim), sim))
-		return res, url, site, err
+		if err := p.flattenedErr(meta); err != nil {
+			return nil, url, site, err
+		}
+		payload, warnings := p.mapEnrichPayload(meta, url, claimedMD5(meta, snap.MD5, sim), sim)
+		res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, payload)
+		if err != nil {
+			return nil, url, site, err
+		}
+		res.TagWarnings = slices.Concat(warnings, res.TagWarnings)
+		return res, url, site, nil
 	}
-	res, err := p.sourceOnlyEnrich(ctx, job, snap, hit)
-	return res, hit.url, hit.site, err
-}
-
-// The caller settles the item.
-func (p *Processor) sourceOnlyEnrich(ctx context.Context, job, snap *queue.Job, hit *simHit) (*monbooru.Result, error) {
 	job.SetSite(hit.site)
 	job.UpdateItem(0, func(it *queue.Item) { it.PostID = hit.note + ", source only" })
-	return p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
+	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
 		PostFields: monbooru.PostFields{Source: p.mapper.SourceLabel(hit.site), URL: hit.url},
 		Verify:     false,
 		Similarity: hit.score,
 	})
+	return res, hit.url, hit.site, err
 }
 
 // A skipped PTR and one that held nothing must not read alike: monbooru's
@@ -201,7 +216,7 @@ func composeLookupNote(ptrApplied bool, ptrNote, ptrMiss, site, onlineNote strin
 }
 
 func (p *Processor) reportPTRTrail(ctx context.Context, snap *queue.Job, onlineTrail []string) {
-	report := append([]string{ptrTrailName + contract.TrailMatch + ", tags applied"}, onlineTrail...)
+	report := append([]string{contract.TrailPTR + contract.TrailMatch + ", tags applied"}, onlineTrail...)
 	if rerr := p.client.ReportFetchOutcome(ctx, snap.ImageID, snap.Gallery, string(snap.Kind), snap.Backend, outcome.ErrCodeHashNotFound, strings.Join(report, contract.TrailSeparator)); rerr != nil {
 		logx.Warnf("queue: job %d fetch-status report failed: %v", snap.ID, rerr)
 	}
@@ -222,12 +237,10 @@ func (p *Processor) lookupBooru(ctx context.Context, job, snap *queue.Job) error
 	}
 	res, url, _, err := p.enrichAllOnline(ctx, job, snap, meta, hit)
 	if err != nil {
-		if ctx.Err() == nil {
-			failItem(job, 0, errorCode(err), err.Error())
-		}
+		p.failOnline(ctx, job, snap, err)
 		return nil
 	}
-	p.markEnriched(job, snap, res, url)
+	p.markEnriched(job, snap, res, url, monbooru.PostFields{})
 	return nil
 }
 
@@ -250,7 +263,7 @@ func missError(trail []string) error {
 }
 
 func (p *Processor) lookupPTR(ctx context.Context, job, snap *queue.Job) error {
-	if p.ptr == nil || !p.ptr.Enabled() {
+	if !p.ptr.Enabled() {
 		err := &outcome.CodedError{Code: outcome.ErrCodePTRUnavailable, Msg: "the ptr lookup backend is not available"}
 		p.failEnrichFetch(ctx, job, snap, err)
 		return nil
@@ -266,19 +279,27 @@ func (p *Processor) lookupPTR(ctx context.Context, job, snap *queue.Job) error {
 		return nil
 	}
 	if !ok {
-		p.failEnrichFetch(ctx, job, snap, missError([]string{ptrTrailName + ": no match"}))
+		p.failEnrichFetch(ctx, job, snap, missError([]string{contract.TrailPTR + ": no match"}))
 		return nil
 	}
-	tags := mapping.MapPTRTags(rawTags)
+	if note, skip := p.mapper.PTRBlacklisted(rawTags); skip {
+		p.failEnrichFetch(ctx, job, snap, missError([]string{contract.TrailPTR + ": " + ptrBlacklistedReason(note)}))
+		return nil
+	}
+	fields := p.ptrFields(rawTags)
+	if len(fields.Tags) == 0 {
+		p.failEnrichFetch(ctx, job, snap, missError([]string{contract.TrailPTR + ": " + ptrNoUsableTags}))
+		return nil
+	}
 	res, err := p.client.EnrichImage(ctx, snap.ImageID, snap.Gallery, monbooru.EnrichPayload{
-		PostFields: monbooru.PostFields{Tags: tags, Source: contract.SourcePTR},
+		PostFields: fields,
 		Verify:     false,
 	})
 	if err != nil {
 		p.failEnrichFetch(ctx, job, snap, err)
 		return nil
 	}
-	p.markEnriched(job, snap, res, "")
+	p.markEnriched(job, snap, res, "", fields)
 	return nil
 }
 
@@ -325,9 +346,6 @@ func (p *Processor) lookupChain(ctx context.Context, snap *queue.Job) (map[strin
 		}
 		var meta map[string]any
 		if src.Similarity {
-			if p.sim == nil {
-				continue
-			}
 			// Before the thumbnail fetch, so unconfigured services never
 			// cause one.
 			if label, missing := p.sim.Missing(src.Name); missing {
@@ -392,7 +410,7 @@ func (p *Processor) lookupWalk(ctx context.Context, md5 string) (map[string]any,
 }
 
 func (p *Processor) walkSite(ctx context.Context, site, md5 string, trail *[]string) map[string]any {
-	if label, missing := p.missingCredential(site); missing {
+	if label, missing := p.mapper.MissingCredential(site); missing {
 		*trail = append(*trail, site+": skipped, needs "+label)
 		return nil
 	}
@@ -472,7 +490,7 @@ func (p *Processor) similaritySource(ctx context.Context, service string, thumb 
 		if attempts == 3 || ctx.Err() != nil {
 			break
 		}
-		if label, missing := p.missingCredential(cand.Site); missing {
+		if label, missing := p.mapper.MissingCredential(cand.Site); missing {
 			*trail = append(*trail, cand.Site+": skipped, needs "+label)
 			continue
 		}
@@ -515,12 +533,4 @@ func candHit(cand similarity.Candidate) *simHit {
 		note:  fmt.Sprintf("%s %.0f%%", cand.Site, cand.Similarity),
 		score: cand.Similarity,
 	}
-}
-
-func (p *Processor) missingCredential(site string) (string, bool) {
-	prof, ok := p.mapper.Lookup(site)
-	if !ok {
-		return "", false
-	}
-	return mapping.RequiredCredential(prof.Auth, p.cfg.Current().FindSite(site))
 }

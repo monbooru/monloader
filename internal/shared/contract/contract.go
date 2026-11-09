@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 )
 
-// Item outcomes of a monloader job.
 const (
 	OutcomeCreated            = "created"
 	OutcomeDuplicate          = "duplicate"
@@ -19,10 +18,10 @@ const (
 	OutcomeReplaced           = "replaced"
 	OutcomeSkippedArchive     = "skipped_archive"
 	OutcomeSkippedUnsupported = "skipped_unsupported"
+	OutcomeSkippedBlacklist   = "skipped_blacklist"
 	OutcomeFailed             = "failed"
 )
 
-// Error codes a failed item, or a fetch report to monbooru, carries.
 const (
 	CodeDownloadFailed      = "download_failed"
 	CodeUnsupportedURL      = "unsupported_url"
@@ -45,7 +44,6 @@ const (
 	CodePTRSyncing          = "ptr_syncing"
 )
 
-// Job statuses.
 const (
 	JobQueued      = "queued"
 	JobRunning     = "running"
@@ -56,7 +54,6 @@ const (
 	JobInterrupted = "interrupted"
 )
 
-// KindLookup is the job kind a lookup's fetch report names.
 const KindLookup = "lookup"
 
 // A lookup trail names each backend it tried; monbooru splits the trail on
@@ -105,7 +102,11 @@ const (
 	TrailSkipped   = "skipped"
 )
 
-const PTRReady = "ready"
+const (
+	PTRReady  = "ready"
+	PTRPaused = "paused"
+	PTRError  = "error"
+)
 
 const (
 	MaxPTRHashes      = 100
@@ -130,21 +131,39 @@ const (
 	ContribParentPetition  = "parent_petition"
 )
 
-const ContribStaged = "staged"
-
 const (
-	PairSuggest  = "suggest"
-	PairPetition = "petition"
-	PairPending  = "pending"
-	PairConflict = "conflict"
-	PairCovered  = "covered"
+	ContribStaged           = "staged"
+	ContribDuplicate        = "duplicate"
+	ContribInvalidReason    = "invalid_reason"
+	ContribIneligible       = "ineligible"
+	ContribAlreadyKnown     = "already_known"
+	ContribAlreadySuggested = "already_suggested"
+	ContribNotOnPTR         = "not_on_ptr"
+	ContribConflict         = "conflict"
+	ContribPending          = "pending"
 )
 
 const (
-	PreviewNew    = "new"
-	PreviewKnown  = "known"
-	PreviewUnsent = "unsent"
+	PairSuggest    = "suggest"
+	PairPetition   = "petition"
+	PairPending    = "pending"
+	PairConflict   = "conflict"
+	PairCovered    = "covered"
+	PairIneligible = "ineligible"
 )
+
+const (
+	PreviewNew        = "new"
+	PreviewKnown      = "known"
+	PreviewUnsent     = "unsent"
+	PreviewIneligible = "ineligible"
+	PreviewFiltered   = "filtered"
+)
+
+// IngestExtensions is what monbooru stores, by file name, lower-cased. monloader
+// skips anything else rather than push it to be rejected, and monbooru pins its
+// own file types to this list.
+var IngestExtensions = []string{".jpg", ".jpeg", ".png", ".webp", ".avif", ".jxl", ".gif", ".mp4", ".webm", ".cbz", ".zip"}
 
 // ContribSendBudget bounds monbooru's wait for a contribution send.
 const ContribSendBudget = 10 * time.Second
@@ -214,7 +233,6 @@ const (
 // ceiling rely on the order.
 var RatingLevels = []string{RatingGeneral, RatingSensitive, RatingQuestionable, RatingExplicit}
 
-// RatingRank is -1 for a word that is not a rating level.
 func RatingRank(level string) int { return slices.Index(RatingLevels, level) }
 
 var BuiltinCategories = []string{

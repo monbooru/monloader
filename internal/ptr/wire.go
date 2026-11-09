@@ -243,21 +243,9 @@ func parseMetadataObject(obj json.RawMessage) (*metadataSlice, error) {
 	}
 	slice := &metadataSlice{}
 	for _, row := range rows {
-		if len(row) != 4 {
-			return nil, fmt.Errorf("metadata row has %d fields, want 4", len(row))
-		}
 		var e updateEntry
-		if err := json.Unmarshal(row[0], &e.Index); err != nil {
-			return nil, fmt.Errorf("decoding update index: %w", err)
-		}
-		if err := json.Unmarshal(row[1], &e.Hashes); err != nil {
-			return nil, fmt.Errorf("decoding update hashes: %w", err)
-		}
-		if err := json.Unmarshal(row[2], &e.Begin); err != nil {
-			return nil, fmt.Errorf("decoding update begin: %w", err)
-		}
-		if err := json.Unmarshal(row[3], &e.End); err != nil {
-			return nil, fmt.Errorf("decoding update end: %w", err)
+		if err := decodeTuple(row, "metadata row", &e.Index, &e.Hashes, &e.Begin, &e.End); err != nil {
+			return nil, err
 		}
 		slice.Updates = append(slice.Updates, e)
 	}
@@ -312,16 +300,10 @@ func parseDefinitions(data []byte) (*definitions, error) {
 	}
 	defs := &definitions{Hashes: map[uint64]string{}, Tags: map[uint64]string{}}
 	for _, block := range blocks {
-		if len(block) != 2 {
-			return nil, fmt.Errorf("definitions block has %d parts, want 2", len(block))
-		}
 		var defType int
-		if err := json.Unmarshal(block[0], &defType); err != nil {
-			return nil, fmt.Errorf("decoding definition type: %w", err)
-		}
 		var rows [][]json.RawMessage
-		if err := json.Unmarshal(block[1], &rows); err != nil {
-			return nil, fmt.Errorf("decoding definition rows: %w", err)
+		if err := decodeTuple(block, "definitions block", &defType, &rows); err != nil {
+			return nil, err
 		}
 		dst := defs.Tags
 		if defType == defTypeHashes {
@@ -330,16 +312,10 @@ func parseDefinitions(data []byte) (*definitions, error) {
 			continue // unknown definition kind: skip forward-compatibly
 		}
 		for _, row := range rows {
-			if len(row) != 2 {
-				return nil, fmt.Errorf("definition row has %d fields, want 2", len(row))
-			}
 			var id uint64
-			if err := json.Unmarshal(row[0], &id); err != nil {
-				return nil, fmt.Errorf("decoding definition id: %w", err)
-			}
 			var val string
-			if err := json.Unmarshal(row[1], &val); err != nil {
-				return nil, fmt.Errorf("decoding definition value: %w", err)
+			if err := decodeTuple(row, "definition row", &id, &val); err != nil {
+				return nil, err
 			}
 			dst[id] = val
 		}
@@ -358,26 +334,18 @@ func parseContent(data []byte) (*contentRows, error) {
 	}
 	c := &contentRows{}
 	for _, block := range blocks {
-		if len(block) != 2 {
-			return nil, fmt.Errorf("content block has %d parts, want 2", len(block))
-		}
 		var contentType int
-		if err := json.Unmarshal(block[0], &contentType); err != nil {
-			return nil, fmt.Errorf("decoding content type: %w", err)
-		}
 		var actions [][]json.RawMessage
-		if err := json.Unmarshal(block[1], &actions); err != nil {
-			return nil, fmt.Errorf("decoding content actions: %w", err)
+		if err := decodeTuple(block, "content block", &contentType, &actions); err != nil {
+			return nil, err
 		}
 		for _, ab := range actions {
-			if len(ab) != 2 {
-				return nil, fmt.Errorf("content action has %d parts, want 2", len(ab))
-			}
 			var action int
-			if err := json.Unmarshal(ab[0], &action); err != nil {
-				return nil, fmt.Errorf("decoding content action: %w", err)
+			var rows json.RawMessage
+			if err := decodeTuple(ab, "content action", &action, &rows); err != nil {
+				return nil, err
 			}
-			if err := c.addRows(contentType, action, ab[1]); err != nil {
+			if err := c.addRows(contentType, action, rows); err != nil {
 				return nil, err
 			}
 		}
@@ -420,26 +388,31 @@ func appendByAction[T any](action int, add, del *[]T, rows []T) {
 }
 
 func parseMappings(rows json.RawMessage) ([]mapping, error) {
-	var raw []json.RawMessage
+	var raw [][]json.RawMessage
 	if err := json.Unmarshal(rows, &raw); err != nil {
 		return nil, fmt.Errorf("decoding mappings rows: %w", err)
 	}
 	out := make([]mapping, 0, len(raw))
-	for _, r := range raw {
-		var row []json.RawMessage
-		if err := json.Unmarshal(r, &row); err != nil || len(row) != 2 {
-			return nil, fmt.Errorf("mappings row is not a [tag_id, hash_ids] pair")
-		}
+	for _, row := range raw {
 		var m mapping
-		if err := json.Unmarshal(row[0], &m.TagID); err != nil {
-			return nil, fmt.Errorf("decoding mapping tag id: %w", err)
-		}
-		if err := json.Unmarshal(row[1], &m.HashIDs); err != nil {
-			return nil, fmt.Errorf("decoding mapping hash ids: %w", err)
+		if err := decodeTuple(row, "mappings row", &m.TagID, &m.HashIDs); err != nil {
+			return nil, err
 		}
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+func decodeTuple(parts []json.RawMessage, what string, dsts ...any) error {
+	if len(parts) != len(dsts) {
+		return fmt.Errorf("%s has %d parts, want %d", what, len(parts), len(dsts))
+	}
+	for i, dst := range dsts {
+		if err := json.Unmarshal(parts[i], dst); err != nil {
+			return fmt.Errorf("decoding %s part %d: %w", what, i, err)
+		}
+	}
+	return nil
 }
 
 func parsePairs(rows json.RawMessage) ([]pair, error) {

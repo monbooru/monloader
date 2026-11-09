@@ -4,13 +4,14 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
-// Commas split too: realbooru joins with ", ", which would otherwise
-// leave a comma stuck to every tag.
+// A comma is part of a name on space-joined sites (hello,_happy_world!), so it
+// splits only when it ends every field but the last: realbooru's ", " join.
 func parseTagField(v any) []string {
 	switch t := v.(type) {
 	case []any:
@@ -26,9 +27,16 @@ func parseTagField(v any) []string {
 		}
 		return out
 	case string:
-		return strings.FieldsFunc(t, func(r rune) bool {
-			return unicode.IsSpace(r) || r == ','
-		})
+		fields := strings.Fields(t)
+		for i, f := range fields {
+			if i < len(fields)-1 && !strings.HasSuffix(f, ",") {
+				return fields
+			}
+		}
+		for i, f := range fields {
+			fields[i] = strings.TrimSuffix(f, ",")
+		}
+		return fields
 	default:
 		return nil
 	}
@@ -89,6 +97,9 @@ var baseCategories = map[string]string{
 	"meta":        "meta",
 	"metadata":    "meta",
 	"species":     "species",
+	"medium":      "medium",
+	"person":      "person",
+	"year":        "year",
 	"lore":        "meta",
 	"contributor": "artist",
 	"circle":      "artist",    // doujin circle
@@ -102,9 +113,15 @@ var baseCategories = map[string]string{
 	"deprecated":  "",
 }
 
+// pixiv's metadata-bookmark adds tags_bookmark beside a post's own flat list.
+var extraTagSuffixes = map[string]bool{"bookmark": true}
+
 func baseCategory(suffix string) (category string, keep bool) {
 	cat, ok := baseCategories[suffix]
 	if !ok {
+		if isTagCategory(suffix) {
+			return suffix, true
+		}
 		return "general", true
 	}
 	return cat, cat != ""
@@ -124,12 +141,33 @@ func splitNamespace(tag string) (category, name string, ok bool) {
 		return "character", rest, true
 	case "copyright", "parody", "series", "game", "franchise", "studio":
 		return "copyright", rest, true
-	case "meta", "source", "medium":
+	case "meta", "source":
 		return "meta", rest, true
+	case "medium":
+		return "medium", rest, true
 	case "general", "theme", "tag":
 		return "general", rest, true
 	}
 	return "", "", false
+}
+
+// monbooru's categories beyond the built-ins, as far as a job or the settings
+// page has seen them. A tag folds in places no mapper reaches, so they live
+// here.
+var (
+	customCategoriesMu      sync.RWMutex
+	customCategories        = map[string]bool{}
+	customCategoriesLearned bool
+)
+
+func customCategory(name string) bool {
+	customCategoriesMu.RLock()
+	defer customCategoriesMu.RUnlock()
+	return customCategories[name]
+}
+
+func isTagCategory(name string) bool {
+	return name != "" && (validTagCategories[name] || customCategory(name))
 }
 
 // Must match monbooru's tags.SplitForm and tags.NormalizeName byte for byte,
@@ -138,7 +176,7 @@ func normalizeTag(tag string) string {
 	tag = strings.TrimSpace(tag)
 	if prefix, rest, ok := strings.Cut(tag, ":"); ok {
 		category := strings.ToLower(prefix)
-		if slices.Contains(contract.BuiltinCategories, category) {
+		if slices.Contains(contract.BuiltinCategories, category) || customCategory(category) {
 			name := normalizeName(rest)
 			if name == "" || category == "general" {
 				return name
@@ -198,6 +236,33 @@ func formatTag(category, name string) string {
 
 func NormalizeTag(tag string) string { return normalizeTag(tag) }
 
+// NormalizeRuleTarget keeps a general: prefix, which normalizeTag folds away:
+// as a rule's target it moves a tag out of its category, where a bare name
+// renames it in place.
+func NormalizeRuleTarget(to string) string {
+	to = strings.TrimSpace(to)
+	if prefix, rest, ok := strings.Cut(to, ":"); ok && strings.EqualFold(prefix, "general") {
+		if name := normalizeName(rest); name != "" {
+			return "general:" + name
+		}
+		return ""
+	}
+	return normalizeTag(to)
+}
+
+// DroppedRuleTarget names the dropped category a tag rule moves its tag into.
+// A bare rename stays in a category only the post knows, so it names none.
+func DroppedRuleTarget(drop []string, from, to string) string {
+	if strings.HasPrefix(to, "general:") && slices.Contains(drop, "general") {
+		return "general"
+	}
+	prefix, _, found := strings.Cut(applyTagRule(map[string]string{from: to}, from), ":")
+	if !found || !slices.Contains(drop, prefix) {
+		return ""
+	}
+	return prefix
+}
+
 // The full form is tried before the bare name, and a general tag
 // containing a colon matches by its full form.
 func applyTagRule(rules map[string]string, tag string) string {
@@ -205,7 +270,7 @@ func applyTagRule(rules map[string]string, tag string) string {
 		return tag
 	}
 	prefix, name := "", tag
-	if cat, rest, found := strings.Cut(tag, ":"); found && validTagCategories[cat] && cat != "" {
+	if cat, rest, found := strings.Cut(tag, ":"); found && isTagCategory(cat) {
 		prefix, name = cat, rest
 	}
 	repl, ok := rules[tag]
@@ -218,8 +283,8 @@ func applyTagRule(rules map[string]string, tag string) string {
 	if repl == "" {
 		return ""
 	}
-	if cat, rest, found := strings.Cut(repl, ":"); found && validTagCategories[cat] && cat != "" && rest != "" {
-		return repl
+	if cat, rest, found := strings.Cut(repl, ":"); found && isTagCategory(cat) && rest != "" {
+		return normalizeTag(repl)
 	}
 	if prefix != "" {
 		return prefix + ":" + repl

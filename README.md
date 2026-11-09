@@ -4,7 +4,7 @@ Download images from the web into [monbooru](https://github.com/monbooru/monboor
 
 Paste a URL from a booru, a gallery, [any site gallery-dl supports](https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md), or a direct image link: monloader fetches the files with their tags, rating and source, and pushes them into a monbooru gallery. For a file monbooru already holds, it looks up tags by md5 or image similarity (IQDB, SauceNAO) on the boorus, or in an optional local copy of the [Hydrus Public Tag Repository](https://hydrusnetwork.github.io/hydrus/PTR.html).
 
-monloader never touches your files directly: everything goes through monbooru's API, and it can add images and tags but never delete anything.
+monloader never touches your files directly: everything goes through monbooru's API. It can add images and tags and, for an upgrade monbooru asks for, swap in a better file.
 
 **[Documentation](https://monbooru.github.io/mondocs/addons/monloader/index.html)** · **[Install](#install)** · **[Releases](https://github.com/monbooru/monloader/releases)** · **[Changelog](CHANGELOG.md)**
 
@@ -24,7 +24,7 @@ monloader never touches your files directly: everything goes through monbooru's 
 - **Update gallery-dl** from the app, or roll it back, when a site fix lands, without waiting for a monloader release
 - **Queue** that shows whether each item was added, already in your library, skipped, or failed
 - **Watched searches**: save a tag search or an artist page and monloader checks it on a schedule, fetching only new posts
-- **Reverse lookup**: exact md5 searches on the boorus, IQDB and SauceNAO similarity lookups for re-encoded copies, and offline sha256 lookups in an optional local copy of the Hydrus PTR (needs tens of GB of disk)
+- **Reverse lookup**: exact md5 searches on the boorus, IQDB and SauceNAO similarity lookups for re-encoded copies, and offline sha256 lookups in an optional local copy of the Hydrus PTR (needs about 80 GB of disk)
 
 ## Related applications
 
@@ -95,7 +95,7 @@ Beside the portable archives, Windows builds also ship as an installer, Linux bu
 
 ### Pair it with monbooru
 
-1. In monloader's **Settings**, check the **API URL** under **monbooru**. The default, `http://monbooru:8455`, is right when both run from monbooru's compose file.
+1. In monloader's **Settings**, check the **API URL** under **Monbooru**. The default, `http://monbooru:8455`, is right when both run from monbooru's compose file.
 2. Under **Pairing**, click **Connect to monbooru**, then approve the request in monbooru under **Settings → Plugins**.
 3. Back in monloader, pick the **Default gallery** and save.
 

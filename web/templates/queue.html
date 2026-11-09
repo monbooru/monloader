@@ -8,9 +8,9 @@
         hx-on::after-request="if (event.detail.xhr.getResponseHeader('HX-Retarget')) { this.reset(); document.getElementById('add-flash').textContent = ''; }">
     <div class="add-row">
       <div class="search-input-wrap">
-        <input type="text" name="url" autocomplete="off" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}} placeholder="Paste a booru URL or an MD5 hash - post, pool, tag search, artist...">
+        <input type="text" name="url" autocomplete="off" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}} placeholder="Paste a post, pool, search or artist URL, or an MD5 hash" data-short-placeholder="Paste a URL or an MD5 hash">
       </div>
-      <select name="items" aria-label="Items to fetch" title="How many posts to fetch">{{template "items_options" .ItemChoices}}</select>
+      <select name="items" aria-label="Posts to fetch" title="How many posts to fetch from a search. A pool or a manga gallery always comes whole.">{{template "items_options" .ItemChoices}}</select>
       <button type="submit" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}}>Download</button>
       {{template "queue_actions" .Actions}}
     </div>
@@ -24,8 +24,8 @@
     </thead>
     <!-- The action buttons in the rows inherit the target and swap from
          here (and the CSRF header from body), so each carries only its verb. -->
-    <tbody id="queue-rows" hx-get="/internal/queue-rows" hx-trigger="load, every 2s [!confirmOpen()]"
-           hx-target="#queue-rows" hx-swap="innerHTML" hx-vals='js:{page: queuePageNum()}'>
+    <tbody id="queue-rows" hx-get="/internal/queue-rows" hx-trigger="load, every 2s [!pollHeld('#queue-rows')], more-opened"
+           hx-target="#queue-rows" hx-swap="innerHTML" hx-vals='js:{page: queuePageNum(), more: expandedMoreRoots()}'>
       {{template "queue_rows" .}}
     </tbody>
   </table>

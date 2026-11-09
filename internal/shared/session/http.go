@@ -23,8 +23,7 @@ func ClientIP(r *http.Request) string {
 	return host
 }
 
-// X-Forwarded-Proto is trusted from a loopback peer only, like
-// X-Forwarded-For in ClientIP.
+// X-Forwarded-Proto is trusted from a loopback peer only.
 func RequestIsHTTPS(r *http.Request) bool {
 	if r.TLS != nil {
 		return true

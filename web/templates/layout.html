@@ -15,7 +15,7 @@
     <nav id="nav">
       <a data-chord="g q" href="/queue" class="nav-queue{{if eq .ActiveNav "queue"}} active{{end}}">Queue</a>
       <a data-chord="g w" href="/watches" class="nav-watches{{if eq .ActiveNav "watches"}} active{{end}}">Watched</a>
-      <a data-chord="g p" href="/ptr" class="nav-ptr{{if eq .ActiveNav "ptr"}} active{{end}}">PTR</a>
+      <a data-chord="g p" href="/ptr" title="Public Tag Repository: an offline copy of Hydrus's shared tags" class="nav-ptr{{if eq .ActiveNav "ptr"}} active{{end}}">PTR</a>
       <a data-chord="g s" href="/settings" class="nav-settings{{if eq .ActiveNav "settings"}} active{{end}}">Settings</a>
       {{template "webui/pair_notice" .PairNotice}}
     </nav>
@@ -50,7 +50,7 @@
         <li><kbd>?</kbd><span>Toggle this overlay</span></li>
         <li data-when=".add-bar input[name=url]"><kbd>s</kbd><kbd>/</kbd><span>Focus the URL box</span></li>
         <li><kbd>Esc</kbd><span>Close dialog &middot; leave a field</span></li>
-        <li><kbd>g</kbd><kbd>g</kbd><span>Home</span></li>
+        <li data-when="#logo"><kbd>g</kbd><kbd>g</kbd><span>Home</span></li>
         <li><kbd>g</kbd><kbd>q</kbd><span>Queue</span></li>
         <li><kbd>g</kbd><kbd>w</kbd><span>Watched</span></li>
         <li><kbd>g</kbd><kbd>p</kbd><span>PTR</span></li>

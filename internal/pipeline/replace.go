@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,13 +55,18 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	w := firstWritten(downloaded)
-	if w == nil {
+	i := slices.IndexFunc(downloaded, written)
+	if i < 0 {
 		dlErr = cmp.Or(dlErr, entryErr(downloaded))
 		if dlErr == nil {
 			dlErr = &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: "the post's file did not download"}
 		}
 		p.failEnrichFetch(ctx, job, snap, dlErr)
+		return nil
+	}
+	w := &downloaded[i]
+	if err := p.flattenedErr(w.Meta); err != nil {
+		p.failEnrichFetch(ctx, job, snap, err)
 		return nil
 	}
 	job.UpdateItem(0, func(it *queue.Item) { it.Status = queue.ItemDownloaded })
@@ -101,6 +107,7 @@ func (p *Processor) processReplace(ctx context.Context, job, snap *queue.Job) er
 		// needs its digest.
 		it.SHA256 = pushRes.SHA256
 		it.MergeNote = pushRes.MergeNote
+		it.TagWarnings = slices.Concat(pf.UnknownTargets, pushRes.TagWarnings)
 	})
 	return nil
 }

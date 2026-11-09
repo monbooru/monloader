@@ -1,25 +1,23 @@
 package gdl
 
 import (
+	"mime"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
-// The types monbooru accepts; anything else is skipped rather than pushed
-// and rejected.
-var ingestableExts = map[string]bool{
-	".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".avif": true,
-	".jxl": true, ".gif": true, ".mp4": true, ".webm": true, ".cbz": true,
-}
-
 func Ingestable(path string) bool {
-	return ingestableExts[strings.ToLower(filepath.Ext(path))]
+	return slices.Contains(contract.IngestExtensions, strings.ToLower(filepath.Ext(path)))
 }
 
 func ingestableMedia(contentType string) (string, bool) {
-	ext, ok := mediaExtension(contentType)
-	if !ok || !ingestableExts["."+ext] {
+	mt, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
 		return "", false
 	}
-	return ext, true
+	ext, ok := mediaExtensions[mt]
+	return ext, ok
 }

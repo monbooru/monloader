@@ -17,7 +17,7 @@ func (q *Queue) Start() {
 	}
 }
 
-// Stop takes no more work and settles what was still pending, so a parked
+// Stop starts no more work and settles what was still pending, so a parked
 // Wait frees the HTTP drain; the running jobs carry on until Close.
 func (q *Queue) Stop() {
 	q.mu.Lock()
@@ -39,6 +39,7 @@ func (q *Queue) Stop() {
 		ids[i] = j.ID
 	}
 	q.persistDelete(ids)
+	close(q.stopped)
 }
 
 func (q *Queue) Close() {
@@ -65,8 +66,8 @@ func (q *Queue) worker() {
 			return
 		}
 		q.runJob(j, ctx)
-		// A job holds whole downloads in the heap; without this, memory
-		// stays at its peak between jobs.
+		// A large pool's item rows and a run's captured output sit in the
+		// heap; without this, memory stays at its peak between jobs.
 		debug.FreeOSMemory()
 	}
 }
@@ -75,7 +76,7 @@ func (q *Queue) worker() {
 func (q *Queue) nextJob() (*Job, context.Context, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for (len(q.pending) == 0 || q.paused) && !q.closed {
+	for (len(q.pending) == 0 || q.paused || q.held) && !q.closed {
 		q.cond.Wait()
 	}
 	if q.closed {
@@ -153,6 +154,7 @@ func (q *Queue) finish(j *Job) {
 	q.recordWatch(j)
 	q.autoContinue(j)
 	q.reconcileSeries(j)
+	q.settleEarlierWindow(j)
 }
 
 // A check that never started is dropped rather than settled canceled: its
@@ -164,7 +166,7 @@ func (q *Queue) dropWatchChecksLocked() []*Job {
 		if j.Watch == 0 || j.seriesKey() != j.ID {
 			return false
 		}
-		if w := q.findWatchLocked(j.Watch); w != nil && w.Last.JobID == j.ID {
+		if w := q.findWatchLocked(j.Watch); w != nil && w.Last.JobID >= j.ID {
 			return false
 		}
 		checks = append(checks, j)

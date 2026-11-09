@@ -3,9 +3,6 @@ function getCSRFToken() {
   return meta ? meta.content : '';
 }
 
-// A boosted swap jumps to the top; htmx would otherwise smooth-scroll there.
-if (window.htmx) window.htmx.config.scrollBehavior = 'auto';
-
 document.body.addEventListener('htmx:configRequest', function(e) {
   e.detail.headers['X-CSRF-Token'] = getCSRFToken();
 });
@@ -31,7 +28,6 @@ function writeStash(key, obj) {
   try { sessionStorage.setItem(key, JSON.stringify(obj)); } catch (e) {}
 }
 
-// null when absent, unreadable or older than maxAgeMs; take removes it.
 function readStash(key, maxAgeMs, take) {
   var raw = null;
   try {
@@ -137,6 +133,9 @@ function showChordHint(node, label) {
 // its single-key job.
 function chordStep(e) {
   if (!_chordNode) return false;
+  // A modifier's own keydown comes first: a next key that needs Shift, a
+  // digit on AZERTY, must find the chord still open.
+  if (/^(Shift|Control|Alt|AltGraph|Meta|CapsLock)$/.test(e.key)) return false;
   var node = _chordNode;
   var label = _chordLabel;
   var next = node[e.key];
@@ -161,7 +160,6 @@ function chordStep(e) {
   return false;
 }
 
-// The chords the page declares: data-chord="g q" on an element clicks it.
 function chordMapFromPage() {
   var map = {};
   document.querySelectorAll('[data-chord]').forEach(function(el) {

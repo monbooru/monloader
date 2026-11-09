@@ -1,17 +1,17 @@
 {{define "queue_actions"}}{{/* The bulk buttons sit outside #queue-rows, so
 they inherit its page number from here instead: a clear answering with page 1
-would swap its rows in under a pager still reading page N. */}}<span id="queue-actions" class="queue-actions" hx-get="/internal/queue-actions" hx-trigger="every 2s [!confirmOpen()]" hx-target="#queue-actions" hx-swap="outerHTML" hx-vals='js:{page: queuePageNum()}'>
+would swap its rows in under a pager still reading page N. */}}<span id="queue-actions" class="queue-actions" hx-get="/internal/queue-actions" hx-trigger="every 2s [!pollHeld('#queue-actions')]" hx-target="#queue-actions" hx-swap="outerHTML" hx-vals='js:{page: queuePageNum()}'>
   {{if .HasSucceeded}}
   <button type="button" hx-post="/queue/clear-succeeded" hx-target="#queue-rows" hx-swap="innerHTML"
-          hx-confirm="Clear every download that finished with nothing left to do?"
+          hx-confirm="Clear succeeded jobs?"
           data-confirm-ok="Clear succeeded"
-          data-confirm-danger="Removes those rows from this list; the images they pushed to monbooru stay.">Clear succeeded</button>
+          data-confirm-danger="Searches with more to fetch stay. Images already in monbooru stay.">Clear succeeded</button>
   {{end}}
   {{if .HasFinished}}
   <button type="button" hx-post="/queue/clear" hx-target="#queue-rows" hx-swap="innerHTML"
-          hx-confirm="Clear recent history?"
-          data-confirm-ok="Clear"
-          data-confirm-danger="Removes every finished row, failures included; the images already pushed to monbooru stay.">Clear</button>
+          hx-confirm="Clear all finished jobs?"
+          data-confirm-ok="Clear finished"
+          data-confirm-danger="Failed ones too. Images already in monbooru stay. If you add a failed post again it may read as already fetched: use Force download.">Clear finished</button>
   {{end}}
   {{if .HasPending}}
   <button type="button" hx-post="/queue/cancel-pending" hx-target="#queue-rows" hx-swap="innerHTML"

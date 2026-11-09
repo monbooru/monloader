@@ -3,8 +3,10 @@
 package kwdict
 
 import (
+	"cmp"
 	"encoding/json"
 	"strconv"
+	"strings"
 )
 
 func String(m map[string]any, key string) string {
@@ -20,24 +22,30 @@ func String(m map[string]any, key string) string {
 	}
 }
 
+// Path reads gallery-dl's format-string notation: author[handle] is
+// m["author"]["handle"].
+func Path(m map[string]any, path string) string {
+	keys := strings.FieldsFunc(path, func(r rune) bool { return r == '[' || r == ']' })
+	if len(keys) == 0 {
+		return ""
+	}
+	last := len(keys) - 1
+	for _, key := range keys[:last] {
+		m, _ = m[key].(map[string]any)
+	}
+	return String(m, keys[last])
+}
+
 // ID falls back to gallery_id, which manga extractors such as nhentai and
-// hitomi key a post by, then to file.id, where civitai nests it.
+// hitomi key a post by, then to file.id, where civitai nests it, then to
+// bluesky's post_id.
 func ID(m map[string]any) string {
-	if s := String(m, "id"); s != "" {
-		return s
-	}
-	if s := String(m, "gallery_id"); s != "" {
-		return s
-	}
 	file, _ := m["file"].(map[string]any)
-	return String(file, "id")
+	return cmp.Or(String(m, "id"), String(m, "gallery_id"), String(file, "id"), String(m, "post_id"))
 }
 
 func Num(m map[string]any) int {
-	if n := Int(m, "num"); n != 0 {
-		return n
-	}
-	return Int(m, "no")
+	return cmp.Or(Int(m, "num"), Int(m, "no"))
 }
 
 func Int(m map[string]any, key string) int {

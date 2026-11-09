@@ -9,7 +9,7 @@ RUN . ./packaging/release-env.sh && \
       -o /monloader ./cmd/monloader
 
 FROM python:3.13-slim-trixie
-RUN pip install --no-cache-dir gallery-dl==1.32.17
+RUN pip install --no-cache-dir gallery-dl==1.32.19
 
 COPY --from=build /monloader /usr/local/bin/monloader
 

@@ -4,26 +4,17 @@ import (
 	"cmp"
 	"context"
 	"encoding/hex"
+	"errors"
 	"net/http"
-	"regexp"
 	"strings"
-	"time"
 
-	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/contrib"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
-var sha256HexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
-type contribToAdd = contract.ContribToAdd
-
-type contribPTROnly = contract.ContribPTROnly
-
-type contribPreviewResponse = contract.ContribPreviewResponse
-
 func (h *Handler) contribGate(w http.ResponseWriter) bool {
-	if h.ptr == nil || !h.ptr.Enabled() {
+	if !h.ptr.Enabled() {
 		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, "the ptr index is not available")
 		return false
 	}
@@ -50,7 +41,7 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 	if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
 		return
 	}
-	if !sha256HexRe.MatchString(body.SHA256) {
+	if !contrib.ValidHash(body.SHA256) {
 		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "sha256 must be 64 lowercase hex characters")
 		return
 	}
@@ -61,250 +52,28 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.newContribPreview(body.SHA256, body.Tags)
+	resp, err := contrib.Preview(h.ptr, body.SHA256, body.Tags, body.Implied)
 	if err != nil {
-		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
-		return
-	}
-	resp := contribPreviewResponse{
-		Provisional: h.ptr.Provisional(),
-		ToAdd:       p.adds(body.Tags),
-		PTROnly:     []contribPTROnly{},
-	}
-	if err := p.resolveSubmitted(body.Implied); err != nil {
-		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
-		return
-	}
-	if resp.PTROnly, err = p.removals(); err != nil {
 		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
 		return
 	}
 	contract.WriteJSON(w, http.StatusOK, resp)
 }
 
-type contribPreview struct {
-	h         *Handler
-	hashHex   string
-	hashRaw   []byte
-	filter    *ptr.TagFilter
-	store     *ptr.ContribStore
-	covered   int64
-	rawTags   []string
-	displayed map[string]bool
-	// carried also holds each projection's pre-widening fold: monbooru
-	// rows stored before the charset widening keep it (girls' -> girls_),
-	// and the known check would offer them as new forever.
-	carried         map[string]bool
-	submitted       map[string]bool
-	submittedPTR    []string
-	submittedIdeals map[string]bool
-}
-
-func (h *Handler) newContribPreview(hashHex string, tags []string) (*contribPreview, error) {
-	p := &contribPreview{
-		h:         h,
-		hashHex:   hashHex,
-		hashRaw:   mustHex(hashHex),
-		filter:    h.ptr.TagFilterCached(),
-		store:     h.ptr.Contrib(),
-		covered:   h.ptr.Status().CoveredThrough,
-		carried:   map[string]bool{},
-		submitted: map[string]bool{},
+func refuse(w http.ResponseWriter, r *contrib.Refusal) {
+	status := http.StatusConflict
+	switch r.Code {
+	case contrib.CodeNotFound:
+		status = http.StatusNotFound
+	case contrib.CodeInternal:
+		status = http.StatusInternalServerError
 	}
-	var err error
-	if p.rawTags, err = h.ptr.RawTagsForHash(hashHex); err != nil {
-		return nil, err
-	}
-	// The display view depends on the hash alone, so one derivation
-	// answers the whole list.
-	if p.displayed, err = h.ptr.HashHasIdeals(hashHex, contribPTRForms(tags)); err != nil {
-		return nil, err
-	}
-	for _, raw := range p.rawTags {
-		if mb := mapping.MapPTRTag(raw); mb != "" {
-			p.carried[mb] = true
-			p.carried[mapping.LegacyFoldTag(mb)] = true
-		}
-	}
-	return p, nil
-}
-
-// adds records each tag's PTR spelling, so it runs before the removal pass.
-func (p *contribPreview) adds(tags []string) []contribToAdd {
-	out := make([]contribToAdd, 0, len(tags))
-	for _, tag := range tags {
-		p.submitted[tag] = true
-		entry := contribToAdd{Tag: tag}
-		mapped := mapping.ContribTagFor(tag)
-		if !mapped.Eligible() {
-			entry.Status, entry.Note = "ineligible", mapped.Note
-			out = append(out, entry)
-			continue
-		}
-		entry.PTR = mapped.PTR
-		p.submittedPTR = append(p.submittedPTR, mapped.PTR)
-		if blocked, rule := p.filter.Blocks(mapped.PTR); blocked {
-			entry.Status, entry.Note = "filtered", "blocked by the PTR tag filter ("+rule+")"
-			out = append(out, entry)
-			continue
-		}
-		if p.store != nil {
-			if waiting, err := p.store.UnsentByKindTag(ptr.ContribMappingAdd, mapped.PTR, p.hashRaw); err == nil && waiting {
-				entry.Status = contract.PreviewUnsent
-				out = append(out, entry)
-				continue
-			}
-		}
-		known, _ := p.h.mappingAddKnown(p.displayed[mapped.PTR], mapped.PTR, p.hashRaw, p.covered)
-		if known || p.carried[tag] {
-			entry.Status = contract.PreviewKnown
-		} else {
-			entry.Status = contract.PreviewNew
-			_, exists, err := p.h.ptr.IdealTag(mapped.PTR)
-			entry.UnknownTag = err == nil && !exists
-		}
-		out = append(out, entry)
-	}
-	return out
-}
-
-// The removal diff compares on ideals: a raw spelling of a tag the caller
-// shows must not read as extra, or its petition would strip a right mapping.
-func (p *contribPreview) resolveSubmitted(implied []string) error {
-	for _, tag := range implied {
-		p.submitted[tag] = true
-		if mapped := mapping.ContribTagFor(tag); mapped.Eligible() {
-			p.submittedPTR = append(p.submittedPTR, mapped.PTR)
-		}
-	}
-	p.submittedIdeals = map[string]bool{}
-	for _, ptrTag := range p.submittedPTR {
-		ideal, ok, err := p.h.ptr.IdealTag(ptrTag)
-		if err != nil {
-			return err
-		}
-		if ok {
-			p.submittedIdeals[ideal] = true
-		}
-	}
-	return nil
-}
-
-func (p *contribPreview) removals() ([]contribPTROnly, error) {
-	idealOfRaw := make(map[string]string, len(p.rawTags))
-	idealCarriers := map[string]int{}
-	for _, raw := range p.rawTags {
-		ideal, ok, err := p.h.ptr.IdealTag(raw)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			idealOfRaw[raw] = ideal
-			// Only the canonical raw counts: two bad spellings of an
-			// absent canonical must not suppress each other, since
-			// removing both is the fix.
-			if raw == ideal {
-				idealCarriers[ideal]++
-			}
-		}
-	}
-
-	out := []contribPTROnly{}
-	for _, raw := range p.rawTags {
-		mb := mapping.MapPTRTag(raw)
-		if mb == "" || p.submitted[mb] || p.submitted[mapping.LegacyFoldTag(mb)] {
-			continue
-		}
-		// The add side refuses these categories, so the petition side
-		// must not offer them either.
-		if mapping.ContribDenied(mb) {
-			continue
-		}
-		if ideal, ok := idealOfRaw[raw]; ok && p.suppressedRemoval(ideal, raw, idealCarriers) {
-			continue
-		}
-		petitionable := true
-		if p.store != nil {
-			if pending, err := p.store.PendingMappingPetition(raw, p.hashRaw); err == nil && pending {
-				petitionable = false
-			}
-		}
-		out = append(out, contribPTROnly{Tag: mb, PTR: raw, Petitionable: petitionable})
-	}
-	return out, nil
-}
-
-func (p *contribPreview) suppressedRemoval(ideal, raw string, idealCarriers map[string]int) bool {
-	switch {
-	// A pull never applies a mapping monbooru cannot represent, so there
-	// is no local judgement to petition it against.
-	case mapping.MapPTRTag(ideal) == "":
-		return true
-	// A bad sibling whose canonical the file also carries shows no tag of
-	// its own: petitioning it is noise.
-	case ideal != raw && idealCarriers[ideal] > 0:
-		return true
-	case p.submittedIdeals[ideal]:
-		return true
-	}
-	// submittedIdeals reverses through ContribTagFor, which is lossy for
-	// quoted or namespace-lifted spellings, so the forward mapping a pull
-	// stores is checked too.
-	mi := mapping.MapPTRTag(ideal)
-	return mi != "" && (p.submitted[mi] || p.submitted[mapping.LegacyFoldTag(mi)])
-}
-
-func contribPTRForms(tags []string) []string {
-	out := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		if mapped := mapping.ContribTagFor(tag); mapped.Eligible() {
-			out = append(out, mapped.PTR)
-		}
-	}
-	return out
-}
-
-// mustHex decodes a hash the regexp already validated.
-func mustHex(h string) []byte {
-	raw, _ := hex.DecodeString(h)
-	return raw
-}
-
-type contribStageItem = contract.ContribItem
-
-type contribStageResult = contract.ContribResult
-
-const fixedRescindReason = "rescinding my own earlier add"
-
-func ContribSendRefusal(ctx context.Context, svc PTRService) *ContribRefusal {
-	if svc == nil || !svc.Enabled() {
-		return &ContribRefusal{http.StatusConflict, errPTRUnavailable, "the ptr index is not available"}
-	}
-	if !svc.HasPersonalKey() {
-		return &ContribRefusal{http.StatusConflict, errPTRAccountRequired, "no personal account key is set"}
-	}
-	// Fresh, so a ban the janitors just set refuses the send now; bounded
-	// well inside contract.ContribSendBudget.
-	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	banned := false
-	if acc, err := svc.RefreshAccount(rctx); err == nil {
-		banned = acc.Banned
-	} else if c := svc.Status().Contrib; c != nil {
-		banned = c.Banned
-	}
-	if banned {
-		return &ContribRefusal{http.StatusConflict, errPTRBanned, "the account is banned"}
-	}
-	if !svc.CaughtUp() {
-		return &ContribRefusal{http.StatusConflict, errPTRSyncing, "the ptr index is not fully synced yet"}
-	}
-	return nil
+	contract.WriteError(w, status, r.Code, r.Msg)
 }
 
 func (h *Handler) contribAccountGate(ctx context.Context, w http.ResponseWriter) bool {
-	if refusal := ContribSendRefusal(ctx, h.ptr); refusal != nil {
-		contract.WriteError(w, refusal.Status, refusal.Code, refusal.Msg)
+	if refusal := contrib.SendRefusal(ctx, h.ptr); refusal != nil {
+		refuse(w, refusal)
 		return false
 	}
 	return true
@@ -333,25 +102,7 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := make([]contribStageResult, 0, len(body.Items))
-	var accepted []int64
-	seen := map[int64]bool{}
-	// Read once: it stats the index files behind the engine lock.
-	covered := h.ptr.Status().CoveredThrough
-	for _, item := range body.Items {
-		result, id := h.stageOne(store, item, body.Origin, covered)
-		if result.Result == contract.ContribStaged && id != 0 {
-			// The same item twice in one request is a duplicate; a row
-			// left from an earlier request is a genuine resend.
-			if seen[id] {
-				result.Result, result.Note = "duplicate", "an identical item is already in this batch"
-			} else {
-				seen[id] = true
-				accepted = append(accepted, id)
-			}
-		}
-		results = append(results, result)
-	}
+	results, accepted := contrib.StageAll(h.ptr, store, body.Items, body.Origin)
 	resp := contract.ContribResponse{Results: results}
 	status := http.StatusOK
 	if commit && len(accepted) > 0 && r.Context().Err() == nil {
@@ -359,202 +110,6 @@ func (h *Handler) ptrContribStage(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusAccepted
 	}
 	contract.WriteJSON(w, status, resp)
-}
-
-func (h *Handler) stageOne(store *ptr.ContribStore, item contribStageItem, origin string, covered int64) (contribStageResult, int64) {
-	s := &contribStager{
-		h: h, store: store, item: item, origin: origin,
-		reason: strings.TrimSpace(item.Reason),
-		res:    contribStageResult{Kind: item.Kind},
-	}
-	if item.Kind != ptr.ContribMappingAdd && s.reason == "" {
-		return s.fail("invalid_reason", "a reason is required")
-	}
-	switch item.Kind {
-	case ptr.ContribMappingAdd, ptr.ContribMappingPetition:
-		return s.stageMapping(covered)
-	case ptr.ContribSibling:
-		return s.stageRelation(h.ptr.SiblingCurrent, "alias", "bad", "good", item.Bad, item.Good)
-	case ptr.ContribSiblingPetition:
-		return s.stagePetition(h.ptr.SiblingCurrent, "alias", item.Bad, item.Good)
-	case ptr.ContribParent:
-		return s.stageRelation(h.ptr.ParentCurrent, "implication", "child", "parent", item.Child, item.Parent)
-	case ptr.ContribParentPetition:
-		return s.stagePetition(h.ptr.ParentCurrent, "implication", item.Child, item.Parent)
-	}
-	return s.fail("ineligible", "unknown kind "+item.Kind)
-}
-
-type contribStager struct {
-	h      *Handler
-	store  *ptr.ContribStore
-	item   contribStageItem
-	origin string
-	reason string
-	res    contribStageResult
-}
-
-func (s *contribStager) fail(result, note string) (contribStageResult, int64) {
-	s.res.Result, s.res.Note = result, note
-	return s.res, 0
-}
-
-func (s *contribStager) stage(it ptr.ContribItem) (contribStageResult, int64) {
-	it.Origin = s.origin
-	it.Reason = s.reason
-	id, dup, err := s.store.Stage(it)
-	if err != nil {
-		return s.fail("ineligible", "staging failed: "+err.Error())
-	}
-	if dup {
-		// Re-confirming an unsent row resends it rather than reporting a no-op.
-		if existing, ok, _ := s.store.StagedID(it.Kind, it.Tag, it.Tag2, it.Hash); ok {
-			s.res.Result = contract.ContribStaged
-			return s.res, existing
-		}
-		return s.fail("duplicate", "an identical item already waits unsent")
-	}
-	s.res.Result = contract.ContribStaged
-	return s.res, id
-}
-
-func (s *contribStager) stageMapping(covered int64) (contribStageResult, int64) {
-	if !sha256HexRe.MatchString(s.item.SHA256) {
-		return s.fail("ineligible", "sha256 must be 64 lowercase hex characters")
-	}
-	hash := mustHex(s.item.SHA256)
-	if s.item.Kind == ptr.ContribMappingAdd {
-		mapped := mapping.ContribTagFor(s.item.Tag)
-		if !mapped.Eligible() {
-			return s.fail("ineligible", mapped.Note)
-		}
-		displayed, err := s.h.ptr.HashHasIdeal(s.item.SHA256, mapped.PTR)
-		if err != nil {
-			return s.fail("ineligible", err.Error())
-		}
-		if known, note := s.h.mappingAddKnown(displayed, mapped.PTR, hash, covered); known {
-			return s.fail("already_known", note)
-		}
-		return s.stage(ptr.ContribItem{Kind: s.item.Kind, Tag: mapped.PTR, Hash: hash})
-	}
-	// The verbatim spelling first: a stored raw whose namespace or
-	// underscores the outbound mapper would rewrite stays petitionable.
-	tag := s.item.Tag
-	current, err := s.h.ptr.HashHasRaw(s.item.SHA256, tag)
-	if err != nil {
-		return s.fail("ineligible", err.Error())
-	}
-	if !current {
-		mapped := mapping.ContribTagFor(s.item.Tag)
-		if !mapped.Eligible() {
-			return s.fail("ineligible", mapped.Note)
-		}
-		tag = mapped.PTR
-		if current, err = s.h.ptr.HashHasRaw(s.item.SHA256, tag); err != nil {
-			return s.fail("ineligible", err.Error())
-		}
-		if !current {
-			return s.fail("not_on_ptr", "the PTR does not hold this exact mapping")
-		}
-	}
-	if pending, err := s.store.PendingMappingPetition(tag, hash); err == nil && pending {
-		return s.fail("already_suggested", "a removal for this mapping is already staged or awaiting review")
-	}
-	return s.stage(ptr.ContribItem{Kind: s.item.Kind, Tag: tag, Hash: hash})
-}
-
-func (s *contribStager) stagePetition(current func(a, b string) (bool, error), noun, a, b string) (contribStageResult, int64) {
-	ra, rb, ok, err := s.h.currentPetitionPair(current, a, b)
-	if err != nil {
-		return s.fail("ineligible", err.Error())
-	}
-	if !ok {
-		return s.fail("not_on_ptr", "the PTR does not hold this "+noun)
-	}
-	if pending, err := s.store.PendingLog(s.item.Kind, ra, rb); err == nil && pending {
-		return s.fail("already_suggested", "already sent and awaiting janitor review")
-	}
-	return s.stage(ptr.ContribItem{Kind: s.item.Kind, Tag: ra, Tag2: rb})
-}
-
-func (s *contribStager) stageRelation(current func(a, b string) (bool, error), noun, aLabel, bLabel, a, b string) (contribStageResult, int64) {
-	aMapped, bMapped := mapping.ContribTagFor(a), mapping.ContribTagFor(b)
-	if !aMapped.Eligible() {
-		return s.fail("ineligible", aLabel+": "+aMapped.Note)
-	}
-	if !bMapped.Eligible() {
-		return s.fail("ineligible", bLabel+": "+bMapped.Note)
-	}
-	_, _, cur, err := s.h.currentPetitionPair(current, a, b)
-	if err != nil {
-		return s.fail("ineligible", err.Error())
-	}
-	if cur {
-		return s.fail("already_known", "the PTR already has this "+noun)
-	}
-	reverse, err := current(bMapped.PTR, aMapped.PTR)
-	if err != nil {
-		return s.fail("ineligible", err.Error())
-	}
-	if reverse {
-		return s.fail("conflict", "the PTR holds this "+noun+" in the opposite direction")
-	}
-	if pending, err := s.store.PendingLog(s.item.Kind, aMapped.PTR, bMapped.PTR); err == nil && pending {
-		return s.fail("already_suggested", "already sent and awaiting janitor review")
-	}
-	return s.stage(ptr.ContribItem{Kind: s.item.Kind, Tag: aMapped.PTR, Tag2: bMapped.PTR})
-}
-
-func (h *Handler) mappingAddKnown(displayed bool, ptrTag string, hash []byte, covered int64) (bool, string) {
-	if displayed {
-		return true, "the PTR already has this tag for the file"
-	}
-	if store := h.ptr.Contrib(); store != nil {
-		if committed, err := store.MappingAddCommittedSince(ptrTag, hash, covered); err == nil && committed {
-			return true, "sent earlier and not yet in the synced index"
-		}
-	}
-	return false, ""
-}
-
-func (h *Handler) currentPetitionPair(current func(a, b string) (bool, error), a, b string) (ra, rb string, ok bool, err error) {
-	for _, x := range mapping.PTRNamespacesFor(a) {
-		for _, y := range mapping.PTRNamespacesFor(b) {
-			cur, err := current(x, y)
-			if err != nil {
-				return "", "", false, err
-			}
-			if cur {
-				return x, y, true, nil
-			}
-		}
-	}
-	return "", "", false, nil
-}
-
-// Every spelling's ideal, not the first hit: a verbatim underscore form
-// can be an orphan while the space-joined form carries the pair.
-func (h *Handler) endpointIdeals(t string) (map[string]bool, error) {
-	out := map[string]bool{}
-	for _, f := range mapping.PTRNamespacesFor(t) {
-		ideal, ok, err := h.ptr.IdealTag(f)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			out[ideal] = true
-		}
-	}
-	return out, nil
-}
-
-func sharesIdeal(a, b map[string]bool) bool {
-	for ideal := range a {
-		if b[ideal] {
-			return true
-		}
-	}
-	return false
 }
 
 type contribUnsentJSON struct {
@@ -592,7 +147,7 @@ func (h *Handler) ptrContribLedger(w http.ResponseWriter, r *http.Request) {
 		contract.WriteError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
 	}
-	logRows, err := store.LogRows(100)
+	logRows, err := store.LogPage(100, 0)
 	if err != nil {
 		contract.WriteError(w, http.StatusInternalServerError, errInternal, err.Error())
 		return
@@ -612,7 +167,7 @@ func (h *Handler) ptrContribLedger(w http.ResponseWriter, r *http.Request) {
 	logJSON := make([]contribLogJSON, 0, len(logRows))
 	outcomes := map[string]int{}
 	for _, row := range logRows {
-		outcomes[cmp.Or(row.Outcome, "pending")]++
+		outcomes[cmp.Or(row.Outcome, contract.ContribPending)]++
 		logJSON = append(logJSON, contribLogJSON{
 			ID: row.ID, Kind: row.Kind, Tag: row.Tag, Tag2: row.Tag2,
 			SHA256: hex.EncodeToString(row.Hash), Reason: row.Reason,
@@ -686,71 +241,15 @@ func (h *Handler) ptrContribLogRescind(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	itemID, rerr := RescindCommittedAdd(h.ptr, store, id)
+	itemID, rerr := contrib.RescindCommittedAdd(h.ptr, store, id)
 	if rerr != nil {
-		contract.WriteError(w, rerr.Status, rerr.Code, rerr.Msg)
+		refuse(w, rerr)
 		return
 	}
 	jobID := h.queue.EnqueueContrib([]int64{itemID}, false)
 	contract.WriteJSON(w, http.StatusAccepted, contract.JobAccepted{JobID: jobID})
 }
 
-type ContribRefusal struct {
-	Status int
-	Code   string
-	Msg    string
-}
-
-// RescindCommittedAdd stages the removal petition and stamps the ledger
-// row; the caller must send the returned item.
-func RescindCommittedAdd(svc PTRService, store *ptr.ContribStore, logID int64) (int64, *ContribRefusal) {
-	row, err := store.LogRow(logID)
-	if err != nil {
-		return 0, &ContribRefusal{http.StatusInternalServerError, errInternal, err.Error()}
-	}
-	if row == nil {
-		return 0, &ContribRefusal{http.StatusNotFound, errNotFound, "no ledger row with that id"}
-	}
-	if row.Kind != ptr.ContribMappingAdd {
-		return 0, &ContribRefusal{http.StatusConflict, errNotRescindable, "only a committed mapping add can be rescinded"}
-	}
-	// Not the stamped outcome: after an earlier rescind's petition failed
-	// and was cleared, the add must stay rescindable.
-	if pending, _ := store.PendingMappingPetition(row.Tag, row.Hash); pending {
-		return 0, &ContribRefusal{http.StatusConflict, errNotRescindable, "a removal for this add is already staged or awaiting review"}
-	}
-	current, err := svc.HashHasRaw(hex.EncodeToString(row.Hash), row.Tag)
-	if err != nil {
-		return 0, &ContribRefusal{http.StatusConflict, errPTRUnavailable, err.Error()}
-	}
-	if !current {
-		// An add committed after the coverage window is live server-side
-		// but not yet in the index.
-		committed, _ := store.MappingAddCommittedSince(row.Tag, row.Hash, svc.Status().CoveredThrough)
-		if !committed {
-			return 0, &ContribRefusal{http.StatusConflict, errNotRescindable, "the mapping is already gone from the index"}
-		}
-	}
-	itemID, dup, err := store.Stage(ptr.ContribItem{
-		Kind: ptr.ContribMappingPetition, Tag: row.Tag, Hash: row.Hash, Reason: fixedRescindReason,
-	})
-	if err != nil {
-		return 0, &ContribRefusal{http.StatusInternalServerError, errInternal, err.Error()}
-	}
-	if dup {
-		if existing, ok, _ := store.StagedID(ptr.ContribMappingPetition, row.Tag, "", row.Hash); ok {
-			itemID = existing
-		}
-	}
-	if err := store.SetOutcome(logID, ptr.OutcomeRescinded); err != nil {
-		return 0, &ContribRefusal{http.StatusInternalServerError, errInternal, err.Error()}
-	}
-	return itemID, nil
-}
-
-type pairPreviewResponse = contract.PairPreviewResponse
-
-// A parent pair arrives as a=child, b=parent: monbooru owns the hydrus flip.
 func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) {
 	if !h.contribGate(w) {
 		return
@@ -765,110 +264,13 @@ func (h *Handler) ptrContribPairPreview(w http.ResponseWriter, r *http.Request) 
 		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "a and b are required")
 		return
 	}
-	aMapped, bMapped := mapping.ContribTagFor(body.A), mapping.ContribTagFor(body.B)
-	resp := pairPreviewResponse{Provisional: h.ptr.Provisional()}
-	for _, m := range []mapping.ContribTag{aMapped, bMapped} {
-		if !m.Eligible() {
-			resp.Direction, resp.Note = "ineligible", m.Note
-			contract.WriteJSON(w, http.StatusOK, resp)
-			return
-		}
-	}
-	resp.APtr, resp.BPtr = aMapped.PTR, bMapped.PTR
-
-	var currentFn func(a, b string) (bool, error)
-	var suggestKind, petitionKind string
-	switch body.Kind {
-	case ptr.ContribSibling:
-		suggestKind, petitionKind = ptr.ContribSibling, ptr.ContribSiblingPetition
-		currentFn = h.ptr.SiblingCurrent
-	case ptr.ContribParent:
-		suggestKind, petitionKind = ptr.ContribParent, ptr.ContribParentPetition
-		currentFn = h.ptr.ParentCurrent
-	default:
-		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "kind must be sibling or parent")
-		return
-	}
-	// Raw-first like the petition stage: a stored spelling the mapper
-	// would rewrite reads as petition, not suggest, and the pending
-	// lookup keys on the raws the stage uses.
-	ra, rb, current, err := h.currentPetitionPair(currentFn, body.A, body.B)
-	if err != nil {
+	resp, err := contrib.PairPreview(h.ptr, body)
+	switch {
+	case errors.Is(err, contrib.ErrUnknownPairKind):
+		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, err.Error())
+	case err != nil:
 		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
-		return
+	default:
+		contract.WriteJSON(w, http.StatusOK, resp)
 	}
-
-	if store := h.ptr.Contrib(); store != nil {
-		pending, _ := store.PendingLog(suggestKind, aMapped.PTR, bMapped.PTR)
-		if !pending && current {
-			pending, _ = store.PendingLog(petitionKind, ra, rb)
-		}
-		if pending {
-			resp.Direction = contract.PairPending
-			contract.WriteJSON(w, http.StatusOK, resp)
-			return
-		}
-	}
-	if current {
-		resp.Direction = contract.PairPetition
-	} else if body.Kind == ptr.ContribSibling {
-		ia, err := h.endpointIdeals(body.A)
-		if err != nil {
-			contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
-			return
-		}
-		ib, err := h.endpointIdeals(body.B)
-		if err != nil {
-			contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
-			return
-		}
-		reverse, _ := h.ptr.SiblingCurrent(bMapped.PTR, aMapped.PTR)
-		switch {
-		case reverse:
-			resp.Direction = contract.PairConflict
-		case sharesIdeal(ia, ib):
-			resp.Direction = contract.PairCovered
-		default:
-			resp.Direction = contract.PairSuggest
-		}
-	} else {
-		if reverse, _ := h.ptr.ParentCurrent(bMapped.PTR, aMapped.PTR); reverse {
-			resp.Direction = contract.PairConflict
-		} else {
-			covered, err := h.parentEdgeCovered(body.A, body.B)
-			if err != nil {
-				contract.WriteError(w, http.StatusConflict, errPTRUnavailable, err.Error())
-				return
-			}
-			if covered {
-				resp.Direction = contract.PairCovered
-			} else {
-				resp.Direction = contract.PairSuggest
-			}
-		}
-	}
-	contract.WriteJSON(w, http.StatusOK, resp)
-}
-
-func (h *Handler) parentEdgeCovered(a, b string) (bool, error) {
-	ia, err := h.endpointIdeals(a)
-	if err != nil {
-		return false, err
-	}
-	ib, err := h.endpointIdeals(b)
-	if err != nil {
-		return false, err
-	}
-	for ca := range ia {
-		for cb := range ib {
-			covered, err := h.ptr.ParentEdgeCovered(ca, cb)
-			if err != nil {
-				return false, err
-			}
-			if covered {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
 }

@@ -2,7 +2,6 @@ package api
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -10,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/contrib"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/ptr"
@@ -17,19 +17,9 @@ import (
 	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
-const maxTagGraphBatch = contract.MaxPTRTags
-
-// Lower than the tag batch: one hit answers a whole tag list, not one
-// tag's edges.
-const maxHashLookupBatch = contract.MaxPTRHashes
-
-// The scan cap is per range and caps the rows it answers with, not the
-// walk: a substring query still scans its namespace.
-const (
-	defaultTagSearchLimit = contract.PTRSearchLimit
-	maxTagSearchLimit     = contract.MaxPTRSearchLimit
-	tagSearchScanCap      = 200
-)
+// Per range, and it caps the rows answered, not the walk: a substring query
+// still scans its namespace.
+const tagSearchScanCap = 200
 
 func plural(n int) string {
 	if n == 1 {
@@ -40,22 +30,13 @@ func plural(n int) string {
 
 // No ptrReady gate: monbooru's capability check needs an answer in every state.
 func (h *Handler) ptrStatus(w http.ResponseWriter, r *http.Request) {
-	if h.ptr == nil {
-		contract.WriteJSON(w, http.StatusOK, ptr.Status{State: ptr.StateDisabled})
-		return
-	}
 	contract.WriteJSON(w, http.StatusOK, h.ptr.Status())
 }
-
-type ptrTagsRequest = contract.PTRTagsRequest
-
-type ptrTagInfo = contract.PTRTagInfo
 
 // Not caught up is refused too: a half-built index would hand over a
 // partial tag set the caller mirrors as the whole answer.
 func (h *Handler) ptrReady(w http.ResponseWriter) bool {
-	if h.ptr == nil || !h.ptr.Enabled() {
-		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, "the ptr index is not available")
+	if !h.contribGate(w) {
 		return false
 	}
 	if !h.ptr.CaughtUp() {
@@ -69,7 +50,7 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 	if !h.ptrReady(w) {
 		return
 	}
-	var body ptrTagsRequest
+	var body contract.PTRTagsRequest
 	if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
 		return
 	}
@@ -77,7 +58,7 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "tags must not be empty")
 		return
 	}
-	if len(body.Tags) > maxTagGraphBatch {
+	if len(body.Tags) > contract.MaxPTRTags {
 		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "too many tags in one request")
 		return
 	}
@@ -98,14 +79,12 @@ func (h *Handler) ptrTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := make(map[string]ptrTagInfo, len(body.Tags))
+	results := make(map[string]contract.PTRTagInfo, len(body.Tags))
 	for _, t := range body.Tags {
 		results[t] = resolveTagInfo(t, candidates[t], graph)
 	}
 	contract.WriteJSON(w, http.StatusOK, contract.PTRTagsResponse{Results: results})
 }
-
-type ptrTagCluster = contract.PTRCluster
 
 func (h *Handler) ptrTagSearch(w http.ResponseWriter, r *http.Request) {
 	if !h.ptrReady(w) {
@@ -116,11 +95,11 @@ func (h *Handler) ptrTagSearch(w http.ResponseWriter, r *http.Request) {
 		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "q must not be empty")
 		return
 	}
-	limit := defaultTagSearchLimit
+	limit := contract.PTRSearchLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > maxTagSearchLimit {
-			contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "limit must be 1.."+strconv.Itoa(maxTagSearchLimit))
+		if err != nil || n < 1 || n > contract.MaxPTRSearchLimit {
+			contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "limit must be 1.."+strconv.Itoa(contract.MaxPTRSearchLimit))
 			return
 		}
 		limit = n
@@ -179,8 +158,8 @@ func tagSearchRanges(q string, contains bool) ([]ptr.TagRange, bool) {
 
 // Clusters that carry relations rank first: that floats the real cluster
 // above near-misses sharing its stem.
-func renderTagClusters(queried string, matches []ptr.TagMatch, limit int) (rows []ptrTagCluster, more bool) {
-	out := make([]ptrTagCluster, 0, len(matches))
+func renderTagClusters(queried string, matches []ptr.TagMatch, limit int) (rows []contract.PTRCluster, more bool) {
+	out := make([]contract.PTRCluster, 0, len(matches))
 	at := map[string]int{}
 	for _, m := range matches {
 		c, ok := renderTagCluster(m)
@@ -197,7 +176,7 @@ func renderTagClusters(queried string, matches []ptr.TagMatch, limit int) (rows 
 		at[c.Ideal] = len(out)
 		out = append(out, c)
 	}
-	slices.SortStableFunc(out, func(a, b ptrTagCluster) int {
+	slices.SortStableFunc(out, func(a, b contract.PTRCluster) int {
 		return cmp.Or(
 			cmp.Compare(boolRank(b.Ideal == queried), boolRank(a.Ideal == queried)),
 			cmp.Compare(boolRank(relations(b) > 0), boolRank(relations(a) > 0)),
@@ -210,11 +189,11 @@ func renderTagClusters(queried string, matches []ptr.TagMatch, limit int) (rows 
 	return out, false
 }
 
-func relations(c ptrTagCluster) int {
+func relations(c contract.PTRCluster) int {
 	return c.Aliases + c.Implications + c.ImpliedBy
 }
 
-func mergeTagCluster(into, from ptrTagCluster) ptrTagCluster {
+func mergeTagCluster(into, from contract.PTRCluster) contract.PTRCluster {
 	for _, n := range from.Matched {
 		if !slices.Contains(into.Matched, n) {
 			into.Matched = append(into.Matched, n)
@@ -226,12 +205,12 @@ func mergeTagCluster(into, from ptrTagCluster) ptrTagCluster {
 	return into
 }
 
-func renderTagCluster(m ptr.TagMatch) (ptrTagCluster, bool) {
+func renderTagCluster(m ptr.TagMatch) (contract.PTRCluster, bool) {
 	ideal := mapping.MapPTRTag(m.Ideal)
 	if ideal == "" {
-		return ptrTagCluster{}, false
+		return contract.PTRCluster{}, false
 	}
-	c := ptrTagCluster{Ideal: ideal, Matched: []string{}, Aliases: m.Aliases, Implications: m.Implications, ImpliedBy: m.ImpliedBy}
+	c := contract.PTRCluster{Ideal: ideal, Matched: []string{}, Aliases: m.Aliases, Implications: m.Implications, ImpliedBy: m.ImpliedBy}
 	for _, raw := range m.Matched {
 		if name := mapping.MapPTRTag(raw); name != "" && !slices.Contains(c.Matched, name) {
 			c.Matched = append(c.Matched, name)
@@ -240,13 +219,11 @@ func renderTagCluster(m ptr.TagMatch) (ptrTagCluster, bool) {
 	return c, true
 }
 
-type ptrLookupRequest = contract.PTRLookupRequest
-
 func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 	if !h.ptrReady(w) {
 		return
 	}
-	var body ptrLookupRequest
+	var body contract.PTRLookupRequest
 	if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
 		return
 	}
@@ -254,12 +231,12 @@ func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "images must not be empty")
 		return
 	}
-	if len(body.Images) > maxHashLookupBatch {
+	if len(body.Images) > contract.MaxPTRHashes {
 		contract.WriteError(w, http.StatusBadRequest, errInvalidRequest, "too many images in one request")
 		return
 	}
 
-	results := map[string][]string{}
+	results, withheld := map[string][]string{}, map[string][]string{}
 	var matched []queue.Item
 	for _, img := range body.Images {
 		if r.Context().Err() != nil {
@@ -281,8 +258,17 @@ func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue
 		}
-		tags := mapping.MapPTRTags(raw)
+		if _, skip := h.mapper.PTRBlacklisted(raw); skip {
+			continue
+		}
+		tags, held := h.mapper.MapPTRWithheld(raw)
+		if len(tags) == 0 {
+			continue
+		}
 		results[img.SHA256] = tags
+		if len(held) > 0 {
+			withheld[img.SHA256] = held
+		}
 		matched = append(matched, queue.Item{
 			PostID:     fmt.Sprintf("%d tag%s", len(tags), plural(len(tags))),
 			Status:     queue.ItemDone,
@@ -292,16 +278,18 @@ func (h *Handler) ptrLookup(w http.ResponseWriter, r *http.Request) {
 	}
 	h.queue.RecordPTRLookup(body.Gallery, body.Scheduled, len(body.Images), matched)
 	contract.WriteJSON(w, http.StatusOK, contract.PTRLookupResponse{
-		Index:   h.ptr.Status().Progress.UpdateIndex,
-		Results: results,
+		Index:              h.ptr.Status().Progress.UpdateIndex,
+		Results:            results,
+		WithheldTags:       withheld,
+		WithheldCategories: h.cfg.Current().Tags.DropCategories,
 	})
 }
 
 // A verbatim spelling can sit in the index as an orphan while the
 // space-joined form carries the cluster, so a connected candidate beats
 // an earlier bare hit.
-func resolveTagInfo(queried string, candidates []string, graph map[string]ptr.TagInfo) ptrTagInfo {
-	var fallback *ptrTagInfo
+func resolveTagInfo(queried string, candidates []string, graph map[string]ptr.TagInfo) contract.PTRTagInfo {
+	var fallback *contract.PTRTagInfo
 	for _, c := range candidates {
 		info, ok := graph[c]
 		if !ok || !info.Known {
@@ -321,17 +309,17 @@ func resolveTagInfo(queried string, candidates []string, graph map[string]ptr.Ta
 	if fallback != nil {
 		return *fallback
 	}
-	return ptrTagInfo{Known: false}
+	return contract.PTRTagInfo{Known: false}
 }
 
 // An answer that projects to nothing counts as unknown: known would
 // promise a graph the caller then finds empty.
-func tagInfoEmpty(t ptrTagInfo) bool {
+func tagInfoEmpty(t contract.PTRTagInfo) bool {
 	return t.Ideal == "" && len(t.Aliases)+len(t.Implications)+len(t.ImpliedBy) == 0
 }
 
-func renderTagInfo(queried string, info ptr.TagInfo) ptrTagInfo {
-	return ptrTagInfo{
+func renderTagInfo(queried string, info ptr.TagInfo) contract.PTRTagInfo {
+	return contract.PTRTagInfo{
 		Known:        true,
 		Ideal:        mapping.MapPTRTag(info.Ideal),
 		Aliases:      dropTag(mapping.MapPTRTags(info.Aliases), queried),
@@ -347,7 +335,7 @@ func dropTag(tags []string, queried string) []string {
 // The repository's 400 here is its account-creation velocity limit, not a
 // malformed request.
 func (h *Handler) ptrAccountCreate(w http.ResponseWriter, r *http.Request) {
-	if h.ptr == nil || !h.ptr.Enabled() {
+	if !h.ptr.Enabled() {
 		contract.WriteError(w, http.StatusConflict, errPTRUnavailable, "the ptr backend is not enabled")
 		return
 	}
@@ -355,33 +343,23 @@ func (h *Handler) ptrAccountCreate(w http.ResponseWriter, r *http.Request) {
 		contract.WriteError(w, http.StatusConflict, errAccountExists, "a personal account key is already set")
 		return
 	}
-	if h.host.SaveConfig == nil {
-		contract.WriteError(w, http.StatusInternalServerError, errSaveFailed, "settings cannot be saved here")
-		return
-	}
-	key, err := h.ptr.CreateContribAccount(r.Context())
-	if err != nil {
-		var serr *ptr.ServerError
-		switch {
-		case errors.As(err, &serr) && serr.Status == 400:
-			contract.WriteError(w, http.StatusServiceUnavailable, errPTRVelocity,
-				"the repository is not taking new accounts right now, try again later")
-		case errors.Is(err, ptr.ErrAccountExists):
-			contract.WriteError(w, http.StatusConflict, errAccountExists, err.Error())
+	failure := contrib.CreateAccount(r.Context(), h.ptr, func(key string) error {
+		return h.cfg.Update(func(c *config.Config) error {
+			c.PTR.AccessKey = key
+			return nil
+		})
+	})
+	if failure != nil {
+		switch failure.Kind {
+		case contrib.AccountVelocity:
+			contract.WriteError(w, http.StatusServiceUnavailable, errPTRVelocity, failure.Msg)
+		case contrib.AccountExists:
+			contract.WriteError(w, http.StatusConflict, errAccountExists, failure.Msg)
+		case contrib.AccountNotSaved:
+			contract.WriteError(w, http.StatusInternalServerError, errSaveFailed, failure.Msg)
 		default:
-			contract.WriteError(w, http.StatusBadGateway, errPTRError, err.Error())
+			contract.WriteError(w, http.StatusBadGateway, errPTRError, failure.Msg)
 		}
-		return
-	}
-	if err := h.host.SaveConfig(func(c *config.Config) error {
-		c.PTR.AccessKey = key
-		return nil
-	}); err != nil {
-		// The redemption is single-use, so the key now exists only in
-		// memory.
-		contract.WriteError(w, http.StatusInternalServerError, errSaveFailed,
-			"account created but saving the key failed: "+err.Error()+
-				" - reveal and back it up from the ptr page before restarting")
 		return
 	}
 	contract.WriteJSON(w, http.StatusOK, map[string]any{"created": true})

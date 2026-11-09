@@ -1,18 +1,24 @@
 {{define "site_dialog"}}
-<form method="POST" action="/settings/sites/{{.Category}}">
+<form method="POST" action="/settings/sites/{{.Category}}"{{with .RefusedTab}} data-refused-tab="{{.}}"{{end}}>
   <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-  <p class="dlg-title">Edit <strong>{{.Category}}</strong>{{if .Custom}} <span class="dlg-title-sub" title="A user profile file overrides the shipped mapping">(custom profile)</span>{{end}}{{template "webui/dialog_x"}}</p>
+  <p class="dlg-title">Edit <strong>{{.Category}}</strong>{{if and .Custom (not .PTR)}} <span class="dlg-title-sub" title="A user profile file overrides the shipped mapping">(custom profile)</span>{{end}}{{template "webui/dialog_x"}}</p>
+  {{with .Refusal}}<div class="flash flash-err">{{.}}</div>{{end}}
+  {{if .PTR}}
+  <input type="hidden" id="sd-family" name="family" value="{{.Profile.Family}}">
+  <input type="hidden" name="kind" value="{{.Profile.Kind}}">
+  <input type="hidden" id="sd-auth" name="auth" value="{{.Profile.Auth}}">
+  {{else}}
   <div class="dialog-tabs">
-    <button type="button" class="dialog-tab active" data-panel="sd-monbooru">monbooru</button>
-    <button type="button" class="dialog-tab" data-panel="sd-auth-panel">auth</button>
+    <button type="button" class="dialog-tab active" data-panel="sd-monbooru">general</button>
+    <button type="button" class="dialog-tab" data-panel="sd-auth-panel">login</button>
     <button type="button" class="dialog-tab" data-panel="sd-profile">profile</button>
-    <button type="button" class="dialog-tab" data-panel="sd-mapping">mappings</button>
+    <button type="button" class="dialog-tab" data-panel="sd-mapping">tags</button>
     <button type="button" class="dialog-tab" data-panel="sd-advanced">advanced</button>
     <button type="button" class="dialog-tab" data-panel="sd-export">export</button>
   </div>
 
   <div class="dialog-panel" id="sd-monbooru">
-    <div class="field"><label>Target gallery</label>
+    <div class="field"><label>Gallery</label>
       {{if .Galleries}}
       <select name="gallery">
         <option value="">(default gallery)</option>
@@ -22,13 +28,12 @@
       {{else}}
       <input type="text" name="gallery" value="{{.Gallery}}">
       {{end}}
-      <span class="field-hint">Downloads from this site land in this monbooru gallery; blank = the default gallery</span>
     </div>
     <div class="field"><label>Source label</label>
       <input type="text" name="label" value="{{.Label}}" placeholder="(blank = the site name)">
-      <span class="field-hint">Stamped as the source on every push from this site</span>
+      <span class="field-hint">The name monbooru shows as the source. Images already sent keep the old name, and sending one again adds the new name beside it.</span>
     </div>
-    <div class="field"><label>Host aliases</label>
+    <div class="field"><label>Extra hosts</label>
       <div class="maprows" id="sd-hosts">
         <template>
           <div class="maprow"><input type="text" name="host_alias" placeholder="cdn.site.example">
@@ -40,20 +45,21 @@
         {{end}}
       </div>
       <button type="button" class="btn-link-accent add-maprow" data-rows="sd-hosts">[+ add host]</button>
-      <span class="field-hint">Direct file links, similarity hits, and browser-extension sends on these hosts count as this site; a domain covers its subdomains</span>
+      <span class="field-hint">Links on these hosts count as this site, subdomains included.</span>
     </div>
   </div>
 
   <div class="dialog-panel" id="sd-auth-panel" hidden>
     <div class="field"><label>Login type</label>
-      <select name="auth" id="sd-auth">{{range .Auths}}<option value="{{.}}"{{if eq . $.Profile.Auth}} selected{{end}}>{{.}}</option>{{end}}</select>
+      <select name="auth" id="sd-auth">{{range .Auths}}<option value="{{.}}"{{if eq . $.Profile.Auth}} selected{{end}}>{{authLabel .}}</option>{{end}}</select>
     </div>
     <p class="field-hint auth-field auth-none">This site reads without credentials - change the login type if yours needs one</p>
     <p class="field-hint auth-field auth-oauth">Run gallery-dl's oauth flow once (gallery-dl oauth:{{.Category}}) and put the resulting tokens in the advanced tab's private options</p>
     <div class="field auth-field auth-username"><label>Username</label><input type="text" name="username" value="{{.Username}}"></div>
-    <div class="field auth-field auth-password"><label>Password</label><input type="password" name="password" autocomplete="off" placeholder="{{if .HasPassword}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
-    <div class="field auth-field auth-userid"><label>User ID</label><input type="text" name="user_id" value="{{.UserID}}"></div>
-    <div class="field auth-field auth-apikey"><label>API key</label><input type="password" name="api_key" autocomplete="off" placeholder="{{if .HasAPIKey}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
+    <div class="field auth-field auth-password"><label>Password</label><input type="password" name="password" autocomplete="off" placeholder="{{if .HasPassword}}(set - leave blank to keep){{else}}(unset){{end}}">{{if .HasPassword}}<button type="submit" form="sd-clear-password" class="btn-link-accent">clear</button>{{end}}</div>
+    <div class="field auth-field auth-userid"><label>User ID</label><input type="text" name="user_id" value="{{.UserID}}">
+      <span class="field-hint">The number on your account's profile page.</span></div>
+    <div class="field auth-field auth-apikey"><label>API key</label><input type="password" name="api_key" autocomplete="off" placeholder="{{if .HasAPIKey}}(set - leave blank to keep){{else}}(unset){{end}}">{{if .HasAPIKey}}<button type="submit" form="sd-clear-api-key" class="btn-link-accent">clear</button>{{end}}</div>
     <div class="field auth-field auth-cookies"><label>Cookies file</label><input type="text" name="cookies" value="{{.Cookies}}" placeholder="{{.CookiesPlaceholder}}"></div>
     <div class="field auth-field auth-cookies"><label>Paste cookies (Netscape export)</label>
       <textarea name="cookies_paste" placeholder="# Netscape HTTP Cookie File&#10;.x.com&#9;TRUE&#9;/&#9;TRUE&#9;1785167999&#9;auth_token&#9;...">{{.CookiesPaste}}</textarea>
@@ -63,99 +69,125 @@
   <div class="dialog-panel" id="sd-profile" hidden>
     <div class="settings-cols">
       <div class="field"><label>Family</label>
-        <select name="family">{{range .Families}}<option value="{{.}}"{{if eq . $.Profile.Family}} selected{{end}}>{{.}}</option>{{end}}</select>
-        <span class="field-hint">Sets the rating and tag semantics; generic fits most sites</span>
+        <select name="family" id="sd-family">{{range .Families}}<option value="{{.}}"{{if eq . $.Profile.Family}} selected{{end}}>{{.}}</option>{{end}}</select>
+        <span class="field-hint">How this site's ratings and tags are read. Generic fits most sites.</span>
       </div>
       <div class="field"><label>Kind</label>
         <select name="kind">{{range .Kinds}}<option value="{{.}}"{{if eq . $.Profile.Kind}} selected{{end}}>{{.}}</option>{{end}}</select>
-        <span class="field-hint">Picks the settings table; a manga gallery bundles into one cbz</span>
+        <span class="field-hint">Which list the site appears under. A manga gallery is saved as one .cbz.</span>
       </div>
       <div class="field"><label>Default rating</label>
         <select name="default_rating">
-          <option value="">(unset)</option>
+          <option value="">(none)</option>
           {{range .Ratings}}<option value="{{.}}"{{if eq . $.Profile.DefaultRating}} selected{{end}}>{{.}}</option>{{end}}
         </select>
         <span class="field-hint">Applies only when the source gives none</span>
       </div>
     </div>
     <div class="field"><label>Post URL template</label>
-      <input type="text" name="post_url_template" value="{{.Profile.PostURL}}" placeholder="https://site.example/posts/{id}  (blank = use gallery-dl's permalink)"></div>
+      <input type="text" name="post_url_template" value="{{.Profile.PostURL}}" placeholder="https://site.example/posts/{id}  (blank = gallery-dl's permalink)">
+      <span class="field-hint">{id} or any gallery-dl keyword, such as {author[handle]}</span></div>
     <div class="field"><label>MD5 search template</label>
       <input type="text" name="md5_search_template" value="{{.Profile.MD5Search}}" placeholder="https://site.example/posts?tags=md5:{md5}  (blank = no hash lookup)"></div>
-    <div class="field"><label>Example URL</label>
-      <input type="text" name="example" value="{{.Profile.Example}}" placeholder="a post URL for the test probe"></div>
+    <div class="field"><label>Test URL</label>
+      <input type="text" name="example" value="{{.Profile.Example}}" placeholder="a post URL the Test button uses"></div>
     <div class="field">
-      <label class="checkbox-inline"><input type="checkbox" name="needs_tags"{{if .Profile.NeedsTags}} checked{{end}}> Needs tags: true</label>
-      <span class="field-hint">The site categorizes its tags only with gallery-dl's tags option, at one extra request per post</span>
+      <label class="checkbox-inline"><input type="checkbox" name="needs_tags"{{if .Profile.NeedsTags}} checked{{end}}> Fetch tag categories</label>
+      <span class="field-hint">For sites that only give categories this way. One extra request per post.</span>
     </div>
     <div class="field">
-      <label class="checkbox-inline"><input type="checkbox" name="has_notes"{{if .Profile.HasNotes}} checked{{end}}> Has annotations</label>
-      <span class="field-hint">The site carries positional note boxes, pushed as monbooru annotations</span>
+      <label class="checkbox-inline"><input type="checkbox" name="has_notes"{{if .Profile.HasNotes}} checked{{end}}> Fetch note boxes</label>
+      <span class="field-hint">Sent to monbooru as annotations. One extra request per post with notes.</span>
     </div>
   </div>
 
-  <div class="dialog-panel" id="sd-mapping" hidden>
-    <div class="field"><label>Rating map <span class="field-hint">(site value -&gt; monbooru level)</span></label>
-      <div class="maprows" id="sd-ratings">
-        <template>
-          <div class="maprow"><input type="text" name="rating_from" placeholder="site value"><span class="field-hint">-&gt;</span>
-            <select name="rating_to">{{range .Ratings}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+  {{end}}
+
+  <div class="dialog-panel tag-flow-scope" id="sd-mapping"{{if not .PTR}} hidden{{end}}>
+    {{template "tag_flow" dict "Site" true "PTR" .PTR "MonbooruURL" .MonbooruURL}}
+    <div class="flow-part-1">
+      <div class="tag-step">1 Mappings: translate ratings, categories and tags {{if .PTR}}<span class="status-badge status-ok">ptr</span><span class="status-badge status-off">incoming tags only</span>{{else}}<span class="status-badge status-ok">this site</span><span class="status-badge status-off">in profile, exported</span>{{end}}</div>
+      <div class="field"><label>Rating map <span class="field-hint">({{if .PTR}}rating: value{{else}}site value{{end}} -&gt; monbooru level)</span></label>
+        <div class="maprows" id="sd-ratings">
+          <template>
+            <div class="maprow"><input type="text" name="rating_from" placeholder="site value"><span class="field-hint">-&gt;</span>
+              <select name="rating_to">{{range .Ratings}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+              <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
+          </template>
+          {{range $from, $to := .Profile.RatingOverrides}}
+          <div class="maprow"><input type="text" name="rating_from" value="{{$from}}"><span class="field-hint">-&gt;</span>
+            <select name="rating_to">{{range $.Ratings}}<option value="{{.}}"{{if eq . $to}} selected{{end}}>{{.}}</option>{{end}}</select>
             <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
-        </template>
-        {{range $from, $to := .Profile.RatingOverrides}}
-        <div class="maprow"><input type="text" name="rating_from" value="{{$from}}"><span class="field-hint">-&gt;</span>
-          <select name="rating_to">{{range $.Ratings}}<option value="{{.}}"{{if eq . $to}} selected{{end}}>{{.}}</option>{{end}}</select>
-          <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
-        {{end}}
+          {{end}}
+        </div>
+        <button type="button" class="btn-link-accent add-maprow" data-rows="sd-ratings">[+ add rating]</button>
+        {{range .RatingTomlOverrides}}<span class="hint-warn">monloader.toml [[rating_overrides]] sends {{.From}} to {{.To}} and wins over this map</span>{{end}}
       </div>
-      <button type="button" class="btn-link-accent add-maprow" data-rows="sd-ratings">[+ add rating]</button>
+      <div class="field"><label>Category map <span class="field-hint">({{if .PTR}}hydrus namespace{{else}}site's category{{end}} -&gt; monbooru category)</span></label>
+        <div class="maprows" id="sd-cats">
+          <template>
+            <div class="maprow"><input type="text" name="cat_from" placeholder="{{if .PTR}}namespace{{else}}site category{{end}}"><span class="field-hint">-&gt;</span>
+              <select name="cat_to">{{template "category_options" (dict "Categories" .Categories "Custom" .CustomCategories "Selected" "general")}}</select>
+              <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
+          </template>
+          {{range $from, $to := .Profile.CategoryOverrides}}
+          <div class="maprow"><input type="text" name="cat_from" value="{{$from}}"><span class="field-hint">-&gt;</span>
+            <select name="cat_to">{{template "category_options" (dict "Categories" $.Categories "Custom" $.CustomCategories "Selected" $to)}}</select>
+            <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button>
+            {{with index $.DroppedCats $from}}<span class="hint-warn">{{.}} is unchecked in Rules, so these tags never reach monbooru</span>{{end}}</div>
+          {{end}}
+        </div>
+        <button type="button" class="btn-link-accent add-maprow" data-rows="sd-cats">{{if .PTR}}[+ add namespace]{{else}}[+ add category]{{end}}</button>
+        {{if .PTR}}<span class="field-hint">A namespace with no row keeps its usual category, and "general" covers tags with no namespace.</span>{{end}}
+        {{range .TagOverrides}}<span class="hint-warn">monloader.toml [[tag_overrides]] {{if .To}}sends {{.From}} to {{.To}}{{else}}drops {{.From}}{{end}} and wins over this map</span>{{end}}
+        {{if not .CategoriesKnown}}<span class="field-hint">monbooru is unreachable, so only the built-in categories are listed; a saved rule keeps its target</span>{{end}}
+      </div>
+      <div class="field"><label>Tag rules <span class="field-hint">(rename, move to a category, or leave blank to drop the tag{{if not .PTR}}; the post still downloads{{end}})</span></label>
+        <div class="maprows" id="sd-rules">
+          <template>
+            <div class="maprow"><input type="text" name="rule_from" placeholder="tag"><span class="field-hint">-&gt;</span>
+              <input type="text" name="rule_to" placeholder="(blank = drop)">
+              <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
+          </template>
+          {{range $from, $to := .Profile.TagRules}}
+          <div class="maprow"><input type="text" name="rule_from" value="{{$from}}"><span class="field-hint">-&gt;</span>
+            <input type="text" name="rule_to" value="{{$to}}" placeholder="(blank = drop)">
+            <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button>
+            {{with index $.DroppedRules $from}}<span class="hint-warn">{{.}} is unchecked in Rules, so this tag never reaches monbooru</span>{{end}}</div>
+          {{end}}
+        </div>
+        <button type="button" class="btn-link-accent add-maprow" data-rows="sd-rules">[+ add rule]</button>
+      </div>
     </div>
-    <div class="field"><label>Category map <span class="field-hint">(tags_&lt;suffix&gt; -&gt; monbooru category)</span></label>
-      <div class="maprows" id="sd-cats">
-        <template>
-          <div class="maprow"><input type="text" name="cat_from" placeholder="suffix"><span class="field-hint">-&gt;</span>
-            <select name="cat_to">{{range .Categories}}<option value="{{.}}">{{.}}</option>{{end}}<option value="drop">(drop these tags)</option></select>
-            <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
-        </template>
-        {{range $from, $to := .Profile.CategoryOverrides}}
-        <div class="maprow"><input type="text" name="cat_from" value="{{$from}}"><span class="field-hint">-&gt;</span>
-          <select name="cat_to">{{range $.Categories}}<option value="{{.}}"{{if eq . $to}} selected{{end}}>{{.}}</option>{{end}}<option value="drop"{{if eq $to ""}} selected{{end}}>(drop these tags)</option></select>
-          <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
-        {{end}}
+    <div class="flow-part-2">
+      {{if .PTR}}<div class="tag-step">2 Blacklist: skip images whose PTR tags include these <span class="status-badge status-ok">ptr</span></div>
+      {{else}}<div class="tag-step">2 Blacklist: skip posts with these tags <span class="status-badge status-ok">this site</span><span class="status-badge status-off">before download</span><span class="status-badge status-off">not exported, kept on a profile reset</span></div>
+      {{end}}<div class="field">
+        <textarea id="sd-blacklist" name="blacklist" aria-label="Blacklist">{{.Blacklist}}</textarea>
+        {{if .PTR}}<span class="field-hint">An image that matches gets no tags from the PTR.</span>
+        {{else}}<span class="field-hint">Added to the global blacklist in Rules. Same syntax.</span>
+        {{with .GlobalRules}}<div class="field-hint global-rules">Also applied, from <a href="/settings#rules" onclick="document.getElementById('site-edit-dialog').close()">Rules</a>:{{range .}}<code>{{.}}</code>{{end}}</div>{{end}}{{end}}
       </div>
-      <button type="button" class="btn-link-accent add-maprow" data-rows="sd-cats">[+ add suffix]</button>
-    </div>
-    <div class="field"><label>Specific tag rules <span class="field-hint">(rename, change category or leave blank to suppress it)</span></label>
-      <div class="maprows" id="sd-rules">
-        <template>
-          <div class="maprow"><input type="text" name="rule_from" placeholder="tag"><span class="field-hint">-&gt;</span>
-            <input type="text" name="rule_to" placeholder="(blank = suppress)">
-            <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
-        </template>
-        {{range $from, $to := .Profile.TagRules}}
-        <div class="maprow"><input type="text" name="rule_from" value="{{$from}}"><span class="field-hint">-&gt;</span>
-          <input type="text" name="rule_to" value="{{$to}}" placeholder="(blank = suppress)">
-          <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
-        {{end}}
-      </div>
-      <button type="button" class="btn-link-accent add-maprow" data-rows="sd-rules">[+ add rule]</button>
     </div>
   </div>
 
+  {{if not .PTR}}
   <div class="dialog-panel" id="sd-advanced" hidden>
-    <div class="field"><label>gallery-dl options (private)</label>
+    <div class="field"><label>User agent</label><input type="text" name="user_agent" value="{{.UserAgent}}" placeholder="{{.DefaultAgent}}">
+      <span class="field-hint">Text sent as written, or a gallery-dl preset: +firefox, +chrome, +gallery-dl</span></div>
+    <div class="field"><label>gallery-dl options (private){{if .HasOptions}} <button type="button" class="btn-sm" id="sd-options-reveal"
+          hx-get="/settings/sites/{{.Category}}/options" hx-target="#sd-options" hx-swap="innerHTML"
+          hx-on::after-request="if (event.detail.successful) { document.getElementById('sd-options-edit').value = '1'; this.remove() }">Reveal</button>{{end}}</label>
       <textarea id="sd-options" name="options" placeholder='{{if .HasOptions}}(set - reveal to edit, blank leaves it){{else}}{"retweets": false}{{end}}'>{{.OptionsPrivate}}</textarea>
       <input type="hidden" id="sd-options-edit" name="options_edit" value="{{if .HasOptions}}0{{else}}1{{end}}">
-      <span class="field-hint">For this instance only; the oauth tokens above land here, so it is not shown until you ask {{if .HasOptions}}<button type="button" class="btn-link-accent" id="sd-options-reveal"
-          hx-get="/settings/sites/{{.Category}}/options" hx-target="#sd-options" hx-swap="innerHTML"
-          hx-on::after-request="document.getElementById('sd-options-edit').value = '1'; this.remove()">reveal</button>{{end}}</span></div>
+      <span class="field-hint">Stay on this machine. Safe for secrets.</span></div>
     <div class="field"><label>gallery-dl options (public)</label>
       <textarea name="profile_options" placeholder='{"retweets": false}'>{{.OptionsPublic}}</textarea>
-      <span class="field-hint">Part of the shareable profile; never secrets</span></div>
+      <span class="field-hint">Included in the export. No secrets here.</span></div>
   </div>
 
   <div class="dialog-panel" id="sd-export" hidden>
-    <p class="field-hint">Click copy to export the profile as last saved; save to fold in edits from the other tabs.</p>
+    <p class="field-hint">Copies the profile as last saved. Save first to include your edits.</p>
     <div class="field"><label>Site profile <span class="field-hint">profiles/{{.Category}}.json</span>
         <button type="button" class="btn-link-accent" data-copy-from="#sd-export-json" title="Copy the profile file">[copy]</button>
         <span class="copy-flash" hidden>copied</span></label>
@@ -164,13 +196,27 @@
     </div>
   </div>
 
+  {{end}}
+
   <div class="dialog-actions">
-    {{if .Custom}}<button type="submit" form="sd-reset-form" class="btn-danger" title="Delete the user profile file; the shipped or generic mapping applies again">Reset profile</button>{{end}}
+    {{if and .Custom (not .PTR)}}<button type="submit" form="sd-reset-form" class="btn-reset-profile" title="Delete the user profile file; the shipped or generic mapping applies again">Reset profile</button>{{end}}
     <button type="button" onclick="document.getElementById('site-edit-dialog').close()">Cancel</button>
     <button type="submit">Save site</button>
   </div>
 </form>
-{{if .Custom}}
+{{if .HasPassword}}
+<form method="POST" id="sd-clear-password" action="/settings/sites/{{.Category}}/clear/password"
+      hx-confirm="Clear {{.Category}}'s stored password?" data-confirm-ok="Clear" data-confirm-danger>
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+</form>
+{{end}}
+{{if .HasAPIKey}}
+<form method="POST" id="sd-clear-api-key" action="/settings/sites/{{.Category}}/clear/api_key"
+      hx-confirm="Clear {{.Category}}'s stored API key?" data-confirm-ok="Clear" data-confirm-danger>
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+</form>
+{{end}}
+{{if and .Custom (not .PTR)}}
 <form method="POST" id="sd-reset-form" action="/settings/sites/{{.Category}}/profile/reset"
       hx-confirm="Reset the mapping for {{.Category}} to the shipped one?" data-confirm-ok="Reset"
       data-confirm-danger="Deletes your profiles/{{.Category}}.json; the tag rules and templates in it are gone.">
@@ -180,3 +226,5 @@
 {{end}}
 
 {{define "site_options"}}{{.}}{{end}}
+
+{{define "category_options"}}{{$selected := .Selected}}<optgroup label="built-in">{{range .Categories}}<option value="{{.}}"{{if eq . $selected}} selected{{end}}>{{.}}</option>{{end}}</optgroup>{{with .Custom}}<optgroup label="custom">{{range .}}<option value="{{.Name}}"{{if eq .Name $selected}} selected{{end}}>{{.Name}}{{if .Missing}} (not in monbooru){{end}}</option>{{end}}</optgroup>{{end}}<option value=""{{if eq $selected ""}} selected{{end}}>(drop these tags)</option>{{end}}

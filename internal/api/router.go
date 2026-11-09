@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/contrib"
 	"github.com/monbooru/monloader/internal/gdl"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/ptr"
@@ -13,29 +14,11 @@ import (
 	"github.com/monbooru/monloader/internal/sitestate"
 )
 
-// PTRService is nil when the PTR is not built into the run.
 type PTRService interface {
-	Status() ptr.Status
+	contrib.Service
 	TagGraph(ctx context.Context, names []string) (map[string]ptr.TagInfo, error)
 	SearchTags(ctx context.Context, ranges []ptr.TagRange, scanCap int) ([]ptr.TagMatch, bool, error)
 	TagsForHash(hashHex string) (tags []string, ok bool, err error)
-	Enabled() bool
-	HasPersonalKey() bool
-	CreateContribAccount(ctx context.Context) (string, error)
-	Syncing() bool
-	Provisional() bool
-	CaughtUp() bool
-	Contrib() *ptr.ContribStore
-	TagFilterCached() *ptr.TagFilter
-	HashHasIdeal(hashHex, tag string) (bool, error)
-	HashHasIdeals(hashHex string, tags []string) (map[string]bool, error)
-	HashHasRaw(hashHex, tag string) (bool, error)
-	RawTagsForHash(hashHex string) ([]string, error)
-	IdealTag(tag string) (string, bool, error)
-	SiblingCurrent(bad, good string) (bool, error)
-	ParentCurrent(child, parent string) (bool, error)
-	ParentEdgeCovered(child, parent string) (bool, error)
-	RefreshAccount(ctx context.Context) (*ptr.Account, error)
 }
 
 type PairHandlers struct {
@@ -45,12 +28,8 @@ type PairHandlers struct {
 }
 
 type Host struct {
-	Pair PairHandlers
-	// May be nil; a handler that saves refuses rather than calling it.
-	SaveConfig func(func(*config.Config) error) error
-	// Whether a lookup walk would query the source rather than skip it for
-	// a missing credential; nil counts every source.
-	Queryable func(mapping.LookupSource) bool
+	Pair       PairHandlers
+	SimMissing func(service string) (string, bool)
 }
 
 type Handler struct {

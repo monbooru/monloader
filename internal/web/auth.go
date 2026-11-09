@@ -58,7 +58,7 @@ func loginNext(p string) string {
 
 func (s *Server) loginData(errMsg, next string) map[string]any {
 	theme := s.activeTheme()
-	data := map[string]any{
+	return map[string]any{
 		"App":          "monloader",
 		"Title":        "Login - " + s.titleName(),
 		"CSRFToken":    s.sessions.CSRFToken(session.Anon),
@@ -66,11 +66,8 @@ func (s *Server) loginData(errMsg, next string) map[string]any {
 		"BooruFavicon": themeFaviconURL(theme),
 		"Theme":        theme.Path != "",
 		"Next":         next,
+		"Error":        errMsg,
 	}
-	if errMsg != "" {
-		data["Error"] = errMsg
-	}
-	return data
 }
 
 func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
@@ -122,10 +119,6 @@ func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		flashFragment(w, "err", "Bad form data.")
-		return
-	}
 	newPass := r.FormValue("new_password")
 	if newPass == "" {
 		flashFragment(w, "err", "New password required.")
@@ -143,7 +136,7 @@ func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wasOn := s.cfg.Current().Auth.EnablePassword
-	if err := s.updateConfig(func(c *config.Config) error {
+	if err := s.cfg.Update(func(c *config.Config) error {
 		c.Auth.PasswordHash = string(hash)
 		c.Auth.EnablePassword = true
 		return nil
@@ -163,23 +156,19 @@ func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sessions.ClearExcept(keep)
 	flashFragment(w, "ok", "Password updated.")
-	s.renderAuthPasswordOOB(w, r)
+	s.renderAuthPasswordOOB(w)
 }
 
 // Gated on the hash, not EnablePassword: a TOML flag flipped off must not
 // skip the check.
 func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		flashFragment(w, "err", "Bad form data.")
-		return
-	}
 	if s.cfg.Current().Auth.PasswordHash != "" {
 		if bcrypt.CompareHashAndPassword([]byte(s.cfg.Current().Auth.PasswordHash), []byte(r.FormValue("current_password"))) != nil {
 			flashFragment(w, "err", "Current password is incorrect.")
 			return
 		}
 	}
-	if err := s.updateConfig(func(c *config.Config) error {
+	if err := s.cfg.Update(func(c *config.Config) error {
 		c.Auth.EnablePassword = false
 		c.Auth.PasswordHash = ""
 		return nil
@@ -190,23 +179,19 @@ func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Reque
 	logx.Infof("settings: password removed from %s", session.ClientIP(r))
 	s.sessions.Clear()
 	flashFragment(w, "ok", "Password removed. Authentication is now disabled.")
-	s.renderAuthPasswordOOB(w, r)
+	s.renderAuthPasswordOOB(w)
 }
 
 // The secret is minted outside updateConfig, whose closure runs twice, so
 // both layers store the same one.
 func (s *Server) settingsTokenCreate(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		flashFragment(w, "err", "Bad form data.")
-		return
-	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	if err := apitoken.ValidateName(name); err != nil {
 		flashFragment(w, "err", err.Error())
 		return
 	}
 	tok, secret := apitoken.New(name, config.AllScopes)
-	if err := s.updateConfig(func(c *config.Config) error {
+	if err := s.cfg.Update(func(c *config.Config) error {
 		return c.Auth.Tokens.Add(tok)
 	}); err != nil {
 		flashFragment(w, "err", err.Error())
@@ -216,13 +201,13 @@ func (s *Server) settingsTokenCreate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("HX-Trigger", "token-created")
 	s.render(w, "webui/token_created", map[string]any{"Token": secret})
-	s.renderAuthTokensOOB(w, r)
+	s.renderAuthTokensOOB(w)
 }
 
 // Only these two peers have a remove-pairing control, so a token paired
 // under any other name stays revocable from the list.
 func hasPairingTeardown(peer string) bool {
-	return peer == contract.AppMonbooru || peer == "monsender"
+	return peer == contract.AppMonbooru || peer == appMonsender
 }
 
 func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +221,7 @@ func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", "This token is managed by a pairing; remove the pairing instead.")
 		return
 	}
-	if err := s.updateConfig(func(c *config.Config) error {
+	if err := s.cfg.Update(func(c *config.Config) error {
 		c.Auth.Tokens.Remove(id)
 		return nil
 	}); err != nil {
@@ -245,14 +230,25 @@ func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	logx.Infof("settings: API token %s revoked from %s", id, session.ClientIP(r))
 	flashFragment(w, "ok", "Token revoked.")
-	s.renderAuthTokensOOB(w, r)
+	s.renderAuthTokensOOB(w)
 }
 
-func (s *Server) renderAuthTokensOOB(w http.ResponseWriter, r *http.Request) {
+// The list's rows. A pairing with no remove control of its own clears Paired,
+// which is what the shared template hides Revoke on.
+func (s *Server) tokenRows() apitoken.List {
+	rows := slices.Clone(s.cfg.Current().Auth.Tokens)
+	for i := range rows {
+		if !hasPairingTeardown(rows[i].Paired) {
+			rows[i].Paired = ""
+		}
+	}
+	return rows
+}
+
+func (s *Server) renderAuthTokensOOB(w http.ResponseWriter) {
 	s.render(w, "webui/auth_tokens", map[string]any{
-		"Tokens":    slices.Clone(s.cfg.Current().Auth.Tokens),
-		"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context())),
-		"OOB":       true,
+		"Tokens": s.tokenRows(),
+		"OOB":    true,
 	})
 }
 
@@ -269,18 +265,13 @@ func (s *Server) settingsTokenPrivilegesGet(w http.ResponseWriter, r *http.Reque
 		config.ScopeWrite: "write - enqueue and manage jobs",
 	}
 	s.render(w, "webui/token_privileges_dialog", map[string]any{
-		"ID":        id,
-		"Scopes":    webui.ScopeRows(config.AllScopes, scopes, descs),
-		"CSRFToken": s.sessions.CSRFToken(session.FromContext(r.Context())),
-		"Paired":    tok.Paired != "",
+		"ID":     id,
+		"Scopes": webui.ScopeRows(config.AllScopes, scopes, descs),
+		"Paired": tok.Paired != "",
 	})
 }
 
 func (s *Server) settingsTokenPrivilegesPost(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		flashFragment(w, "err", "Bad form data.")
-		return
-	}
 	id := r.PathValue("id")
 	tok := s.cfg.Current().Auth.Tokens.ByID(id)
 	if tok == nil {
@@ -292,7 +283,7 @@ func (s *Server) settingsTokenPrivilegesPost(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	scopes := apitoken.Filter(r.Form["scope"], config.AllScopes)
-	if err := s.updateConfig(func(c *config.Config) error {
+	if err := s.cfg.Update(func(c *config.Config) error {
 		c.Auth.Tokens.SetScopes(id, scopes)
 		return nil
 	}); err != nil {
@@ -304,18 +295,10 @@ func (s *Server) settingsTokenPrivilegesPost(w http.ResponseWriter, r *http.Requ
 	s.render(w, "webui/token_scopes_saved", map[string]string{"ID": id, "Scopes": strings.Join(scopes, " ")})
 }
 
-func grantedScopes(requested []string) []string {
-	if sc := apitoken.Filter(requested, config.AllScopes); len(sc) > 0 {
-		return sc
-	}
-	return []string{config.ScopeRead}
-}
-
-func (s *Server) renderAuthPasswordOOB(w http.ResponseWriter, r *http.Request) {
+func (s *Server) renderAuthPasswordOOB(w http.ResponseWriter) {
 	s.render(w, "webui/auth_password_section", map[string]any{
 		"AuthEnabled": s.cfg.Current().Auth.EnablePassword,
 		"HasPassword": s.cfg.Current().Auth.PasswordHash != "",
-		"CSRFToken":   s.sessions.CSRFToken(session.FromContext(r.Context())),
 		"OOB":         true,
 	})
 }

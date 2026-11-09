@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,7 @@ type Config struct {
 	Server          ServerConfig     `toml:"server"`
 	Monbooru        MonbooruConfig   `toml:"monbooru"`
 	Downloader      DownloaderConfig `toml:"downloader"`
+	Tags            TagsConfig       `toml:"tags"`
 	GalleryDL       GalleryDLConfig  `toml:"gallerydl"`
 	Auth            AuthConfig       `toml:"auth"`
 	Log             LogConfig        `toml:"log"`
@@ -57,6 +59,12 @@ type MonbooruConfig struct {
 	Paused bool `toml:"paused,omitempty"`
 }
 
+// Unconfigured: monbooru refuses a push with no token, so a removed pairing
+// counts as much as a blank address.
+func (m MonbooruConfig) Unconfigured() bool { return m.APIURL == "" || m.APIToken == "" }
+
+func (m MonbooruConfig) Held() bool { return m.Unconfigured() || m.Paused }
+
 func (m MonbooruConfig) WebBase() string {
 	return strings.TrimRight(m.WebURL, "/")
 }
@@ -70,6 +78,13 @@ type DownloaderConfig struct {
 	// For a job that imported everything with no window left to fetch; 0
 	// leaves it to HistoryRetentionDays.
 	SuccessRetentionDays int `toml:"success_retention_days"`
+}
+
+type TagsConfig struct {
+	// A deny list, so a category monbooru gains later is sent until
+	// someone says otherwise.
+	DropCategories []string `toml:"drop_categories,omitempty"`
+	Blacklist      []string `toml:"blacklist,omitempty"`
 }
 
 func (d DownloaderConfig) HistoryRetention() time.Duration {
@@ -117,6 +132,22 @@ func IsHTTPURL(s string) bool {
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
+// NormalizeURL lower-cases an http(s) scheme and host: url.Parse does the scheme
+// for the check above, while gallery-dl's patterns see the string as typed and
+// match case-sensitively. A fragment stays: some of its extractors match on one.
+func NormalizeURL(s string) string {
+	scheme, rest, ok := strings.Cut(s, "://")
+	if !ok || (!strings.EqualFold(scheme, "http") && !strings.EqualFold(scheme, "https")) {
+		return s
+	}
+	end := strings.IndexAny(rest, "/?#")
+	if end < 0 {
+		end = len(rest)
+	}
+	host := strings.LastIndex(rest[:end], "@") + 1
+	return strings.ToLower(scheme) + "://" + rest[:host] + strings.ToLower(rest[host:end]) + rest[end:]
+}
+
 func IsRelativeFolder(s string) bool {
 	return !strings.HasPrefix(s, "/") && !slices.Contains(strings.Split(s, "/"), "..")
 }
@@ -150,10 +181,7 @@ type PTRConfig struct {
 const PublicAccessKey = "4a285629721ca442541ef2c15ea17d1f7f7578b0c3f4f5f2a05f8f0ab297786f"
 
 func (p PTRConfig) EffectiveAccessKey() string {
-	if p.AccessKey != "" {
-		return p.AccessKey
-	}
-	return PublicAccessKey
+	return cmp.Or(p.AccessKey, PublicAccessKey)
 }
 
 type LookupConfig struct {
@@ -201,18 +229,49 @@ type Site struct {
 	// Stamped as the source on this site's pushes; empty keeps the category.
 	Label   string `toml:"label,omitempty"`
 	Cookies string `toml:"cookies"`
+	// Literal text or one of agentPresets; empty keeps the default.
+	Agent string `toml:"user_agent,omitempty"`
 	// Merged under extractor.<name>. Unlike a profile's options it may
 	// hold secrets, so it is never shared.
 	Options string `toml:"options,omitempty"`
 	// 1 is first; 0 keeps the site out of the hash-lookup walk.
 	LookupOrder int `toml:"lookup_order,omitempty"`
+	// Adds to [tags].blacklist for this site. Here and not in the profile:
+	// a preference, where a profile is a shareable fact about the site.
+	Blacklist []string `toml:"blacklist,omitempty"`
+}
+
+// UserAgent is the operator's agent, else the account named as Danbooru asks
+// of API clients; empty without either.
+func (s *Site) UserAgent() string {
+	return cmp.Or(s.Agent, s.accountAgent())
+}
+
+// HeaderAgent is UserAgent for a request gallery-dl does not make: only
+// gallery-dl can expand a preset.
+func (s *Site) HeaderAgent() string {
+	if slices.Contains(agentPresets, s.Agent) {
+		return s.accountAgent()
+	}
+	return s.UserAgent()
+}
+
+func (s *Site) accountAgent() string {
+	if s.UserID == "" {
+		return ""
+	}
+	return "monloader; user #" + s.UserID
 }
 
 // HasUserData ignores LookupOrder: the seeded chain gives untouched blocks one.
 func (s *Site) HasUserData() bool {
 	return s.Username != "" || s.Password != "" || s.APIKey != "" || s.UserID != "" ||
-		s.Gallery != "" || s.Label != "" || s.Cookies != "" || s.Options != ""
+		s.Gallery != "" || s.Label != "" || s.Cookies != "" || s.Agent != "" || s.Options != "" || len(s.Blacklist) > 0
 }
+
+// SitePTR is the reserved [[sites]] and profile name holding the PTR's mappings
+// and blacklist; gallery-dl has no extractor of that name.
+const SitePTR = "ptr"
 
 type TagOverride struct {
 	Site string `toml:"site"`
@@ -220,11 +279,7 @@ type TagOverride struct {
 	To   string `toml:"to"`
 }
 
-type RatingOverride struct {
-	Site string `toml:"site"`
-	From string `toml:"from"`
-	To   string `toml:"to"`
-}
+type RatingOverride TagOverride
 
 type HostLabel struct {
 	Host  string `toml:"host"`
@@ -263,7 +318,7 @@ func Default() *Config {
 			DataPath:    "/ptr",
 			Address:     "https://ptr.hydrus.network:45871",
 			FetchSleep:  1.0,
-			MinFreeGB:   70,
+			MinFreeGB:   90,
 			CommitSleep: 1.0,
 		},
 		Lookup: LookupConfig{
@@ -335,35 +390,23 @@ func absent(path string, portable bool) (bool, error) {
 }
 
 // binary_path is left alone: it names a command on PATH as often as a file.
-func resolveIn(cfg *Config, base string) {
-	cfg.GalleryDL.ConfigPath = fsx.AbsIn(cfg.GalleryDL.ConfigPath, base)
-	cfg.GalleryDL.ArchivePath = fsx.AbsIn(cfg.GalleryDL.ArchivePath, base)
-	cfg.GalleryDL.CookiesDir = fsx.AbsIn(cfg.GalleryDL.CookiesDir, base)
-	cfg.GalleryDL.SupportedSitesPath = fsx.AbsIn(cfg.GalleryDL.SupportedSitesPath, base)
-	cfg.PTR.DataPath = fsx.AbsIn(cfg.PTR.DataPath, base)
+func mapPaths(cfg *Config, base string, f func(path, base string) string) {
+	cfg.GalleryDL.ConfigPath = f(cfg.GalleryDL.ConfigPath, base)
+	cfg.GalleryDL.ArchivePath = f(cfg.GalleryDL.ArchivePath, base)
+	cfg.GalleryDL.CookiesDir = f(cfg.GalleryDL.CookiesDir, base)
+	cfg.GalleryDL.SupportedSitesPath = f(cfg.GalleryDL.SupportedSitesPath, base)
+	cfg.PTR.DataPath = f(cfg.PTR.DataPath, base)
+	for i := range cfg.Sites {
+		cfg.Sites[i].Cookies = f(cfg.Sites[i].Cookies, base)
+	}
 }
 
-func RelativizeIn(cfg *Config, base string) {
-	cfg.GalleryDL.ConfigPath = fsx.RelIn(cfg.GalleryDL.ConfigPath, base)
-	cfg.GalleryDL.ArchivePath = fsx.RelIn(cfg.GalleryDL.ArchivePath, base)
-	cfg.GalleryDL.CookiesDir = fsx.RelIn(cfg.GalleryDL.CookiesDir, base)
-	cfg.GalleryDL.SupportedSitesPath = fsx.RelIn(cfg.GalleryDL.SupportedSitesPath, base)
-	cfg.PTR.DataPath = fsx.RelIn(cfg.PTR.DataPath, base)
-}
+func RelativizeIn(cfg *Config, base string) { mapPaths(cfg, base, fsx.RelIn) }
 
-// LoadWithDefaults applies seed only to a config it creates; one already on
-// disk loads as it stands, so a container's volume layout is never rewritten.
-func LoadWithDefaults(path string, seed func(*Config)) (*Config, error) {
-	return load(path, "", seed)
-}
-
-// LoadPortable resolves the file's relative paths against its folder, so
-// the install can move.
-func LoadPortable(path string, seed func(*Config)) (*Config, error) {
-	return load(path, filepath.Dir(path), seed)
-}
-
-func load(path, base string, seed func(*Config)) (*Config, error) {
+// Load applies seed only to a config it creates, so a container's volume layout
+// is never rewritten. A non-empty base resolves the file's relative paths against
+// it, so a portable install can move.
+func Load(path, base string, seed func(*Config)) (*Config, error) {
 	fresh, err := absent(path, base != "")
 	if err != nil {
 		return nil, err
@@ -402,13 +445,9 @@ func seedLookupDefaults(cfg *Config, md toml.MetaData) {
 	if !md.IsDefined("lookup", "scheduled_daily_budget") {
 		cfg.Lookup.ScheduledDailyBudget = defaultScheduledDailyBudget
 	}
-	legacy := true
-	for _, s := range cfg.Sites {
-		if s.LookupOrder > 0 && legacyLookupOrders[s.Name] != s.LookupOrder {
-			legacy = false
-			break
-		}
-	}
+	legacy := !slices.ContainsFunc(cfg.Sites, func(s Site) bool {
+		return s.LookupOrder > 0 && legacyLookupOrders[s.Name] != s.LookupOrder
+	})
 	for _, d := range defaultLookupSites {
 		if cfg.FindSite(d.Name) == nil {
 			cfg.Sites = append(cfg.Sites, d)
@@ -470,9 +509,9 @@ func decodeFile(path, base string) (*Config, []toml.Key, error) {
 		return nil, nil, fmt.Errorf("checking config file: %w", err)
 	}
 	if base != "" {
-		resolveIn(cfg, base)
+		mapPaths(cfg, base, fsx.AbsIn)
 	} else if wd, err := os.Getwd(); err == nil {
-		resolveIn(cfg, wd)
+		mapPaths(cfg, wd, fsx.AbsIn)
 	}
 	return cfg, unknown, nil
 }
@@ -486,14 +525,19 @@ func Save(cfg *Config, path string) error {
 	})
 }
 
-// Every element type is a plain value except Token.Scopes; a new slice or
-// map inside one must be cloned here too.
+// Every element type is a plain value except Token.Scopes, the Tags lists
+// and Site.Blacklist; a new slice or map inside one must be cloned here too.
 func (cfg *Config) Clone() *Config {
 	cp := *cfg
 	cp.Sites = append([]Site(nil), cfg.Sites...)
 	cp.TagOverrides = append([]TagOverride(nil), cfg.TagOverrides...)
 	cp.RatingOverrides = append([]RatingOverride(nil), cfg.RatingOverrides...)
 	cp.HostLabels = append([]HostLabel(nil), cfg.HostLabels...)
+	cp.Tags.DropCategories = slices.Clone(cfg.Tags.DropCategories)
+	cp.Tags.Blacklist = slices.Clone(cfg.Tags.Blacklist)
+	for i := range cp.Sites {
+		cp.Sites[i].Blacklist = slices.Clone(cp.Sites[i].Blacklist)
+	}
 	cp.Auth.Tokens = append(apitoken.List(nil), cfg.Auth.Tokens...)
 	for i := range cp.Auth.Tokens {
 		cp.Auth.Tokens[i].Scopes = slices.Clone(cp.Auth.Tokens[i].Scopes)
@@ -547,10 +591,39 @@ func (cfg *Config) Secrets() []Secret {
 		add(s.Name+".api_key", s.APIKey)
 		add(s.Name+".password", s.Password)
 		add(s.Name+".user_id", s.UserID)
+		jsonStrings(s.Options, func(v string) { add(s.Name+".options", v) })
+	}
+	for _, name := range LookupServices {
+		add("lookup."+name+".api_key", cfg.Lookup.Service(name).APIKey)
 	}
 	add("monbooru.api_token", cfg.Monbooru.APIToken)
 	add("ptr.access_key", cfg.PTR.AccessKey)
+	jsonStrings(cfg.GalleryDL.RawConfig, func(v string) { add("gallerydl.raw_config", v) })
 	return out
+}
+
+// Every string, whatever its key: cookies and tokens nest under arbitrary ones.
+func jsonStrings(raw string, visit func(string)) {
+	var doc any
+	if json.Unmarshal([]byte(raw), &doc) != nil {
+		return
+	}
+	var walk func(any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case string:
+			visit(t)
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range t {
+				walk(e)
+			}
+		}
+	}
+	walk(doc)
 }
 
 func RedactSecrets(text string, secrets []Secret) (string, int) {
@@ -580,6 +653,23 @@ func validateJSONObject(s, what string) error {
 func ValidateRawConfig(s string) error { return validateJSONObject(s, "raw gallery-dl config") }
 
 func ValidateSiteOptions(s string) error { return validateJSONObject(s, "site options") }
+
+var agentPresets = []string{"+firefox", "+chrome", "+gallery-dl"}
+
+// gallery-dl reads "browser" and "@name" as opening a browser and waiting on
+// it, "auto" and an unknown "+" value as its default, and fails a request on
+// a character outside latin-1.
+func ValidateSiteAgent(s string) error {
+	if s == "" || slices.Contains(agentPresets, s) {
+		return nil
+	}
+	refused := s == "browser" || s == "auto" || strings.HasPrefix(s, "@") || strings.HasPrefix(s, "+") ||
+		strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r > 0x7e })
+	if refused {
+		return fmt.Errorf("user agent %q must be plain ASCII text or one of %s", s, strings.Join(agentPresets, ", "))
+	}
+	return nil
+}
 
 func applyEnvOverrides(cfg *Config) {
 	envOverride("MONLOADER_SERVER_BIND_ADDRESS", &cfg.Server.BindAddress, parseString)
@@ -682,6 +772,11 @@ func validate(cfg *Config) error {
 			if u, err := url.Parse(raw); err != nil || u.Scheme != "https" || u.Host == "" {
 				return fmt.Errorf("lookup.%s.url %q must be an absolute https URL", name, raw)
 			}
+		}
+	}
+	for _, site := range cfg.Sites {
+		if err := ValidateSiteAgent(site.Agent); err != nil {
+			return fmt.Errorf("sites.%s.user_agent: %w", site.Name, err)
 		}
 	}
 	return nil

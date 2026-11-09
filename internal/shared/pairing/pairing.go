@@ -16,8 +16,6 @@ const (
 	MaxPending = 16
 )
 
-// State is the status word a peer reads back while it polls, and the one
-// a teardown answers.
 type State string
 
 const (
@@ -41,7 +39,6 @@ type Request struct {
 
 func (r *Request) request() *Request { return r }
 
-// ExpiresAt is when a request still pending is swept.
 func (r Request) ExpiresAt() time.Time { return r.CreatedAt.Add(pendingTTL) }
 
 type requestPtr[T any] interface {
@@ -164,15 +161,11 @@ func (s *Store[T, P]) Claim(id string) (T, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, ok := s.m[id]
-	var zero T
-	if !ok {
+	if !ok || p.request().State != Approved || p.request().Claimed {
+		var zero T
 		return zero, false
 	}
-	r := p.request()
-	if r.State != Approved || r.Claimed {
-		return zero, false
-	}
-	r.Claimed = true
+	p.request().Claimed = true
 	return *p, true
 }
 

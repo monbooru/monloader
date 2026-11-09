@@ -443,7 +443,7 @@ Consider all listed sites to potentially be NSFW.
     <td><span title="https://www.deviantart.com/USER/avatar/">Avatars</span> |
         <span title="https://www.deviantart.com/USER/banner/">Backgrounds</span> |
         <span title="https://www.deviantart.com/USER/favourites/12345/TITLE">Collections</span> |
-        <span title="https://www.deviantart.com/UsER/art/TITLE-12345">Deviations</span> |
+        <span title="https://www.deviantart.com/USER/art/TITLE-12345">Deviations</span> |
         <span title="https://www.deviantart.com/USER/favourites/">Favorites</span> |
         <span title="https://www.deviantart.com/USER/gallery/12345/TITLE">Folders</span> |
         <span title="https://www.deviantart.com/USER/about#watching">Followed Users</span> |
@@ -579,6 +579,13 @@ Consider all listed sites to potentially be NSFW.
         <span title="https://fapello.com/MODEL/12345/">Posts</span></td>
     <td></td>
 </tr>
+<tr id="febri" title="febri">
+    <td>Febri</td>
+    <td>https://febri.jp/</td>
+    <td><span title="https://febri.jp/topics/TITLE/">Articles</span> |
+        <span title="https://febri.jp/topics/">Topics</span></td>
+    <td></td>
+</tr>
 <tr id="fikfap" title="fikfap">
     <td>FikFap</td>
     <td>https://fikfap.com/</td>
@@ -703,7 +710,8 @@ Consider all listed sites to potentially be NSFW.
     <td>GoonBox</td>
     <td>https://goonbox.cr/</td>
     <td><span title="https://goonbox.cr/a/ID">Albums</span> |
-        <span title="https://goonbox.cr/img/ID">individual Images</span></td>
+        <span title="https://goonbox.cr/img/ID">individual Images</span> |
+        <span title="https://goonbox.cr/u/USER">User Profiles</span></td>
     <td></td>
 </tr>
 <tr id="harvardlawnuremberg" title="harvardlawnuremberg">
@@ -746,8 +754,8 @@ Consider all listed sites to potentially be NSFW.
 <tr id="hentai2read" title="hentai2read">
     <td>Hentai2Read</td>
     <td>https://hentai2read.com/</td>
-    <td><span title="https://hentai2read.com/TITLE/1/">Chapters</span> |
-        <span title="https://hentai2read.com/TITLE/">Manga</span></td>
+    <td><span title="https://hentai2read.com/reader/12345-TITLE/12345">Chapters</span> |
+        <span title="https://hentai2read.com/original/12345-TITLE/">Manga</span></td>
     <td></td>
 </tr>
 <tr id="hentaihand" title="hentaihand">
@@ -760,8 +768,8 @@ Consider all listed sites to potentially be NSFW.
 <tr id="hentaihere" title="hentaihere">
     <td>HentaiHere</td>
     <td>https://hentaihere.com/</td>
-    <td><span title="https://hentaihere.com/m/S12345/1/1/">Chapters</span> |
-        <span title="https://hentaihere.com/m/S12345">Manga</span></td>
+    <td><span title="https://hentaihere.com/reader/12345-TITLE/12345">Chapters</span> |
+        <span title="https://hentaihere.com/original/12345-TITLE">Manga</span></td>
     <td></td>
 </tr>
 <tr id="hentainexus" title="hentainexus">
@@ -799,7 +807,7 @@ Consider all listed sites to potentially be NSFW.
 </tr>
 <tr id="idolcomplex" title="idolcomplex">
     <td>Idol Complex</td>
-    <td>https://www.idolcomplex.com/</td>
+    <td>https://www.idolcomplex.com/<br>https://idol.sankakucomplex.com/<br>https://iapi.sankakucomplex.com/</td>
     <td><span title="https://www.idolcomplex.com/en/pools/0123456789abcdef">Pools</span> |
         <span title="https://www.idolcomplex.com/en/posts/0123456789abcdef">Posts</span> |
         <span title="https://www.idolcomplex.com/en/posts?tags=TAGS">Tag Searches</span></td>
@@ -914,10 +922,12 @@ Consider all listed sites to potentially be NSFW.
         <span title="https://www.instagram.com/USER/followers/">Followers</span> |
         <span title="https://www.instagram.com/USER/following/">Followed Users</span> |
         <span title="https://www.instagram.com/USER/highlights/">Highlights</span> |
+        <span title="https://www.instagram.com/USER/highlights/covers/">Highlights Covers</span> |
         <span title="https://www.instagram.com/USER/info/">User Profile Information</span> |
         <span title="https://www.instagram.com/USER/photos/">Photos</span> |
         <span title="https://www.instagram.com/p/abcdefg/">Posts</span> |
         <span title="https://www.instagram.com/USER/reels/">Reels</span> |
+        <span title="https://www.instagram.com/USER/reposts/">Reposts</span> |
         <span title="https://www.instagram.com/USER/saved/">Saved Posts</span> |
         <span title="https://www.instagram.com/stories/USER/">Stories</span> |
         <span title="https://www.instagram.com/stories/me/">Stories Home Tray</span> |
@@ -975,9 +985,9 @@ Consider all listed sites to potentially be NSFW.
 </tr>
 <tr id="kagane" title="kagane">
     <td>Kagane</td>
-    <td>https://kagane.to/</td>
-    <td><span title="https://kagane.to/series/MANGA_ID/reader/CHAPTER_ID">Chapters</span> |
-        <span title="https://kagane.to/series/MANGA_ID">Manga</span></td>
+    <td>https://kagane.si/<br>https://kagane.cx/<br>https://kagane.moe/<br>https://kagane.net/</td>
+    <td><span title="https://kagane.si/series/MANGA_ID/reader/CHAPTER_ID">Chapters</span> |
+        <span title="https://kagane.si/series/MANGA_ID">Manga</span></td>
     <td></td>
 </tr>
 <tr id="kaliscan" title="kaliscan">

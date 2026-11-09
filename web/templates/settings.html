@@ -4,12 +4,14 @@
   <aside id="sidebar">
     <nav class="settings-nav">
       {{if .DesktopProfile}}<a href="#desktop">Desktop</a>{{end}}
-      <a href="#monbooru">monbooru</a>
+      <a href="#monbooru">Monbooru</a>
       <a href="#pairing">Pairing<span id="settings-pair-count" class="nav-count">{{with len .PairNotice.Items}} ({{.}}){{end}}</span></a>
       <a href="#auth">Auth</a>
       <a href="#downloads">Downloads</a>
-      <a href="#lookup">Lookup</a>
+      <a href="#trace">Trace</a>
+      <a href="#rules">Rules</a>
       <a href="#sites">Sites</a>
+      <a href="#lookup">Lookup</a>
       <a href="#ptr">PTR</a>
       <a href="#themes">Themes</a>
       <a href="#advanced">Advanced</a>
@@ -23,7 +25,7 @@
   {{if .DesktopProfile}}
   {{$dk := .Desktop}}
   <section class="settings-section" id="desktop">
-    {{template "webui/settings_section_header" dict "Title" "Desktop" "Hint" "Folders, launch options and the tray icon."}}
+    {{template "webui/settings_section_header" dict "Title" "Desktop"}}
     {{if eq .FlashSection "desktop"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
     {{/* The switches sit in columns beside the folders, which are forms of
          their own, so the form they belong to is empty and they reach it by
@@ -33,7 +35,7 @@
     </form>
     <div class="settings-cols">
       <div class="settings-sub">
-        <h4>Folders</h4>
+        <h4>Open a folder</h4>
         <div class="desktop-folders">
           {{range $kind := .DesktopFolders}}
           <form method="POST" action="/internal/open-folder" style="display:inline">
@@ -53,7 +55,7 @@
           {{end}}
           {{if $dk.AutostartSupported}}
           <label><input type="checkbox" name="start_at_login" form="desktop-switches" {{if $dk.AutostartEnabled}}checked{{end}}> Start at login</label>
-          <p class="field-hint">The queue keeps retries and a daily budget, so leaving monloader running is what makes them run.</p>
+          <p class="field-hint">Retries and nightly lookups only run while monloader is open.</p>
           {{end}}
         </div>
       </div>
@@ -76,23 +78,23 @@
   {{end}}
 
   <section class="settings-section" id="monbooru">
-    {{template "webui/settings_section_header" dict "Title" "monbooru" "Hint" "Where monloader reaches monbooru's API, and the address its links open."}}
+    {{template "webui/settings_section_header" dict "Title" "Monbooru"}}
     {{if eq .FlashSection "monbooru"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
     <form method="POST" action="/settings/monbooru">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="settings-cols">
         <div class="field">
           <label for="mb-api-url">API URL</label>
-          <input id="mb-api-url" type="text" name="api_url" value="{{or (index .Draft "api_url") .Cfg.Monbooru.APIURL}}" placeholder="{{.MonbooruAPIHint}}">
-          <p class="field-hint">Internal URL monloader uses to reach monbooru's API (default {{.MonbooruAPIHint}}).</p>
+          <input id="mb-api-url" type="text" name="api_url" value="{{draft .Draft "api_url" .Cfg.Monbooru.APIURL}}" placeholder="{{.MonbooruAPIHint}}">
+          <p class="field-hint">The address monloader uses to reach monbooru (default {{.MonbooruAPIHint}}).</p>
         </div>
         <div class="field">
           <label for="mb-web-url">Web URL</label>
-          <input id="mb-web-url" type="text" name="web_url" value="{{or (index .Draft "web_url") .Cfg.Monbooru.WebURL}}" placeholder="http://localhost:8455">
-          <p class="field-hint">Browser URL for links back to monbooru; blank = no links.</p>
+          <input id="mb-web-url" type="text" name="web_url" value="{{draft .Draft "web_url" .Cfg.Monbooru.WebURL}}" placeholder="http://localhost:8455">
+          <p class="field-hint">The address your browser uses to open monbooru. Blank = no links to it.</p>
         </div>
       </div>
-      {{template "monbooru_gallery" (dict "Paired" .MonbooruPaired "Galleries" .Galleries "DefaultGallery" .Cfg.Monbooru.DefaultGallery "GalleryWarn" .GalleryWarn "GalleryMissing" .GalleryMissing)}}
+      {{template "monbooru_gallery" (dict "Paired" .MonbooruPaired "Galleries" .Galleries "DefaultGallery" (draft .Draft "default_gallery" .Cfg.Monbooru.DefaultGallery) "GalleryWarn" .GalleryWarn "GalleryMissing" .GalleryMissing)}}
       <div id="flash-monbooru-test"></div>
       <div class="settings-actions">
         <button type="button" class="peer-accent" hx-post="/settings/monbooru/test" hx-include="closest form" hx-target="#flash-monbooru-test" hx-swap="innerHTML">Test connection</button>
@@ -102,30 +104,31 @@
   </section>
 
   <section class="settings-section" id="pairing">
-    {{template "webui/settings_section_header" dict "Title" "Pairing" "Hint" "Connections to monbooru and the monsender extension."}}
+    {{template "webui/settings_section_header" dict "Title" "Pairing"}}
+    {{if eq .FlashSection "pairing"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
     <div class="settings-cols">
       <div class="settings-sub">
-        <h4>monbooru</h4>
-        <p class="field-hint">Let monloader push to your monbooru.</p>
-        {{template "monbooru_pair" (dict "Paired" .MonbooruPaired "Waiting" .MonbooruPairWaiting "Message" "" "CSRFToken" .CSRFToken)}}
+        <h4>Monbooru</h4>
+        <p class="field-hint">Lets monloader send images to monbooru.</p>
+        {{template "monbooru_pair" (dict "Paired" .MonbooruPaired "Waiting" .MonbooruPairWaiting "Message" "")}}
       </div>
       <div class="settings-sub">
-        <h4>monsender extension</h4>
-        <p class="field-hint">Let the browser extension send URLs to monloader.</p>
-        {{template "monsender_pairing" (dict "Pending" .MonsenderPending "Awaiting" .MonsenderAwaiting "Paired" .MonsenderPaired "CSRFToken" .CSRFToken "PairKey" .PairNotice.Key)}}
+        <h4>Monsender extension</h4>
+        <p class="field-hint">Lets the browser extension send URLs to monloader.</p>
+        {{template "monsender_pairing" (dict "Pending" .MonsenderPending "Awaiting" .MonsenderAwaiting "Paired" .MonsenderPaired "PairKey" .PairNotice.Key)}}
       </div>
     </div>
   </section>
 
   <section class="settings-section" id="auth">
-    {{template "webui/settings_section_header" dict "Title" "Authentication" "Hint" "UI password and API tokens."}}
+    {{template "webui/settings_section_header" dict "Title" "Authentication"}}
     <div id="flash-auth"></div>
     <div class="settings-cols">
-      {{template "webui/auth_password_section" (dict "AuthEnabled" .Cfg.Auth.EnablePassword "HasPassword" (ne .Cfg.Auth.PasswordHash "") "CSRFToken" .CSRFToken)}}
-      <div class="settings-sub settings-sub-wide">
+      {{template "webui/auth_password_section" (dict "AuthEnabled" .Cfg.Auth.EnablePassword "HasPassword" (ne .Cfg.Auth.PasswordHash ""))}}
+      <div class="settings-sub">
         <h4>API Tokens</h4>
-        <p class="field-hint">Bearer tokens for the REST API. The secret is shown once, at creation.</p>
-        {{template "webui/auth_tokens" (dict "Tokens" .Cfg.Auth.Tokens "CSRFToken" .CSRFToken)}}
+        <p class="field-hint">For scripts and apps that talk to monloader. A token is shown once, when you create it.</p>
+        {{template "webui/auth_tokens" (dict "Tokens" .TokenRows)}}
         <form hx-post="/settings/auth/tokens" hx-target="#flash-auth" hx-swap="innerHTML" style="margin-top:8px"
               hx-on:token-created="this.reset()">
           <input type="text" name="name" placeholder="token name" maxlength="64" required>
@@ -136,30 +139,30 @@
   </section>
 
   <section class="settings-section" id="downloads">
-    {{template "webui/settings_section_header" dict "Title" "Downloads" "Hint" "Workers, pacing and history retention."}}
+    {{template "webui/settings_section_header" dict "Title" "Downloads"}}
     {{if eq .FlashSection "downloads"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
     <form method="POST" action="/settings/downloader">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="downloads-grid">
-        {{template "field" (dict "ID" "dl-concurrency" "Label" "Concurrency" "Name" "concurrency"
-          "Value" (or (index .Draft "concurrency") .Cfg.Downloader.Concurrency)
-          "Hint" (printf "Parallel download workers; applies on restart (default %v)" .Defaults.Downloader.Concurrency))}}
-        {{template "field" (dict "ID" "dl-sleep" "Label" "Sleep / request (s)" "Name" "sleep_request"
-          "Value" (or (index .Draft "sleep_request") .Cfg.GalleryDL.SleepRequest)
-          "Hint" (printf "Delay between requests (default %v)" .Defaults.GalleryDL.SleepRequest))}}
-        {{template "field" (dict "ID" "dl-max-items" "Label" "Max items / job" "Name" "max_items_per_job"
-          "Value" (or (index .Draft "max_items_per_job") .Cfg.Downloader.MaxItemsPerJob)
-          "Hint" (printf "Cap on posts per search; a pool or a manga gallery is fetched whole (default %v)" .Defaults.Downloader.MaxItemsPerJob))}}
+        {{template "field" (dict "ID" "dl-concurrency" "Label" "Parallel downloads" "Name" "concurrency"
+          "Value" (draft .Draft "concurrency" .Cfg.Downloader.Concurrency)
+          "Hint" (printf "Applies after a restart (default %v)" .Defaults.Downloader.Concurrency))}}
+        {{template "field" (dict "ID" "dl-sleep" "Label" "Delay between requests (s)" "Name" "sleep_request"
+          "Value" (draft .Draft "sleep_request" .Cfg.GalleryDL.SleepRequest)
+          "Hint" (printf "(default %v)" .Defaults.GalleryDL.SleepRequest))}}
+        {{template "field" (dict "ID" "dl-max-items" "Label" "Max posts per search" "Name" "max_items_per_job"
+          "Value" (draft .Draft "max_items_per_job" .Cfg.Downloader.MaxItemsPerJob)
+          "Hint" (printf "A pool or a manga gallery always comes whole (default %v)" .Defaults.Downloader.MaxItemsPerJob))}}
         {{template "field" (dict "ID" "dl-folder" "Label" "Default folder" "Name" "default_folder"
-          "Value" (or (index .Draft "default_folder") .Cfg.Downloader.DefaultFolder)
+          "Value" (draft .Draft "default_folder" .Cfg.Downloader.DefaultFolder)
           "Placeholder" "(monbooru's default)"
-          "Hint" "monbooru subfolder for pushes; blank = monbooru's \"Where received files go\"")}}
-        {{template "field" (dict "ID" "dl-success-retention" "Label" "Clear succeeded after (days)" "Name" "success_retention_days"
-          "Value" (or (index .Draft "success_retention_days") .Cfg.Downloader.SuccessRetentionDays)
-          "Hint" (printf "Drop downloads with nothing left to do; 0 = off (default %v)" .Defaults.Downloader.SuccessRetentionDays))}}
-        {{template "field" (dict "ID" "dl-retention" "Label" "Clear all history after (days)" "Name" "history_retention_days"
-          "Value" (or (index .Draft "history_retention_days") .Cfg.Downloader.HistoryRetentionDays)
-          "Hint" (printf "Drop the rest, failures included; 0 keeps them (default %v)" .Defaults.Downloader.HistoryRetentionDays))}}
+          "Hint" "Subfolder in monbooru. Blank = monbooru's \"Where received files go\"")}}
+        {{template "field" (dict "ID" "dl-success-retention" "Label" "Clear succeeded jobs after (days)" "Name" "success_retention_days"
+          "Value" (draft .Draft "success_retention_days" .Cfg.Downloader.SuccessRetentionDays)
+          "Hint" (printf "Searches with more to fetch stay. 0 = never (default %v)" .Defaults.Downloader.SuccessRetentionDays))}}
+        {{template "field" (dict "ID" "dl-retention" "Label" "Clear finished jobs after (days)" "Name" "history_retention_days"
+          "Value" (draft .Draft "history_retention_days" .Cfg.Downloader.HistoryRetentionDays)
+          "Hint" (printf "Failures included. 0 = never (default %v)" .Defaults.Downloader.HistoryRetentionDays))}}
       </div>
       <div class="settings-actions">
         <button type="submit">Save</button>
@@ -167,128 +170,71 @@
     </form>
   </section>
 
-  <section class="settings-section" id="lookup">
-    <div class="settings-section-header">
-      <h3>Lookup</h3>
-      <p class="field-hint">Lookup sites find an image's source booru post by file hash or visual similarity; the chain is queried top to bottom until one matches.</p>
-      <button type="button" class="btn-link-accent sites-title-link" onclick="document.getElementById('chain-dialog').showModal()">[edit order]</button>
-    </div>
-    {{if eq .FlashSection "lookup"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
-    {{if .LookupPanel.Chain}}
-    <div class="table-scroll">
-    <table class="grid-table sites-table chain-table stack-table">
-      <thead><tr><th>#</th><th>Source</th><th>Kind</th><th>Credentials</th><th>State</th><th>Action</th></tr></thead>
-      <tbody>
-      {{range .LookupPanel.Chain}}
-      <tr>
-        <td class="stack-head">{{if .Position}}{{.Position}}{{else}}-{{end}}</td>
-        <td class="stack-head">{{.Name}}</td>
-        <td data-label="Kind"><span class="status-badge">{{if .Similarity}}similarity{{else}}exact md5{{end}}</span></td>
-        <td data-label="Credentials"{{if .Note}} title="{{.Note}}"{{end}}>{{if .Note}}<span class="status-dim">{{.Note}}</span>{{else}}-{{end}}</td>
-        <td class="site-state" id="lk-state-{{.Name}}" title="{{.State}}" data-label="State">{{if .Warn}}<span class="flash-warn">{{.State}}</span>{{else}}<span class="flash-ok">{{.State}}</span>{{end}}</td>
-        <td class="site-actions"><span class="actions">
-          {{if .Position}}<button type="button" hx-post="/settings/lookup/test/{{.Name}}" hx-target="previous .site-state" hx-swap="innerHTML"
-                  hx-on::before-request="this.closest('tr').querySelector('.site-state').innerHTML='<span class=&quot;hint&quot;>testing...</span>'"
-                  title="{{if .Similarity}}Run one real query with a built-in probe image{{else}}Run one real MD5 search with the probe image's MD5{{end}}">Test</button>{{end}}
-          {{if eq .Name "saucenao"}}<button type="button" onclick="document.getElementById('saucenao-dialog').showModal()">Key</button>{{end}}
-          {{if .Site}}{{template "site_edit_btn" (dict "Row" .Site "Label" "Edit site")}}{{end}}
-        </span></td>
-      </tr>
-      {{end}}
-      </tbody>
-    </table>
-    </div>
-    {{else}}
-    <p class="field-hint">Nothing is queried - give a source a position via edit order.</p>
-    {{end}}
-    <form method="POST" action="/settings/lookup">
+  <section class="settings-section" id="trace">
+    {{template "webui/settings_section_header" dict "Title" "Trace a post" "Hint" "See which tags a post would send to monbooru, without downloading it."}}
+    <form class="trace-bar" hx-post="/settings/rules/trace" hx-target="#rules-trace" hx-swap="innerHTML"
+          hx-on::before-request="document.getElementById('rules-trace').innerHTML='<span class=&quot;field-hint&quot;>tracing...</span>'">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <div class="lookup-fields">
-        <div class="field">
-          <label for="lk-min-similarity">Min similarity %</label>
-          <input id="lk-min-similarity" type="number" name="min_similarity" min="1" max="100" step="1" value="{{or (index .Draft "min_similarity") .LookupPanel.MinSimilarity}}">
-          <span class="field-hint">An iqdb or saucenao match scoring below this percentage is ignored (default {{.Defaults.Lookup.MinSimilarity}})</span>
-        </div>
-        <div class="field">
-          <label for="lk-scheduled-budget">Daily budget for scheduled lookups
-            <span class="lookup-budget-left{{if not .LookupPanel.ScheduledLeft}} spent{{end}}">({{.LookupPanel.ScheduledLeft}} left today)</span></label>
-          <input id="lk-scheduled-budget" type="number" name="scheduled_daily_budget" min="0" step="1" value="{{or (index .Draft "scheduled_daily_budget") .LookupPanel.ScheduledBudget}}">
-          <span class="field-hint">Images per day monbooru's nightly run may cover, 0 = refuse them all (default {{.Defaults.Lookup.ScheduledDailyBudget}}); resets {{humanDue .LookupPanel.ScheduledResets}}.</span>
+      <input type="text" id="rules-trace-url" name="url" aria-label="Post URL" placeholder="post URL" autocomplete="off">
+      <button type="submit">Trace</button>
+    </form>
+    <span class="field-hint">Uses saved settings. A search or a pool traces its first post.</span>
+    <div id="rules-trace"></div>
+  </section>
+
+  <section class="settings-section tag-flow-scope" id="rules">
+    {{template "webui/settings_section_header" dict "Title" "Rules" "Hint" "What happens to a post's tags, in order."}}
+    {{if eq .FlashSection "rules"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
+    {{template "tag_flow" dict "Site" false "MonbooruURL" .MonbooruURL}}
+    <p class="field-hint">Refresh, lookup, upgrade and contribution jobs skip step 2.</p>
+    <form method="POST" action="/settings/rules">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div class="field field-separated flow-part-2">
+        <label for="rules-blacklist">2 Blacklist: skip posts with these tags <span class="status-badge status-ok">all sites</span><span class="status-badge status-off">before download</span></label>
+        <textarea id="rules-blacklist" name="blacklist">{{draft .Draft "blacklist" (join .Cfg.Tags.Blacklist "\n")}}</textarea>
+        <span class="field-hint">One rule per line. All tags on a line must match. -tag means absent, * is a wildcard.</span>
+        {{with .SiteBlacklists}}<span class="field-hint">Sites adding their own rules: {{range .}}<button type="button" class="edit-site btn-link-accent" data-site="{{.Category}}">{{.Category}} +{{.Rules}}</button> {{end}}</span>{{end}}
+      </div>
+      <div class="field field-separated flow-part-3">
+        <label>3 Keep tags from these categories <span class="status-badge status-ok">all sites</span><span class="status-badge status-off">after download</span></label>
+        <div class="category-boxes">
+          {{range .TagCategories}}<input type="hidden" name="category_shown" value="{{.Name}}">
+          <label class="checkbox-inline"><input type="checkbox" name="category_sent" value="{{.Name}}"{{if .Sent}} checked{{end}}> {{.Name}}</label>
+          {{end}}
         </div>
       </div>
-      {{if .LookupPanel.SaucenaoLimited}}<span class="field-hint">saucenao is rate limited, resets {{humanDue .LookupPanel.SaucenaoLimited}}</span>{{end}}
-      <div class="settings-actions"><button type="submit">Save</button></div>
+      <div class="settings-actions">
+        <button type="submit">Save</button>
+      </div>
     </form>
-
-    <dialog id="chain-dialog">
-      <form method="POST" action="/settings/lookup/chain" id="chain-form">
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <p class="dlg-title">Edit the <strong>lookup chain</strong> order{{template "webui/dialog_x"}}</p>
-        <p class="field-hint">Drag a source between the columns, or use its buttons; the queried column is asked top to bottom.</p>
-        <div class="chain-cols">
-          <div class="chain-col">
-            <h4>Queried</h4>
-            <ul id="chain-on">
-              {{range .LookupPanel.DialogOn}}<li draggable="true" data-name="{{.Name}}"><span>{{.Name}}{{if .Similarity}} <span class="field-hint">(similarity)</span>{{end}}</span><span class="chain-moves"><button type="button" class="btn-link-accent chain-move" data-move="chain-on" aria-label="Query {{.Name}}">[+]</button><button type="button" class="btn-link-accent chain-move" data-move="up" aria-label="Move {{.Name}} earlier">[^]</button><button type="button" class="btn-link-accent chain-move" data-move="down" aria-label="Move {{.Name}} later">[v]</button><button type="button" class="btn-link-accent chain-move" data-move="chain-off" aria-label="Stop querying {{.Name}}">[x]</button></span></li>
-              {{end}}
-            </ul>
-          </div>
-          <div class="chain-col">
-            <h4>Not queried</h4>
-            <ul id="chain-off">
-              {{range .LookupPanel.DialogOff}}<li draggable="true" data-name="{{.Name}}"><span>{{.Name}}{{if .Similarity}} <span class="field-hint">(similarity)</span>{{end}}</span><span class="chain-moves"><button type="button" class="btn-link-accent chain-move" data-move="chain-on" aria-label="Query {{.Name}}">[+]</button><button type="button" class="btn-link-accent chain-move" data-move="up" aria-label="Move {{.Name}} earlier">[^]</button><button type="button" class="btn-link-accent chain-move" data-move="down" aria-label="Move {{.Name}} later">[v]</button><button type="button" class="btn-link-accent chain-move" data-move="chain-off" aria-label="Stop querying {{.Name}}">[x]</button></span></li>
-              {{end}}
-            </ul>
-          </div>
-        </div>
-        <div class="dialog-actions">
-          <button type="button" onclick="document.getElementById('chain-dialog').close()">Cancel</button>
-          <button type="submit">Save chain</button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog id="saucenao-dialog">
-      <form method="POST" action="/settings/lookup">
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <p class="dlg-title">Edit the <strong>saucenao</strong> API key{{template "webui/dialog_x"}}</p>
-        <div class="field"><label for="saucenao-key">API key</label>
-          <input id="saucenao-key" type="password" name="api_key" autocomplete="off" placeholder="{{if .LookupPanel.SaucenaoKeySet}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
-        <p class="field-hint">From saucenao.com account settings; the service is skipped until one is set. Queries upload the image's thumbnail to saucenao.com.</p>
-        <div class="dialog-actions">
-          <button type="button" onclick="document.getElementById('saucenao-dialog').close()">Cancel</button>
-          <button type="submit">Save key</button>
-        </div>
-      </form>
-    </dialog>
   </section>
 
   <section class="settings-section" id="sites">
     <div class="settings-section-header">
-      <h3>Sites <span class="status-dim">({{len .BooruSites}} booru{{if ne (len .BooruSites) 1}}s{{end}}, {{len .MangaSites}} manga / comics, {{len .OtherSites}} other)</span></h3>
-      <p class="field-hint">Download credentials and per-site targets; the lookup chain is configured in the lookup section above.</p>
+      <h3>Sites</h3>
+      <p class="field-hint">Logins, galleries and tag rules per site. The lookup chain is in <a href="#lookup">Lookup</a>.</p>
       <a class="sites-title-link" href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">gallery-dl supported sites</a>
     </div>
     {{if eq .FlashSection "sites"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
-    <p class="field-hint">Login - <strong>none</strong>: no auth &middot; <strong>api (opt)</strong>: optional key, higher rate limits &middot; <strong>api key</strong>: key required &middot; <strong>user/pass</strong>: account login &middot; <strong>cookies</strong>: needs a cookies file &middot; <strong>oauth</strong>: via gallery-dl's oauth flow</p>
 
     <div class="site-search">
       <div class="search-input-wrap">
-        <input type="search" name="q" placeholder="Add a site - search gallery-dl's supported sites" autocomplete="off"
+        <input type="search" name="q" placeholder="Search supported sites to add one" autocomplete="off"
                hx-get="/settings/sites/search" hx-trigger="input changed delay:300ms, search" hx-target="#site-search-results" hx-swap="innerHTML">
       </div>
       <div id="site-search-results"></div>
     </div>
 
+    {{template "sites_table" (dict "Heading" "Public Tag Repository" "Rows" .PTRSite "Hint" "Rules for the tags the PTR gives.")}}
     {{if .BooruSites}}{{template "sites_table" (dict "Heading" "Boorus" "Rows" .BooruSites)}}{{end}}
     {{if .MangaSites}}{{template "sites_table" (dict "Heading" "Manga / comics" "Rows" .MangaSites)}}{{end}}
     {{if .OtherSites}}{{template "sites_table" (dict "Heading" "Other sites" "Rows" .OtherSites)}}{{end}}
     {{if and (not .BooruSites) (not .MangaSites) (not .OtherSites)}}
-    <p class="field-hint">No sites configured - a site appears here once it carries credentials, a target gallery, a cookies file, options, or a custom profile.</p>
+    <p class="field-hint">No sites added. Every supported site already works: add one only to give it a login, its own gallery or its own rules.</p>
     {{end}}
 
     <h3 class="sites-group">Host labels</h3>
-    <p class="field-hint">A direct-link push from a matching host uses this label as its source instead of the raw hostname; subdomains match their parent.</p>
+    <p class="field-hint">When a direct file link comes from this host, monbooru shows this name as its source. Subdomains count too.</p>
     <form method="POST" action="/settings/host-labels">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="field">
@@ -298,7 +244,7 @@
               <input type="text" name="hostlabel_label" aria-label="Label" placeholder="label">
               <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
           </template>
-          {{range .Cfg.HostLabels}}
+          {{range .HostLabels}}
           <div class="maprow"><input type="text" name="hostlabel_host" aria-label="Host" value="{{.Host}}"><span class="field-hint">-&gt;</span>
             <input type="text" name="hostlabel_label" aria-label="Label" value="{{.Label}}">
             <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
@@ -316,40 +262,134 @@
     </dialog>
   </section>
 
+  <section class="settings-section" id="lookup">
+    <div class="settings-section-header">
+      <h3>Lookup</h3>
+      <p class="field-hint">Where monloader looks for an image's post, by exact file hash or by visual similarity. Sites are asked top to bottom until one matches.</p>
+      <button type="button" class="btn-link-accent sites-title-link" onclick="document.getElementById('chain-dialog').showModal()">[edit chain]</button>
+    </div>
+    {{if eq .FlashSection "lookup"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
+    {{if .LookupPanel.Chain}}
+    <div class="table-scroll">
+    <table class="grid-table sites-table chain-table stack-table">
+      <thead><tr><th>#</th><th>Source</th><th>Kind</th><th>Credentials</th><th>State</th><th>Action</th></tr></thead>
+      <tbody>
+      {{range .LookupPanel.Chain}}
+      <tr>
+        <td class="stack-head">{{if .Position}}{{.Position}}{{else}}-{{end}}</td>
+        <td class="stack-head">{{.Name}}</td>
+        <td data-label="Kind"><span class="status-badge">{{if .Similarity}}similarity{{else}}exact md5{{end}}</span></td>
+        <td data-label="Credentials"{{if .Note}} title="{{.Note}}"{{end}}>{{if .Note}}<span class="status-dim">{{.Note}}</span>{{else}}-{{end}}</td>
+        <td class="site-state" id="lk-state-{{.Name}}" title="{{.State}}" data-label="State">{{if .Warn}}<span class="flash-warn">{{.State}}</span>{{else}}<span class="flash-ok">{{.State}}</span>{{end}}</td>
+        <td class="site-actions"><span class="actions">
+          {{if .Position}}<button type="button" hx-post="/settings/lookup/test/{{.Name}}" hx-target="previous .site-state" hx-swap="innerHTML"
+                  hx-on::before-request="this.closest('tr').querySelector('.site-state').innerHTML='<span class=&quot;field-hint&quot;>testing...</span>'"
+                  title="{{if .Similarity}}Run one real query with a built-in probe image{{else}}Run one real MD5 search with the probe image's MD5{{end}}">Test</button>{{end}}
+          {{if eq .Name "saucenao"}}<button type="button" onclick="document.getElementById('saucenao-dialog').showModal()">Key</button>{{end}}
+          {{if .Site}}{{template "site_edit_btn" (dict "Row" .Site "Label" "Edit site")}}{{end}}
+        </span></td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}
+    <p class="field-hint">No site is asked. Add one with [edit chain].</p>
+    {{end}}
+    <form method="POST" action="/settings/lookup">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div class="lookup-fields">
+        <div class="field">
+          <label for="lk-min-similarity">Min similarity %</label>
+          <input id="lk-min-similarity" type="number" name="min_similarity" min="1" max="100" step="1" value="{{draft .Draft "min_similarity" .LookupPanel.MinSimilarity}}">
+          <span class="field-hint">Ignore iqdb and saucenao matches below this (default {{.Defaults.Lookup.MinSimilarity}})</span>
+        </div>
+        <div class="field">
+          <label for="lk-scheduled-budget">Nightly lookups per day
+            <span class="lookup-budget-left{{if not .LookupPanel.ScheduledLeft}} spent{{end}}">({{.LookupPanel.ScheduledLeft}} left today)</span></label>
+          <input id="lk-scheduled-budget" type="number" name="scheduled_daily_budget" min="0" step="1" value="{{draft .Draft "scheduled_daily_budget" .LookupPanel.ScheduledBudget}}">
+          <span class="field-hint">Images monbooru's nightly run may look up. 0 = none (default {{.Defaults.Lookup.ScheduledDailyBudget}}). Resets {{humanDue .LookupPanel.ScheduledResets}}.</span>
+        </div>
+      </div>
+      {{if .LookupPanel.SaucenaoLimited}}<span class="field-hint">saucenao is rate limited, resets {{humanDue .LookupPanel.SaucenaoLimited}}</span>{{end}}
+      <div class="settings-actions"><button type="submit">Save</button></div>
+    </form>
+
+    <dialog id="chain-dialog">
+      <form method="POST" action="/settings/lookup/chain" id="chain-form">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <p class="dlg-title">Edit the <strong>lookup chain</strong>{{template "webui/dialog_x"}}</p>
+        <p class="field-hint">Drag a source between the columns, or use its buttons.</p>
+        <div class="chain-cols">
+          <div class="chain-col">
+            <h4>Ask, in this order</h4>
+            <ul id="chain-on">{{template "chain_rows" .LookupPanel.DialogOn}}</ul>
+          </div>
+          <div class="chain-col">
+            <h4>Don't ask</h4>
+            <ul id="chain-off">{{template "chain_rows" .LookupPanel.DialogOff}}</ul>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" onclick="document.getElementById('chain-dialog').close()">Cancel</button>
+          <button type="submit">Save chain</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="saucenao-dialog">
+      <form method="POST" action="/settings/lookup">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <p class="dlg-title">Edit the <strong>saucenao</strong> API key{{template "webui/dialog_x"}}</p>
+        <div class="field"><label for="saucenao-key">API key</label>
+          <input id="saucenao-key" type="password" name="api_key" autocomplete="off" placeholder="{{if .LookupPanel.SaucenaoKeySet}}(set - leave blank to keep){{else}}(unset){{end}}"></div>
+        <p class="field-hint">From saucenao.com account settings; the service is skipped until one is set. Queries upload the image's thumbnail to saucenao.com.</p>
+        <div class="dialog-actions">
+          {{if .LookupPanel.SaucenaoKeySet}}<button type="submit" form="saucenao-clear-form" class="btn-danger">Clear key</button>{{end}}
+          <button type="button" onclick="document.getElementById('saucenao-dialog').close()">Cancel</button>
+          <button type="submit">Save key</button>
+        </div>
+      </form>
+      {{if .LookupPanel.SaucenaoKeySet}}<form method="POST" id="saucenao-clear-form" action="/settings/lookup/clear-key" hx-confirm="Clear the SauceNAO API key?" data-confirm-ok="Clear key" data-confirm-danger="SauceNAO is skipped until a new one is set.">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      </form>{{end}}
+    </dialog>
+  </section>
+
   <section class="settings-section" id="ptr">
-    {{template "webui/settings_section_header" dict "Title" "PTR" "Hint" "Storage and repository settings for the Public Tag Repository index."}}
+    {{template "webui/settings_section_header" dict "Title" "PTR"}}
     {{if eq .FlashSection "ptr"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
     <form method="POST" action="/settings/ptr" id="ptr-form">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="field">
-        <label class="checkbox-inline"><input type="checkbox" name="enabled" value="1"{{if .PTREnabled}} checked{{end}}> Enable sync and answer SHA-256 lookups</label>
-        <span class="field-hint">Unchecking stops the sync and keeps the index; the lookup answers again when you re-enable it</span>
+        <label class="checkbox-inline"><input type="checkbox" name="enabled" value="1"{{if .PTREnabled}} checked{{end}}> Enable the PTR</label>
+        <span class="field-hint">Turning it off stops the sync and keeps the data.</span>
       </div>
       <div class="downloads-grid">
         <div class="field">
           <label for="ptr-data-path">Data path</label>
           <div class="path-row">
-            <input id="ptr-data-path" type="text" name="data_path" value="{{or (index .Draft "data_path") .Cfg.PTR.DataPath}}">
+            <input id="ptr-data-path" type="text" name="data_path" value="{{draft .Draft "data_path" .Cfg.PTR.DataPath}}">
             {{if .DesktopProfile}}
             <button type="button" class="btn-sm dir-picker-open" data-into="ptr-data-path"
                     hx-get="/internal/browse?into=ptr-data-path" hx-target="#dir-picker-body"
                     hx-swap="innerHTML">Browse</button>
             {{end}}
           </div>
-          <span class="field-hint">Dedicated index volume; applies on restart (default {{.Defaults.PTR.DataPath}})</span>
+          <span class="field-hint">Folder for the index. A running sync picks up a change after a restart (default {{.Defaults.PTR.DataPath}})</span>
         </div>
         {{template "field" (dict "ID" "ptr-address" "Label" "Address" "Name" "address"
-          "Value" (or (index .Draft "address") .Cfg.PTR.Address)
-          "Hint" (printf "Repository to sync from; a running sync takes it on restart (default %v)" .Defaults.PTR.Address))}}
+          "Value" (draft .Draft "address" .Cfg.PTR.Address)
+          "Hint" (printf "Repository to sync from. Same restart rule (default %v)" .Defaults.PTR.Address))}}
         {{template "field" (dict "ID" "ptr-access-key" "Label" "Access key" "Name" "access_key" "Type" "password" "Value" ""
           "Placeholder" (or (and .Cfg.PTR.AccessKey "(set - leave blank to keep)") "(unset - uses the public read-only key)")
-          "Hint" "A private repository key or the personal contribution account")}}
-        {{template "field" (dict "ID" "ptr-fetch-sleep" "Label" "Fetch sleep (s)" "Name" "fetch_sleep"
-          "Value" (or (index .Draft "fetch_sleep") .Cfg.PTR.FetchSleep)
-          "Hint" (printf "Delay between update downloads; applies on restart (default %v)" .Defaults.PTR.FetchSleep))}}
-        {{template "field" (dict "ID" "ptr-min-free" "Label" "Min free GB" "Name" "min_free_gb"
-          "Value" (or (index .Draft "min_free_gb") .Cfg.PTR.MinFreeGB)
-          "Hint" (printf "Refuse the initial sync below this free space; applies on restart (default %v)" .Defaults.PTR.MinFreeGB))}}
+          "Hint" "Key of a private repository or of your contribution account")}}
+        {{template "field" (dict "ID" "ptr-fetch-sleep" "Label" "Delay between updates (s)" "Name" "fetch_sleep"
+          "Value" (draft .Draft "fetch_sleep" .Cfg.PTR.FetchSleep)
+          "Hint" (printf "(default %v)" .Defaults.PTR.FetchSleep))}}
+        {{template "field" (dict "ID" "ptr-min-free" "Label" "Free space needed (GiB)" "Name" "min_free_gb"
+          "Value" (draft .Draft "min_free_gb" .Cfg.PTR.MinFreeGB)
+          "Hint" (printf "The first sync won't start below this (default %v)" .Defaults.PTR.MinFreeGB))}}
         <div class="field">
           <label>Danger</label>
           <div class="danger-zone">
@@ -374,16 +414,16 @@
   </section>
 
   <section class="settings-section" id="themes">
-    {{template "webui/settings_section_header" dict "Title" "Themes" "Hint" "Themes for monloader."}}
+    {{template "webui/settings_section_header" dict "Title" "Themes"}}
     <div id="theme-flash" class="field-hint"></div>
     <div class="settings-sub">
-      <p class="field-hint">Put a theme folder in <code>{{.ThemesDir}}</code>.</p>
       {{template "webui/theme_cluster" (dict "Names" .Themes.Names "Active" .Themes.Active "PostURL" "/settings/theme")}}
+      <p class="field-hint">To add a theme, put its folder in <code>{{.ThemesDir}}</code>.</p>
     </div>
   </section>
 
   <section class="settings-section" id="advanced">
-    {{template "webui/settings_section_header" dict "Title" "Advanced" "Hint" "gallery-dl version and raw configuration."}}
+    {{template "webui/settings_section_header" dict "Title" "Advanced"}}
     {{if eq .FlashSection "advanced"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
     <div class="settings-cols">
       <div class="settings-sub">
@@ -394,7 +434,12 @@
         <h4>Raw gallery-dl config (JSON)</h4>
         <form method="POST" action="/settings/raw">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-          <textarea id="raw-config" name="raw_config">{{or (index .Draft "raw_config") .Cfg.GalleryDL.RawConfig}}</textarea>
+          {{$rawSet := .Cfg.GalleryDL.RawConfig}}
+          <textarea id="raw-config" name="raw_config"{{if $rawSet}} placeholder="(set - reveal to edit, blank leaves it)"{{end}}>{{index .Draft "raw_config"}}</textarea>
+          <input type="hidden" id="raw-config-edit" name="raw_config_edit" value="{{if or (not $rawSet) (eq (index .Draft "raw_config_edit") "1")}}1{{else}}0{{end}}">
+          {{if and $rawSet (ne (index .Draft "raw_config_edit") "1")}}<span class="field-hint">Hidden because it may hold secrets. <button type="button" class="btn-sm" id="raw-config-reveal"
+            hx-get="/settings/raw" hx-target="#raw-config" hx-swap="innerHTML"
+            hx-on::after-request="if (event.detail.successful) { document.getElementById('raw-config-edit').value = '1'; this.remove() }">Reveal</button></span>{{end}}
           <div class="settings-actions">
             <button type="submit">Save raw config</button>
           </div>
@@ -404,14 +449,14 @@
   </section>
 
   <section class="settings-section" id="stats">
-    {{template "webui/settings_section_header" dict "Title" "Stats" "Hint" "Memory, gallery-dl and queue."}}
+    {{template "webui/settings_section_header" dict "Title" "Stats"}}
     <div class="stats-cols">
       <div class="settings-sub">
         <h4>Process memory</h4>
         <table class="stats-table">
           <tbody>
             {{if .Stats.Mem.RSS}}
-            <tr><th>Process memory (RSS)</th><td>{{humanBytes .Stats.Mem.RSS}}</td></tr>
+            <tr><th>In use (RSS)</th><td>{{humanBytes .Stats.Mem.RSS}}</td></tr>
             {{else}}
             <tr><th>Go runtime (reserved)</th><td>{{humanBytes .Stats.Mem.Sys}}</td></tr>
             {{end}}

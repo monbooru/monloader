@@ -1,0 +1,9 @@
+{
+  "family": "generic",
+  "kind": "other",
+  "post_url_template": "https://bsky.app/profile/{author[handle]}/post/{post_id}",
+  "auth": "username_password",
+  "example": "https://bsky.app/profile/bsky.app/post/3mz4cvlf7z22v",
+  "hosts": ["cdn.bsky.app", "bsky.network"],
+  "options": {"metadata": ["facets"]}
+}

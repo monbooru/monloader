@@ -12,7 +12,7 @@ services:
       - ALL
     volumes:
       - /path/to/monloader/config:/config
-      # Required to enable the Public Tag Repository syncing (>70GB required)
+      # Required to enable the Public Tag Repository syncing (about 80 GB; 90 GiB free to start)
       # - /path/to/monloader/ptr:/ptr
     environment:
       - MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8456

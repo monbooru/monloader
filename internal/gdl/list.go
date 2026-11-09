@@ -1,12 +1,8 @@
 package gdl
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"strings"
-
-	"github.com/monbooru/monloader/internal/shared/logx"
 )
 
 func (t *Tool) ListExtractors(ctx context.Context) ([]Extractor, error) {
@@ -28,10 +24,8 @@ func parseExtractors(data []byte) []Extractor {
 		}
 		cur = Extractor{}
 	}
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	for line := range strings.Lines(string(data)) {
+		line = strings.TrimSpace(line)
 		if line == "" {
 			flush()
 			continue
@@ -56,9 +50,6 @@ func parseExtractors(data []byte) []Extractor {
 		}
 	}
 	flush()
-	if err := sc.Err(); err != nil {
-		logx.Warnf("gdl: reading extractor list: %v", err)
-	}
 	return out
 }
 

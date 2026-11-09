@@ -47,11 +47,15 @@ appimage_finish() {
     install -Dm644 "packaging/icons/$APP-$size.png" \
       "$app/usr/share/icons/hicolor/${size}x${size}/apps/$APP.png"
   done
+  mkdir -p "$app/usr/share/metainfo"
+  sh packaging/metainfo.sh "$APP.desktop" > "$app/usr/share/metainfo/$APPID.appdata.xml"
 
   out="dist/${APP}_${VERSION#v}_${arch}.AppImage"
-  rm -f "$out"
+  rm -f "$out" "$out.zsync"
   ARCH=$arch "./$work/appimagetool" --appimage-extract-and-run \
+    -u "gh-releases-zsync|monbooru|$APP|latest|${APP}_*_${arch}.AppImage.zsync" \
     --runtime-file "$work/runtime" "$app" "$out"
+  mv "${out##*/}.zsync" dist/
   rm -rf "$app"
   ls -la dist
 }

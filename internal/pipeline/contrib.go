@@ -2,10 +2,11 @@ package pipeline
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
+	"slices"
 	"time"
 
+	"github.com/monbooru/monloader/internal/contrib"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/queue"
@@ -13,16 +14,13 @@ import (
 )
 
 type ContribSender interface {
+	contrib.CurrentReader
 	HasPersonalKey() bool
 	CaughtUp() bool
 	RefreshAccount(ctx context.Context) (*ptr.Account, error)
 	RefreshTagFilter(ctx context.Context) (*ptr.TagFilter, error)
 	PostUpdate(ctx context.Context, u *ptr.C2SUpdate) error
 	Contrib() *ptr.ContribStore
-	HashHasIdeal(hashHex, tag string) (bool, error)
-	HashHasRaw(hashHex, tag string) (bool, error)
-	SiblingCurrent(bad, good string) (bool, error)
-	ParentCurrent(child, parent string) (bool, error)
 	Status() ptr.Status
 }
 
@@ -31,6 +29,8 @@ type ContribSender interface {
 const contribChunkWeight = 100
 
 const contribPostRetries = 3
+
+const errContribDenied = "the account has no permission to send this"
 
 var contribRetryBackoff = 2 * time.Second
 
@@ -101,8 +101,19 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 		failAll(outcome.ErrCodePTRBanned, "the account is banned: "+acc.BanReason)
 		return nil
 	}
-	if !acc.Type.CanPetition() {
-		failAll(outcome.ErrCodePTRAccountRequired, "the account lacks contribution permissions")
+	var denied []ptr.ContribItem
+	items = slices.DeleteFunc(items, func(it ptr.ContribItem) bool {
+		if acc.Type.CanSend(it.Kind) {
+			return false
+		}
+		denied = append(denied, it)
+		if err := store.FailItem(it.ID, errContribDenied); err != nil {
+			logx.Warnf("contrib: marking item %d failed: %v", it.ID, err)
+		}
+		return true
+	})
+	if len(items) == 0 {
+		job.Fail(outcome.ErrCodePTRAccountRequired, errContribDenied, time.Now())
 		return nil
 	}
 	filter, err := sender.RefreshTagFilter(ctx)
@@ -121,7 +132,7 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 		return nil
 	}
 
-	up := p.newContribUpload(job, sender, store, packContribChunks(survivors))
+	up := p.newContribUpload(job, sender, store, packContribChunks(survivors), denied)
 	sent, failedCount, uerr := up.run(ctx)
 	if perr := store.PruneLog(); perr != nil {
 		logx.Warnf("contrib: pruning the ledger: %v", perr)
@@ -129,7 +140,7 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 	if uerr != nil {
 		return uerr
 	}
-	job.SetNote(contribSummary(sent, droppedKnown, droppedFiltered, failedCount))
+	job.SetNote(contribSummary(sent, droppedKnown, droppedFiltered, failedCount+len(denied)))
 	return nil
 }
 
@@ -137,26 +148,33 @@ func (p *Processor) processContrib(ctx context.Context, job, snap *queue.Job) er
 // drop is counted.
 func (p *Processor) reDiffContrib(sender ContribSender, store *ptr.ContribStore, items []ptr.ContribItem, filter *ptr.TagFilter, covered int64) (survivors []ptr.ContribItem, droppedKnown, droppedFiltered int, err error) {
 	for _, it := range items {
-		resolved, derr := p.contribResolved(sender, store, it, covered)
+		resolved, derr := contrib.Resolved(sender, store, it, covered)
 		if derr != nil {
 			return nil, 0, 0, derr
 		}
 		if resolved {
 			droppedKnown++
-			_ = store.Drop(it.ID)
+			dropContrib(store, it.ID)
 			continue
 		}
 		if it.Kind == ptr.ContribMappingAdd {
 			if blocked, rule := filter.Blocks(it.Tag); blocked {
 				droppedFiltered++
 				logx.Infof("contrib: %q dropped by the server tag filter (%s)", it.Tag, rule)
-				_ = store.Drop(it.ID)
+				dropContrib(store, it.ID)
 				continue
 			}
 		}
 		survivors = append(survivors, it)
 	}
 	return survivors, droppedKnown, droppedFiltered, nil
+}
+
+// Log only: a failed drop leaves the row claimed until the boot reset re-diffs it.
+func dropContrib(store *ptr.ContribStore, id int64) {
+	if err := store.Drop(id); err != nil {
+		logx.Warnf("contrib: dropping item %d: %v", id, err)
+	}
 }
 
 type contribUpload struct {
@@ -170,7 +188,7 @@ type contribUpload struct {
 	total int
 }
 
-func (p *Processor) newContribUpload(job *queue.Job, sender ContribSender, store *ptr.ContribStore, chunks []contribChunk) *contribUpload {
+func (p *Processor) newContribUpload(job *queue.Job, sender ContribSender, store *ptr.ContribStore, chunks []contribChunk, denied []ptr.ContribItem) *contribUpload {
 	up := &contribUpload{p: p, job: job, sender: sender, store: store, chunks: chunks, spans: make([][2]int, len(chunks))}
 	base := p.cfg.Current().Monbooru.WebBase()
 	var jobItems []queue.Item
@@ -186,6 +204,14 @@ func (p *Processor) newContribUpload(job *queue.Job, sender ContribSender, store
 		up.spans[ci][1] = len(jobItems)
 	}
 	up.total = len(jobItems)
+	for _, it := range denied {
+		jobItems = append(jobItems, queue.Item{
+			PostID: ptr.ContribQueueLabel(it.Kind, it.Tag, it.Tag2),
+			URL:    ptr.ContribItemLink(base, it.Kind, it.Tag, it.Hash),
+			Status: queue.ItemFailed, Outcome: outcome.Failed,
+			ErrorCode: outcome.ErrCodePTRAccountRequired, Error: errContribDenied,
+		})
+	}
 	job.SetItems(jobItems)
 	return up
 }
@@ -221,6 +247,9 @@ func (up *contribUpload) commit(i int, chunk contribChunk, sent map[string]int) 
 	for _, it := range chunk.items {
 		if _, cerr := up.store.Complete(it); cerr != nil {
 			logx.Warnf("contrib: recording item %d in the ledger: %v", it.ID, cerr)
+			if ferr := up.store.FailItem(it.ID, "sent, but not recorded in the ledger: "+cerr.Error()); ferr != nil {
+				logx.Warnf("contrib: marking item %d failed: %v", it.ID, ferr)
+			}
 		}
 		sent[it.Kind]++
 	}
@@ -255,40 +284,6 @@ func (up *contribUpload) failRemainder(i int, code, reason string) int {
 		})
 	}
 	return failed
-}
-
-func (p *Processor) contribResolved(sender ContribSender, store *ptr.ContribStore, it ptr.ContribItem, covered int64) (bool, error) {
-	hashHex := hex.EncodeToString(it.Hash)
-	switch it.Kind {
-	case ptr.ContribMappingAdd:
-		return sender.HashHasIdeal(hashHex, it.Tag)
-	case ptr.ContribMappingPetition:
-		has, err := sender.HashHasRaw(hashHex, it.Tag)
-		if err != nil || has {
-			return false, err
-		}
-		// An add committed since the index's coverage is live on the
-		// server already, so its rescind still has work to do.
-		live, err := store.MappingAddCommittedSince(it.Tag, it.Hash, covered)
-		return !live, err
-	case ptr.ContribSibling:
-		if cur, err := sender.SiblingCurrent(it.Tag, it.Tag2); err != nil || cur {
-			return cur, err
-		}
-		return sender.SiblingCurrent(it.Tag2, it.Tag)
-	case ptr.ContribParent:
-		if cur, err := sender.ParentCurrent(it.Tag, it.Tag2); err != nil || cur {
-			return cur, err
-		}
-		return sender.ParentCurrent(it.Tag2, it.Tag)
-	case ptr.ContribSiblingPetition:
-		cur, err := sender.SiblingCurrent(it.Tag, it.Tag2)
-		return !cur, err
-	case ptr.ContribParentPetition:
-		cur, err := sender.ParentCurrent(it.Tag, it.Tag2)
-		return !cur, err
-	}
-	return false, fmt.Errorf("unknown contribution kind %q", it.Kind)
 }
 
 type contribUnit struct {

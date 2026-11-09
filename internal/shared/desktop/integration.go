@@ -84,25 +84,16 @@ func (h Hook) Integration(trayEnabled bool) Integration {
 	}
 }
 
-// Unquoted: each sink quotes by its own rules. In a sandbox only the
-// host's flatpak run form can launch the app.
-func launchTarget() (string, []string) {
+// In a sandbox only the host's flatpak run form can launch the app.
+func launchLine(quote func(string) string) string {
 	if id := os.Getenv("FLATPAK_ID"); id != "" {
-		return "flatpak", []string{"run", id, "-desktop"}
+		return quote("flatpak") + " run " + id + " -desktop"
 	}
 	exe := Program()
 	if exe == "" {
-		return "", nil
-	}
-	return exe, []string{"-desktop"}
-}
-
-func launchLine(quote func(string) string) string {
-	exe, args := launchTarget()
-	if exe == "" {
 		return ""
 	}
-	return strings.Join(append([]string{quote(exe)}, args...), " ")
+	return quote(exe) + " -desktop"
 }
 
 // LaunchCommand is the Exec line a .desktop entry runs.

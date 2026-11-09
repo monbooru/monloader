@@ -102,24 +102,12 @@ func installIcon(h Hook) error {
 		return err
 	}
 	size := fmt.Sprintf("%dx%d", cfg.Width, cfg.Height)
-	path := filepath.Join(dir, "icons", "hicolor", size, "apps", h.App+".png")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, h.Icon, 0o644)
+	return writeFile(filepath.Join(dir, "icons", "hicolor", size, "apps", h.App+".png"), string(h.Icon))
 }
 
 func underSystemPrefix() bool {
-	dir := ExeDir()
-	if dir == "" {
-		return false
-	}
-	for _, prefix := range []string{"/usr/", "/opt/"} {
-		if strings.HasPrefix(dir+"/", prefix) {
-			return true
-		}
-	}
-	return false
+	dir := ExeDir() + "/"
+	return strings.HasPrefix(dir, "/usr/") || strings.HasPrefix(dir, "/opt/")
 }
 
 func writeFile(path, body string) error {

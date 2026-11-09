@@ -11,7 +11,6 @@ import (
 // every write.
 const maxLogBytes = 8 << 20
 
-// OpenLog adds <dir>/<app>.log to the stdlib logger's output.
 func OpenLog(dir, app string) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err

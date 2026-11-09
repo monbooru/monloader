@@ -236,17 +236,32 @@ type AccountType struct {
 	Title       string
 	Permissions map[int]int // content type -> permission action
 	VelocityNum int         // accounts creatable per period; 0 = not auto-creatable
-	VelocitySec int
 }
 
 func (a AccountType) CanCreateMappings() bool {
 	return a.Permissions[contentTypeMappings] >= permissionCreate
 }
 
-// CanPetition needs no level check: petition is the lowest permission (0),
-// so any listed content type grants it.
-func (a AccountType) CanPetition() bool {
-	return len(a.Permissions) > 0
+// CanSend needs a level check only for a mapping add: hydrus offers no create
+// level on siblings and parents, and petition is the lowest level, so listing a
+// content type grants the rest. The server drops what an account may not send
+// and still answers 200.
+func (a AccountType) CanSend(kind string) bool {
+	listed := func(contentType int) bool {
+		_, ok := a.Permissions[contentType]
+		return ok
+	}
+	switch kind {
+	case ContribMappingAdd:
+		return a.CanCreateMappings()
+	case ContribMappingPetition:
+		return listed(contentTypeMappings)
+	case ContribSibling, ContribSiblingPetition:
+		return listed(contentTypeSiblings)
+	case ContribParent, ContribParentPetition:
+		return listed(contentTypeParents)
+	}
+	return false
 }
 
 func parseAccountTypeTuple(v any) (AccountType, error) {
@@ -290,9 +305,6 @@ func parseAccountTypeTuple(v any) (AccountType, error) {
 	}
 	if vel, ok := fields[4].([]any); ok && len(vel) == 2 {
 		if at.VelocityNum, err = asInt(vel[0]); err != nil {
-			return AccountType{}, err
-		}
-		if at.VelocitySec, err = asInt(vel[1]); err != nil {
 			return AccountType{}, err
 		}
 	}
@@ -491,89 +503,14 @@ func (f *TagFilter) Blocks(tag string) (bool, string) {
 	if f == nil || len(f.rules) == 0 {
 		return false, ""
 	}
-	if rule, ok := f.rules[tag]; ok {
-		return rule == 1, tag
+	keys := []string{tag, ""}
+	if ns, _, ok := strings.Cut(tag, ":"); ok {
+		keys = []string{tag, ns + ":", ":"}
 	}
-	ns, _, hasNS := strings.Cut(tag, ":")
-	if hasNS {
-		if rule, ok := f.rules[ns+":"]; ok {
-			return rule == 1, ns + ":"
+	for _, k := range keys {
+		if rule, ok := f.rules[k]; ok {
+			return rule == 1, k
 		}
-		if rule, ok := f.rules[":"]; ok {
-			return rule == 1, ":"
-		}
-		return false, ""
-	}
-	if rule, ok := f.rules[""]; ok {
-		return rule == 1, ""
 	}
 	return false, ""
 }
-
-// DecodedUpdate and DecodeC2SUpdate read an encoded update back the way the
-// server would.
-type DecodedUpdate struct {
-	Actions []decodedAction
-}
-
-type decodedAction struct {
-	Action  int
-	Entries []decodedEntry
-}
-
-type decodedEntry struct {
-	ContentType int
-	Data        any
-	Reason      string
-}
-
-func DecodeC2SUpdate(body []byte) (DecodedUpdate, error) {
-	actions, err := responseList(body, "client_to_server_update", typeC2SUpdate)
-	if err != nil {
-		return DecodedUpdate{}, err
-	}
-	var out DecodedUpdate
-	for _, a := range actions {
-		pair, ok := a.([]any)
-		if !ok || len(pair) != 2 {
-			return DecodedUpdate{}, fmt.Errorf("malformed action pair")
-		}
-		action, err := asInt(pair[0])
-		if err != nil {
-			return DecodedUpdate{}, err
-		}
-		da := decodedAction{Action: action}
-		entries, ok := pair[1].([]any)
-		if !ok {
-			return DecodedUpdate{}, fmt.Errorf("action entries not a list")
-		}
-		for _, e := range entries {
-			cr, ok := e.([]any)
-			if !ok || len(cr) != 2 {
-				return DecodedUpdate{}, fmt.Errorf("malformed content+reason")
-			}
-			contentTuple, ok := cr[0].([]any)
-			if !ok {
-				return DecodedUpdate{}, fmt.Errorf("content is not a tuple")
-			}
-			cPayload, err := envelopePayload(contentTuple, typeContent)
-			if err != nil {
-				return DecodedUpdate{}, err
-			}
-			cp, ok := cPayload.([]any)
-			if !ok || len(cp) != 2 {
-				return DecodedUpdate{}, fmt.Errorf("content payload malformed")
-			}
-			ct, err := asInt(cp[0])
-			if err != nil {
-				return DecodedUpdate{}, err
-			}
-			reason, _ := cr[1].(string)
-			da.Entries = append(da.Entries, decodedEntry{ContentType: ct, Data: cp[1], Reason: reason})
-		}
-		out.Actions = append(out.Actions, da)
-	}
-	return out, nil
-}
-
-const ContentTypeMappings = contentTypeMappings

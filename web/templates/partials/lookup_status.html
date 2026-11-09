@@ -1,6 +1,3 @@
-{{define "lookup_status"}}{{with .Lookup}}
-<div class="lookup-status">
-  <span>booru lookup: {{if .BooruSources}}<span class="lk-on" title="Queries {{join .BooruSources ", "}}">on</span>{{else}}<span class="lk-off">off</span> - configure the chain in <a href="/settings#lookup">settings</a>{{end}}</span>
-  <span>Public Tag Repository lookup: {{if .PTREnabled}}<span class="lk-on">{{if .PTRSyncing}}syncing{{else}}on{{end}}</span>{{else}}<span class="lk-off">off</span> - enable it on the <a href="/ptr">PTR page</a>{{end}}</span>
-</div>
+{{define "lookup_status"}}{{if .MD5LookupOff}}
+<div class="lookup-status">MD5 lookup is off: no site in the <a href="/settings#lookup">lookup chain</a>.</div>
 {{end}}{{end}}

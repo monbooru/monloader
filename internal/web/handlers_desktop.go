@@ -14,7 +14,6 @@ import (
 	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/shared/desktop"
 	"github.com/monbooru/monloader/internal/shared/logx"
-	"github.com/monbooru/monloader/internal/shared/session"
 )
 
 // Every route that reaches the filesystem or the process goes through
@@ -57,10 +56,6 @@ func (s *Server) browseDirs(w http.ResponseWriter, r *http.Request) {
 var openFolderKinds = []string{"config", "logs", "cookies", "ptr"}
 
 func (s *Server) openFolder(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "Bad form data.")
-		return
-	}
 	kind := r.FormValue("kind")
 	if !slices.Contains(openFolderKinds, kind) {
 		s.redirectFlash(w, r, "err", "Unknown folder.")
@@ -124,14 +119,10 @@ func (s *Server) desktopIntegration() desktop.Integration {
 func (s *Server) TrayEnabled() bool { return s.cfg.Current().Desktop.Tray }
 
 func (s *Server) settingsDesktopPost(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.redirectFlash(w, r, "err", "Bad form data.")
-		return
-	}
 	failures := s.DesktopHook().Apply(r.FormValue("menu_entry") == "on", r.FormValue("start_at_login") == "on")
 	if desktop.TrayAvailable() {
 		tray := r.FormValue("tray") == "on"
-		if err := s.updateConfig(func(c *config.Config) error {
+		if err := s.cfg.Update(func(c *config.Config) error {
 			c.Desktop.Tray = tray
 			return nil
 		}); err != nil {
@@ -152,18 +143,22 @@ const quitDelay = 300 * time.Millisecond
 func (s *Server) stopWithPage(w http.ResponseWriter, r *http.Request, verb string, act func()) {
 	running, queued := s.queue.InFlight()
 	inFlight := running + queued
+	were, them := fmt.Sprintf("%d jobs were", inFlight), "them"
+	if inFlight == 1 {
+		were, them = "1 job was", "it"
+	}
 	page := map[string]any{"App": "monloader", "Poll": verb == "restart"}
 	if verb == "restart" {
 		page["Heading"] = s.titleName() + " is restarting"
 		page["Hint"] = "This page will reload automatically."
 		if inFlight > 0 {
-			page["Hint"] = fmt.Sprintf("This page will reload automatically. %d job(s) were running or waiting. The restart cancelled them; retry them from the queue once it is back.", inFlight)
+			page["Hint"] = fmt.Sprintf("This page will reload automatically. %s running or waiting. The restart canceled %s; retry from the queue once it is back.", were, them)
 		}
 	} else {
 		page["Heading"] = s.titleName() + " has stopped"
 		page["Hint"] = "You can close this tab. Start it again from the applications menu."
 		if inFlight > 0 {
-			page["Hint"] = fmt.Sprintf("%d job(s) were running or waiting. Stopping cancelled them; retry them from the queue next time you start it.", inFlight)
+			page["Hint"] = fmt.Sprintf("%s running or waiting. Stopping canceled %s; retry from the queue next time you start it.", were, them)
 		}
 	}
 	theme := s.activeTheme()
@@ -194,8 +189,10 @@ func (s *Server) desktopStopPrompt(verb, gerund string) string {
 	if total == 0 {
 		return verb + " monloader?"
 	}
-	return fmt.Sprintf("%s monloader? %d job(s) are running or waiting; %s cancels them, and the queue keeps them for a retry.",
-		verb, total, gerund)
+	if total == 1 {
+		return fmt.Sprintf("%s monloader? 1 job is running or waiting; %s cancels it, and the queue keeps it for a retry.", verb, gerund)
+	}
+	return fmt.Sprintf("%s monloader? %d jobs are running or waiting; %s cancels them, and the queue keeps them for a retry.", verb, total, gerund)
 }
 
 func (s *Server) desktopQuitPrompt() string { return s.desktopStopPrompt("Stop", "stopping") }
@@ -204,7 +201,7 @@ func (s *Server) desktopRestartPrompt() string { return s.desktopStopPrompt("Res
 
 func (s *Server) desktopActionsFragment(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "desktop_actions", map[string]any{
-		"CSRFToken":     s.sessions.CSRFToken(session.FromContext(r.Context())),
+		"CSRFToken":     s.csrf(r),
 		"QuitPrompt":    s.desktopQuitPrompt(),
 		"RestartPrompt": s.desktopRestartPrompt(),
 	})

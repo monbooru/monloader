@@ -1,7 +1,6 @@
 package queue
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -52,10 +51,13 @@ type Summary struct {
 	// The archive half of Skipped, so a row can offer a force download
 	// without its items.
 	Archived int `json:"archived,omitempty"`
-	Failed   int `json:"failed"`
-	Matched  int `json:"matched,omitempty"`
-	Canceled int `json:"canceled,omitempty"`
-	Total    int `json:"total"`
+	// The rule half of Skipped: a row offers no force download for these,
+	// since the archive never held them.
+	Blacklisted int `json:"blacklisted,omitempty"`
+	Failed      int `json:"failed"`
+	Matched     int `json:"matched,omitempty"`
+	Canceled    int `json:"canceled,omitempty"`
+	Total       int `json:"total"`
 }
 
 type Item struct {
@@ -68,8 +70,11 @@ type Item struct {
 	SHA256      string          `json:"sha256,omitempty"`
 	TagWarnings []string        `json:"tag_warnings,omitempty"`
 	MergeNote   string          `json:"merge_note,omitempty"`
-	ErrorCode   string          `json:"error_code,omitempty"`
-	Error       string          `json:"error,omitempty"`
+	TagsSent    int             `json:"tags_sent,omitempty"`
+	// Pre-phrased: what never reached the image, and why.
+	Held      []string `json:"held_tags,omitempty"`
+	ErrorCode string   `json:"error_code,omitempty"`
+	Error     string   `json:"error,omitempty"`
 }
 
 // A download job carries the zero JobKind.
@@ -90,73 +95,30 @@ const (
 	BackendAll   = contract.LookupAll
 )
 
-// Split from the lock so Snapshot copies it whole; reset zeroes any field
-// it does not carry over.
+// Split from the lock so Snapshot copies it whole; reset carries Options and
+// zeroes the rest.
 type jobState struct {
-	ID             int64     `json:"id"`
-	URL            string    `json:"url"`
-	Status         JobStatus `json:"status"`
-	Kind           JobKind   `json:"kind,omitempty"`
-	ImageID        int64     `json:"image_id,omitempty"`
-	Backend        string    `json:"backend,omitempty"`
-	MD5            string    `json:"md5,omitempty"`
-	SHA256         string    `json:"sha256,omitempty"`
-	Site           string    `json:"site"`
-	Subcategory    string    `json:"-"`
-	Gallery        string    `json:"gallery"`
-	Folder         string    `json:"folder,omitempty"`
-	MaxItems       int       `json:"max_items,omitempty"`
-	PageURL        string    `json:"page_url,omitempty"`
-	Tags           []string  `json:"tags,omitempty"`
-	Commentary     string    `json:"commentary,omitempty"`
-	Source         string    `json:"source,omitempty"`
-	Via            string    `json:"via,omitempty"`
-	Offset         int       `json:"-"`
-	Root           int64     `json:"root,omitempty"`
-	Auto           bool      `json:"-"`
-	Force          bool      `json:"force,omitempty"`
-	Priority       bool      `json:"-"`
-	Background     bool      `json:"-"`
-	Budgeted       bool      `json:"-"`
-	Watch          int64     `json:"-"`
-	Target         int       `json:"-"`
-	Summary        Summary   `json:"summary"`
-	Note           string    `json:"note,omitempty"`
-	ContribIDs     []int64   `json:"-"`
-	ContribBacklog bool      `json:"-"`
-	Capped         bool      `json:"capped,omitempty"`
-	Cap            int       `json:"cap,omitempty"`
-	ErrorCode      string    `json:"error_code,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	Items          []Item    `json:"items"`
-	CreatedAt      time.Time `json:"created_at"`
-	StartedAt      time.Time `json:"started_at,omitempty"`
-	FinishedAt     time.Time `json:"finished_at,omitempty"`
+	Options
+	ID          int64     `json:"id"`
+	URL         string    `json:"url"`
+	Status      JobStatus `json:"status"`
+	Subcategory string    `json:"-"`
+	Summary     Summary   `json:"summary"`
+	Note        string    `json:"note,omitempty"`
+	Capped      bool      `json:"capped,omitempty"`
+	Cap         int       `json:"cap,omitempty"`
+	// The next window of one its listing's error cut short starts here, not
+	// past its range.
+	ListedTo   int       `json:"-"`
+	ErrorCode  string    `json:"error_code,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	Items      []Item    `json:"items"`
+	CreatedAt  time.Time `json:"created_at"`
+	StartedAt  time.Time `json:"started_at,omitzero"`
+	FinishedAt time.Time `json:"finished_at,omitzero"`
 	// Set by every Status write, and not derived from the stamps above: a
 	// retry re-queues a job but keeps its CreatedAt.
 	StatusChangedAt time.Time `json:"-"`
-}
-
-// MarshalJSON omits unset stamps, which omitempty does not do for a zero
-// time.Time; the shallower shadow fields win over the embedded ones.
-func (j jobState) MarshalJSON() ([]byte, error) {
-	type plain jobState
-	return json.Marshal(struct {
-		plain
-		StartedAt  *time.Time `json:"started_at,omitempty"`
-		FinishedAt *time.Time `json:"finished_at,omitempty"`
-	}{
-		plain:      plain(j),
-		StartedAt:  stampOrNil(j.StartedAt),
-		FinishedAt: stampOrNil(j.FinishedAt),
-	})
-}
-
-func stampOrNil(t time.Time) *time.Time {
-	if t.IsZero() {
-		return nil
-	}
-	return &t
 }
 
 // Job's mu guards its mutable fields: read them through Snapshot, change
@@ -170,19 +132,6 @@ type Job struct {
 	itemCount  int
 	seq        uint64
 	priorItems map[string]Item
-}
-
-func validJobTransition(from, to JobStatus) bool {
-	switch from {
-	case JobQueued:
-		return to == JobRunning || to == JobCanceled
-	case JobRunning:
-		return to == JobSucceeded || to == JobPartial || to == JobFailed ||
-			to == JobCanceled || to == JobInterrupted
-	case JobSucceeded, JobPartial, JobFailed, JobCanceled, JobInterrupted:
-		return to == JobQueued
-	}
-	return false
 }
 
 func validItemTransition(from, to ItemStatus) bool {
@@ -203,33 +152,10 @@ func validItemTransition(from, to ItemStatus) bool {
 func newJob(id int64, url string, opts Options, now time.Time) *Job {
 	return &Job{
 		jobState: jobState{
+			Options:         opts,
 			ID:              id,
 			URL:             url,
 			Status:          JobQueued,
-			Kind:            opts.Kind,
-			ImageID:         opts.ImageID,
-			Backend:         opts.Backend,
-			MD5:             opts.MD5,
-			SHA256:          opts.SHA256,
-			ContribIDs:      opts.ContribIDs,
-			ContribBacklog:  opts.ContribBacklog,
-			Site:            opts.Site,
-			Gallery:         opts.Gallery,
-			Folder:          opts.Folder,
-			MaxItems:        opts.MaxItems,
-			PageURL:         opts.PageURL,
-			Tags:            opts.Tags,
-			Commentary:      opts.Commentary,
-			Source:          opts.Source,
-			Via:             opts.Via,
-			Offset:          opts.Offset,
-			Root:            opts.Root,
-			Auto:            opts.Auto,
-			Priority:        opts.Priority,
-			Background:      opts.Background,
-			Budgeted:        opts.Budgeted,
-			Watch:           opts.Watch,
-			Target:          opts.Target,
 			CreatedAt:       now,
 			StatusChangedAt: now,
 		},
@@ -240,7 +166,7 @@ func newJob(id int64, url string, opts Options, now time.Time) *Job {
 func (j *Job) start(now time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if !validJobTransition(j.Status, JobRunning) {
+	if j.Status != JobQueued {
 		return fmt.Errorf("illegal job transition %s -> running", j.Status)
 	}
 	j.Status = JobRunning
@@ -364,6 +290,26 @@ func (j *Job) SetCapped(cap int) {
 	j.mu.Unlock()
 }
 
+// CutShort names why a listing ended early, which no item of it can say.
+func (j *Job) CutShort(code, msg string) {
+	j.mu.Lock()
+	j.ErrorCode, j.Error = code, msg
+	j.mu.Unlock()
+}
+
+func (j *Job) SetListedTo(cap, listedTo int) {
+	j.mu.Lock()
+	j.Capped, j.Cap, j.ListedTo = true, cap, listedTo
+	j.mu.Unlock()
+}
+
+func (j *Job) capEndLocked() int {
+	if j.ListedTo > 0 {
+		return j.ListedTo
+	}
+	return j.Offset + j.Cap
+}
+
 func (j *Job) capOf() int {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -455,7 +401,7 @@ func (j *Job) windowEnd() int {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.Capped {
-		return j.Offset + j.Cap
+		return j.capEndLocked()
 	}
 	if !j.finalized && len(j.Items) == 0 && j.MaxItems > 0 {
 		return j.Offset + j.MaxItems
@@ -463,11 +409,22 @@ func (j *Job) windowEnd() int {
 	return j.Offset + len(j.Items)
 }
 
+func (j *Job) renameGallery(from, to string) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.Gallery != from {
+		return false
+	}
+	j.Gallery = to
+	return true
+}
+
 func (j *Job) Fail(code, msg string, now time.Time) {
 	j.settle(now, func() {
 		j.ErrorCode = code
 		j.Error = msg
 		j.failPendingItems(code, msg)
+		j.Summary = summarize(j.Items)
 		j.Status = JobFailed
 	})
 }
@@ -477,6 +434,9 @@ func (j *Job) Finalize(now time.Time) {
 		j.restorePriorLinksLocked()
 		j.Summary = summarize(j.Items)
 		j.Status = deriveStatus(j.Items)
+		if j.Status == JobSucceeded && j.ErrorCode != "" {
+			j.Status = JobPartial
+		}
 	})
 }
 
@@ -513,7 +473,7 @@ func (j *Job) settle(now time.Time, apply func()) {
 func (j *Job) reset(force bool, now time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if !validJobTransition(j.Status, JobQueued) {
+	if j.Status == JobQueued || j.Status == JobRunning {
 		return fmt.Errorf("cannot retry a %s job", j.Status)
 	}
 	if j.Kind == KindPTRLookup {
@@ -527,37 +487,25 @@ func (j *Job) reset(force bool, now time.Time) error {
 		// Re-resolve the hash rather than trust a post that may have moved.
 		url = ""
 	}
+	opts := j.Options
+	// Only a succeeded run may lean on the archive: a failure, cancel or
+	// crash can land between a post's download and its push.
+	opts.Force = force || j.Status != JobSucceeded
 	j.jobState = jobState{
-		ID:             j.ID,
-		URL:            url,
-		Status:         JobQueued,
-		Kind:           j.Kind,
-		ImageID:        j.ImageID,
-		Backend:        j.Backend,
-		MD5:            j.MD5,
-		SHA256:         j.SHA256,
-		Site:           j.Site,
-		Gallery:        j.Gallery,
-		Folder:         j.Folder,
-		ContribIDs:     j.ContribIDs,
-		ContribBacklog: j.ContribBacklog,
-		// Only a succeeded run may lean on the archive: a failure, cancel
-		// or crash can land between a post's download and its push.
-		Force:           force || j.Status != JobSucceeded,
-		MaxItems:        j.MaxItems,
-		PageURL:         j.PageURL,
-		Offset:          j.Offset,
-		Root:            j.Root,
-		Auto:            j.Auto,
-		Priority:        j.Priority,
-		Background:      j.Background,
-		Budgeted:        j.Budgeted,
-		Watch:           j.Watch,
-		Target:          j.Target,
+		Options:         opts,
+		ID:              j.ID,
+		URL:             url,
+		Status:          JobQueued,
 		CreatedAt:       j.CreatedAt,
 		StatusChangedAt: now,
 	}
 	j.finalized = false
+	// A retry inside finish's window would strand a waiter on the old channel.
+	select {
+	case <-j.done:
+	default:
+		close(j.done)
+	}
 	j.done = make(chan struct{})
 	return nil
 }
@@ -583,6 +531,9 @@ func (j *Job) failPendingItems(code, msg string) {
 func (j *Job) signalDone() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if !j.finalized {
+		return
+	}
 	select {
 	case <-j.done:
 	default:
@@ -610,8 +561,8 @@ func (j *Job) snapshot(withItems bool) *Job {
 	} else {
 		state.Items = nil
 	}
-	// Only while unfinished: a finished summary is final (Fail leaves it
-	// zero, and a batch lookup's counts run past the items it keeps).
+	// Only while unfinished: a finished summary is final, and a batch
+	// lookup's counts run past the items it keeps.
 	if !j.finalized {
 		state.Summary = summarize(j.Items)
 	}
@@ -639,6 +590,8 @@ func (s Summary) Add(b Summary) Summary {
 		Matched:   s.Matched + b.Matched,
 		Canceled:  s.Canceled + b.Canceled,
 		Total:     s.Total + b.Total,
+
+		Blacklisted: s.Blacklisted + b.Blacklisted,
 	}
 }
 
@@ -661,6 +614,9 @@ func summarize(items []Item) Summary {
 			s.Archived++
 		case outcome.SkippedUnsupported:
 			s.Skipped++
+		case outcome.SkippedBlacklist:
+			s.Skipped++
+			s.Blacklisted++
 		case outcome.Failed:
 			if it.ErrorCode == outcome.ErrCodeCanceled {
 				s.Canceled++
@@ -693,12 +649,9 @@ func deriveStatus(items []Item) JobStatus {
 }
 
 func priorImports(items []Item) map[string]Item {
-	var m map[string]Item
+	m := map[string]Item{}
 	for _, it := range items {
 		if it.MonbooruID != 0 {
-			if m == nil {
-				m = map[string]Item{}
-			}
 			m[itemKey(it.PostID, it.Num)] = it
 		}
 	}
@@ -706,9 +659,6 @@ func priorImports(items []Item) map[string]Item {
 }
 
 func (j *Job) restorePriorLinksLocked() {
-	if j.priorItems == nil {
-		return
-	}
 	for i := range j.Items {
 		it := &j.Items[i]
 		if it.Outcome != outcome.SkippedArchive || it.MonbooruID != 0 {

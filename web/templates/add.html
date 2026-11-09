@@ -9,21 +9,21 @@
     <div class="add-row">
       <div class="search-input-wrap">
         <input id="add-input" type="text" name="url" autocomplete="off" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}}
-               placeholder="Paste a booru URL or an MD5 hash - post, pool, tag search, artist...">
+               placeholder="Paste a post, pool, search or artist URL, or an MD5 hash" data-short-placeholder="Paste a URL or an MD5 hash">
       </div>
-      <select name="items" aria-label="Items to fetch" title="How many posts to fetch">{{template "items_options" .ItemChoices}}</select>
+      <select name="items" aria-label="Posts to fetch" title="How many posts to fetch from a search. A pool or a manga gallery always comes whole.">{{template "items_options" .ItemChoices}}</select>
       <button type="submit" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}}>Download</button>
     </div>
   </form>
   {{template "lookup_status" .}}
-  <div class="field-hint"><a href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">See the supported sites</a></div>
+  <div class="field-hint"><a href="https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md" target="_blank" rel="noopener">Supported sites</a></div>
   <div id="add-flash" class="field-hint"></div>
   <div class="links">
-    <a href="/queue">[queue]</a>
-    <a href="/watches">[watched]</a>
-    <a href="/ptr">[PTR]</a>
-    <a href="/settings">[settings]</a>
-    {{if .MonbooruWebURL}}<a href="{{.MonbooruWebURL}}">[go to monbooru]</a>{{end}}
+    <a data-chord="g q" href="/queue">[queue]</a>
+    <a data-chord="g w" href="/watches">[watched]</a>
+    <a data-chord="g p" href="/ptr" title="Public Tag Repository: an offline copy of Hydrus's shared tags">[PTR]</a>
+    <a data-chord="g s" href="/settings">[settings]</a>
+    {{if .MonbooruWebURL}}<a href="{{.MonbooruWebURL}}">[monbooru]</a>{{end}}
   </div>
   {{template "webui/pair_notice" .PairNotice}}
 </main>

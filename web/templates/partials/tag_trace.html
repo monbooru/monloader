@@ -1,0 +1,39 @@
+{{define "tag_trace"}}
+{{with .Failure}}<div class="flash flash-{{.Kind}}">{{.Msg}}{{with .Detail}}: {{.}}{{end}}</div>{{end}}
+{{$resolved := .Resolved}}{{$gallery := .Gallery}}{{$unpaired := .Unpaired}}{{$galleryErr := .GalleryErr}}
+{{with .Trace}}{{$skipped := .Skipped}}{{$refused := .Refused}}
+{{if $skipped}}<div class="flash flash-warn">Skipped by {{$skipped}}. Nothing is downloaded.</div>{{else if $refused}}<div class="flash flash-err">Sending fails: {{$refused}}</div>{{else}}<div class="flash flash-ok">Would download and send {{len .Tags}} tag{{if ne (len .Tags) 1}}s{{end}}{{if $unpaired}}. monbooru not paired, the trace stops at the push{{else if $galleryErr}}. The gallery column is blank: {{$galleryErr}}{{end}}</div>{{end}}
+<p class="field-hint">{{.Site}}{{with .PostURL}}, first post of this URL: <a href="{{.}}" target="_blank" rel="noopener">{{.}}</a>{{end}}</p>
+{{range .Warnings}}<span class="hint-warn">{{.}}</span>{{end}}
+{{if or .Rows .Rating}}
+<div class="table-scroll">
+<table class="grid-table trace-table">
+  <thead><tr><th>on the site</th><th>1 category</th><th>1 tag rule</th><th>2 blacklist</th><th>3 sent</th>{{if not $unpaired}}<th>4-6 {{$gallery}}</th>{{end}}</tr></thead>
+  <tbody>
+  {{range .Rows}}
+  <tr>
+    <td><span class="status-dim">{{.Field}}:</span> {{.Listed}}</td>
+    <td>{{if .MapDropped}}<span class="o-failed">dropped</span>{{else}}{{.Category}}{{end}}</td>
+    <td>{{if .MapDropped}}<span class="status-dim">-</span>{{else if .RuleDropped}}<span class="o-failed">dropped</span>{{else if ne .Ruled .Mapped}}-&gt; {{.Ruled}}{{else}}<span class="status-dim">=</span>{{end}}</td>
+    <td>{{if gt (len .Reads) 1}}{{range $i, $read := .Reads}}{{if $i}}, {{end}}{{if .Hit}}<span class="trace-hit">{{.Tag}}</span>{{else}}{{.Tag}}{{end}}{{end}}{{else}}{{range .Reads}}{{if .Hit}}<span class="trace-hit">{{.Tag}}</span>{{else}}<span class="status-dim">ok</span>{{end}}{{end}}{{end}}</td>
+    <td>{{if $skipped}}<span class="status-dim">skipped</span>{{else if $refused}}<span class="status-dim">not sent</span>{{else if .Sent}}<span class="o-created">{{.Sent}}</span>{{else if .Unchecked}}<span class="o-failed">dropped ({{.Unchecked}})</span>{{else}}<span class="status-dim">not sent</span>{{end}}</td>
+    {{if not $unpaired}}<td>{{template "trace_gallery_cell" (index $resolved .Sent)}}</td>{{end}}
+  </tr>
+  {{end}}
+  {{if .Rating}}
+  <tr>
+    <td><span class="status-dim">rating:</span> {{with .RatingListed}}{{.}}{{else}}<span class="status-dim">none</span>{{end}}</td>
+    <td>{{.Rating}}</td>
+    <td><span class="status-dim">-</span></td>
+    <td>{{if .RatingHit}}<span class="trace-hit">rating:{{.Rating}}</span>{{else}}<span class="status-dim">ok</span>{{end}}</td>
+    <td>{{if $skipped}}<span class="status-dim">skipped</span>{{else if $refused}}<span class="status-dim">not sent</span>{{else}}<span class="o-created">rating:{{.Rating}}</span>{{end}}</td>
+    {{if not $unpaired}}<td>{{template "trace_gallery_cell" (index $resolved (printf "rating:%s" .Rating))}}</td>{{end}}
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{else}}<p class="field-hint">The post lists no tags and no rating.</p>{{end}}
+{{end}}
+{{end}}
+{{define "trace_gallery_cell"}}{{if .Status}}{{if eq .Status "exists"}}<span class="o-created">kept</span>{{else if eq .Status "alias"}}-&gt; {{.ResolvesTo}}{{else if eq .Status "rejected"}}<span class="o-failed">rejected</span>{{else if eq .Status "new"}}<span class="o-created">new tag</span>{{else}}<span class="o-failed">refused</span>{{with .Reason}} ({{.}}){{end}}{{end}}{{with .Implies}} <span class="status-dim">+ {{range $i, $t := .}}{{if $i}}, {{end}}{{$t}}{{end}}</span>{{end}}{{else}}<span class="status-dim">-</span>{{end}}{{end}}

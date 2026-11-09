@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-// The connection words webui/peer_light shows; anything else reads as
-// still checking.
+// Anything but these connection words reads as still checking.
 const (
 	ConnOK           = "ok"
 	ConnPaused       = "paused"
@@ -19,11 +18,8 @@ const (
 	ConnUnconfigured = "unconfigured"
 )
 
-// PeerLight is what webui/peer_light reads: the footer light for the
-// paired app.
 type PeerLight struct {
-	Peer string
-	// The peer's page the name links to, when there is one.
+	Peer     string
 	Href     string
 	Conn     string
 	Version  string
@@ -41,8 +37,6 @@ type PeerLight struct {
 	Paired bool
 }
 
-// PairNotice is what webui/pair_notice reads: the nav link to the pairing
-// requests waiting for the operator.
 type PairNotice struct {
 	Href  string
 	Items []PairItem

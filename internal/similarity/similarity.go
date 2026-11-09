@@ -98,15 +98,15 @@ func (c *Client) Missing(service string) (string, bool) {
 		site := c.cfg.Current().FindSite(CredentialSite(service))
 		switch {
 		case site == nil || (site.Username == "" && site.APIKey == ""):
-			return "danbooru login and api key", true
+			return "danbooru login and API key", true
 		case site.Username == "":
 			return "danbooru username", true
 		case site.APIKey == "":
-			return "danbooru api key", true
+			return "danbooru API key", true
 		}
 	case "saucenao":
 		if c.cfg.Current().Lookup.Saucenao.APIKey == "" {
-			return "api key", true
+			return "API key", true
 		}
 	}
 	return "", false
@@ -143,12 +143,16 @@ func (c *Client) Search(ctx context.Context, service string, img []byte) (Result
 // before the multipart body is parsed, so form fields would go unseen.
 func (c *Client) searchIQDB(ctx context.Context, img []byte) (Result, error) {
 	params := url.Values{"limit": {"8"}}
-	if site := c.cfg.Current().FindSite(CredentialSite("iqdb")); site != nil && site.Username != "" && site.APIKey != "" {
-		params.Set("login", site.Username)
-		params.Set("api_key", site.APIKey)
+	userAgent := ""
+	if site := c.cfg.Current().FindSite(CredentialSite("iqdb")); site != nil {
+		if site.Username != "" && site.APIKey != "" {
+			params.Set("login", site.Username)
+			params.Set("api_key", site.APIKey)
+		}
+		userAgent = site.HeaderAgent()
 	}
 	endpoint := cmp.Or(c.cfg.Current().Lookup.Iqdb.URL, c.iqdbURL)
-	status, body, err := c.post(ctx, "iqdb", endpoint+"?"+params.Encode(), img, "search[file]")
+	status, body, err := c.post(ctx, "iqdb", endpoint+"?"+params.Encode(), img, "search[file]", userAgent)
 	if err != nil {
 		return Result{}, err
 	}
@@ -191,7 +195,7 @@ func (c *Client) searchSauceNAO(ctx context.Context, img []byte) (Result, error)
 		"api_key":     {c.cfg.Current().Lookup.Saucenao.APIKey},
 	}
 	endpoint := cmp.Or(c.cfg.Current().Lookup.Saucenao.URL, c.saucenaoURL)
-	status, body, err := c.post(ctx, "saucenao", endpoint+"?"+params.Encode(), img, "file")
+	status, body, err := c.post(ctx, "saucenao", endpoint+"?"+params.Encode(), img, "file", "")
 	if err != nil {
 		return Result{}, err
 	}
@@ -275,7 +279,7 @@ func hostLabel(raw string) string {
 }
 
 // Errors never echo endpoint: its query string carries the api keys.
-func (c *Client) post(ctx context.Context, service, endpoint string, img []byte, fileField string) (int, []byte, error) {
+func (c *Client) post(ctx context.Context, service, endpoint string, img []byte, fileField, userAgent string) (int, []byte, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	fw, err := w.CreateFormFile(fileField, "query.png")
@@ -293,6 +297,9 @@ func (c *Client) post(ctx context.Context, service, endpoint string, img []byte,
 		return 0, nil, &outcome.CodedError{Code: outcome.ErrCodeDownloadFailed, Msg: err.Error()}
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {

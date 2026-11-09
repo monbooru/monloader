@@ -2,5 +2,8 @@
   "family": "generic",
   "kind": "manga",
   "auth": "none",
+  "category_overrides": {
+    "group": "meta"
+  },
   "example": "https://dynasty-scans.com/series/yuru_yuri"
 }

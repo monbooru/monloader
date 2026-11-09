@@ -13,7 +13,6 @@ type Refusal struct {
 	Code, Msg string
 }
 
-// The codes the pairing routes refuse with.
 const (
 	CodeInvalidRequest = "invalid_request"
 	CodeNotFound       = "not_found"
@@ -44,7 +43,6 @@ func DecodeOffer(w http.ResponseWriter, r *http.Request, dst offerBody) *Refusal
 	return nil
 }
 
-// Offer files a request, or refuses it while MaxPending wait.
 func (s *Store[T, P]) Offer(req T) (Accepted, *Refusal) {
 	id, ok := s.Create(req)
 	if !ok {
@@ -77,7 +75,6 @@ func (s *Store[T, P]) Poll(id string, mint func(T) (string, error)) (StatusBody,
 	return StatusBody{Status: Approved, Token: secret}, nil
 }
 
-// NoPairingToken refuses a teardown whose bearer is no paired token.
 func NoPairingToken() *Refusal {
 	return &Refusal{http.StatusUnauthorized, CodeUnauthorized, "pairing token required"}
 }

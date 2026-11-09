@@ -4,7 +4,7 @@ import "errors"
 
 var ErrTrayUnavailable = errors.New("no system tray in this build")
 
-// TrayMenu stays open, start-at-login and quit: the tray is optional, so
+// TrayMenu holds Open, start-at-login and Quit: the tray is optional, so
 // nothing may be reachable only through it.
 type TrayMenu struct {
 	Title     string

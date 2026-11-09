@@ -52,6 +52,7 @@ func init() {
 func Funcs() template.FuncMap {
 	return template.FuncMap{
 		"browseURL":   BrowseURL,
+		"dateOnly":    func(stamp string) string { date, _, _ := strings.Cut(stamp, "T"); return date },
 		"humanBytes":  HumanBytes,
 		"minutesLeft": MinutesLeft,
 		"add":         func(a, b int) int { return a + b },
@@ -68,7 +69,6 @@ func Funcs() template.FuncMap {
 	}
 }
 
-// ScopeRow is one checkbox of webui/token_privileges_dialog.
 type ScopeRow struct {
 	Name    string
 	Desc    string

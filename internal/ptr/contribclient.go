@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 func (c *client) SetAccessKey(key string) {
@@ -26,6 +27,18 @@ func (c *client) setAddress(addr string) {
 	c.keyMu.Lock()
 	c.addr = addr
 	c.keyMu.Unlock()
+}
+
+func (c *client) setFetchSleep(d time.Duration) {
+	c.keyMu.Lock()
+	c.sleep = d
+	c.keyMu.Unlock()
+}
+
+func (c *client) fetchSleep() time.Duration {
+	c.keyMu.RLock()
+	defer c.keyMu.RUnlock()
+	return c.sleep
 }
 
 func (c *client) address() string {

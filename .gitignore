@@ -1,5 +1,6 @@
 # Built binary
 /monloader
+/monloader.exe
 
 /dist/
 /stage/

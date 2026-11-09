@@ -20,6 +20,8 @@ type itemDisplay struct {
 	Note         string
 	ViewURL      string
 	Warnings     []string
+	Sent         string
+	SentTitle    string
 }
 
 func itemView(it queue.Item, ctx map[string]any) itemDisplay {
@@ -29,6 +31,16 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 	site, _ := ctx["Site"].(string)
 
 	d := itemDisplay{Warnings: it.TagWarnings}
+	if it.TagsSent > 0 || len(it.Held) > 0 {
+		d.Sent = fmt.Sprintf("%d tags sent", it.TagsSent)
+		if it.TagsSent == 1 {
+			d.Sent = "1 tag sent"
+		}
+		if len(it.Held) > 0 {
+			d.Sent += fmt.Sprintf(", %d held", len(it.Held))
+			d.SentTitle = strings.Join(it.Held, ", ")
+		}
+	}
 	enrich := kind == queue.KindLookup || kind == queue.KindMetadata || kind == queue.KindPTRLookup
 
 	switch {
@@ -74,9 +86,9 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 	case it.ErrorCode == outcome.ErrCodeCanceled:
 		d.Outcome, d.OutcomeCls = "canceled", "o-canceled"
 	case it.ErrorCode != "":
-		d.Outcome, d.OutcomeCls, d.OutcomeTitle = it.ErrorCode, "o-failed", it.Error
+		d.Outcome, d.OutcomeCls, d.OutcomeTitle = errorLabel(it.ErrorCode), "o-failed", it.Error
 	case it.Outcome != "":
-		d.Outcome, d.OutcomeCls = string(it.Outcome), "o-"+string(it.Outcome)
+		d.Outcome, d.OutcomeCls = cmp.Or(outcomeLabels[it.Outcome], string(it.Outcome)), "o-"+string(it.Outcome)
 	default:
 		d.Outcome, d.OutcomeCls = string(it.Status), "o-"+string(it.Status)
 	}
@@ -93,6 +105,37 @@ func itemView(it queue.Item, ctx map[string]any) itemDisplay {
 	return d
 }
 
+var outcomeLabels = map[outcome.Outcome]string{
+	outcome.SkippedBlacklist:   "blacklisted",
+	outcome.SkippedArchive:     "already fetched",
+	outcome.SkippedUnsupported: "file type not supported",
+}
+
+var errorLabels = map[string]string{
+	outcome.ErrCodeDownloadFailed:      "download failed",
+	outcome.ErrCodeUnsupportedURL:      "URL not supported",
+	outcome.ErrCodeAuthRequired:        "login required",
+	outcome.ErrCodeBlocked:             "blocked by the site",
+	outcome.ErrCodeRateLimited:         "rate limited",
+	outcome.ErrCodeNetworkUnreachable:  "site unreachable",
+	outcome.ErrCodeFileTooLarge:        "file too large",
+	outcome.ErrCodeMappingFailed:       "no usable file",
+	outcome.ErrCodeMonbooruUnreachable: "monbooru unreachable",
+	outcome.ErrCodeMonbooruRejected:    "refused by monbooru",
+	outcome.ErrCodeHashMismatch:        "source file changed",
+	outcome.ErrCodeAlreadyExists:       "already in monbooru",
+	outcome.ErrCodeWrongType:           "not an image",
+	outcome.ErrCodeHashNotFound:        "no match found",
+	outcome.ErrCodePTRUnavailable:      "PTR is off",
+	outcome.ErrCodePTRSyncing:          "PTR still syncing",
+	outcome.ErrCodePTRAccountRequired:  "PTR account needed",
+	outcome.ErrCodePTRBanned:           "PTR account banned",
+}
+
+func errorLabel(code string) string {
+	return cmp.Or(errorLabels[code], code)
+}
+
 // A metadata job is monbooru's refresh and a replace its upgrade, so the
 // badge uses monbooru's words.
 func jobKindLabel(j *queue.Job) string {
@@ -107,9 +150,9 @@ func jobKindLabel(j *queue.Job) string {
 	case queue.KindHashImport:
 		return "import"
 	case queue.KindContrib:
-		return "contrib:ptr"
+		return "contribution"
 	case queue.KindPTRLookup:
-		return "lookup:ptr"
+		return "lookup (PTR)"
 	case queue.KindReplace:
 		return "upgrade"
 	case queue.KindMetadata:
@@ -134,3 +177,37 @@ func clientMeta(j *queue.Job) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// Every word moreBucket can return must be listed here, or its count is
+// dropped.
+var moreOrder = []string{"downloading", "created", "duplicate", "enriched", "matched",
+	"replaced", "skipped", "blacklisted", "failed", "canceled"}
+
+var moreWords = map[outcome.Outcome]string{
+	outcome.Created: "created", outcome.Duplicate: "duplicate", outcome.Enriched: "enriched", outcome.Matched: "matched",
+	outcome.Replaced: "replaced", outcome.SkippedArchive: "skipped", outcome.SkippedUnsupported: "skipped",
+	outcome.SkippedBlacklist: "blacklisted", outcome.Failed: "failed",
+}
+
+func moreBucket(it queue.Item) string {
+	if it.ErrorCode == outcome.ErrCodeCanceled {
+		return "canceled"
+	}
+	return cmp.Or(moreWords[it.Outcome], "downloading")
+}
+
+func moreSummary(items []queue.Item) string {
+	n := map[string]int{}
+	for _, it := range items {
+		n[moreBucket(it)]++
+	}
+	parts := make([]string, 0, len(moreOrder))
+	for _, label := range moreOrder {
+		if n[label] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n[label], label))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+const maxQueueItems = 20

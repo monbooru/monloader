@@ -86,12 +86,7 @@ func (l List) NameExists(name string) bool {
 }
 
 func (l List) ByHash(hash string) *Token {
-	for i := range l {
-		if subtle.ConstantTimeCompare([]byte(l[i].TokenHash), []byte(hash)) == 1 {
-			return &l[i]
-		}
-	}
-	return nil
+	return l.find(func(t Token) bool { return subtle.ConstantTimeCompare([]byte(t.TokenHash), []byte(hash)) == 1 })
 }
 
 // Authorize finds the token an Authorization header names, or returns the
