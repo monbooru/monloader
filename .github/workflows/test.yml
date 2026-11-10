@@ -1,0 +1,169 @@
+name: Test
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to test; empty tests the branch above
+        required: false
+
+permissions: {}
+
+jobs:
+  target:
+    name: The commit to test
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/test') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      issues: write
+      statuses: write
+    outputs:
+      sha: ${{ steps.target.outputs.SHA }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.issue.number || inputs.pr }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Resolve the commit
+        id: target
+        run: |
+          if [ -n "$PR" ]; then
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.sha)
+            echo "testing pull request #$PR at $sha"
+          else
+            sha="$GITHUB_SHA"
+            echo "testing $GITHUB_REF_NAME at $sha"
+          fi
+          echo "SHA=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Acknowledge the comment
+        if: github.event_name == 'issue_comment'
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/comments/${{ github.event.comment.id }}/reactions" -f content=rocket > /dev/null
+
+      - name: Mark the commit pending
+        run: gh api "repos/$GITHUB_REPOSITORY/statuses/${{ steps.target.outputs.SHA }}" -f state=pending -f context=test -f description="Tests running" -f target_url="$RUN_URL" > /dev/null
+
+  race:
+    name: Tests
+    needs: target
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.13"
+
+      - name: Install the pinned gallery-dl
+        run: |
+          . packaging/pins.env
+          pip install --no-cache-dir "gallery-dl==${GDL_VERSION}"
+          gallery-dl --version
+
+      - name: Test
+        run: go test -race ./...
+
+  coverage:
+    name: Coverage floor
+    needs: target
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.13"
+
+      - name: Install the pinned gallery-dl
+        run: |
+          . packaging/pins.env
+          pip install --no-cache-dir "gallery-dl==${GDL_VERSION}"
+
+      - name: Coverage floor (>= 80%, excluding cmd/)
+        run: |
+          go test -coverprofile=coverage.out $(go list ./... | grep -v '/cmd/')
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
+          echo "total coverage: ${pct}%"
+          if awk "BEGIN {exit !(${pct} < 80)}"; then
+            echo "::error::coverage ${pct}% is below the 80% floor"
+            exit 1
+          fi
+
+  tray:
+    name: Linux tray
+    needs: target
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: Build the Linux tray
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pkg-config libgtk-3-dev libayatana-appindicator3-dev
+          make build-tray
+
+  test:
+    name: Status on the commit
+    needs: [target, race, coverage, tray]
+    if: always() && needs.target.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RESULTS: ${{ join(needs.*.result, ' ') }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Every part passed
+        run: |
+          state=success
+          description="Tests passed"
+          case "$RESULTS" in
+            *failure*|*cancelled*|*skipped*)
+              state=failure
+              description="Tests failed: $RESULTS" ;;
+          esac
+          gh api "repos/$GITHUB_REPOSITORY/statuses/${{ needs.target.outputs.sha }}" -f state="$state" -f context=test -f description="$description" -f target_url="$RUN_URL" > /dev/null
+          [ "$state" = success ] || { echo "::error::$description"; exit 1; }

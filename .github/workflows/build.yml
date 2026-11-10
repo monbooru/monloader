@@ -1,0 +1,201 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      image_tags:
+        description: The image tags, space-separated, without the variant suffix
+        required: true
+        type: string
+      docker:
+        description: Build and push the images
+        required: false
+        type: boolean
+        default: true
+      binaries:
+        description: Build the binaries, installers, AppImage and Flatpak
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      GHCR_LEGACY_TOKEN:
+        required: false
+
+jobs:
+  docker:
+    if: inputs.docker
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Lowercase image name
+        id: img
+        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Login to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.arch }}
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=ghcr.io/${{ steps.img.outputs.NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Smoke test ${{ matrix.arch }}
+        run: |
+          docker run --rm --entrypoint /usr/local/bin/monloader \
+            ghcr.io/${{ steps.img.outputs.NAME }}@${{ steps.build.outputs.digest }} \
+            -version
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    if: inputs.docker
+    runs-on: ubuntu-latest
+    needs: docker
+    steps:
+      - name: Lowercase image name
+        id: img
+        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Login to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag the manifest
+        working-directory: /tmp/digests
+        run: |
+          tags=""
+          for t in ${{ inputs.image_tags }}; do
+            tags="$tags --tag ghcr.io/${{ steps.img.outputs.NAME }}:${t}"
+          done
+          docker buildx imagetools create $tags \
+            $(printf 'ghcr.io/${{ steps.img.outputs.NAME }}@sha256:%s ' *)
+
+      - name: Login to GHCR (legacy namespace)
+        if: github.repository == 'monbooru/monloader'
+        continue-on-error: true
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: leqwin
+          password: ${{ secrets.GHCR_LEGACY_TOKEN }}
+
+      - name: Push to legacy namespace
+        if: github.repository == 'monbooru/monloader'
+        continue-on-error: true
+        run: |
+          set -- ${{ inputs.image_tags }}
+          tags=""
+          for t in "$@"; do
+            tags="$tags --tag ghcr.io/leqwin/monloader:${t}"
+          done
+          docker buildx imagetools create $tags \
+            ghcr.io/${{ steps.img.outputs.NAME }}:${1}
+
+  binaries:
+    name: Binaries
+    if: inputs.binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install the build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+          . packaging/pins.env
+          ./packaging/install-go.sh "${GO_VERSION}" "${GO_SHA256_LINUX_AMD64}"
+          grep '^G' packaging/pins.env >> "$GITHUB_ENV"
+
+      - name: Fetch the bundled gallery-dl
+        run: ./packaging/fetch-tools.sh
+
+      - name: Build
+        run: ./packaging/build-binaries.sh
+
+      - name: Build the installers
+        run: |
+          ./packaging/build-installer.sh lite
+          ./packaging/build-installer.sh bundled
+
+      - name: Build the AppImage
+        run: ./packaging/build-appimage.sh
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: binaries-plain
+          path: dist/*
+          if-no-files-found: error
+
+  flatpak:
+    name: Flatpak bundle
+    if: inputs.binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+
+      - name: Let bwrap open a user namespace
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build the bundle
+        run: ./packaging/flatpak-bundle.sh
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: binaries-flatpak
+          path: dist/*
+          if-no-files-found: error

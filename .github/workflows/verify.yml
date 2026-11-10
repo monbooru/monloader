@@ -1,0 +1,96 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  base-branch:
+    name: Targets dev
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: The base branch is dev
+        run: |
+          if [ "${{ github.base_ref }}" != dev ]; then
+            echo "::error::Pull requests target dev, not ${{ github.base_ref }}: main only holds release snapshots. Edit the pull request's base branch; CONTRIBUTING.md has the details."
+            exit 1
+          fi
+
+  build:
+    name: Build and vet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: The registry tree is monbooru-plugins'
+        run: |
+          git clone --quiet --depth 1 https://github.com/monbooru/monbooru-plugins.git /tmp/monbooru-plugins
+          mkdir /tmp/registry
+          git -C /tmp/monbooru-plugins archive HEAD themes/light themes/legacy-dark themes/legacy-light | tar -x -C /tmp/registry
+          diff -r /tmp/registry web/plugins
+
+      - name: The site table is the pin's
+        run: |
+          . packaging/pins.env
+          table="$(cat internal/gdl/supportedsites.version)"
+          [ "$table" = "$GDL_VERSION" ] || { echo "::error::internal/gdl/supportedsites.md is gallery-dl $table's, the pin is $GDL_VERSION"; exit 1; }
+
+      - name: Build
+        run: go build ./...
+
+      - name: Cross-compile
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./...
+          GOOS=darwin GOARCH=arm64 go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  lint:
+    name: Lint and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
+        with:
+          version: v2.14.0
+          install-mode: goinstall
+
+      - name: Check advisories
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+
+  verify:
+    needs: [build, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every part passed
+        run: |
+          case "${{ join(needs.*.result, ' ') }}" in
+            *failure*|*cancelled*|*skipped*)
+              echo "::error::a part of Verify did not pass: ${{ join(needs.*.result, ' ') }}"
+              exit 1 ;;
+          esac

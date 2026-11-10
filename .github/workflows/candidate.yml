@@ -1,0 +1,78 @@
+name: Candidate
+
+concurrency:
+  group: candidate
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      binaries:
+        description: Build the binaries, installers, AppImage and Flatpak, and publish them as the dev-build pre-release
+        type: boolean
+        default: true
+      docker:
+        description: Build the images and push them as :dev and :dev-<sha>
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  check:
+    name: On dev
+    runs-on: ubuntu-latest
+    outputs:
+      short: ${{ steps.sha.outputs.SHORT }}
+    steps:
+      - name: On dev
+        run: |
+          if [ "${{ github.ref }}" != refs/heads/dev ]; then
+            echo "::error::Candidate runs on dev, not on ${{ github.ref_name }}."
+            exit 1
+          fi
+
+      - name: Short sha
+        id: sha
+        run: echo "SHORT=$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    uses: ./.github/workflows/build.yml
+    with:
+      image_tags: dev dev-${{ needs.check.outputs.short }}
+      docker: ${{ inputs.docker }}
+      binaries: ${{ inputs.binaries }}
+    secrets: inherit
+
+  prerelease:
+    name: The dev-build pre-release
+    if: inputs.binaries
+    runs-on: ubuntu-latest
+    needs: [check, build]
+    steps:
+      - name: Download every artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          path: dist
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Checksum every artifact
+        working-directory: dist
+        run: sha256sum -- * > ../SHA256SUMS && mv ../SHA256SUMS .
+
+      - name: Replace the dev-build pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete dev-build --yes --cleanup-tag 2>/dev/null || true
+          gh api -X DELETE "repos/$GH_REPO/git/refs/tags/dev-build" 2>/dev/null || true
+          gh release create dev-build --prerelease \
+            --target "${{ github.sha }}" \
+            --title "dev-build ${{ needs.check.outputs.short }}" \
+            --notes "Built on demand from dev at ${{ github.sha }} on $(date -u +%Y-%m-%d). Not a release: it is replaced by the next candidate and carries no support." \
+            dist/*

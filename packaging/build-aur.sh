@@ -5,13 +5,21 @@ set -eu
 
 . ./packaging/release-env.sh
 pkgver=${VERSION#v}
-tarball="$REPO/archive/refs/tags/$VERSION.tar.gz"
+tarball="${TARBALL_REPO:-$REPO}/archive/refs/tags/$VERSION.tar.gz"
 
 out=dist/aur
 rm -rf "$out"
 mkdir -p "$out"
 
-sha=$(curl -fsSL "$tarball" | sha256sum | cut -d' ' -f1)
+tries=0
+until curl -fsSL ${TARBALL_TOKEN:+-H "Authorization: token $TARBALL_TOKEN"} -o "$out/src.tar.gz" "$tarball"; do
+  tries=$((tries + 1))
+  [ "$tries" -lt 6 ] || { echo "cannot download $tarball after $tries tries" >&2; exit 1; }
+  sleep 10
+done
+[ -s "$out/src.tar.gz" ] || { echo "the tarball $tarball is empty" >&2; exit 1; }
+sha=$(sha256sum "$out/src.tar.gz" | cut -d' ' -f1)
+rm -f "$out/src.tar.gz"
 sed -E "s|^pkgver=.*|pkgver=$pkgver|; s|^sha256sums=\('[0-9a-f]{64}'\)|sha256sums=('$sha')|" \
   packaging/aur/PKGBUILD > "$out/PKGBUILD"
 grep -qx "pkgver=$pkgver" "$out/PKGBUILD" || { echo "no pkgver line to stamp" >&2; exit 1; }

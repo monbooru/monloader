@@ -1,246 +1,88 @@
 name: Release
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: write
   packages: write
-
-env:
-  GO_VERSION: '1.27.3'
-  GO_SHA256_LINUX_AMD64: '65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40'
-  GDL_VERSION: '1.32.19'
-  GDL_SHA256_LINUX_AMD64: '9662483cafa72f51ce4b2153aebd620256a9ab536218674b8794f7b3ece11c29'
-  GDL_SHA256_WINDOWS_AMD64: '4dda3f14efbc8a8e616af1fc7e1e88d795995326b47692453e620117254dec18'
-  GDL_LICENSE_SHA256: '8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643'
+  checks: read
 
 jobs:
-  docker:
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+  check:
+    name: The version is ready
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - name: Lowercase image name
-        id: img
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Login to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push ${{ matrix.arch }}
-        id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: docker/Dockerfile
-          platforms: linux/${{ matrix.arch }}
-          outputs: type=image,name=ghcr.io/${{ steps.img.outputs.NAME }},push-by-digest=true,name-canonical=true,push=true
-
-      - name: Smoke test ${{ matrix.arch }}
+      - name: On dev
         run: |
-          docker run --rm --entrypoint /usr/local/bin/monloader \
-            ghcr.io/${{ steps.img.outputs.NAME }}@${{ steps.build.outputs.digest }} \
-            -version
-
-      - name: Export digest
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: digests-${{ matrix.arch }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  manifest:
-    runs-on: ubuntu-latest
-    needs: docker
-    steps:
-      - name: Lowercase image name
-        id: img
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
-      - name: Download digests
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          path: /tmp/digests
-          pattern: digests-*
-          merge-multiple: true
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Login to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Tag the manifest
-        working-directory: /tmp/digests
-        run: |
-          latest=""
-          if [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
-            latest="--tag ghcr.io/${{ steps.img.outputs.NAME }}:latest"
-          fi
-          docker buildx imagetools create $latest \
-            --tag ghcr.io/${{ steps.img.outputs.NAME }}:${{ github.ref_name }} \
-            $(printf 'ghcr.io/${{ steps.img.outputs.NAME }}@sha256:%s ' *)
-
-      - name: Login to GHCR (legacy namespace)
-        continue-on-error: true
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ghcr.io
-          username: leqwin
-          password: ${{ secrets.GHCR_LEGACY_TOKEN }}
-
-      - name: Push to legacy namespace
-        continue-on-error: true
-        run: |
-          latest=""
-          if [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
-            latest="--tag ghcr.io/leqwin/monloader:latest"
-          fi
-          docker buildx imagetools create $latest \
-            --tag ghcr.io/leqwin/monloader:${{ github.ref_name }} \
-            ghcr.io/${{ steps.img.outputs.NAME }}:${{ github.ref_name }}
-
-  release:
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: manifest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Extract changelog entry
-        run: |
-          awk '/^## /{if(found){exit} found=1; next} found' CHANGELOG.md > .latest_changelog.md
-          if [ ! -s .latest_changelog.md ]; then
-            echo "No changelog entry found under a '## ' heading." >&2
+          if [ "${{ github.ref }}" != refs/heads/dev ]; then
+            echo "::error::Release runs on dev, not on ${{ github.ref_name }}."
             exit 1
           fi
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          body_path: .latest_changelog.md
+      - name: Read the version
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' < VERSION.md)"
+          if ! echo "$version" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION.md must be strict SemVer 'vMAJOR.MINOR.PATCH', got: $version"
+            exit 1
+          fi
+          heading="$(awk '/^## /{print $2; exit}' CHANGELOG.md)"
+          if [ "$heading" != "[$version]" ]; then
+            echo "::error::CHANGELOG.md's newest entry is $heading, VERSION.md says $version."
+            exit 1
+          fi
+          if git ls-remote --tags origin "refs/tags/$version" | grep -q "refs/tags/$version"; then
+            echo "::error::$version is already a tag; bump VERSION.md and CHANGELOG.md first."
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_OUTPUT"
 
-  binaries:
-    name: Binaries
+      - name: Verify is green on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusions="$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?check_name=verify&per_page=50" --jq '.check_runs[].conclusion')"
+          if [ -z "$conclusions" ]; then
+            echo "::error::Verify has not run on ${{ github.sha }}; wait for it, or run it by hand first."
+            exit 1
+          fi
+          if ! echo "$conclusions" | grep -qx success; then
+            echo "::error::Verify is not green on ${{ github.sha }}: $(echo "$conclusions" | tr '\n' ' ')"
+            exit 1
+          fi
+
+  build:
+    needs: check
+    uses: ./.github/workflows/build.yml
+    with:
+      image_tags: ${{ needs.check.outputs.version }}
+    secrets: inherit
+
+  publish:
+    name: Publish ${{ needs.check.outputs.version }}
     runs-on: ubuntu-latest
+    needs: [check, build]
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install the build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends zip
-          ./packaging/install-go.sh "${GO_VERSION}" "${GO_SHA256_LINUX_AMD64}"
-
-      - name: Fetch the bundled gallery-dl
-        run: ./packaging/fetch-tools.sh
-
-      - name: Build
-        run: ./packaging/build-binaries.sh
-
-      - name: Build the installers
-        run: |
-          ./packaging/build-installer.sh lite
-          ./packaging/build-installer.sh bundled
-
-      - name: Build the AppImage
-        run: ./packaging/build-appimage.sh
-
-      - name: Upload
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          name: binaries-plain
-          path: dist/*
-          if-no-files-found: error
+          fetch-depth: 0
 
-  flatpak:
-    name: Flatpak bundle
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install flatpak-builder
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
-
-      - name: Let bwrap open a user namespace
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-
-      - name: Build the bundle
-        run: ./packaging/flatpak-bundle.sh
-
-      - name: Upload
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: binaries-flatpak
-          path: dist/*
-          if-no-files-found: error
-
-  aur:
-    name: AUR package files
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: release
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Build the PKGBUILD and .SRCINFO
-        run: ./packaging/build-aur.sh
-
-      - name: Upload
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: aur
-          path: dist/aur
-          if-no-files-found: error
-
-  attach:
-    name: Attach the artifacts to the release
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [release, binaries, flatpak]
-    steps:
       - name: Download every artifact
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           path: dist
           pattern: binaries-*
@@ -250,8 +92,86 @@ jobs:
         working-directory: dist
         run: sha256sum -- * > ../SHA256SUMS && mv ../SHA256SUMS .
 
-      - name: Attach
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+      - name: Extract the changelog entry
+        run: |
+          awk '/^## /{if(found){exit} found=1; next} found' CHANGELOG.md > /tmp/latest_changelog.md
+          if [ ! -s /tmp/latest_changelog.md ]; then
+            echo "::error::CHANGELOG.md has no entry under a '## ' heading."
+            exit 1
+          fi
+
+      - name: Write the snapshot on main and the tag
+        run: |
+          git config user.name leqwin
+          git config user.email 216300216+leqwin@users.noreply.github.com
+          rm -rf /tmp/snap
+          mkdir -p /tmp/snap
+          rsync -a --exclude='.git/' --exclude='dist/' --exclude-from=.github/release-exclude ./ /tmp/snap/
+          tree="$(cd /tmp/snap && GIT_INDEX_FILE=/tmp/snap.index git --git-dir="$GITHUB_WORKSPACE/.git" --work-tree=/tmp/snap add -A && GIT_INDEX_FILE=/tmp/snap.index git --git-dir="$GITHUB_WORKSPACE/.git" write-tree)"
+          parent=""
+          if git fetch -q origin main 2>/dev/null; then
+            parent="-p $(git rev-parse FETCH_HEAD)"
+          fi
+          commit="$(git commit-tree $tree $parent -m "release: $VERSION" -m "$(cat /tmp/latest_changelog.md)")"
+          git push origin "$commit:refs/heads/main"
+          git push origin "$commit:refs/tags/$VERSION"
+          echo "main and $VERSION at $commit"
+
+      - name: Create the release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ needs.check.outputs.version }}
+          name: ${{ needs.check.outputs.version }}
+          body_path: /tmp/latest_changelog.md
           files: dist/*
+
+      - name: Build the PKGBUILD and .SRCINFO
+        env:
+          TARBALL_REPO: ${{ github.server_url }}/${{ github.repository }}
+          TARBALL_TOKEN: ${{ github.token }}
+        run: ./packaging/build-aur.sh
+
+      - name: Upload the AUR files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: aur
+          path: dist/aur
+          if-no-files-found: error
+
+      - name: Lowercase image name
+        id: img
+        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move latest
+        run: |
+          for suffix in ""; do
+            docker buildx imagetools create \
+              --tag "ghcr.io/${{ steps.img.outputs.NAME }}:latest$suffix" \
+              "ghcr.io/${{ steps.img.outputs.NAME }}:${VERSION}$suffix"
+          done
+
+      - name: Login to GHCR (legacy namespace)
+        if: github.repository == 'monbooru/monloader'
+        continue-on-error: true
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: leqwin
+          password: ${{ secrets.GHCR_LEGACY_TOKEN }}
+
+      - name: Move latest in the legacy namespace
+        if: github.repository == 'monbooru/monloader'
+        continue-on-error: true
+        run: |
+          for suffix in ""; do
+            docker buildx imagetools create \
+              --tag "ghcr.io/leqwin/monloader:latest$suffix" \
+              "ghcr.io/${{ steps.img.outputs.NAME }}:${VERSION}$suffix"
+          done
