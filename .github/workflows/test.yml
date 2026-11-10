@@ -29,11 +29,34 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PR: ${{ github.event.issue.number || inputs.pr }}
+      BODY: ${{ github.event.comment.body }}
+      COMMENT_ID: ${{ github.event.comment.id }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Resolve the commit
         id: target
         run: |
+          case "$PR" in
+            *[!0-9]*)
+              echo "::error::Not a pull request number: $PR"
+              exit 1 ;;
+          esac
+          want=""
+          if [ "$GITHUB_EVENT_NAME" = issue_comment ]; then
+            body="${BODY//$'\r'/}"
+            body="${body#"${body%%[![:space:]]*}"}"
+            body="${body%"${body##*[![:space:]]}"}"
+            if [[ ! "$body" =~ ^/test([[:blank:]]+([^[:space:]]+))?$ ]]; then
+              echo "Not a /test command; nothing to do."
+              exit 0
+            fi
+            want="${BASH_REMATCH[2],,}"
+            if [ -n "$want" ] && [[ ! "$want" =~ ^[0-9a-f]{7,40}$ ]]; then
+              gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=-1 > /dev/null
+              echo "::error::/test takes nothing, or the head commit of the pull request as 7 to 40 hex digits."
+              exit 1
+            fi
+          fi
           if [ -n "$PR" ]; then
             sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.sha)
             echo "testing pull request #$PR at $sha"
@@ -41,18 +64,27 @@ jobs:
             sha="$GITHUB_SHA"
             echo "testing $GITHUB_REF_NAME at $sha"
           fi
+          if [ -n "$want" ] && [ "${sha#"$want"}" = "$sha" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=-1 > /dev/null
+            echo "::error::$want is not the head of pull request #$PR, which is now at ${sha:0:7}; nothing tested."
+            exit 1
+          fi
           echo "SHA=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Acknowledge the comment
-        if: github.event_name == 'issue_comment'
-        run: gh api "repos/$GITHUB_REPOSITORY/issues/comments/${{ github.event.comment.id }}/reactions" -f content=rocket > /dev/null
+        if: github.event_name == 'issue_comment' && steps.target.outputs.SHA != ''
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=rocket > /dev/null
 
       - name: Mark the commit pending
-        run: gh api "repos/$GITHUB_REPOSITORY/statuses/${{ steps.target.outputs.SHA }}" -f state=pending -f context=test -f description="Tests running" -f target_url="$RUN_URL" > /dev/null
+        if: steps.target.outputs.SHA != ''
+        env:
+          SHA: ${{ steps.target.outputs.SHA }}
+        run: gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context=test -f description="Tests running on ${SHA:0:7}" -f target_url="$RUN_URL" > /dev/null
 
   race:
     name: Tests
     needs: target
+    if: needs.target.outputs.sha != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -67,6 +99,7 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
@@ -80,11 +113,12 @@ jobs:
           gallery-dl --version
 
       - name: Test
-        run: go test -race ./...
+        run: go test -race -timeout 30m ./...
 
   coverage:
     name: Coverage floor
     needs: target
+    if: needs.target.outputs.sha != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -99,6 +133,7 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
@@ -123,6 +158,7 @@ jobs:
   tray:
     name: Linux tray
     needs: target
+    if: needs.target.outputs.sha != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -137,6 +173,7 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Build the Linux tray
         run: |
@@ -147,23 +184,24 @@ jobs:
   test:
     name: Status on the commit
     needs: [target, race, coverage, tray]
-    if: always() && needs.target.result == 'success'
+    if: always() && needs.target.result == 'success' && needs.target.outputs.sha != ''
     runs-on: ubuntu-latest
     permissions:
       statuses: write
     env:
       GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.target.outputs.sha }}
       RESULTS: ${{ join(needs.*.result, ' ') }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Every part passed
         run: |
           state=success
-          description="Tests passed"
+          description="Tests passed on ${SHA:0:7}"
           case "$RESULTS" in
             *failure*|*cancelled*|*skipped*)
               state=failure
-              description="Tests failed: $RESULTS" ;;
+              description="Tests failed on ${SHA:0:7}: $RESULTS" ;;
           esac
-          gh api "repos/$GITHUB_REPOSITORY/statuses/${{ needs.target.outputs.sha }}" -f state="$state" -f context=test -f description="$description" -f target_url="$RUN_URL" > /dev/null
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context=test -f description="$description" -f target_url="$RUN_URL" > /dev/null
           [ "$state" = success ] || { echo "::error::$description"; exit 1; }

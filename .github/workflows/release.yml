@@ -16,11 +16,16 @@ jobs:
   check:
     name: The version is ready
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: On dev
         run: |
@@ -31,6 +36,8 @@ jobs:
 
       - name: Read the version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="$(tr -d '[:space:]' < VERSION.md)"
           if ! echo "$version" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
@@ -42,9 +49,21 @@ jobs:
             echo "::error::CHANGELOG.md's newest entry is $heading, VERSION.md says $version."
             exit 1
           fi
-          if git ls-remote --tags origin "refs/tags/$version" | grep -q "refs/tags/$version"; then
-            echo "::error::$version is already a tag; bump VERSION.md and CHANGELOG.md first."
-            exit 1
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          g() { git -c "http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" "$@"; }
+          remote_tag="$(g ls-remote --tags origin "refs/tags/$version")"
+          if [ -n "$remote_tag" ]; then
+            rm -rf /tmp/snap
+            mkdir -p /tmp/snap
+            rsync -a --exclude='.git/' --exclude='dist/' --exclude-from=.github/release-exclude ./ /tmp/snap/
+            tree="$(cd /tmp/snap && GIT_INDEX_FILE=/tmp/snap.index git --git-dir="$GITHUB_WORKSPACE/.git" --work-tree=/tmp/snap add -A && GIT_INDEX_FILE=/tmp/snap.index git --git-dir="$GITHUB_WORKSPACE/.git" write-tree)"
+            g fetch -q --depth 1 origin "refs/tags/$version"
+            if [ "$(git rev-parse 'FETCH_HEAD^{tree}')" != "$tree" ]; then
+              echo "::error::$version is already a tag; bump VERSION.md and CHANGELOG.md first."
+              exit 1
+            fi
+            echo "::notice::$version is already tagged on this commit's snapshot: resuming its publication."
           fi
           echo "VERSION=$version" >> "$GITHUB_OUTPUT"
 
@@ -52,27 +71,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          conclusions="$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?check_name=verify&per_page=50" --jq '.check_runs[].conclusion')"
-          if [ -z "$conclusions" ]; then
-            echo "::error::Verify has not run on ${{ github.sha }}; wait for it, or run it by hand first."
+          newest="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=verify&filter=all&per_page=100" --jq '.check_runs | max_by(.id) | if . == null then "" else (.conclusion // .status) end')"
+          if [ -z "$newest" ]; then
+            echo "::error::Verify has not run on $GITHUB_SHA; wait for it, or run it by hand first."
             exit 1
           fi
-          if ! echo "$conclusions" | grep -qx success; then
-            echo "::error::Verify is not green on ${{ github.sha }}: $(echo "$conclusions" | tr '\n' ' ')"
+          if [ "$newest" != success ]; then
+            echo "::error::Verify's newest run on $GITHUB_SHA is not green: $newest"
             exit 1
           fi
 
   build:
     needs: check
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/build.yml
-    with:
-      image_tags: ${{ needs.check.outputs.version }}
     secrets: inherit
 
   publish:
     name: Publish ${{ needs.check.outputs.version }}
     runs-on: ubuntu-latest
     needs: [check, build]
+    permissions:
+      contents: write
+      packages: write
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
@@ -80,6 +103,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Download every artifact
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -87,6 +111,12 @@ jobs:
           path: dist
           pattern: binaries-*
           merge-multiple: true
+
+      - name: Download the image digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          path: /tmp/digests
+          pattern: digests-*
 
       - name: Checksum every artifact
         working-directory: dist
@@ -101,20 +131,43 @@ jobs:
           fi
 
       - name: Write the snapshot on main and the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name leqwin
           git config user.email 216300216+leqwin@users.noreply.github.com
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          g() { git -c "http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" "$@"; }
           rm -rf /tmp/snap
           mkdir -p /tmp/snap
           rsync -a --exclude='.git/' --exclude='dist/' --exclude-from=.github/release-exclude ./ /tmp/snap/
           tree="$(cd /tmp/snap && GIT_INDEX_FILE=/tmp/snap.index git --git-dir="$GITHUB_WORKSPACE/.git" --work-tree=/tmp/snap add -A && GIT_INDEX_FILE=/tmp/snap.index git --git-dir="$GITHUB_WORKSPACE/.git" write-tree)"
-          parent=""
-          if git fetch -q origin main 2>/dev/null; then
-            parent="-p $(git rev-parse FETCH_HEAD)"
+          remote_tag="$(g ls-remote --tags origin "refs/tags/$VERSION")"
+          if [ -n "$remote_tag" ]; then
+            g fetch -q origin "refs/tags/$VERSION"
+            if [ "$(git rev-parse 'FETCH_HEAD^{tree}')" != "$tree" ]; then
+              echo "::error::$VERSION is already a tag on another tree; nothing pushed."
+              exit 1
+            fi
+            echo "main and $VERSION already hold this snapshot at $(git rev-parse 'FETCH_HEAD^{commit}')"
+            exit 0
           fi
-          commit="$(git commit-tree $tree $parent -m "release: $VERSION" -m "$(cat /tmp/latest_changelog.md)")"
-          git push origin "$commit:refs/heads/main"
-          git push origin "$commit:refs/tags/$VERSION"
+          parent=()
+          commit=""
+          if g fetch -q origin main 2>/dev/null; then
+            tip="$(git rev-parse FETCH_HEAD)"
+            parent=(-p "$tip")
+            if [ "$(git rev-parse "$tip^{tree}")" = "$tree" ] && [ "$(git log -1 --format=%s "$tip")" = "release: $VERSION" ]; then
+              commit="$tip"
+              echo "main already holds this snapshot at $commit"
+            fi
+          fi
+          if [ -z "$commit" ]; then
+            commit="$(git commit-tree "$tree" "${parent[@]}" -m "release: $VERSION" -m "$(cat /tmp/latest_changelog.md)")"
+            g push origin "$commit:refs/heads/main"
+          fi
+          g push origin "$commit:refs/tags/$VERSION"
           echo "main and $VERSION at $commit"
 
       - name: Create the release
@@ -124,6 +177,7 @@ jobs:
           name: ${{ needs.check.outputs.version }}
           body_path: /tmp/latest_changelog.md
           files: dist/*
+          overwrite_files: true
 
       - name: Build the PKGBUILD and .SRCINFO
         env:
@@ -137,6 +191,7 @@ jobs:
           name: aur
           path: dist/aur
           if-no-files-found: error
+          overwrite: true
 
       - name: Lowercase image name
         id: img
@@ -149,15 +204,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Move latest
+      - name: Tag the images and move latest
+        working-directory: /tmp/digests
+        env:
+          NAME: ${{ steps.img.outputs.NAME }}
         run: |
-          for suffix in ""; do
-            docker buildx imagetools create \
-              --tag "ghcr.io/${{ steps.img.outputs.NAME }}:latest$suffix" \
-              "ghcr.io/${{ steps.img.outputs.NAME }}:${VERSION}$suffix"
+          refs=()
+          for f in digests-*/*; do
+            refs+=("ghcr.io/$NAME@sha256:${f##*/}")
           done
+          docker buildx imagetools create \
+            --tag "ghcr.io/$NAME:${VERSION}" \
+            --tag "ghcr.io/$NAME:latest" \
+            "${refs[@]}"
 
       - name: Login to GHCR (legacy namespace)
+        id: legacy
         if: github.repository == 'monbooru/monloader'
         continue-on-error: true
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
@@ -166,12 +228,19 @@ jobs:
           username: leqwin
           password: ${{ secrets.GHCR_LEGACY_TOKEN }}
 
-      - name: Move latest in the legacy namespace
-        if: github.repository == 'monbooru/monloader'
-        continue-on-error: true
+      - name: The legacy namespace login failed
+        if: steps.legacy.outcome == 'failure'
+        run: echo "::warning::The login to the legacy namespace failed (GHCR_LEGACY_TOKEN expired?); ghcr.io/leqwin/monloader keeps its old tags."
+
+      - name: Tag the images and move latest in the legacy namespace
+        if: steps.legacy.outcome == 'success'
+        env:
+          NAME: ${{ steps.img.outputs.NAME }}
         run: |
           for suffix in ""; do
             docker buildx imagetools create \
+              --tag "ghcr.io/leqwin/monloader:${VERSION}$suffix" \
               --tag "ghcr.io/leqwin/monloader:latest$suffix" \
-              "ghcr.io/${{ steps.img.outputs.NAME }}:${VERSION}$suffix"
+              "ghcr.io/$NAME:${VERSION}$suffix" \
+              || echo "::warning::The push of ${VERSION}$suffix to the legacy namespace failed; ghcr.io/leqwin/monloader keeps its old tags."
           done

@@ -2,6 +2,7 @@ name: Verify
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches:
       - dev
@@ -29,6 +30,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -36,10 +39,13 @@ jobs:
           go-version-file: go.mod
 
       - name: The registry tree is monbooru-plugins'
+        env:
+          PLUGINS_COMMIT: 9d275a40de0054130ed269831b5f5e811571b33b
         run: |
-          git clone --quiet --depth 1 https://github.com/monbooru/monbooru-plugins.git /tmp/monbooru-plugins
+          git init --quiet /tmp/monbooru-plugins
+          git -C /tmp/monbooru-plugins fetch --quiet --depth 1 https://github.com/monbooru/monbooru-plugins.git "$PLUGINS_COMMIT"
           mkdir /tmp/registry
-          git -C /tmp/monbooru-plugins archive HEAD themes/light themes/legacy-dark themes/legacy-light | tar -x -C /tmp/registry
+          git -C /tmp/monbooru-plugins archive FETCH_HEAD themes/light themes/legacy-dark themes/legacy-light | tar -x -C /tmp/registry
           diff -r /tmp/registry web/plugins
 
       - name: The site table is the pin's
@@ -65,6 +71,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e

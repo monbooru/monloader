@@ -4,9 +4,10 @@ on:
   workflow_call:
     inputs:
       image_tags:
-        description: The image tags, space-separated, without the variant suffix
-        required: true
+        description: The image tags, space-separated, without the variant suffix; empty pushes the images by digest only
+        required: false
         type: string
+        default: ''
       docker:
         description: Build and push the images
         required: false
@@ -25,6 +26,9 @@ jobs:
   docker:
     if: inputs.docker
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +40,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Lowercase image name
         id: img
@@ -78,12 +84,15 @@ jobs:
           name: digests-${{ matrix.arch }}
           path: /tmp/digests/*
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   manifest:
-    if: inputs.docker
+    if: inputs.docker && inputs.image_tags != ''
     runs-on: ubuntu-latest
     needs: docker
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Lowercase image name
         id: img
@@ -117,6 +126,7 @@ jobs:
             $(printf 'ghcr.io/${{ steps.img.outputs.NAME }}@sha256:%s ' *)
 
       - name: Login to GHCR (legacy namespace)
+        id: legacy
         if: github.repository == 'monbooru/monloader'
         continue-on-error: true
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
@@ -125,9 +135,12 @@ jobs:
           username: leqwin
           password: ${{ secrets.GHCR_LEGACY_TOKEN }}
 
+      - name: The legacy namespace login failed
+        if: steps.legacy.outcome == 'failure'
+        run: echo "::warning::The login to the legacy namespace failed (GHCR_LEGACY_TOKEN expired?); ghcr.io/leqwin/monloader keeps its old tags."
+
       - name: Push to legacy namespace
-        if: github.repository == 'monbooru/monloader'
-        continue-on-error: true
+        if: steps.legacy.outcome == 'success'
         run: |
           set -- ${{ inputs.image_tags }}
           tags=""
@@ -135,15 +148,20 @@ jobs:
             tags="$tags --tag ghcr.io/leqwin/monloader:${t}"
           done
           docker buildx imagetools create $tags \
-            ghcr.io/${{ steps.img.outputs.NAME }}:${1}
+            ghcr.io/${{ steps.img.outputs.NAME }}:${1} \
+            || echo "::warning::The push to the legacy namespace failed; ghcr.io/leqwin/monloader keeps its old tags."
 
   binaries:
     name: Binaries
     if: inputs.binaries
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Install the build tools
         run: |
@@ -178,9 +196,13 @@ jobs:
     name: Flatpak bundle
     if: inputs.binaries
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Install flatpak-builder
         run: |
