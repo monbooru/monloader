@@ -1,0 +1,28 @@
+{
+  "names": [
+    {"in": "Foo Bar", "out": "foo_bar"},
+    {"in": "  leading and trailing  ", "out": "leading_and_trailing"},
+    {"in": "multi   space\ttab", "out": "multi_spacetab"},
+    {"in": "quote\"star*", "out": "quote_star"},
+    {"in": "girls' frontline", "out": "girls'_frontline"},
+    {"in": "Ünicode Name", "out": "ünicode_name"},
+    {"in": "zero​width", "out": "zerowidth"},
+    {"in": "a__b", "out": "a__b"},
+    {"in": ">_<", "out": ">_<"},
+    {"in": "___", "out": ""},
+    {"in": "nier:automata", "out": "nier:automata"}
+  ],
+  "forms": [
+    {"in": "artist: foo", "out": "artist:foo"},
+    {"in": "Artist:Foo Bar", "out": "artist:foo_bar"},
+    {"in": "character:  x ", "out": "character:x"},
+    {"in": "meta:highres", "out": "meta:highres"},
+    {"in": "species:cat\"girl", "out": "species:cat_girl"},
+    {"in": "general:foo", "out": "foo"},
+    {"in": "nier:automata", "out": "nier:automata"},
+    {"in": "nier: automata", "out": "nier:_automata"},
+    {"in": ":3", "out": ":3"},
+    {"in": "copyright:", "out": ""},
+    {"in": "copyright: ", "out": ""}
+  ]
+}
