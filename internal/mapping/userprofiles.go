@@ -114,7 +114,14 @@ func ValidateProfile(p Profile) error {
 			return fmt.Errorf("tag category %q maps to unknown category %q", from, to)
 		}
 	}
-	for from, to := range p.TagRules {
+	return CheckTagRules(p.TagRules)
+}
+
+func CheckTagRules(rules map[string]string) error {
+	for from, to := range rules {
+		if strings.Contains(from, "*") {
+			return fmt.Errorf("tag rule %q has a *: a tag rule names one exact tag", from)
+		}
 		if from == "" || normalizeTag(from) != from {
 			return fmt.Errorf("tag rule %q is not a normalized tag name", from)
 		}

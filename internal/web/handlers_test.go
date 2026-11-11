@@ -2153,6 +2153,23 @@ func TestSaveSiteRefusalWritesNothing(t *testing.T) {
 	}
 }
 
+func TestSaveSiteRefusesStarInTagRuleKey(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+
+	body := refusedSave(t, postForm(t, ts, srv, "/settings/sites/newgrounds", url.Values{
+		"family": {"generic"}, "kind": {"other"}, "auth": {"none"},
+		"rule_from": {"*_(va)"}, "rule_to": {"va:*"},
+	}))
+	for _, want := range []string{`data-refused-tab="sd-mapping"`, `value="*_(va)"`, `value="va:*"`, "names one exact tag"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the refused dialog lacks %q, got %q", want, truncate(body))
+		}
+	}
+	if srv.mapper.CustomProfile("newgrounds") {
+		t.Error("a refused save wrote the mapping profile")
+	}
+}
+
 func TestSiteDialogExportTab(t *testing.T) {
 	srv, ts := serveWeb(t, "")
 

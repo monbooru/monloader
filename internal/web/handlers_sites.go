@@ -376,8 +376,20 @@ func profileFromForm(r *http.Request) (mapping.Profile, error) {
 	foldKey := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 	p.RatingOverrides = formPairs(r, "rating_from", "rating_to", foldKey, nil)
 	p.CategoryOverrides = formPairs(r, "cat_from", "cat_to", foldKey, nil)
-	foldTag := func(s string) string { return mapping.NormalizeTag(strings.TrimSpace(s)) }
+	// A key holding a * stays as typed, target included: folded, the check
+	// that refuses it would never see the *.
+	foldTag := func(s string) string {
+		if s = strings.TrimSpace(s); strings.Contains(s, "*") {
+			return s
+		}
+		return mapping.NormalizeTag(s)
+	}
 	p.TagRules = formPairs(r, "rule_from", "rule_to", foldTag, mapping.NormalizeRuleTarget)
+	for i, from := range r.Form["rule_from"] {
+		if tos := r.Form["rule_to"]; strings.Contains(from, "*") && i < len(tos) {
+			p.TagRules[foldTag(from)] = strings.TrimSpace(tos[i])
+		}
+	}
 	if raw := strings.TrimSpace(r.FormValue("profile_options")); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &p.Options); err != nil {
 			return p, fmt.Errorf("public gallery-dl options must be a JSON object: %w", err)
@@ -443,6 +455,10 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		p, err := profileFromForm(r)
 		if err != nil {
 			s.refuseSiteSave(w, r, name, "sd-advanced", err.Error())
+			return
+		}
+		if err := mapping.CheckTagRules(p.TagRules); err != nil {
+			s.refuseSiteSave(w, r, name, "sd-mapping", err.Error())
 			return
 		}
 		profile = &p

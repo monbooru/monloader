@@ -3,6 +3,7 @@ package mapping
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/monbooru/monloader/internal/config"
@@ -144,5 +145,17 @@ func TestValidateProfileOnTagRuleTargets(t *testing.T) {
 		if (err == nil) != ok {
 			t.Errorf("target %q: err = %v", to, err)
 		}
+	}
+}
+
+func TestCheckTagRulesRefusesStarInKey(t *testing.T) {
+	for _, key := range []string{"*_(va)", "artist:*_(va)", "a*b"} {
+		err := CheckTagRules(map[string]string{key: "va:x"})
+		if err == nil || !strings.Contains(err.Error(), "names one exact tag") {
+			t.Errorf("key %q: err = %v", key, err)
+		}
+	}
+	if err := CheckTagRules(map[string]string{"soandso_(va)": "va:soandso"}); err != nil {
+		t.Errorf("an exact rule was refused: %v", err)
 	}
 }
