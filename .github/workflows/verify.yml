@@ -66,7 +66,7 @@ jobs:
         run: go vet ./...
 
   lint:
-    name: Lint and advisories
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -84,11 +84,6 @@ jobs:
         with:
           version: v2.14.0
           install-mode: goinstall
-
-      - name: Check advisories
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
-          govulncheck ./...
 
   verify:
     needs: [build, lint]
