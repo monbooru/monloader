@@ -2,6 +2,7 @@ package web
 
 import (
 	"cmp"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,6 +42,13 @@ var builtinThemes = []webui.Theme{
 }
 
 var builtinArt = map[string]string{"dark": "/static/", "light": "/static/light/"}
+
+var ownScheme = func() string {
+	sheet, _ := fs.ReadFile(webFS.FS, "static/main.css")
+	return webui.SheetScheme(sheet, "")
+}()
+
+func themeScheme(t webui.Theme) string { return webui.ThemeScheme(t, webFS.FS, ownScheme) }
 
 var mascotFaces = []string{"lost", "sleep", "panic", "sparkle"}
 
@@ -171,11 +179,13 @@ func (s *Server) serveThemeFile(w http.ResponseWriter, r *http.Request, t webui.
 	webui.ServeThemeFile(w, r, t, path, webFS.FS)
 }
 
+var assetVersion = webui.AssetVersion(webFS.FS, webui.Static)
+
 func themeLogoURL(t webui.Theme) string {
 	if t.Logo != "" {
 		return "/theme.logo"
 	}
-	return cmp.Or(builtinArt[t.Name], "/static/") + "logo.png"
+	return cmp.Or(builtinArt[t.Name], "/static/") + "logo.png?v=" + assetVersion
 }
 
 // Versioned: Firefox does not revalidate a favicon, so a fixed URL keeps the first icon seen.

@@ -163,6 +163,7 @@ func (s *Server) stopWithPage(w http.ResponseWriter, r *http.Request, verb strin
 	}
 	theme := s.activeTheme()
 	page["Title"], page["BooruFavicon"], page["Theme"] = page["Heading"], themeFaviconURL(theme), theme.Path != ""
+	page["ColorScheme"] = themeScheme(theme)
 	s.render(w, "webui/message_page", page)
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()

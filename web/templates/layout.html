@@ -2,9 +2,9 @@
 <html lang="en" data-app="monloader">
 <head>
 {{template "webui/head" .}}
-  <script src="/static/shared/htmx.min.js" defer></script>
-  <script src="/static/shared/base.js" defer></script>
-  <script src="/static/main.js" defer></script>
+  <script src="{{static "/static/shared/htmx.min.js"}}" defer></script>
+  <script src="{{static "/static/shared/base.js"}}" defer></script>
+  <script src="{{static "/static/main.js"}}" defer></script>
 </head>
 <body{{with .CanonicalURL}} data-canonical-url="{{.}}"{{end}}>
 {{end}}

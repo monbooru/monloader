@@ -65,6 +65,7 @@ func (s *Server) loginData(errMsg, next string) map[string]any {
 		"BooruName":    s.booruName(),
 		"BooruFavicon": themeFaviconURL(theme),
 		"Theme":        theme.Path != "",
+		"ColorScheme":  themeScheme(theme),
 		"Next":         next,
 		"Error":        errMsg,
 	}

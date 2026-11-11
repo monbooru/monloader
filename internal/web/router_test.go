@@ -171,6 +171,33 @@ func TestStaticAssetsCarryTheirOwnContentType(t *testing.T) {
 	}
 }
 
+func TestPagesLinkTheStaticFilesThePageCacheKeeps(t *testing.T) {
+	_, ts := serveProc(t, noopProc{})
+	_, queue := get(t, ts, "/queue")
+	for _, path := range []string{"/static/shared/base.css", "/static/main.css", "/static/shared/htmx.min.js", "/static/shared/base.js", "/static/main.js"} {
+		if !strings.Contains(queue, `"`+path+"?v="+assetVersion+`"`) {
+			t.Errorf("the queue page links %s without the version", path)
+		}
+	}
+	h := newWebServer(t, "", "").Handler()
+	for path, want := range map[string]string{
+		"/static/main.css?v=" + assetVersion:        "max-age=31536000, immutable",
+		"/static/shared/base.css?v=" + assetVersion: "max-age=31536000, immutable",
+		"/static/light/logo.png?v=" + assetVersion:  "max-age=31536000, immutable",
+		"/static/shared/jetbrains-mono.woff2":       "no-cache",
+	} {
+		w := record(h.ServeHTTP, httptest.NewRequest("GET", "http://127.0.0.1"+path, nil))
+		if w.Code != 200 || w.Header().Get("Cache-Control") != want {
+			t.Errorf("GET %s: %d %q, want 200 %q", path, w.Code, w.Header().Get("Cache-Control"), want)
+		}
+	}
+	r := httptest.NewRequest("GET", "http://127.0.0.1/static/shared/jetbrains-mono.woff2", nil)
+	r.Header.Set("If-None-Match", `"`+assetVersion+`"`)
+	if w := record(h.ServeHTTP, r); w.Code != 304 {
+		t.Errorf("revalidation: %d, want 304", w.Code)
+	}
+}
+
 var csrfRe = regexp.MustCompile(`(?:name="_csrf" value|name="csrf-token" content)="([^"]+)"`)
 
 func newTestServer(t *testing.T, srv *Server) *httptest.Server {

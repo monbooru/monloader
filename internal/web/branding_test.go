@@ -201,7 +201,7 @@ func TestBrandingDefaults(t *testing.T) {
 		}
 	}
 	_, queue := get(t, ts, "/queue")
-	for _, want := range []string{`src="/static/logo.png"`, `<span>mon<span class="wordmark-accent">loader</span></span>`, `src="/static/mascot-sleep.png"`, `<title>Queue - Monloader</title>`} {
+	for _, want := range []string{`src="/static/logo.png?v=` + assetVersion + `"`, `<span>mon<span class="wordmark-accent">loader</span></span>`, `src="/static/mascot-sleep.png"`, `<title>Queue - Monloader</title>`} {
 		if !strings.Contains(queue, want) {
 			t.Errorf("default queue page missing %q", want)
 		}
@@ -255,5 +255,16 @@ func TestMonbooruLink(t *testing.T) {
 	}
 	if !strings.Contains(plainLight, "connected to monbooru") {
 		t.Errorf("unlinked light should still read 'connected to monbooru', got %q", plainLight)
+	}
+}
+
+func TestTheHeadDeclaresTheActiveThemesColorScheme(t *testing.T) {
+	srv, ts := serveProc(t, noopProc{})
+	installTheme(t, srv, map[string]string{"plain.css": ":root{--bg:#222}"})
+	for theme, want := range map[string]string{"": "dark", "light": "light", "legacy-light": "light", "legacy-dark": "dark", "plain": "dark"} {
+		srv.cfg.Current().Server.Theme = theme
+		if _, queue := get(t, ts, "/queue"); !strings.Contains(queue, `<meta name="color-scheme" content="`+want+`">`) {
+			t.Errorf("%q: the head does not declare %s", theme, want)
+		}
 	}
 }
