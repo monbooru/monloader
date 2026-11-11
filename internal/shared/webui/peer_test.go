@@ -50,7 +50,7 @@ func TestPairNoticeTitleNamesTheSourceAndTheExpiry(t *testing.T) {
 }
 
 func TestPairNoticeRendersHiddenWithNothingWaiting(t *testing.T) {
-	tmpl := template.Must(template.New("").Funcs(Funcs()).ParseFS(Templates, "pair_notice.html"))
+	tmpl := template.Must(template.New("").Funcs(Funcs("")).ParseFS(Templates, "pair_notice.html"))
 	render := func(n PairNotice) string {
 		var buf bytes.Buffer
 		if err := tmpl.ExecuteTemplate(&buf, "webui/pair_notice", n); err != nil {

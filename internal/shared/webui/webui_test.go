@@ -6,10 +6,13 @@ import (
 	"html/template"
 	"io/fs"
 	"mime"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestVendoredFilesAreThePinnedBuilds(t *testing.T) {
@@ -89,7 +92,7 @@ func TestBaseFilesAreServed(t *testing.T) {
 }
 
 func TestTheSharedTemplatesParseWithTheirFuncs(t *testing.T) {
-	tmpl, err := template.New("").Funcs(Funcs()).ParseFS(Templates, "*.html")
+	tmpl, err := template.New("").Funcs(Funcs("")).ParseFS(Templates, "*.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,5 +127,32 @@ func TestTheStylesheetAndScriptTypesAreRegistered(t *testing.T) {
 		if got := mime.TypeByExtension(ext); got != want {
 			t.Errorf("TypeByExtension(%q) = %q, want %q", ext, got, want)
 		}
+	}
+}
+
+func TestAStaticURLIsKeptOnlyUnderTheCurrentVersion(t *testing.T) {
+	files := fstest.MapFS{"main.css": {Data: []byte("body{}")}}
+	version := AssetVersion(files)
+	h := StaticHandler(files, version)
+	for target, want := range map[string]string{
+		"/main.css?v=" + version: "max-age=31536000, immutable",
+		"/main.css?v=0ld":        "no-cache",
+		"/main.css":              "no-cache",
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != want {
+			t.Errorf("%s: %d %q, want 200 %q", target, w.Code, w.Header().Get("Cache-Control"), want)
+		}
+	}
+	r := httptest.NewRequest(http.MethodGet, "/main.css", nil)
+	r.Header.Set("If-None-Match", `"`+version+`"`)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusNotModified {
+		t.Errorf("revalidation: %d, want 304", w.Code)
+	}
+	if AssetVersion(fstest.MapFS{"main.css": {Data: []byte("body{ }")}}) == version {
+		t.Error("the version did not move with the bytes")
 	}
 }

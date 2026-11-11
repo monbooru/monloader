@@ -23,11 +23,14 @@
 package webui
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"mime"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -49,8 +52,45 @@ func init() {
 	_ = mime.AddExtensionType(".woff2", "font/woff2")
 }
 
-func Funcs() template.FuncMap {
+// AssetVersion changes whenever a byte of the files does, which a build
+// stamp would not: every dev build carries the same one.
+func AssetVersion(fsyss ...fs.FS) string {
+	h := sha256.New()
+	for _, fsys := range fsyss {
+		err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			b, err := fs.ReadFile(fsys, path)
+			h.Write([]byte(path))
+			h.Write(b)
+			return err
+		})
+		if err != nil {
+			panic(err)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// A URL carrying the current version is kept for good, so the next page
+// has its stylesheets before it parses; any other revalidates.
+func StaticHandler(fsys fs.FS, version string) http.Handler {
+	files := http.FileServer(http.FS(fsys))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+version+`"`)
+		if r.URL.Query().Get("v") == version {
+			w.Header().Set("Cache-Control", "max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		files.ServeHTTP(w, r)
+	})
+}
+
+func Funcs(assetVersion string) template.FuncMap {
 	return template.FuncMap{
+		"static":      func(path string) string { return path + "?v=" + assetVersion },
 		"browseURL":   BrowseURL,
 		"dateOnly":    func(stamp string) string { date, _, _ := strings.Cut(stamp, "T"); return date },
 		"humanBytes":  HumanBytes,

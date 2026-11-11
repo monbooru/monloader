@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -216,6 +217,31 @@ func readSeed(dir string) map[string]string {
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+var colorScheme = regexp.MustCompile(`color-scheme:\s*([a-z ]*[a-z])\s*[;}]`)
+
+// SheetScheme is the first color-scheme a sheet declares, fallback when none.
+func SheetScheme(sheet []byte, fallback string) string {
+	if m := colorScheme.FindSubmatch(sheet); m != nil {
+		return string(m[1])
+	}
+	return fallback
+}
+
+// ThemeScheme reads t's sheet from where ServeThemeFile serves it; the
+// app's own sheet stays under a theme that declares none.
+func ThemeScheme(t Theme, builtin fs.FS, own string) string {
+	if t.Path == "" {
+		return own
+	}
+	var sheet []byte
+	if t.Builtin {
+		sheet, _ = fs.ReadFile(builtin, t.Path)
+	} else {
+		sheet, _ = os.ReadFile(t.Path)
+	}
+	return SheetScheme(sheet, own)
 }
 
 func ServeThemeFile(w http.ResponseWriter, r *http.Request, t Theme, path string, builtin fs.FS) {

@@ -239,3 +239,23 @@ func TestSeedThemeKeepsAFileItsRecordNamesOutsideTheFolder(t *testing.T) {
 		t.Errorf("a file outside the folder was removed: %q, %v", got, err)
 	}
 }
+
+func TestThemeSchemeReadsTheSheetTheThemeServes(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"mine.css": ":root {\n  color-scheme: light dark;\n}", "bare.css": ":root{--bg:#111}"})
+	builtin := fstest.MapFS{"light/theme.css": {Data: []byte(":root{color-scheme:light}")}}
+	for _, tc := range []struct {
+		t    Theme
+		want string
+	}{
+		{Theme{Name: "dark", Builtin: true}, "dark"},
+		{Theme{Name: "light", Builtin: true, Path: "light/theme.css"}, "light"},
+		{Theme{Name: "mine", Path: filepath.Join(dir, "mine.css")}, "light dark"},
+		{Theme{Name: "bare", Path: filepath.Join(dir, "bare.css")}, "dark"},
+		{Theme{Name: "gone", Path: filepath.Join(dir, "gone.css")}, "dark"},
+	} {
+		if got := ThemeScheme(tc.t, builtin, "dark"); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.t.Name, got, tc.want)
+		}
+	}
+}
