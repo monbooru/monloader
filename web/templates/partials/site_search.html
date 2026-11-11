@@ -7,15 +7,15 @@
   {{range .Rows}}
   <tr>
     <td class="stack-head">{{.Category}}</td>
-    <td class="field-hint" data-label="Name">{{.Name}}</td>
+    <td class="status-dim" data-label="Name">{{.Name}}</td>
     <td data-label="Login"><span class="status-badge">{{.Login}}</span></td>
     <td>{{if .Configured}}<button type="button" disabled title="Already configured - use its row's edit button">Add</button>{{else}}<button type="button" class="edit-site" data-site="{{.Category}}" title="Set up this site - nothing is stored until you save">Add</button>{{end}}</td>
   </tr>
   {{end}}
-  {{if gt .More 0}}<tr><td colspan="4" class="field-hint">+{{.More}} more - refine the search</td></tr>{{end}}
+  {{if gt .More 0}}<tr><td colspan="4" class="status-dim">+{{.More}} more - refine the search</td></tr>{{end}}
   </tbody>
   {{else}}
-  <tbody><tr><td class="field-hint">No supported site matches.</td></tr></tbody>
+  <tbody><tr><td class="no-results">No supported site matches.</td></tr></tbody>
   {{end}}
 </table>
 </div>
