@@ -33,7 +33,7 @@ const managedDirName = "gallery-dl"
 var defaultGDL = config.Default().GalleryDL
 
 // The version reaches pip and a download URL, so only a plain release
-// number passes.
+// number passes. A nightly's date tag has the same shape.
 var managedVersionRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}$`)
 
 func ValidVersion(v string) bool { return managedVersionRE.MatchString(v) }
@@ -165,7 +165,7 @@ func LatestVersion(ctx context.Context) (string, error) {
 // fall back to the bundled binary but never shadow it with a broken one.
 func InstallManaged(ctx context.Context, stateDir, version string, progress InstallProgress) error {
 	if !ValidVersion(version) {
-		return fmt.Errorf("%q is not a release number like 1.32.9", version)
+		return fmt.Errorf("%q is not a release number like 1.32.9 or a nightly like 2026.11.12", version)
 	}
 	report := func(step string, percent int) {
 		if progress != nil {
@@ -181,8 +181,18 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 	report("resolving the release", 5)
 
 	installed := ""
+	sitesURL := "https://raw.githubusercontent.com/mikf/gallery-dl/v" + version + "/docs/supportedsites.md"
 	asset, ok := standaloneAssets[runtime.GOOS+"/"+runtime.GOARCH]
-	if ok {
+	if IsNightly(version) {
+		nightly, err := nightlyAsset()
+		if err != nil {
+			return err
+		}
+		if installed, sitesURL, err = installNightly(ctx, root, version, nightly, report); err != nil {
+			removeIfUnrunnable(root)
+			return fmt.Errorf("could not install gallery-dl %s: %s", ReleaseLabel(version), err)
+		}
+	} else if ok {
 		path, err := installStandalone(ctx, root, version, asset, report)
 		switch {
 		case err == nil:
@@ -194,7 +204,7 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 			return fmt.Errorf("could not install gallery-dl %s: %s", version, err)
 		}
 	}
-	if !ok {
+	if installed == "" && !ok {
 		var err error
 		if installed, err = installVenv(ctx, root, version, report); err != nil {
 			return err
@@ -207,7 +217,7 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 		return fmt.Errorf("the installed gallery-dl does not run; removed it, the bundled binary is active again")
 	}
 	report("fetching the site list", 88)
-	fetchManagedSupportedSites(ctx, root, version, "https://raw.githubusercontent.com/mikf/gallery-dl/v"+version+"/docs/supportedsites.md")
+	fetchManagedSupportedSites(ctx, root, version, sitesURL)
 	return nil
 }
 
@@ -320,12 +330,16 @@ func RevertManaged(stateDir string) error {
 const maxSupportedSitesBytes int64 = 4 << 20
 
 // On failure an older copy is removed rather than left describing another
-// release.
+// release. An empty url is a build whose source commit is unknown.
 func fetchManagedSupportedSites(ctx context.Context, root, version, url string) {
 	dst := filepath.Join(root, "supportedsites.md")
 	fail := func(reason string) {
 		os.Remove(dst)
 		logx.Warnf("gdl: supportedsites for %s unavailable (%s); site names seed from the bundled copy", version, reason)
+	}
+	if url == "" {
+		fail("the build names no commit")
+		return
 	}
 	body, err := fetch(ctx, url, maxSupportedSitesBytes+1)
 	if err != nil {
