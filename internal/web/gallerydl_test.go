@@ -89,6 +89,49 @@ func TestGDLInstallRejectsBadVersion(t *testing.T) {
 	}
 }
 
+func TestGDLInstallNightly(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		lookup  error
+		version string // what reaches the installer; empty when nothing should
+		want    string
+	}{
+		{"the keyword takes the newest build", "nightly", nil, "2026.11.12", "nightly 2026.11.12"},
+		{"the keyword ignores case", "Nightly", nil, "2026.11.12", "nightly 2026.11.12"},
+		{"a date pins a build", "2026.11.10", nil, "2026.11.10", "nightly 2026.11.10"},
+		{"a failed lookup claims nothing", "nightly", errors.New("rate limited"), "", "could not ask GitHub for the latest nightly: rate limited"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv, ts := serveWeb(t, "")
+			oldLatest, oldInstall := latestNightly, installManaged
+			latestNightly = func(context.Context) (string, error) { return "2026.11.12", c.lookup }
+			got := make(chan string, 1)
+			installManaged = func(_ context.Context, _, version string, _ gdl.InstallProgress) error {
+				got <- version
+				return errors.New("no network")
+			}
+			t.Cleanup(func() { latestNightly, installManaged = oldLatest, oldInstall })
+
+			resp := postFollow(t, ts, srv, "/settings/gallerydl/install", url.Values{"version": {c.input}})
+			if panel := readBody(t, resp); !strings.Contains(panel, c.want) {
+				t.Errorf("panel missing %q: %s", c.want, panel)
+			}
+			if c.version == "" {
+				if srv.gdlJob != nil {
+					t.Error("a failed lookup claimed the install slot")
+				}
+				return
+			}
+			if v := <-got; v != c.version {
+				t.Errorf("installer got %q, want %q", v, c.version)
+			}
+			waitFor(t, func() bool { return !srv.gdlRunning() })
+		})
+	}
+}
+
 func TestGDLInstallProgressPanel(t *testing.T) {
 	srv, ts := serveWeb(t, "")
 	srv.gdlJob = &gdlJob{version: "1.32.9", step: "downloading gallery-dl 1.32.9", percent: 44, running: true}
