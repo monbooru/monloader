@@ -45,6 +45,10 @@ type gdlPanel struct {
 	Percent   int
 	MsgKind   string
 	Msg       string
+	// The Stats section sits outside the panel; only an htmx answer sends
+	// it, as the settings page renders its own copy.
+	StatsOOB   bool
+	Extractors int
 }
 
 func (s *Server) gdlPanel(csrf string) gdlPanel {
@@ -228,6 +232,7 @@ func (s *Server) gdlStatusFragment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderGDLPanel(w http.ResponseWriter, r *http.Request, kind, msg string) {
 	panel := s.gdlPanel(s.csrf(r))
+	panel.StatsOOB, panel.Extractors = true, len(s.catalog.Extractors())
 	if msg != "" {
 		panel.MsgKind, panel.Msg = kind, msg
 	}

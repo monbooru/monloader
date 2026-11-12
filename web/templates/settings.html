@@ -465,15 +465,7 @@
           </tbody>
         </table>
       </div>
-      <div class="settings-sub">
-        <h4>gallery-dl</h4>
-        <table class="stats-table">
-          <tbody>
-            <tr><th>Version</th><td>{{if .Stats.GDLVersion}}{{.Stats.GDLVersion}}{{else}}not available{{end}}</td></tr>
-            <tr><th>Extractors</th><td>{{.Stats.Extractors}}</td></tr>
-          </tbody>
-        </table>
-      </div>
+      {{template "gallerydl_stats" dict "Version" .Stats.GDLVersion "Extractors" .Stats.Extractors}}
       <div class="settings-sub">
         <h4>Queue</h4>
         <table class="stats-table">

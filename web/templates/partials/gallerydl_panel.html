@@ -29,4 +29,17 @@
   {{end}}
   {{end}}
 </div>
+{{if .StatsOOB}}{{template "gallerydl_stats" dict "Version" .ActiveVersion "Extractors" .Extractors "OOB" true}}{{end}}
+{{end}}
+
+{{define "gallerydl_stats"}}
+<div class="settings-sub" id="gdl-stats"{{if .OOB}} hx-swap-oob="true"{{end}}>
+  <h4>gallery-dl</h4>
+  <table class="stats-table">
+    <tbody>
+      <tr><th>Version</th><td>{{if .Version}}{{.Version}}{{else}}not available{{end}}</td></tr>
+      <tr><th>Extractors</th><td>{{.Extractors}}</td></tr>
+    </tbody>
+  </table>
+</div>
 {{end}}
