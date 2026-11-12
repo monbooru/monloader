@@ -1595,30 +1595,30 @@ func TestRevokingAnUnknownToken(t *testing.T) {
 	}
 }
 
-func TestUnmanagedPairedTokenRevocable(t *testing.T) {
+func TestEveryPairedTokenHasRevoke(t *testing.T) {
 	srv := stubbedServer(t, "")
-	tok, _ := apitoken.New("monsender-dev (paired)", config.AllScopes)
-	tok.Paired = "monsender-dev"
-	addToken(t, srv, tok)
-	managed, _ := apitoken.New("monsender (paired)", config.AllScopes)
-	managed.Paired = "monsender"
-	addToken(t, srv, managed)
-
-	page := httptest.NewRecorder()
-	srv.render(page, "webui/auth_tokens", map[string]any{"Tokens": srv.tokenRows()})
-	if !strings.Contains(page.Body.String(), `hx-delete="/settings/auth/tokens/`+tok.ID+`"`) {
-		t.Errorf("no Revoke for a pairing with no panel: %s", page.Body)
-	}
-	if strings.Contains(page.Body.String(), `hx-delete="/settings/auth/tokens/`+managed.ID+`"`) || !strings.Contains(page.Body.String(), "via pairing") {
-		t.Errorf("monsender's token should read via pairing: %s", page.Body)
+	plain, _ := apitoken.New("script", config.AllScopes)
+	addToken(t, srv, plain)
+	for _, app := range []string{"monbooru", "monsender", "monsender-dev"} {
+		tok, _ := apitoken.New(app+" (paired)", config.AllScopes)
+		tok.Paired = app
+		addToken(t, srv, tok)
 	}
 
-	req := httptest.NewRequest("DELETE", "/settings/auth/tokens/"+tok.ID, nil)
-	req.SetPathValue("id", tok.ID)
-	record(srv.settingsTokenRevoke, req)
-
-	if srv.cfg.Current().Auth.Tokens.ByID(tok.ID) != nil {
-		t.Errorf("token kept: %v", srv.cfg.Current().Auth.Tokens)
+	page := record(srv.settingsScreen, httptest.NewRequest("GET", "/settings", nil)).Body.String()
+	for _, tok := range srv.cfg.Current().Auth.Tokens {
+		if !strings.Contains(page, `hx-delete="/settings/auth/tokens/`+tok.ID+`"`) {
+			t.Errorf("no Revoke for %s", tok.Name)
+		}
+		if tok.Paired != "" && !strings.Contains(page, "This also removes the pairing with "+tok.Paired+",") {
+			t.Errorf("the confirm for %s does not say the pairing goes", tok.Name)
+		}
+	}
+	if strings.Contains(page, "via pairing") {
+		t.Error("a row still reads via pairing")
+	}
+	if n := strings.Count(page, `status-badge status-ok">paired<`); n != 3 {
+		t.Errorf("%d paired badges, want 3", n)
 	}
 }
 

@@ -128,7 +128,7 @@
       <div class="settings-sub">
         <h4>API Tokens</h4>
         <p class="field-hint">For scripts and apps that talk to monloader. A token is shown once, when you create it.</p>
-        {{template "webui/auth_tokens" (dict "Tokens" .TokenRows)}}
+        {{template "webui/auth_tokens" (dict "Tokens" .Cfg.Auth.Tokens)}}
         <form hx-post="/settings/auth/tokens" hx-target="#flash-auth" hx-swap="innerHTML" style="margin-top:8px"
               hx-on:token-created="this.reset()">
           <input type="text" name="name" placeholder="token name" maxlength="64" required>

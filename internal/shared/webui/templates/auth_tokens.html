@@ -18,13 +18,12 @@
                   onclick="document.getElementById('token-cfg-{{.ID}}').showModal()">Config</button>
         </td>
         <td class="cell-action">
-          {{if .Paired}}<span class="field-hint">via pairing</span>{{else}}
           <button class="btn-sm btn-danger"
                   hx-delete="/settings/auth/tokens/{{.ID}}"
                   hx-target="#flash-auth" hx-swap="innerHTML"
                   hx-confirm="Revoke token {{.Name}}?"
                   data-confirm-ok="Revoke"
-                  data-confirm-danger="Any integration using this token stops working immediately.">Revoke</button>{{end}}
+                  data-confirm-danger="{{if .Paired}}This also removes the pairing with {{.Paired}}, which must pair again to connect.{{else}}Any integration using this token stops working immediately.{{end}}">Revoke</button>
         </td>
       </tr>
       {{end}}

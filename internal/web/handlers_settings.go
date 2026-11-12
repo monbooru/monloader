@@ -47,7 +47,6 @@ func setFlash(data map[string]any, kind, section, msg string) {
 func (s *Server) settingsData(r *http.Request) map[string]any {
 	data := s.base(r, "settings", "Settings - "+s.titleName())
 	data["Cfg"] = s.cfg.Current()
-	data["TokenRows"] = s.tokenRows()
 	local := s.desktopLocal(r)
 	data["DesktopProfile"] = local
 	if local {

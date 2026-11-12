@@ -205,12 +205,6 @@ func (s *Server) settingsTokenCreate(w http.ResponseWriter, r *http.Request) {
 	s.renderAuthTokensOOB(w)
 }
 
-// Only these two peers have a remove-pairing control, so a token paired
-// under any other name stays revocable from the list.
-func hasPairingTeardown(peer string) bool {
-	return peer == contract.AppMonbooru || peer == appMonsender
-}
-
 func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cfg := s.cfg.Current()
@@ -245,21 +239,9 @@ func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	s.renderDefaultGalleryOOB(w, r)
 }
 
-// The list's rows. A pairing with no remove control of its own clears Paired,
-// which is what the shared template hides Revoke on.
-func (s *Server) tokenRows() apitoken.List {
-	rows := slices.Clone(s.cfg.Current().Auth.Tokens)
-	for i := range rows {
-		if !hasPairingTeardown(rows[i].Paired) {
-			rows[i].Paired = ""
-		}
-	}
-	return rows
-}
-
 func (s *Server) renderAuthTokensOOB(w http.ResponseWriter) {
 	s.render(w, "webui/auth_tokens", map[string]any{
-		"Tokens": s.tokenRows(),
+		"Tokens": slices.Clone(s.cfg.Current().Auth.Tokens),
 		"OOB":    true,
 	})
 }
