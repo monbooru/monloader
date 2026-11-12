@@ -65,6 +65,20 @@ func TestGDLSettingsSection(t *testing.T) {
 	if strings.Contains(body, "/settings/gallerydl/revert") {
 		t.Error("revert form rendered without a managed install")
 	}
+	if n := strings.Count(body, `id="gdl-stats"`); n != 1 || strings.Contains(body, `id="gdl-stats" hx-swap-oob`) {
+		t.Errorf("the settings page renders %d stats blocks, want its own one in place", n)
+	}
+}
+
+func TestGDLPanelRefreshesTheStats(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+	srv.gdlJob = &gdlJob{version: "2026.11.12", kind: "ok", msg: "gallery-dl nightly 2026.11.12 installed and active."}
+
+	_, body := get(t, ts, "/internal/gallerydl-status")
+	stats := body[strings.Index(body, `id="gdl-stats"`)+1:]
+	if !strings.Contains(body, `id="gdl-stats" hx-swap-oob="true"`) || !strings.Contains(stats, fakeGDLVersion) {
+		t.Errorf("the finished panel should carry the stats out of band with the probed version, got %s", body)
+	}
 }
 
 func postFollow(t *testing.T, ts *httptest.Server, srv *Server, path string, vals url.Values) *http.Response {
