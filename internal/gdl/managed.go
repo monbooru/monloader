@@ -207,7 +207,7 @@ func InstallManaged(ctx context.Context, stateDir, version string, progress Inst
 		return fmt.Errorf("the installed gallery-dl does not run; removed it, the bundled binary is active again")
 	}
 	report("fetching the site list", 88)
-	fetchManagedSupportedSites(ctx, root, version)
+	fetchManagedSupportedSites(ctx, root, version, "https://raw.githubusercontent.com/mikf/gallery-dl/v"+version+"/docs/supportedsites.md")
 	return nil
 }
 
@@ -321,9 +321,8 @@ const maxSupportedSitesBytes int64 = 4 << 20
 
 // On failure an older copy is removed rather than left describing another
 // release.
-func fetchManagedSupportedSites(ctx context.Context, root, version string) {
+func fetchManagedSupportedSites(ctx context.Context, root, version, url string) {
 	dst := filepath.Join(root, "supportedsites.md")
-	url := "https://raw.githubusercontent.com/mikf/gallery-dl/v" + version + "/docs/supportedsites.md"
 	fail := func(reason string) {
 		os.Remove(dst)
 		logx.Warnf("gdl: supportedsites for %s unavailable (%s); site names seed from the bundled copy", version, reason)
