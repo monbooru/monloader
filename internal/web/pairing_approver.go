@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -44,6 +45,25 @@ func (s *Server) removePairingLocal(peer string) error {
 	})
 }
 
+var errNoToken = errors.New("token not found")
+
+// Drops one token, so two devices paired under one name stay apart. The
+// monbooru link goes with the last token paired to it.
+func (s *Server) removeToken(id string) error {
+	return s.cfg.Update(func(c *config.Config) error {
+		tok := c.Auth.Tokens.ByID(id)
+		if tok == nil {
+			return errNoToken
+		}
+		peer := tok.Paired
+		c.Auth.Tokens.Remove(id)
+		if peer == contract.AppMonbooru && c.Auth.Tokens.Paired(peer) == nil {
+			c.Monbooru.APIToken, c.Monbooru.Paused = "", false
+		}
+		return nil
+	})
+}
+
 // Removes only locally: calling the peer back would loop.
 func (s *Server) extPairTeardown(w http.ResponseWriter, r *http.Request) {
 	setPairCORS(w, r)
@@ -55,7 +75,7 @@ func (s *Server) extPairTeardown(w http.ResponseWriter, r *http.Request) {
 		pairRefuse(w, pairing.NoPairingToken())
 		return
 	}
-	if err := s.removePairingLocal(tok.Paired); err != nil {
+	if err := s.removeToken(tok.ID); err != nil {
 		contract.WriteError(w, http.StatusInternalServerError, pairing.CodeRemoveFailed, err.Error())
 		return
 	}

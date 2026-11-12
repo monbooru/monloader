@@ -1521,21 +1521,77 @@ func TestAuthTokenPrivileges(t *testing.T) {
 	}
 }
 
-func TestPairedTokenNotRevocable(t *testing.T) {
-	srv := stubbedServer(t, "")
-	tok, _ := apitoken.New("monbooru (paired)", config.AllScopes)
-	tok.Paired = "monbooru"
+func revokeToken(srv *Server, id string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("DELETE", "/settings/auth/tokens/"+id, nil)
+	req.SetPathValue("id", id)
+	return record(srv.settingsTokenRevoke, req)
+}
+
+func TestRevokingTheMonbooruRowRemovesThePairing(t *testing.T) {
+	var teardown string
+	mb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/pair/remove" {
+			teardown = r.Header.Get("Authorization")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mb.Close()
+	srv := newWebServer(t, mb.URL, "")
+	pairMBWith(t, srv, "peer-secret")
+	mustUpdate(t, srv, func(c *config.Config) { c.Monbooru.Paused = true })
+
+	w := revokeToken(srv, srv.cfg.Current().Auth.Tokens.Paired("monbooru").ID)
+
+	if c := srv.cfg.Current(); srv.hasPairedToken("monbooru") || c.Monbooru.APIToken != "" || c.Monbooru.Paused {
+		t.Errorf("the monbooru link outlived its token: %+v", c.Monbooru)
+	}
+	if teardown != "Bearer peer-secret" {
+		t.Errorf("monbooru was called back with %q", teardown)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "monbooru pairing removed") || !strings.Contains(body, `id="monbooru-pair" hx-swap-oob="true"`) {
+		t.Errorf("the flash or the refreshed card is missing: %q", body)
+	}
+}
+
+func TestRevokingTheMonbooruRowWarnsWhenUnreachable(t *testing.T) {
+	srv := newWebServer(t, "http://ml", "")
+	pairMBWith(t, srv, "peer-secret")
+
+	w := revokeToken(srv, srv.cfg.Current().Auth.Tokens.Paired("monbooru").ID)
+
+	if srv.hasPairedToken("monbooru") {
+		t.Error("local pairing not removed")
+	}
+	if !strings.Contains(w.Body.String(), `flash-warn`) || !strings.Contains(w.Body.String(), "remove the pairing in monbooru too") {
+		t.Errorf("an unreachable monbooru should warn, got %q", w.Body.String())
+	}
+}
+
+func TestRevokingAnAppRowLeavesTheMonbooruLink(t *testing.T) {
+	srv := newWebServer(t, "http://ml", "")
+	pairMBWith(t, srv, "peer-secret")
+	tok, _ := apitoken.New("monsender (paired)", config.AllScopes)
+	tok.Paired = "monsender"
 	addToken(t, srv, tok)
 
-	req := httptest.NewRequest("DELETE", "/settings/auth/tokens/"+tok.ID, nil)
-	req.SetPathValue("id", tok.ID)
-	w := record(srv.settingsTokenRevoke, req)
+	w := revokeToken(srv, tok.ID)
 
-	if len(srv.cfg.Current().Auth.Tokens) != 1 {
-		t.Fatalf("paired token was revoked directly; want it kept (manage via pairing)")
+	if srv.hasPairedToken("monsender") {
+		t.Error("monsender's token kept")
 	}
-	if !strings.Contains(w.Body.String(), "pairing") {
-		t.Errorf("expected a pairing hint, got %q", w.Body.String())
+	if !srv.hasPairedToken("monbooru") || srv.cfg.Current().Monbooru.APIToken != "peer-secret" {
+		t.Error("revoking an app's token touched the monbooru link")
+	}
+	if !strings.Contains(w.Body.String(), "Token revoked.") || strings.Contains(w.Body.String(), "monbooru-pair") {
+		t.Errorf("got %q", w.Body.String())
+	}
+}
+
+func TestRevokingAnUnknownToken(t *testing.T) {
+	srv := stubbedServer(t, "")
+	if w := revokeToken(srv, "nope"); !strings.Contains(w.Body.String(), "Token not found.") {
+		t.Errorf("got %q", w.Body.String())
 	}
 }
 

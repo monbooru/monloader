@@ -191,6 +191,26 @@ func TestExtPairTeardownRemovesLocally(t *testing.T) {
 	}
 }
 
+func TestExtPairTeardownRemovesOnlyTheCallingToken(t *testing.T) {
+	srv := newWebServer(t, "http://mb", "")
+	laptop, secret := apitoken.New("monsender (paired)", config.AllScopes)
+	laptop.Paired = "monsender"
+	desktop, _ := apitoken.New("monsender desktop (paired)", config.AllScopes)
+	desktop.Paired = "monsender"
+	addToken(t, srv, laptop)
+	addToken(t, srv, desktop)
+
+	req := httptest.NewRequest("POST", "/api/v1/pair/remove", nil)
+	req.Header.Set("Authorization", "Bearer "+secret)
+	if w := record(srv.extPairTeardown, req); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	toks := srv.cfg.Current().Auth.Tokens
+	if toks.ByID(laptop.ID) != nil || toks.ByID(desktop.ID) == nil {
+		t.Errorf("want only the calling token gone, have %v", toks)
+	}
+}
+
 func TestExtPairTeardownRejectsBadToken(t *testing.T) {
 	srv := newWebServer(t, "http://mb", "")
 

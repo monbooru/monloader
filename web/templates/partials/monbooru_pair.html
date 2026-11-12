@@ -1,5 +1,5 @@
 {{define "monbooru_pair"}}
-<div id="monbooru-pair"{{if .Waiting}} hx-post="/settings/monbooru/pair/poll" hx-trigger="every 2s [!confirmOpen()]" hx-swap="outerHTML"{{end}}>
+<div id="monbooru-pair"{{if .OOB}} hx-swap-oob="true"{{end}}{{if .Waiting}} hx-post="/settings/monbooru/pair/poll" hx-trigger="every 2s [!confirmOpen()]" hx-swap="outerHTML"{{end}}>
   {{if .Waiting}}
   <p class="field-hint">Waiting... Approve the request in monbooru, under Settings &gt; Plugins.
     <form hx-post="/settings/monbooru/pair/cancel" hx-target="#monbooru-pair" hx-swap="outerHTML" style="display:inline">

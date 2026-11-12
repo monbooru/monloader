@@ -213,25 +213,36 @@ func hasPairingTeardown(peer string) bool {
 
 func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tok := s.cfg.Current().Auth.Tokens.ByID(id)
+	cfg := s.cfg.Current()
+	tok := cfg.Auth.Tokens.ByID(id)
 	if tok == nil {
 		flashFragment(w, "err", "Token not found.")
 		return
 	}
-	if hasPairingTeardown(tok.Paired) {
-		flashFragment(w, "err", "This token is managed by a pairing; remove the pairing instead.")
-		return
-	}
-	if err := s.cfg.Update(func(c *config.Config) error {
-		c.Auth.Tokens.Remove(id)
-		return nil
-	}); err != nil {
+	peer, peerToken := tok.Paired, cfg.Monbooru.APIToken
+	if err := s.removeToken(id); err != nil {
 		flashFragment(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: API token %s revoked from %s", id, session.ClientIP(r))
-	flashFragment(w, "ok", "Token revoked.")
+	if peer != contract.AppMonbooru {
+		flashFragment(w, "ok", "Token revoked.")
+		s.renderAuthTokensOOB(w)
+		return
+	}
+	s.clearPairAttempt()
+	logx.Infof("pairing: removed monbooru pairing")
+	if err := s.notifyMonbooruTeardown(peerToken); err != nil {
+		logx.Errorf("pairing: could not notify monbooru of teardown: %v", err)
+		flashFragment(w, "warn", "Revoked here, but could not reach monbooru - remove the pairing in monbooru too.")
+	} else {
+		flashFragment(w, "ok", "Token revoked, monbooru pairing removed.")
+	}
 	s.renderAuthTokensOOB(w)
+	data := s.monbooruPairData(r, "")
+	data["OOB"] = true
+	s.render(w, "monbooru_pair", data)
+	s.renderDefaultGalleryOOB(w, r)
 }
 
 // The list's rows. A pairing with no remove control of its own clears Paired,
