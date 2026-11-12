@@ -273,7 +273,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /internal/monsender-pairing", s.monsenderPairingFragment)
 	mux.HandleFunc("POST /settings/auth/pair/{id}/approve", s.monsenderPairApprove)
 	mux.HandleFunc("POST /settings/auth/pair/{id}/deny", s.monsenderPairDeny)
-	mux.HandleFunc("POST /settings/auth/pair/remove", s.monsenderPairRemove)
 
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginPost)

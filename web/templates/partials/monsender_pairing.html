@@ -1,8 +1,8 @@
 {{define "monsender_pairing"}}
-<div id="monsender-pairing"{{if not .Paired}} hx-get="/internal/monsender-pairing?paired={{.Paired}}&pair={{.PairKey}}" hx-trigger="every 3s [!confirmOpen()]" hx-swap="outerHTML"{{end}}>
+<div id="monsender-pairing" hx-get="/internal/monsender-pairing?paired={{.Paired}}&pair={{.PairKey}}" hx-trigger="every 3s [!confirmOpen()]" hx-swap="outerHTML">
   {{if .Pending}}
   <div class="pairing-pending">
-  <p class="pairing-pending-msg">monsender wants to pair.</p>
+  <p class="pairing-pending-msg">{{if eq (len .Pending) 1}}{{(index .Pending 0).App}} wants to pair.{{else}}{{len .Pending}} apps want to pair.{{end}}</p>
   <div class="table-scroll">
   <table class="data-table stack-table">
     <thead><tr><th>App</th><th>Source</th><th>Scopes</th><th>Expires</th><th class="cell-action">Approve</th><th class="cell-action">Deny</th></tr></thead>
@@ -22,20 +22,11 @@
   </div>
   </div>
   {{end}}
-  {{if .Paired}}
-  <p class="field-hint">Paired with the extension.
-    <form hx-post="/settings/auth/pair/remove" hx-target="#monsender-pairing" hx-swap="outerHTML"
-          hx-confirm="Remove the extension pairing?" data-confirm-ok="Remove"
-          data-confirm-danger="The extension must re-pair before it can send again." style="display:inline">
-      <button type="submit" class="btn-danger">Remove pairing</button>
-    </form>
-  </p>
-  {{else if .Awaiting}}
   {{range .Awaiting}}<p class="field-hint">Approved. Waiting for {{.App}} to finish.</p>{{end}}
-  {{else if not .Pending}}
+  {{with .Paired}}<p class="field-hint">Paired with {{.}}. <a href="#auth">Revoke one under API Tokens</a>.</p>{{end}}
+  {{if not (or .Pending .Awaiting)}}
   <p class="field-hint">To set up the monsender extension: in the extension click "connect to monloader", then approve the request here.</p>
   {{end}}
-  {{with .Message}}<span class="field-hint">{{.}}</span>{{end}}
 </div>
 {{with .Notice}}{{template "webui/pair_notice" .}}<span id="settings-pair-count" class="nav-count" hx-swap-oob="true">{{with len .Items}} ({{.}}){{end}}</span>{{end}}
 {{end}}

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 
@@ -77,24 +76,6 @@ func TestExtensionPairingHandshake(t *testing.T) {
 		t.Errorf("re-pair guard code = %d, want 409", rr2.Code)
 	}
 
-	srv.monsenderPairRemove(httptest.NewRecorder(), httptest.NewRequest("POST", "/settings/auth/pair/remove", nil))
-	if srv.hasPairedToken("monsender") {
-		t.Error("remove did not drop the extension token")
-	}
-}
-
-func TestMonsenderPairRemoveReportsAFailedSave(t *testing.T) {
-	srv := newWebServer(t, "http://mb", "")
-	storeCfg(srv, func(c *config.Config) {
-		c.Auth.Tokens = append(c.Auth.Tokens, apitoken.Token{ID: "m", Name: "monsender (paired)", Paired: "monsender"})
-	})
-	if err := os.WriteFile(srv.configPath, []byte("not toml ["), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	w := record(srv.monsenderPairRemove, httptest.NewRequest("POST", "/settings/auth/pair/remove", nil))
-	if !strings.Contains(w.Body.String(), "Could not save") {
-		t.Errorf("the panel says nothing about the failed save: %q", w.Body.String())
-	}
 }
 
 func TestExtPairRequestRejectsReservedApp(t *testing.T) {
@@ -164,12 +145,12 @@ func TestMonsenderPairingRefreshesTokensOnTransition(t *testing.T) {
 	tok.Paired = "monsender"
 	addToken(t, srv, tok)
 
-	rr := record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing?paired=false", nil))
+	rr := record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing?paired=", nil))
 	if body := rr.Body.String(); !strings.Contains(body, `id="auth-tokens"`) || !strings.Contains(body, "hx-swap-oob") {
 		t.Errorf("transition to paired should OOB-refresh the token list, got %q", body)
 	}
 
-	rr2 := record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing?paired=true", nil))
+	rr2 := record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing?paired=monsender", nil))
 	if strings.Contains(rr2.Body.String(), "hx-swap-oob") {
 		t.Errorf("no state change should not OOB the token list, got %q", rr2.Body.String())
 	}
@@ -325,25 +306,8 @@ func TestAnApprovedExtensionAwaitsItsTokenInTheColumn(t *testing.T) {
 	}
 
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/v1/pair/status?id="+id, nil))
-	if body := settings(); strings.Contains(body, awaiting) || !strings.Contains(body, "Paired with the extension.") {
+	if body := settings(); strings.Contains(body, awaiting) || !strings.Contains(body, "Paired with monsender.") {
 		t.Errorf("after the claim the column still awaits")
-	}
-}
-
-func TestMonsenderPairingStopsPollingWhenPaired(t *testing.T) {
-	srv := newWebServer(t, "http://mb", "")
-
-	rr := record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing?paired=false", nil))
-	if !strings.Contains(rr.Body.String(), "every 3s") {
-		t.Errorf("unpaired panel should poll, got %q", rr.Body.String())
-	}
-
-	tok, _ := apitoken.New("monsender (paired)", config.AllScopes)
-	tok.Paired = "monsender"
-	addToken(t, srv, tok)
-	rr2 := record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing?paired=true", nil))
-	if strings.Contains(rr2.Body.String(), "every 3s") {
-		t.Errorf("paired panel must not poll, got %q", rr2.Body.String())
 	}
 }
 
@@ -435,11 +399,11 @@ func TestTheExtensionCardPollSwapsTheCountOnlyOnAChange(t *testing.T) {
 	srv.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/v1/pair/request", strings.NewReader(`{"app":"monsender","requested_scopes":["read"]}`)))
 	key := srv.pairNotice().Key()
 
-	rr := record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing?paired=false&pair=", nil))
+	rr := record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing?paired=&pair=", nil))
 	if !strings.Contains(rr.Body.String(), `<span id="settings-pair-count" class="nav-count" hx-swap-oob="true"> (1)</span>`) {
 		t.Errorf("a changed set does not swap the count: %s", rr.Body)
 	}
-	same := record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing?paired=false&pair="+url.QueryEscape(key), nil))
+	same := record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing?paired=&pair="+url.QueryEscape(key), nil))
 	if strings.Contains(same.Body.String(), "hx-swap-oob") {
 		t.Errorf("an unchanged set is swapped again: %s", same.Body)
 	}
@@ -455,5 +419,35 @@ func TestTheSettingsPageShowsThePairingsGrantNotItsAsk(t *testing.T) {
 	}
 	if !strings.Contains(page, `<td data-label="Scopes">`+config.ScopeRead+"</td>") {
 		t.Errorf("the pending row should name the read-only grant, got %q", truncate(page))
+	}
+}
+
+func TestAppsPanelNamesWhoAsksAndWhoIsPaired(t *testing.T) {
+	srv := newWebServer(t, "http://mb", "")
+	h := srv.Handler()
+	panel := func() string {
+		return record(srv.monsenderPairingFragment, httptest.NewRequest("GET", "/internal/monsender-pairing", nil)).Body.String()
+	}
+	record(h.ServeHTTP, httptest.NewRequest("POST", "/api/v1/pair/request", strings.NewReader(`{"app":"sendtool"}`)))
+	if body := panel(); !strings.Contains(body, "sendtool wants to pair.") {
+		t.Errorf("the pending line does not name the app: %s", truncate(body))
+	}
+	record(h.ServeHTTP, httptest.NewRequest("POST", "/api/v1/pair/request", strings.NewReader(`{"app":"monsender"}`)))
+	if body := panel(); !strings.Contains(body, "2 apps want to pair.") {
+		t.Errorf("two requests should be counted: %s", truncate(body))
+	}
+
+	pairMBWith(t, srv, "x")
+	for _, app := range []string{"monsender", "sendtool"} {
+		tok, _ := apitoken.New(app+" (paired)", config.AllScopes)
+		tok.Paired = app
+		addToken(t, srv, tok)
+	}
+	body := panel()
+	if !strings.Contains(body, "Paired with monsender, sendtool.") || !strings.Contains(body, `<a href="#auth">Revoke one under API Tokens</a>`) {
+		t.Errorf("the paired apps or the link are missing: %s", truncate(body))
+	}
+	if strings.Contains(body, "Remove pairing") || !strings.Contains(body, `hx-trigger="every 3s`) {
+		t.Errorf("the panel should keep polling and offer no remove of its own: %s", truncate(body))
 	}
 }
