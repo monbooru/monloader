@@ -344,8 +344,9 @@ dialog[open]::backdrop { animation: dlg-fade 120ms linear; }
 }
 dialog p { margin-bottom: 16px; }
 dialog .dlg-title {
+  position: relative;
   margin: -24px -24px 18px;
-  padding: 7px 10px 7px 16px;
+  padding: 7px calc(26px + 3ch) 7px 16px;
   background: color-mix(in srgb, var(--fg) 7%, var(--bg-surface));
   border-top: 2px solid var(--accent);
   color: var(--fg);
@@ -356,8 +357,9 @@ dialog .dlg-title {
 }
 .dlg-title-sub { font-weight: normal; color: var(--fg-dim); }
 .dlg-x {
-  float: right;
-  margin-left: 16px;
+  position: absolute;
+  top: 7px;
+  right: 10px;
   color: var(--fg-dim);
   font-weight: normal;
   cursor: pointer;
