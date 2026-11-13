@@ -349,6 +349,34 @@ func TestReaddJudgesTheLastRunAcrossItsSeries(t *testing.T) {
 	}
 }
 
+func TestReaddCountsOnlyTheFinishedWindowsOfItsSeries(t *testing.T) {
+	q := New(noopProcessor{}, 1, 100)
+	url := "https://x/posts?tags=a"
+	parkFinished(q, 10, time.Now(), func(j *Job) {
+		j.URL, j.Root, j.Offset, j.Status = url, 10, 0, JobPartial
+		j.Items = make([]Item, 2)
+	})
+	parkFinished(q, 20, time.Now(), func(j *Job) {
+		j.URL, j.Root, j.Offset, j.Status = "https://x/posts?tags=b", 20, 0, JobSucceeded
+		j.Items = make([]Item, 2)
+	})
+	for _, w := range []struct{ id, root int64 }{{11, 10}, {21, 20}} {
+		later := newJob(w.id, "", Options{Root: w.root, Offset: 2, MaxItems: 2}, time.Now())
+		q.index[w.id] = later
+		q.pending = append(q.pending, later)
+	}
+	q.mu.Lock()
+	a := q.enqueueLocked(url, Options{})
+	b := q.enqueueLocked("https://x/posts?tags=b", Options{})
+	q.mu.Unlock()
+	if !a.Force || a.ForceTo != 2 {
+		t.Errorf("re-add force=%v to %d, want the finished window's reach of 2, not the queued one's", a.Force, a.ForceTo)
+	}
+	if b.Force {
+		t.Error("re-add of a clean run forced by a window still queued, want not forced")
+	}
+}
+
 func TestRetryCanceledJobForcesArchiveBypass(t *testing.T) {
 	var mu sync.Mutex
 	var seen []bool
