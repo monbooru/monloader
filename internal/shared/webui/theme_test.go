@@ -222,6 +222,32 @@ func TestServeThemeFileReadsTheRightSource(t *testing.T) {
 	}
 }
 
+func TestServeThemeFileRevalidatesABuiltin(t *testing.T) {
+	builtin := fstest.MapFS{"light/theme.css": {Data: []byte(":root{--bg:#fff}")}}
+	theme := Theme{Name: "light", Builtin: true}
+	w := httptest.NewRecorder()
+	ServeThemeFile(w, httptest.NewRequest(http.MethodGet, "/theme.css", nil), theme, "light/theme.css", builtin)
+	etag := w.Header().Get("ETag")
+	if w.Code != 200 || w.Header().Get("Cache-Control") != "no-cache" || etag == "" {
+		t.Fatalf("first answer %d, headers %v", w.Code, w.Header())
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/theme.css", nil)
+	r.Header.Set("If-None-Match", etag)
+	w = httptest.NewRecorder()
+	ServeThemeFile(w, r, theme, "light/theme.css", builtin)
+	if w.Code != http.StatusNotModified {
+		t.Errorf("revalidation answered %d, want 304", w.Code)
+	}
+
+	builtin["light/theme.css"] = &fstest.MapFile{Data: []byte(":root{--bg:#eee}")}
+	w = httptest.NewRecorder()
+	ServeThemeFile(w, r, theme, "light/theme.css", builtin)
+	if w.Code != 200 || w.Header().Get("ETag") == etag {
+		t.Errorf("changed bytes answered %d with ETag %s", w.Code, w.Header().Get("ETag"))
+	}
+}
+
 func TestSeedThemeKeepsAFileItsRecordNamesOutsideTheFolder(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "themes")
@@ -256,6 +282,24 @@ func TestThemeSchemeReadsTheSheetTheThemeServes(t *testing.T) {
 	} {
 		if got := ThemeScheme(tc.t, builtin, "dark"); got != tc.want {
 			t.Errorf("%s: %q, want %q", tc.t.Name, got, tc.want)
+		}
+	}
+}
+
+func TestSheetSchemeReadsTheRootRule(t *testing.T) {
+	for _, tc := range []struct{ sheet, want string }{
+		{"/* was: color-scheme: light; */\n:root { color-scheme: dark; }", "dark"},
+		{".card { color-scheme: light; }\n:root { color-scheme: dark; }", "dark"},
+		{":root { color-scheme: light !important; }", "light"},
+		{":root { Color-Scheme: Light; }", "light"},
+		{"html{color-scheme:light dark}", "light dark"},
+		{":root, .card { --bg: #fff; color-scheme: light }", "light"},
+		{".card { color-scheme: light; }", "light"},
+		{"@media (prefers-color-scheme: light) { :root { --bg: #fff; } }", "fallback"},
+		{"", "fallback"},
+	} {
+		if got := SheetScheme([]byte(tc.sheet), "fallback"); got != tc.want {
+			t.Errorf("%q: %q, want %q", tc.sheet, got, tc.want)
 		}
 	}
 }
