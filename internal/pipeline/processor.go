@@ -43,6 +43,13 @@ type SimilarityService interface {
 	Search(ctx context.Context, service string, image []byte) (similarity.Result, error)
 }
 
+type BookLedger interface {
+	BookLanded(url string) (bool, error)
+	MarkBookLanded(url string) error
+	BlacklistedBook(url string) (map[string]any, error)
+	MarkBookBlacklisted(url string, meta map[string]any) error
+}
+
 type Processor struct {
 	runner    gdl.Runner
 	mapper    *mapping.Mapper
@@ -52,7 +59,7 @@ type Processor struct {
 	siteState *sitestate.Tracker
 	ptr       PTRService
 	sim       SimilarityService
-	books     *queue.Store
+	books     BookLedger
 }
 
 func New(runner gdl.Runner, mapper *mapping.Mapper, client *monbooru.Client, cfg *config.Provider, workRoot string, siteState *sitestate.Tracker, ptr PTRService, sim SimilarityService) *Processor {
@@ -65,9 +72,10 @@ var (
 	// Reached by assertion in processContrib, where a mismatch would compile
 	// and fail every send at run time.
 	_ ContribSender = (*ptr.Engine)(nil)
+	_ BookLedger    = (*queue.Store)(nil)
 )
 
-func (p *Processor) UseStore(st *queue.Store) { p.books = st }
+func (p *Processor) UseBooks(books BookLedger) { p.books = books }
 
 func (p *Processor) ReportDropped(ctx context.Context, snap *queue.Job) {
 	switch snap.Kind {

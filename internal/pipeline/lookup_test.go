@@ -83,7 +83,9 @@ func storeEnv(t *testing.T, fake gdl.Runner, handler http.HandlerFunc, cfg *conf
 		t.Fatalf("mapper: %v", err)
 	}
 	proc := New(fake, mapper, monbooru.New(config.NewProvider(cfg)), config.NewProvider(cfg), t.TempDir(), sitestate.New(), ptrSvc, simSvc)
-	proc.UseStore(st)
+	if st != nil {
+		proc.UseBooks(st)
+	}
 	q := queue.New(proc, 1, 100)
 	q.Start()
 	t.Cleanup(func() { q.Close(); srv.Close() })
