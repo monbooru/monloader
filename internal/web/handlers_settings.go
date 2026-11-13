@@ -85,6 +85,7 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 	data["MonsenderPending"] = s.pendingPairs()
 	data["MonsenderAwaiting"] = s.pairs.ListApproved()
 	data["MonsenderPaired"] = s.pairedApps()
+	data["MonsenderOffer"] = s.senderOffer(r)
 	// Empty except on a refused save; the fields read the typed values
 	// from here first.
 	data["Draft"] = map[string]string{}

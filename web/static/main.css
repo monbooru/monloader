@@ -348,3 +348,18 @@ dialog textarea { resize: vertical; max-height: 60vh; }
 .ptr-day-3 { background: var(--heat-3); }
 .ptr-day-4 { background: var(--heat-4); }
 .ptr-activity-legend { display: flex; align-items: center; justify-content: flex-end; gap: 3px; margin-top: 4px; font-size: 10px; color: var(--fg-dim); }
+
+.sender-get { display: flex; align-items: flex-end; gap: 16px; margin-top: 12px; }
+.sender-get-mascot { width: 92px; height: 72px; object-fit: cover; object-position: 50% 8%; flex-shrink: 0; }
+.sender-get-bubble { position: relative; border: 1px solid var(--accent); background: var(--bg-surface); padding: 10px 14px; }
+.sender-get-mascot + .sender-get-bubble::before {
+  content: ""; position: absolute; left: -9px; bottom: 14px; width: 16px; height: 16px;
+  background: var(--bg-surface); border-left: 1px solid var(--accent); border-bottom: 1px solid var(--accent); transform: rotate(45deg);
+}
+.sender-get-bubble p { position: relative; font-size: 13px; color: var(--link); margin-bottom: 8px; }
+.sender-get-kao { white-space: nowrap; }
+.sender-get-links { position: relative; display: flex; flex-wrap: wrap; gap: 8px; }
+.sender-get-link { padding: 5px 12px; color: var(--fg); background: color-mix(in srgb, var(--fg) 10%, transparent); }
+.sender-get-link:hover { text-decoration: none; background: color-mix(in srgb, var(--fg) 19%, transparent); }
+.sender-get-link.is-here { color: var(--on-accent); background: var(--accent); }
+.sender-get-link.is-here:hover { background: color-mix(in srgb, var(--accent) 82%, var(--fg)); }

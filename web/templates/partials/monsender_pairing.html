@@ -26,6 +26,20 @@
   {{with .Paired}}<p class="field-hint">Paired with {{.}}. <a href="#auth">Revoke one under API Tokens</a>.</p>{{end}}
   {{if not (or .Pending .Awaiting)}}
   <p class="field-hint">To set up the monsender extension: in the extension click "connect to monloader", then approve the request here.</p>
+  {{with .Sender}}{{if .Paired}}
+  <p class="field-hint">monsender on another browser: <a href="https://addons.mozilla.org/en-US/firefox/addon/monsender/" target="_blank" rel="noopener">Firefox</a> · <a href="https://chromewebstore.google.com/detail/monsender/jhiaelblkhpfbmaijnlbmhpcjhghnack" target="_blank" rel="noopener">Chrome</a></p>
+  {{else}}
+  <div class="sender-get">
+    {{with .Mascot}}<img src="{{.}}" alt="" class="sender-get-mascot">{{end}}
+    <div class="sender-get-bubble">
+      <p>Use the extension to send pages directly from your browser <span class="sender-get-kao">(＾ω＾)ノ</span></p>
+      <div class="sender-get-links">
+        <a class="sender-get-link{{if .Firefox}} is-here{{end}}" href="https://addons.mozilla.org/en-US/firefox/addon/monsender/" target="_blank" rel="noopener">Add to Firefox</a>
+        <a class="sender-get-link{{if not .Firefox}} is-here{{end}}" href="https://chromewebstore.google.com/detail/monsender/jhiaelblkhpfbmaijnlbmhpcjhghnack" target="_blank" rel="noopener">Add to Chrome</a>
+      </div>
+    </div>
+  </div>
+  {{end}}{{end}}
   {{end}}
 </div>
 {{with .Notice}}{{template "webui/pair_notice" .}}<span id="settings-pair-count" class="nav-count" hx-swap-oob="true">{{with len .Items}} ({{.}}){{end}}</span>{{end}}

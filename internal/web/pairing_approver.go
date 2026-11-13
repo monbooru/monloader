@@ -156,8 +156,18 @@ func (s *Server) extPairData(r *http.Request) map[string]any {
 		"Pending":  pending,
 		"Awaiting": s.pairs.ListApproved(),
 		"Paired":   s.pairedApps(),
+		"Sender":   s.senderOffer(r),
 		"Notice":   n,
 		"PairKey":  n.Key(),
+	}
+}
+
+func (s *Server) senderOffer(r *http.Request) map[string]any {
+	paired := slices.ContainsFunc(s.cfg.Current().Auth.Tokens, func(t apitoken.Token) bool { return t.Paired == "monsender" })
+	return map[string]any{
+		"Mascot":  themeMascots(s.activeTheme())["sparkle"],
+		"Firefox": strings.Contains(r.UserAgent(), "Firefox/"),
+		"Paired":  paired,
 	}
 }
 

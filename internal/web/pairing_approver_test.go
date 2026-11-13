@@ -451,3 +451,47 @@ func TestAppsPanelNamesWhoAsksAndWhoIsPaired(t *testing.T) {
 		t.Errorf("the panel should keep polling and offer no remove of its own: %s", truncate(body))
 	}
 }
+
+func TestAppsPanelOffersMonsenderUntilItIsPaired(t *testing.T) {
+	srv := newWebServer(t, "http://mb", "")
+	h := srv.Handler()
+	panel := func(ua string) string {
+		req := httptest.NewRequest("GET", "/internal/monsender-pairing", nil)
+		req.Header.Set("User-Agent", ua)
+		return record(srv.monsenderPairingFragment, req).Body.String()
+	}
+	const (
+		firefox = `class="sender-get-link is-here" href="https://addons.mozilla.org/`
+		chrome  = `class="sender-get-link is-here" href="https://chromewebstore.google.com/`
+	)
+
+	body := panel("Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0")
+	if !strings.Contains(body, firefox) || strings.Contains(body, chrome) || !strings.Contains(body, `src="/static/mascot-sparkle.png"`) {
+		t.Errorf("Firefox should get its store first, with the mascot: %s", truncate(body))
+	}
+	if body := panel("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0 Safari/537.36"); !strings.Contains(body, chrome) || strings.Contains(body, firefox) {
+		t.Errorf("any other browser should get the Chrome Web Store first: %s", truncate(body))
+	}
+	if page := record(h.ServeHTTP, httptest.NewRequest("GET", "http://127.0.0.1/settings", nil)).Body.String(); !strings.Contains(page, `class="sender-get"`) {
+		t.Errorf("the settings page should carry the offer too")
+	}
+
+	tok, _ := apitoken.New("sendtool (paired)", config.AllScopes)
+	tok.Paired = "sendtool"
+	addToken(t, srv, tok)
+	if body := panel(""); !strings.Contains(body, `class="sender-get"`) {
+		t.Errorf("another paired app should leave the offer up: %s", truncate(body))
+	}
+
+	tok, _ = apitoken.New("monsender (paired)", config.AllScopes)
+	tok.Paired = "monsender"
+	addToken(t, srv, tok)
+	if body := panel(""); strings.Contains(body, `class="sender-get"`) || !strings.Contains(body, "monsender on another browser:") {
+		t.Errorf("a paired monsender should leave only the store links: %s", truncate(body))
+	}
+
+	record(h.ServeHTTP, httptest.NewRequest("POST", "/api/v1/pair/request", strings.NewReader(`{"app":"thirdapp"}`)))
+	if body := panel(""); strings.Contains(body, "sender-get") || strings.Contains(body, "monsender on another browser:") {
+		t.Errorf("a pending request should take the whole panel: %s", truncate(body))
+	}
+}
