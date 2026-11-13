@@ -18,6 +18,16 @@ on:
         required: false
         type: boolean
         default: true
+      ref:
+        description: The commit the images are built from; empty builds the one the workflow runs on
+        required: false
+        type: string
+        default: ''
+      legacy:
+        description: Also tag the images in the legacy namespace
+        required: false
+        type: boolean
+        default: true
     secrets:
       GHCR_LEGACY_TOKEN:
         required: false
@@ -41,6 +51,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Lowercase image name
@@ -133,7 +144,7 @@ jobs:
 
       - name: Login to GHCR (legacy namespace)
         id: legacy
-        if: github.repository == 'monbooru/monloader'
+        if: inputs.legacy && github.repository == 'monbooru/monloader'
         continue-on-error: true
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
         with:

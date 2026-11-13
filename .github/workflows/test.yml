@@ -8,6 +8,10 @@ on:
       pr:
         description: Pull request number to test; empty tests the branch above
         required: false
+      build:
+        description: With a pull request, build its images as :pr-<n> and :pr-<n>-<sha> once the tests pass
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -17,7 +21,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.issue.pull_request &&
-       startsWith(github.event.comment.body, '/test') &&
+       (startsWith(github.event.comment.body, '/test') || startsWith(github.event.comment.body, '/build')) &&
        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     permissions:
@@ -26,9 +30,12 @@ jobs:
       statuses: write
     outputs:
       sha: ${{ steps.target.outputs.SHA }}
+      build: ${{ steps.target.outputs.BUILD }}
+      tags: ${{ steps.target.outputs.TAGS }}
     env:
       GH_TOKEN: ${{ github.token }}
       PR: ${{ github.event.issue.number || inputs.pr }}
+      BUILD: ${{ inputs.build }}
       BODY: ${{ github.event.comment.body }}
       COMMENT_ID: ${{ github.event.comment.id }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -42,18 +49,20 @@ jobs:
               exit 1 ;;
           esac
           want=""
+          build="$BUILD"
           if [ "$GITHUB_EVENT_NAME" = issue_comment ]; then
             body="${BODY//$'\r'/}"
             body="${body#"${body%%[![:space:]]*}"}"
             body="${body%"${body##*[![:space:]]}"}"
-            if [[ ! "$body" =~ ^/test([[:blank:]]+([^[:space:]]+))?$ ]]; then
-              echo "Not a /test command; nothing to do."
+            if [[ ! "$body" =~ ^/(test|build)([[:blank:]]+([^[:space:]]+))?$ ]]; then
+              echo "Not a /test or /build command; nothing to do."
               exit 0
             fi
-            want="${BASH_REMATCH[2],,}"
+            [ "${BASH_REMATCH[1]}" = build ] && build=true || build=false
+            want="${BASH_REMATCH[3],,}"
             if [ -n "$want" ] && [[ ! "$want" =~ ^[0-9a-f]{7,40}$ ]]; then
               gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=-1 > /dev/null
-              echo "::error::/test takes nothing, or the head commit of the pull request as 7 to 40 hex digits."
+              echo "::error::/test and /build take nothing, or the head commit of the pull request as 7 to 40 hex digits."
               exit 1
             fi
           fi
@@ -69,6 +78,14 @@ jobs:
             echo "::error::$want is not the head of pull request #$PR, which is now at ${sha:0:7}; nothing tested."
             exit 1
           fi
+          if [ "$build" = true ]; then
+            if [ -z "$PR" ]; then
+              echo "::error::The images are built for a pull request; give its number."
+              exit 1
+            fi
+            echo "BUILD=true" >> "$GITHUB_OUTPUT"
+            echo "TAGS=pr-$PR pr-$PR-${sha:0:7}" >> "$GITHUB_OUTPUT"
+          fi
           echo "SHA=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Acknowledge the comment
@@ -79,7 +96,12 @@ jobs:
         if: steps.target.outputs.SHA != ''
         env:
           SHA: ${{ steps.target.outputs.SHA }}
-        run: gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context=test -f description="Tests running on ${SHA:0:7}" -f target_url="$RUN_URL" > /dev/null
+          IMAGES: ${{ steps.target.outputs.BUILD }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context=test -f description="Tests running on ${SHA:0:7}" -f target_url="$RUN_URL" > /dev/null
+          if [ "$IMAGES" = true ]; then
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context=build -f description="Images wait for the tests on ${SHA:0:7}" -f target_url="$RUN_URL" > /dev/null
+          fi
 
   race:
     name: Tests
@@ -204,4 +226,49 @@ jobs:
               description="Tests failed on ${SHA:0:7}: $RESULTS" ;;
           esac
           gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context=test -f description="$description" -f target_url="$RUN_URL" > /dev/null
+          [ "$state" = success ] || { echo "::error::$description"; exit 1; }
+
+  images:
+    name: Images
+    needs: [target, test]
+    if: needs.target.outputs.build == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.target.outputs.sha }}
+      image_tags: ${{ needs.target.outputs.tags }}
+      binaries: false
+      legacy: false
+
+  built:
+    name: Build status on the commit
+    needs: [target, test, images]
+    if: always() && needs.target.result == 'success' && needs.target.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.target.outputs.sha }}
+      TAGS: ${{ needs.target.outputs.tags }}
+      RESULT: ${{ needs.images.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: The images are pushed
+        run: |
+          set -- $TAGS
+          case "$RESULT" in
+            success)
+              state=success
+              description="Pushed ghcr.io/${GITHUB_REPOSITORY,,}:$1 and :$2" ;;
+            skipped)
+              state=failure
+              description="No images: the tests failed on ${SHA:0:7}" ;;
+            *)
+              state=failure
+              description="The images failed on ${SHA:0:7}: $RESULT" ;;
+          esac
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context=build -f description="$description" -f target_url="$RUN_URL" > /dev/null
           [ "$state" = success ] || { echo "::error::$description"; exit 1; }
