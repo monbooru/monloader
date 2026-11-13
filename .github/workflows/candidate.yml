@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       checks: read
+      statuses: read
     outputs:
       short: ${{ steps.sha.outputs.SHORT }}
     steps:
@@ -47,6 +48,20 @@ jobs:
           fi
           if [ "$newest" != success ]; then
             echo "::error::Verify's newest run on $GITHUB_SHA is not green: $newest"
+            exit 1
+          fi
+
+      - name: Test is green on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" --jq '[.statuses[] | select(.context == "test")][0].state // ""')"
+          if [ -z "$state" ]; then
+            echo "::error::Test has not run on $GITHUB_SHA; run Test on dev first."
+            exit 1
+          fi
+          if [ "$state" != success ]; then
+            echo "::error::Test's newest status on $GITHUB_SHA is not green: $state"
             exit 1
           fi
 
