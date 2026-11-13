@@ -96,7 +96,7 @@ func TestTheSharedTemplatesParseWithTheirFuncs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"webui/head", "webui/login_page", "webui/peer_light", "webui/message_page", "webui/dir_picker", "webui/confirm_dialog", "webui/auth_tokens", "webui/token_privileges_dialog", "webui/auth_password_section", "webui/theme_cluster", "webui/token_created", "webui/settings_section_header", "webui/dir_picker_dialog", "webui/token_scopes_saved", "webui/pair_notice", "webui/dialog_x"} {
+	for _, name := range []string{"webui/head", "webui/login_page", "webui/peer_light", "webui/message_page", "webui/dir_picker", "webui/confirm_dialog", "webui/auth_tokens", "webui/token_privileges_dialog", "webui/auth_password_section", "webui/theme_cluster", "webui/token_created", "webui/settings_section_header", "webui/dir_picker_dialog", "webui/token_scopes_saved", "webui/pair_notice", "webui/dialog_x", "webui/desktop_section", "webui/desktop_power", "webui/memory_table"} {
 		if tmpl.Lookup(name) == nil {
 			t.Errorf("%s is not defined", name)
 		}
@@ -154,5 +154,37 @@ func TestAStaticURLIsKeptOnlyUnderTheCurrentVersion(t *testing.T) {
 	}
 	if AssetVersion(fstest.MapFS{"main.css": {Data: []byte("body{ }")}}) == version {
 		t.Error("the version did not move with the bytes")
+	}
+}
+
+type testIntegration struct{ MenuSupported, MenuEnabled, AutostartSupported, AutostartEnabled, TraySupported, TrayEnabled bool }
+
+func (d testIntegration) Supported() bool { return d.MenuSupported || d.AutostartSupported }
+
+func TestTheDesktopSectionTakesTheAppAsData(t *testing.T) {
+	tmpl := template.Must(template.New("").Funcs(Funcs("")).ParseFS(Templates, "*.html"))
+	var buf strings.Builder
+	err := tmpl.ExecuteTemplate(&buf, "webui/desktop_section", map[string]any{
+		"Folders":   []string{"config", "logs"},
+		"FolderURL": "/open",
+		"Desktop":   testIntegration{AutostartSupported: true, AutostartEnabled: true},
+		"StartHint": "Runs while open.",
+		"Power":     DesktopPower{Name: "app", PollURL: "/power", QuitWarning: "A job is running.", CSRFToken: "tok"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{`hx-post="/open"`, ">logs</button>", `name="start_at_login" checked`, "Runs while open.",
+		`hx-get="/power"`, `hx-confirm="Restart app?"`, `data-confirm-danger="A job is running."`, ">Stop app</button>", `value="tok"`, `form="desktop-switches">Save`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the section lacks %s", want)
+		}
+	}
+	if strings.Count(out, "data-confirm-danger") != 1 {
+		t.Errorf("the restart carries a warning it was not given:\n%s", out)
+	}
+	if strings.Contains(out, "menu_entry") || strings.Contains(out, `name="tray"`) {
+		t.Error("the section offers a switch the platform lacks")
 	}
 }

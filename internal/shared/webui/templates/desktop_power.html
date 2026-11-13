@@ -1,0 +1,14 @@
+{{define "webui/desktop_power"}}<div id="desktop-power" class="desktop-power" hx-get="{{.PollURL}}" hx-trigger="every 5s [!confirmOpen()]" hx-swap="outerHTML">
+  <form method="post" action="/settings/restart"
+        hx-confirm="Restart {{.Name}}?" data-confirm-ok="Restart"
+        {{with .RestartWarning}}data-confirm-danger="{{.}}"{{end}}>
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <button type="submit">Restart {{.Name}}</button>
+  </form>
+  <form method="post" action="/settings/quit" class="desktop-quit"
+        hx-confirm="Stop {{.Name}}?" data-confirm-ok="Stop"
+        {{with .QuitWarning}}data-confirm-danger="{{.}}"{{end}}>
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <button type="submit" class="btn-danger">Stop {{.Name}}</button>
+  </form>
+</div>{{end}}

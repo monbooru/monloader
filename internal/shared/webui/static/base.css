@@ -377,6 +377,10 @@ dialog:has(.dialog-actions .btn-danger:not([hidden])) .dlg-title-sub { color: in
   color: var(--success);
 }
 .copy-flash[hidden] { display: none; }
+.export-block { background: var(--bg-surface); border: 1px solid var(--border); padding: 6px 8px; margin: 4px 0 8px; font-size: 11px; max-height: 40vh; overflow-y: auto; }
+.export-block span { display: block; white-space: pre; }
+.exp-add { color: var(--success); }
+.exp-del { color: var(--error); text-decoration: line-through; opacity: 0.75; }
 .btn-sm {
   background: color-mix(in srgb, var(--fg) 10%, transparent);
   border: 1px solid transparent;
@@ -556,8 +560,9 @@ a.btn-sm:hover { text-decoration: none; }
 .dir-picker-entry:hover { background: var(--bg-surface); color: var(--link); }
 .dir-picker-entry:focus-visible { outline: 1px solid var(--link); outline-offset: 0; }
 .desktop-folders { display: flex; gap: 6px; flex-wrap: wrap; }
-.desktop-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
-.desktop-power, .desktop-quit { display: flex; align-items: center; gap: 8px; }
+.desktop-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.desktop-power, .desktop-quit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.desktop-power button { white-space: nowrap; }
 #setup-page { max-width: 620px; margin: 40px auto; padding: 0 16px; }
 #setup-page h2 { margin: 18px 0 10px; }
 .setup-actions { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
@@ -637,3 +642,8 @@ a.btn-sm:hover { text-decoration: none; }
 
 .no-results { color: var(--fg-dim); font-style: italic; padding: 8px; grid-column: 1 / -1; }
 .danger-zone { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.reorder-grip { background: none; border: 0; padding: 0 4px; color: var(--fg-dim); cursor: grab; touch-action: none; }
+.reorder-grip:hover, .reorder-grip:focus-visible { color: var(--fg); }
+.reorder-grip:focus-visible { outline: 1px solid var(--link); outline-offset: 1px; }
+.reorder-dragging { outline: 1px dashed var(--fg); outline-offset: -1px; }
+.reorder-dragging .reorder-grip { color: var(--accent); cursor: grabbing; }

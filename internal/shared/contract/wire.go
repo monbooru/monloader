@@ -185,6 +185,50 @@ type PostFields struct {
 	WithheldTags []string `json:"withheld_tags,omitempty"`
 }
 
+type TagName struct {
+	Tag      string `json:"tag"`
+	Category string `json:"category"`
+}
+
+type TagRulesRequest struct {
+	Names []TagName `json:"names"`
+}
+
+// TagRule is what one site does to a tag of that name when it arrives from
+// there.
+type TagRule struct {
+	Site   string `json:"site"`
+	Rule   string `json:"rule"`
+	Target string `json:"target,omitempty"`
+	// The rule that does it, as written, and its list.
+	RuleKey       string `json:"rule_key,omitempty"`
+	RuleList      string `json:"rule_list,omitempty"`
+	Blacklist     string `json:"blacklist,omitempty"`
+	BlacklistLine string `json:"blacklist_line,omitempty"`
+	// The line's other tokens: empty when the line names the tag alone,
+	// absent when no line skips it.
+	BlacklistCondition *string  `json:"blacklist_condition,omitempty"`
+	MappedFrom         []string `json:"mapped_from,omitempty"`
+	RenamedFrom        []string `json:"renamed_from,omitempty"`
+	// The same, from the rules for all sites the site's own leave alone.
+	RenamedFromGlobal []string `json:"renamed_from_global,omitempty"`
+	// Whether the tag, as the site sends it, survives the category drop.
+	Kept    bool   `json:"kept"`
+	Kind    string `json:"kind"`
+	Builtin bool   `json:"builtin,omitempty"`
+}
+
+type TagRules struct {
+	Tag          string    `json:"tag"`
+	Category     string    `json:"category"`
+	CategoryKept bool      `json:"category_kept"`
+	Sites        []TagRule `json:"sites"`
+}
+
+type TagRulesBatch struct {
+	Results []TagRules `json:"results"`
+}
+
 type EnrichRequest struct {
 	PostFields
 	SourceMD5  string  `json:"source_md5,omitempty"`

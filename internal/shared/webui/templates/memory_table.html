@@ -1,0 +1,31 @@
+{{define "webui/memory_table"}}<div class="settings-sub">
+      <h4>Process memory</h4>
+      <div class="table-scroll">
+      <table class="stats-table">
+        <tbody>
+          {{if .Available}}
+          <tr><th>Memory used (PSS)</th><td>{{humanBytes .Total}}</td></tr>
+          {{if or .Anon .File}}
+          <tr><th class="stats-d1">Private (anonymous)</th><td>{{humanBytes .Anon}}</td></tr>
+          <tr><th class="stats-d2">Go runtime (in use)</th><td>{{humanBytes .GoInuse}}</td></tr>
+          <tr><th class="stats-d3">Go heap (live objects)</th><td>{{humanBytes .HeapAlloc}}</td></tr>
+          <tr><th class="stats-d2">Go runtime (idle)</th><td>{{humanBytes .GoIdle}}</td></tr>
+          <tr><th class="stats-d2">Native heap (SQLite, CGO)</th><td>{{humanBytes .Native}}</td></tr>
+          <tr><th class="stats-d1">Shared (file-backed)</th><td>{{humanBytes .File}}</td></tr>
+          {{if .DB}}
+          <tr><th class="stats-d2">DB pages (memory-mapped)</th><td>{{humanBytes .DB}}</td></tr>
+          <tr><th class="stats-d2">Code &amp; shared libs</th><td>{{humanBytes .OtherFile}}</td></tr>
+          {{end}}
+          {{else}}
+          <tr><th class="stats-d1">Go runtime (reserved)</th><td>{{humanBytes .Sys}}</td></tr>
+          <tr><th class="stats-d2">Go heap (live objects)</th><td>{{humanBytes .HeapAlloc}}</td></tr>
+          {{end}}
+          {{else}}
+          <tr><th>Go runtime (reserved)</th><td>{{humanBytes .Sys}}</td></tr>
+          <tr><th class="stats-d1">Go heap (live objects)</th><td>{{humanBytes .HeapAlloc}}</td></tr>
+          {{end}}
+          <tr><th>Goroutines</th><td>{{.Goroutines}}</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>{{end}}
