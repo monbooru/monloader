@@ -14,7 +14,10 @@ const gdlInstallTimeout = 3 * time.Minute
 
 const gdlProbeTimeout = 30 * time.Second
 
-var installManaged = gdl.InstallManaged
+var (
+	installManaged = gdl.InstallManaged
+	latestNightly  = gdl.LatestNightly
+)
 
 const gdlBusyReason = "A gallery-dl install or revert is running - wait for it to finish."
 
@@ -42,6 +45,10 @@ type gdlPanel struct {
 	Percent   int
 	MsgKind   string
 	Msg       string
+	// The Stats section sits outside the panel; only an htmx answer sends
+	// it, as the settings page renders its own copy.
+	StatsOOB   bool
+	Extractors int
 }
 
 func (s *Server) gdlPanel(csrf string) gdlPanel {
@@ -62,7 +69,7 @@ func (s *Server) gdlPanel(csrf string) gdlPanel {
 	if s.gdlJob == nil {
 		return p
 	}
-	p.Running, p.Version, p.Step, p.Percent = s.gdlJob.running, s.gdlJob.version, s.gdlJob.step, s.gdlJob.percent
+	p.Running, p.Version, p.Step, p.Percent = s.gdlJob.running, gdl.ReleaseLabel(s.gdlJob.version), s.gdlJob.step, s.gdlJob.percent
 	p.MsgKind, p.Msg = s.gdlJob.kind, s.gdlJob.msg
 	if !p.Running {
 		// Cleared once reported, so a later reload shows the version
@@ -158,16 +165,24 @@ func (s *Server) gdlInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	version := strings.TrimSpace(r.FormValue("version"))
-	if version == "" {
+	switch {
+	case version == "":
 		v, err := gdl.LatestVersion(r.Context())
 		if err != nil {
 			s.renderGDLPanel(w, r, "err", "could not ask PyPI for the latest release: "+err.Error())
 			return
 		}
 		version = v
+	case strings.EqualFold(version, gdl.NightlyLatest):
+		v, err := latestNightly(r.Context())
+		if err != nil {
+			s.renderGDLPanel(w, r, "err", "could not ask GitHub for the latest nightly: "+err.Error())
+			return
+		}
+		version = v
 	}
 	if !gdl.ValidVersion(version) {
-		s.renderGDLPanel(w, r, "err", version+" is not a release number like 1.32.9")
+		s.renderGDLPanel(w, r, "err", version+" is not a release number like 1.32.9 or a nightly like 2026.11.12")
 		return
 	}
 	done, reason := s.gdlSwitchGuard()
@@ -203,11 +218,12 @@ func (s *Server) runGDLInstall(version string, done func()) {
 	}
 	s.gdlStep("re-reading the extractor list", 92)
 	s.refreshGDLCatalog()
+	label := gdl.ReleaseLabel(version)
 	if !s.catalog.Managed() {
-		finish("warn", "gallery-dl "+version+" installed, but binary_path still names the binary in use.")
+		finish("warn", "gallery-dl "+label+" installed, but binary_path still names the binary in use.")
 		return
 	}
-	finish("ok", "gallery-dl "+version+" installed and active.")
+	finish("ok", "gallery-dl "+label+" installed and active.")
 }
 
 func (s *Server) gdlStatusFragment(w http.ResponseWriter, r *http.Request) {
@@ -216,6 +232,7 @@ func (s *Server) gdlStatusFragment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderGDLPanel(w http.ResponseWriter, r *http.Request, kind, msg string) {
 	panel := s.gdlPanel(s.csrf(r))
+	panel.StatsOOB, panel.Extractors = true, len(s.catalog.Extractors())
 	if msg != "" {
 		panel.MsgKind, panel.Msg = kind, msg
 	}

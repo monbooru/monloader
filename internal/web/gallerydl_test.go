@@ -65,6 +65,20 @@ func TestGDLSettingsSection(t *testing.T) {
 	if strings.Contains(body, "/settings/gallerydl/revert") {
 		t.Error("revert form rendered without a managed install")
 	}
+	if n := strings.Count(body, `id="gdl-stats"`); n != 1 || strings.Contains(body, `id="gdl-stats" hx-swap-oob`) {
+		t.Errorf("the settings page renders %d stats blocks, want its own one in place", n)
+	}
+}
+
+func TestGDLPanelRefreshesTheStats(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+	srv.gdlJob = &gdlJob{version: "2026.11.12", kind: "ok", msg: "gallery-dl nightly 2026.11.12 installed and active."}
+
+	_, body := get(t, ts, "/internal/gallerydl-status")
+	stats := body[strings.Index(body, `id="gdl-stats"`)+1:]
+	if !strings.Contains(body, `id="gdl-stats" hx-swap-oob="true"`) || !strings.Contains(stats, fakeGDLVersion) {
+		t.Errorf("the finished panel should carry the stats out of band with the probed version, got %s", body)
+	}
 }
 
 func postFollow(t *testing.T, ts *httptest.Server, srv *Server, path string, vals url.Values) *http.Response {
@@ -86,6 +100,49 @@ func TestGDLInstallRejectsBadVersion(t *testing.T) {
 	}
 	if srv.gdlJob != nil {
 		t.Error("a refused version claimed the install slot")
+	}
+}
+
+func TestGDLInstallNightly(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		lookup  error
+		version string // what reaches the installer; empty when nothing should
+		want    string
+	}{
+		{"the keyword takes the newest build", "nightly", nil, "2026.11.12", "nightly 2026.11.12"},
+		{"the keyword ignores case", "Nightly", nil, "2026.11.12", "nightly 2026.11.12"},
+		{"a date pins a build", "2026.11.10", nil, "2026.11.10", "nightly 2026.11.10"},
+		{"a failed lookup claims nothing", "nightly", errors.New("rate limited"), "", "could not ask GitHub for the latest nightly: rate limited"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv, ts := serveWeb(t, "")
+			oldLatest, oldInstall := latestNightly, installManaged
+			latestNightly = func(context.Context) (string, error) { return "2026.11.12", c.lookup }
+			got := make(chan string, 1)
+			installManaged = func(_ context.Context, _, version string, _ gdl.InstallProgress) error {
+				got <- version
+				return errors.New("no network")
+			}
+			t.Cleanup(func() { latestNightly, installManaged = oldLatest, oldInstall })
+
+			resp := postFollow(t, ts, srv, "/settings/gallerydl/install", url.Values{"version": {c.input}})
+			if panel := readBody(t, resp); !strings.Contains(panel, c.want) {
+				t.Errorf("panel missing %q: %s", c.want, panel)
+			}
+			if c.version == "" {
+				if srv.gdlJob != nil {
+					t.Error("a failed lookup claimed the install slot")
+				}
+				return
+			}
+			if v := <-got; v != c.version {
+				t.Errorf("installer got %q, want %q", v, c.version)
+			}
+			waitFor(t, func() bool { return !srv.gdlRunning() })
+		})
 	}
 }
 
