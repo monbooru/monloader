@@ -379,13 +379,16 @@ func (e *Engine) DataPath() string {
 }
 
 // SetDataPath answers false under a running sync: an open index keeps its
-// path until the next boot.
+// path until the next boot. It also answers false while an enable or disable
+// runs, rather than stall a save behind it; the save leaves it owed.
 func (e *Engine) SetDataPath(path string) bool {
-	e.lifecycleMu.Lock()
-	defer e.lifecycleMu.Unlock()
+	free := e.lifecycleMu.TryLock()
+	if free {
+		defer e.lifecycleMu.Unlock()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.store != nil {
+	if !free || e.store != nil {
 		return e.cfg.DataPath == path
 	}
 	e.cfg.DataPath = path
@@ -412,11 +415,13 @@ func (e *Engine) Address() string {
 }
 
 func (e *Engine) SetAddress(addr string) bool {
-	e.lifecycleMu.Lock()
-	defer e.lifecycleMu.Unlock()
+	free := e.lifecycleMu.TryLock()
+	if free {
+		defer e.lifecycleMu.Unlock()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.store != nil {
+	if !free || e.store != nil {
 		return e.cfg.Address == addr
 	}
 	e.cfg.Address = addr

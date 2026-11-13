@@ -795,6 +795,26 @@ func TestEngineMissingDataPathRefused(t *testing.T) {
 	}
 }
 
+func TestEngineSettersDoNotWaitOnALifecycleChange(t *testing.T) {
+	dir := t.TempDir()
+	e := NewEngine(config.PTRConfig{DataPath: dir, Address: "https://old.example"})
+	e.lifecycleMu.Lock()
+	defer e.lifecycleMu.Unlock()
+	done := make(chan [2]bool, 1)
+	go func() { done <- [2]bool{e.SetDataPath(t.TempDir()), e.SetAddress("https://new.example")} }()
+	select {
+	case got := <-done:
+		if got[0] || got[1] {
+			t.Errorf("SetDataPath, SetAddress = %v, want both refused while an enable or disable holds the engine", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a setter waited on an enable or disable in progress")
+	}
+	if e.DataPath() != dir || e.Address() != "https://old.example" {
+		t.Errorf("DataPath, Address = %q, %q, want them unchanged", e.DataPath(), e.Address())
+	}
+}
+
 func TestEngineSetDataPathEnablesWithoutARestart(t *testing.T) {
 	fr := seededRepo(t)
 	e := newTestEngine(t, fr, "")
