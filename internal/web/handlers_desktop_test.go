@@ -158,7 +158,7 @@ func TestDesktopControlsAreGated(t *testing.T) {
 				{"/settings/desktop", "POST", "_csrf=" + csrf},
 				{"/settings/quit", "POST", "_csrf=" + csrf},
 				{"/settings/restart", "POST", "_csrf=" + csrf},
-				{"/internal/desktop-actions", "GET", ""},
+				{"/internal/desktop-power", "GET", ""},
 			} {
 				w := httptest.NewRecorder()
 				r := localRequest(probe.method, probe.path, probe.body)
@@ -208,11 +208,8 @@ func TestDesktopControlsSurviveANetworkBind(t *testing.T) {
 func TestOpenFolderRefusesAnUnknownKind(t *testing.T) {
 	srv := desktopServer(t)
 	w := record(srv.openFolder, localRequest("POST", "/internal/open-folder", "kind=/etc"))
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want a flash redirect", w.Code)
-	}
-	if !strings.Contains(w.Header().Get("Location"), "kind=err") {
-		t.Errorf("location = %q, want an error flash", w.Header().Get("Location"))
+	if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(body, `<div class="flash flash-err">Unknown folder.</div>`) {
+		t.Errorf("status = %d, body = %q, want the refusal flashed in place", w.Code, body)
 	}
 }
 
@@ -256,59 +253,62 @@ func TestRestartWarnsLikeTheStopBesideIt(t *testing.T) {
 	srv.queue.Pause()
 	srv.queue.Enqueue("https://example.com/posts/1", queue.Options{})
 
-	got := srv.desktopRestartPrompt()
+	got := srv.desktopStopWarning("restarting")
 	if !strings.Contains(got, "1 job is") || !strings.Contains(got, "cancels it") {
-		t.Errorf("prompt = %q, want the waiting job counted and said to be cancelled", got)
+		t.Errorf("warning = %q, want the waiting job counted and said to be cancelled", got)
 	}
 	w := record(srv.settingsScreen, localRequest("GET", "/settings", ""))
-	if body := w.Body.String(); !strings.Contains(body, `hx-confirm="Restart monloader? 1 job is`) {
-		t.Errorf("the restart form carries no counted confirmation:\n%s", truncate(body))
+	body := w.Body.String()
+	for _, want := range []string{`hx-confirm="Restart monloader?"`, `data-confirm-danger="1 job is running or waiting; restarting cancels it`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the restart form lacks %s:\n%s", want, truncate(body))
+		}
 	}
 }
 
-func TestDesktopActionsFragmentCountsTheQueueNow(t *testing.T) {
+func TestDesktopPowerFragmentCountsTheQueueNow(t *testing.T) {
 	srv := desktopServer(t)
-	w := record(srv.settingsScreen, localRequest("GET", "/settings", ""))
-	if body := w.Body.String(); strings.Contains(body, "job is") {
-		t.Fatalf("an idle queue should count nothing:\n%s", truncate(body))
+	w := record(srv.desktopPowerFragment, localRequest("GET", "/internal/desktop-power", ""))
+	if body := w.Body.String(); strings.Contains(body, "data-confirm-danger") {
+		t.Fatalf("an idle queue should warn of nothing:\n%s", truncate(body))
 	}
 
 	srv.queue.Pause()
 	for range 4 {
 		srv.queue.Enqueue("https://example.com/posts/1", queue.Options{})
 	}
-	w = record(srv.desktopActionsFragment, localRequest("GET", "/internal/desktop-actions", ""))
+	w = record(srv.desktopPowerFragment, localRequest("GET", "/internal/desktop-power", ""))
 	body := w.Body.String()
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	for _, want := range []string{"Stop monloader? 4 jobs are", "Restart monloader? 4 jobs are"} {
+	for _, want := range []string{"4 jobs are running or waiting; stopping cancels them", "4 jobs are running or waiting; restarting cancels them", `hx-get="/internal/desktop-power"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("fragment missing %q:\n%s", want, truncate(body))
 		}
 	}
 }
 
-func TestQuitPromptCountsNothingWhenTheQueueIsEmpty(t *testing.T) {
+func TestQuitWarnsOfNothingWhenTheQueueIsEmpty(t *testing.T) {
 	srv := desktopServer(t)
-	if got := srv.desktopQuitPrompt(); strings.Contains(got, "job is") {
-		t.Errorf("prompt = %q, want no job count on an empty queue", got)
+	if got := srv.desktopStopWarning("stopping"); got != "" {
+		t.Errorf("warning = %q, want none on an empty queue", got)
 	}
 }
 
-func TestQuitPromptSaysAWaitingJobIsCancelled(t *testing.T) {
+func TestQuitWarningSaysAWaitingJobIsCancelled(t *testing.T) {
 	srv := desktopServer(t)
 	srv.queue.Pause()
 	srv.queue.Enqueue("https://example.com/posts/1", queue.Options{})
-	got := srv.desktopQuitPrompt()
+	got := srv.desktopStopWarning("stopping")
 	if !strings.Contains(got, "1 job is") {
-		t.Errorf("prompt = %q, want the waiting job counted", got)
+		t.Errorf("warning = %q, want the waiting job counted", got)
 	}
 	if !strings.Contains(got, "cancels it") {
-		t.Errorf("prompt = %q, want the stop to say it cancels it", got)
+		t.Errorf("warning = %q, want the stop to say it cancels it", got)
 	}
 	if strings.Contains(got, "resume") {
-		t.Errorf("prompt = %q, want no resume promise the queue cannot keep", got)
+		t.Errorf("warning = %q, want no resume promise the queue cannot keep", got)
 	}
 }
 

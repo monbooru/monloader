@@ -14,6 +14,7 @@ import (
 	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/shared/desktop"
 	"github.com/monbooru/monloader/internal/shared/logx"
+	"github.com/monbooru/monloader/internal/shared/webui"
 )
 
 // Every route that reaches the filesystem or the process goes through
@@ -58,26 +59,26 @@ var openFolderKinds = []string{"config", "logs", "cookies", "ptr"}
 func (s *Server) openFolder(w http.ResponseWriter, r *http.Request) {
 	kind := r.FormValue("kind")
 	if !slices.Contains(openFolderKinds, kind) {
-		s.redirectFlash(w, r, "err", "Unknown folder.")
+		writeInlineFlash(w, "err", "Unknown folder.")
 		return
 	}
 	dir, ours := s.desktopFolder(kind)
 	if dir == "" {
-		s.redirectFlash(w, r, "err", "That folder is not configured.")
+		writeInlineFlash(w, "err", "That folder is not configured.")
 		return
 	}
 	if ours {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			s.redirectFlash(w, r, "err", "Could not create "+dir+": "+err.Error())
+			writeInlineFlash(w, "err", "Could not create "+dir+": "+err.Error())
 			return
 		}
 	}
 	if err := desktop.OpenFolder(dir); err != nil {
 		logx.Warnf("open-folder %s: %v", kind, err)
-		s.redirectFlash(w, r, "err", "Could not open "+dir+".")
+		writeInlineFlash(w, "err", "Could not open "+dir+".")
 		return
 	}
-	s.redirectFlash(w, r, "ok", "Opened "+dir+".")
+	writeInlineFlash(w, "ok", "Opened "+dir+".")
 }
 
 // The bool is whether monloader owns the folder and may create it; the
@@ -130,10 +131,10 @@ func (s *Server) settingsDesktopPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(failures) > 0 {
-		s.redirectFlash(w, r, "err", strings.Join(failures, "; "))
+		writeInlineFlash(w, "err", strings.Join(failures, "; "))
 		return
 	}
-	s.redirectFlash(w, r, "ok", "Saved.")
+	writeInlineFlash(w, "ok", "Saved.")
 }
 
 // Long enough for the response to reach the tab over loopback, short
@@ -184,28 +185,32 @@ func (s *Server) settingsRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 // Restart carries one too: it ends the queue exactly as a stop does.
-func (s *Server) desktopStopPrompt(verb, gerund string) string {
+func (s *Server) desktopStopWarning(gerund string) string {
 	running, queued := s.queue.InFlight()
-	total := running + queued
-	if total == 0 {
-		return verb + " monloader?"
+	switch total := running + queued; total {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("1 job is running or waiting; %s cancels it, and the queue keeps it for a retry.", gerund)
+	default:
+		return fmt.Sprintf("%d jobs are running or waiting; %s cancels them, and the queue keeps them for a retry.", total, gerund)
 	}
-	if total == 1 {
-		return fmt.Sprintf("%s monloader? 1 job is running or waiting; %s cancels it, and the queue keeps it for a retry.", verb, gerund)
-	}
-	return fmt.Sprintf("%s monloader? %d jobs are running or waiting; %s cancels them, and the queue keeps them for a retry.", verb, total, gerund)
 }
 
-func (s *Server) desktopQuitPrompt() string { return s.desktopStopPrompt("Stop", "stopping") }
+// Polled because both warnings count the queue, and a count rendered with
+// the page is wrong by the time the operator clicks.
+func (s *Server) desktopPower(r *http.Request) webui.DesktopPower {
+	return webui.DesktopPower{
+		Name:           "monloader",
+		PollURL:        "/internal/desktop-power",
+		RestartWarning: s.desktopStopWarning("restarting"),
+		QuitWarning:    s.desktopStopWarning("stopping"),
+		CSRFToken:      s.csrf(r),
+	}
+}
 
-func (s *Server) desktopRestartPrompt() string { return s.desktopStopPrompt("Restart", "restarting") }
-
-func (s *Server) desktopActionsFragment(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "desktop_actions", map[string]any{
-		"CSRFToken":     s.csrf(r),
-		"QuitPrompt":    s.desktopQuitPrompt(),
-		"RestartPrompt": s.desktopRestartPrompt(),
-	})
+func (s *Server) desktopPowerFragment(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "webui/desktop_power", s.desktopPower(r))
 }
 
 // config.Default is the container's service name; a desktop pair talks

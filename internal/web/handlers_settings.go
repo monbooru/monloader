@@ -52,8 +52,7 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 	if local {
 		data["DesktopFolders"] = s.availableFolders()
 		data["Desktop"] = s.desktopIntegration()
-		data["DesktopQuitPrompt"] = s.desktopQuitPrompt()
-		data["DesktopRestartPrompt"] = s.desktopRestartPrompt()
+		data["DesktopPower"] = s.desktopPower(r)
 	}
 	data["Defaults"] = config.Default()
 	data["MonbooruAPIHint"] = s.monbooruAPIHint()
@@ -258,13 +257,10 @@ func draftForm(r *http.Request) map[string]string {
 
 var settingsSections = map[string]string{
 	"monbooru": "monbooru", "downloader": "downloads", "rules": "rules", "lookup": "lookup", "ptr": "ptr",
-	"sites": "sites", "host-labels": "sites", "gallerydl": "advanced", "raw": "advanced", "desktop": "desktop",
+	"sites": "sites", "host-labels": "sites", "gallerydl": "advanced", "raw": "advanced",
 }
 
 func sectionForPath(path string) string {
-	if path == "/internal/open-folder" {
-		return "desktop"
-	}
 	section, _, _ := strings.Cut(strings.TrimPrefix(path, "/settings/"), "/")
 	return settingsSections[section]
 }

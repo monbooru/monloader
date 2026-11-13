@@ -23,58 +23,7 @@
   <h2>Settings</h2>
 
   {{if .DesktopProfile}}
-  {{$dk := .Desktop}}
-  <section class="settings-section" id="desktop">
-    {{template "webui/settings_section_header" dict "Title" "Desktop"}}
-    {{if eq .FlashSection "desktop"}}<div class="flash flash-{{.FlashKind}}">{{.Flash}}</div>{{end}}
-    {{/* The switches sit in columns beside the folders, which are forms of
-         their own, so the form they belong to is empty and they reach it by
-         name. */}}
-    <form id="desktop-switches" method="POST" action="/settings/desktop">
-      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    </form>
-    <div class="settings-cols">
-      <div class="settings-sub">
-        <h4>Open a folder</h4>
-        <div class="desktop-folders">
-          {{range $kind := .DesktopFolders}}
-          <form method="POST" action="/internal/open-folder" style="display:inline">
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            <input type="hidden" name="kind" value="{{$kind}}">
-            <button type="submit">{{$kind}}</button>
-          </form>
-          {{end}}
-        </div>
-      </div>
-      {{if $dk.Supported}}
-      <div class="settings-sub">
-        <h4>Launching</h4>
-        <div class="field">
-          {{if $dk.MenuSupported}}
-          <label><input type="checkbox" name="menu_entry" form="desktop-switches" {{if $dk.MenuEnabled}}checked{{end}}> Add to the applications menu</label>
-          {{end}}
-          {{if $dk.AutostartSupported}}
-          <label><input type="checkbox" name="start_at_login" form="desktop-switches" {{if $dk.AutostartEnabled}}checked{{end}}> Start at login</label>
-          <p class="field-hint">Retries and nightly lookups only run while monloader is open.</p>
-          {{end}}
-        </div>
-      </div>
-      {{end}}
-      {{if $dk.TraySupported}}
-      <div class="settings-sub">
-        <h4>Tray</h4>
-        <div class="field">
-          <label><input type="checkbox" name="tray" form="desktop-switches" {{if $dk.TrayEnabled}}checked{{end}}> Show the tray icon</label>
-          <p class="field-hint">Takes effect after a restart.</p>
-        </div>
-      </div>
-      {{end}}
-    </div>
-    <div class="desktop-actions">
-      {{template "desktop_actions" (dict "CSRFToken" .CSRFToken "QuitPrompt" .DesktopQuitPrompt "RestartPrompt" .DesktopRestartPrompt)}}
-      {{if or $dk.Supported $dk.TraySupported}}<button type="submit" form="desktop-switches">Save</button>{{end}}
-    </div>
-  </section>
+  {{template "webui/desktop_section" (dict "Folders" .DesktopFolders "FolderURL" "/internal/open-folder" "Desktop" .Desktop "StartHint" "Retries and nightly lookups only run while monloader is open." "Power" .DesktopPower)}}
   {{end}}
 
   <section class="settings-section" id="monbooru">
