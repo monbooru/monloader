@@ -322,60 +322,11 @@ onClick(".maprow-del", function (del) {
   del.closest(".maprow").remove();
 });
 
-
-var chainDragging = null;
-document.body.addEventListener("dragstart", function (e) {
-  var li = e.target.closest && e.target.closest("#chain-dialog li");
-  if (!li) {
-    return;
-  }
-  chainDragging = li;
-  e.dataTransfer.effectAllowed = "move";
-  // Firefox refuses to start a drag with no payload attached.
-  e.dataTransfer.setData("text/plain", li.dataset.name);
-});
-document.body.addEventListener("dragover", function (e) {
-  if (!chainDragging) {
-    return;
-  }
-  var list = e.target.closest && e.target.closest("#chain-dialog ul");
-  if (!list) {
-    return;
-  }
-  e.preventDefault();
-  var before = null;
-  list.querySelectorAll("li").forEach(function (li) {
-    if (li !== chainDragging && !before && e.clientY < li.getBoundingClientRect().top + li.offsetHeight / 2) {
-      before = li;
-    }
-  });
-  if (before !== chainDragging.nextSibling || chainDragging.parentNode !== list) {
-    list.insertBefore(chainDragging, before);
-  }
-});
-document.body.addEventListener("dragend", function () {
-  chainDragging = null;
-});
-
-// HTML5 drag works from neither keyboard nor touch, so each row carries
-// its moves as buttons too.
 onClick(".chain-move", function (btn) {
   var li = btn.closest("li");
   var move = btn.dataset.move;
-  if (move === "up") {
-    if (li.previousElementSibling) {
-      li.parentNode.insertBefore(li, li.previousElementSibling);
-    }
-  } else if (move === "down") {
-    if (li.nextElementSibling) {
-      li.parentNode.insertBefore(li.nextElementSibling, li);
-    }
-  } else {
-    document.getElementById(move).appendChild(li);
-    li.querySelector(move === "chain-on" ? '[data-move="up"]' : '[data-move="chain-on"]').focus();
-    return;
-  }
-  btn.focus();
+  document.getElementById(move).appendChild(li);
+  li.querySelector(move === "chain-on" ? ".reorder-grip" : '[data-move="chain-on"]').focus();
 });
 document.addEventListener("DOMContentLoaded", function () {
   var form = document.getElementById("chain-form");

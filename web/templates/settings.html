@@ -268,15 +268,15 @@
       <form method="POST" action="/settings/lookup/chain" id="chain-form">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <p class="dlg-title">Edit the <strong>lookup chain</strong>{{template "webui/dialog_x"}}</p>
-        <p class="field-hint">Drag a source between the columns, or use its buttons.</p>
+        <p class="field-hint">Drag &equiv; to move a source, or focus it and press &uarr; / &darr;.</p>
         <div class="chain-cols">
           <div class="chain-col">
             <h4>Ask, in this order</h4>
-            <ul id="chain-on">{{template "chain_rows" .LookupPanel.DialogOn}}</ul>
+            <ul id="chain-on" data-reorder data-reorder-group="chain">{{template "chain_rows" .LookupPanel.DialogOn}}</ul>
           </div>
           <div class="chain-col">
             <h4>Don't ask</h4>
-            <ul id="chain-off">{{template "chain_rows" .LookupPanel.DialogOff}}</ul>
+            <ul id="chain-off" data-reorder data-reorder-group="chain">{{template "chain_rows" .LookupPanel.DialogOff}}</ul>
           </div>
         </div>
         <div class="dialog-actions">
