@@ -18,12 +18,6 @@ import (
 	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
-const (
-	CodeNotFound       = "not_found"
-	CodeNotRescindable = "not_rescindable"
-	CodeInternal       = "internal_error"
-)
-
 type Service interface {
 	CurrentReader
 	Status() ptr.Status
@@ -401,10 +395,10 @@ const selfPairNote = "both sides are the same tag"
 
 func SendRefusal(ctx context.Context, svc Service) *Refusal {
 	if !svc.Enabled() {
-		return &Refusal{outcome.ErrCodePTRUnavailable, "the ptr index is not available"}
+		return &Refusal{Code: outcome.ErrCodePTRUnavailable, Msg: "the ptr index is not available"}
 	}
 	if !svc.HasPersonalKey() {
-		return &Refusal{outcome.ErrCodePTRAccountRequired, "no personal account key is set"}
+		return &Refusal{Code: outcome.ErrCodePTRAccountRequired, Msg: "no personal account key is set"}
 	}
 	// Fresh, so a ban the janitors just set refuses the send now; bounded
 	// well inside contract.ContribSendBudget.
@@ -417,10 +411,10 @@ func SendRefusal(ctx context.Context, svc Service) *Refusal {
 		banned = c.Banned
 	}
 	if banned {
-		return &Refusal{outcome.ErrCodePTRBanned, "the account is banned"}
+		return &Refusal{Code: outcome.ErrCodePTRBanned, Msg: "the account is banned"}
 	}
 	if !svc.CaughtUp() {
-		return &Refusal{outcome.ErrCodePTRSyncing, "the ptr index is not fully synced yet"}
+		return &Refusal{Code: outcome.ErrCodePTRSyncing, Msg: "the ptr index is not fully synced yet"}
 	}
 	return nil
 }
@@ -635,7 +629,18 @@ func sharesIdeal(a, b map[string]bool) bool {
 	return false
 }
 
+type RefusalKind int
+
+// A Refused refusal carries its own Code; the others are the api's words.
+const (
+	Refused RefusalKind = iota
+	NotFound
+	NotRescindable
+	Internal
+)
+
 type Refusal struct {
+	Kind RefusalKind
 	Code string
 	Msg  string
 }
@@ -645,36 +650,36 @@ type Refusal struct {
 func RescindCommittedAdd(svc Service, store *ptr.ContribStore, logID int64) (int64, *Refusal) {
 	row, err := store.LogRow(logID)
 	if err != nil {
-		return 0, &Refusal{CodeInternal, err.Error()}
+		return 0, &Refusal{Kind: Internal, Msg: err.Error()}
 	}
 	if row == nil {
-		return 0, &Refusal{CodeNotFound, "no ledger row with that id"}
+		return 0, &Refusal{Kind: NotFound, Msg: "no ledger row with that id"}
 	}
 	if row.Kind != ptr.ContribMappingAdd {
-		return 0, &Refusal{CodeNotRescindable, "only a committed mapping add can be rescinded"}
+		return 0, &Refusal{Kind: NotRescindable, Msg: "only a committed mapping add can be rescinded"}
 	}
 	// Not the stamped outcome: after an earlier rescind's petition failed
 	// and was cleared, the add must stay rescindable.
 	if pending, _ := store.PendingMappingPetition(row.Tag, row.Hash); pending {
-		return 0, &Refusal{CodeNotRescindable, "a removal for this add is already staged or awaiting review"}
+		return 0, &Refusal{Kind: NotRescindable, Msg: "a removal for this add is already staged or awaiting review"}
 	}
 	current, err := svc.HashHasRaw(hex.EncodeToString(row.Hash), row.Tag)
 	if err != nil {
-		return 0, &Refusal{outcome.ErrCodePTRUnavailable, err.Error()}
+		return 0, &Refusal{Code: outcome.ErrCodePTRUnavailable, Msg: err.Error()}
 	}
 	if !current {
 		// An add committed after the coverage window is live server-side
 		// but not yet in the index.
 		committed, _ := store.MappingAddCommittedSince(row.Tag, row.Hash, svc.Status().CoveredThrough)
 		if !committed {
-			return 0, &Refusal{CodeNotRescindable, "the mapping is already gone from the index"}
+			return 0, &Refusal{Kind: NotRescindable, Msg: "the mapping is already gone from the index"}
 		}
 	}
 	itemID, dup, err := store.Stage(ptr.ContribItem{
 		Kind: ptr.ContribMappingPetition, Tag: row.Tag, Hash: row.Hash, Reason: fixedRescindReason,
 	})
 	if err != nil {
-		return 0, &Refusal{CodeInternal, err.Error()}
+		return 0, &Refusal{Kind: Internal, Msg: err.Error()}
 	}
 	if dup {
 		if existing, ok, _ := store.StagedID(ptr.ContribMappingPetition, row.Tag, "", row.Hash); ok {

@@ -1162,6 +1162,7 @@ func TestPTRContribLogRescind(t *testing.T) {
 	}
 
 	wantCode(t, "POST", srv.URL+"/api/v1/ptr/contrib/log/"+strconv.FormatInt(sibLogID, 10)+"/rescind", "", http.StatusConflict, "not_rescindable")
+	wantCode(t, "POST", srv.URL+"/api/v1/ptr/contrib/log/999999/rescind", "", http.StatusNotFound, "not_found")
 }
 
 func TestPTRContribReconfirmFailedResends(t *testing.T) {
