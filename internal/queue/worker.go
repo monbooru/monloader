@@ -139,7 +139,7 @@ func (q *Queue) finish(j *Job) {
 	}
 	var evicted []int64
 	if quiet {
-		delete(q.index, j.ID)
+		q.unindexLocked(j.ID)
 	} else {
 		evicted = q.pushFinishedLocked(j)
 	}
@@ -170,7 +170,7 @@ func (q *Queue) dropWatchChecksLocked() []*Job {
 			return false
 		}
 		checks = append(checks, j)
-		delete(q.index, j.ID)
+		q.unindexLocked(j.ID)
 		return true
 	})
 	return checks

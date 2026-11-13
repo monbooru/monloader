@@ -335,11 +335,11 @@ func TestListSweepsFinishedPastRetention(t *testing.T) {
 	for _, id := range []int64{1, 2, 3} {
 		j := newJob(id, "u", Options{}, now.Add(-ages[id]))
 		j.Finalize(now.Add(-ages[id]))
-		q.index[id] = j
+		q.indexLocked(j)
 		q.pushFinishedLocked(j)
 	}
 	pending := newJob(99, "u", Options{}, now)
-	q.index[99] = pending
+	q.indexLocked(pending)
 	q.pending = append(q.pending, pending)
 
 	got, total := q.List(ListOptions{})
@@ -362,7 +362,7 @@ func TestListSweepsFinishedPastRetention(t *testing.T) {
 	q2.now = func() time.Time { return now }
 	old := newJob(1, "u", Options{}, now.Add(-30*24*time.Hour))
 	old.Finalize(now.Add(-30 * 24 * time.Hour))
-	q2.index[1] = old
+	q2.indexLocked(old)
 	q2.pushFinishedLocked(old)
 	if _, total := q2.List(ListOptions{}); total != 1 {
 		t.Errorf("with retention unset a 30-day-old job should remain, got total %d", total)
@@ -372,7 +372,7 @@ func TestListSweepsFinishedPastRetention(t *testing.T) {
 func parkFinished(q *Queue, id int64, at time.Time, shape func(*Job)) *Job {
 	j := newJob(id, "u", Options{}, at)
 	shape(j)
-	q.index[id] = j
+	q.indexLocked(j)
 	q.pushFinishedLocked(j)
 	return j
 }
@@ -497,7 +497,7 @@ func TestQueueClear(t *testing.T) {
 		parkFinished(q, i, time.Now(), func(*Job) {})
 	}
 	pending := newJob(99, "u", Options{}, time.Now())
-	q.index[99] = pending
+	q.indexLocked(pending)
 	q.pending = append(q.pending, pending)
 
 	q.Clear()

@@ -362,7 +362,7 @@ func TestReaddCountsOnlyTheFinishedWindowsOfItsSeries(t *testing.T) {
 	})
 	for _, w := range []struct{ id, root int64 }{{11, 10}, {21, 20}} {
 		later := newJob(w.id, "", Options{Root: w.root, Offset: 2, MaxItems: 2}, time.Now())
-		q.index[w.id] = later
+		q.indexLocked(later)
 		q.pending = append(q.pending, later)
 	}
 	q.mu.Lock()

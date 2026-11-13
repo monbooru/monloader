@@ -679,7 +679,7 @@ func TestAClearedRootKeepsLaterWindowsRecording(t *testing.T) {
 	q.recordWatch(root)
 	second := finishedWindow(q, 11, 10, id, 2, JobSucceeded)
 	q.mu.Lock()
-	delete(q.index, root.ID)
+	q.unindexLocked(root.ID)
 	q.mu.Unlock()
 	q.recordWatch(second)
 	third := finishedWindow(q, 12, 10, id, 0, JobFailed)
@@ -704,7 +704,7 @@ func TestAClearedWindowsDebtSurvivesTheNextRecord(t *testing.T) {
 	}
 	owed := q.Watches()[0].Last.OwedTo
 	q.mu.Lock()
-	delete(q.index, root.ID)
+	q.unindexLocked(root.ID)
 	q.mu.Unlock()
 	later := finishedWindow(q, 11, 10, id, 2, JobSucceeded)
 	q.recordWatch(later)
@@ -771,7 +771,7 @@ func TestAWatchAddedOverAFailedRunOwesItsPosts(t *testing.T) {
 		{"a failed download", outcome.ErrCodeDownloadFailed, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			q.finished, q.index = nil, map[int64]*Job{}
+			q.finished, q.index, q.series = nil, map[int64]*Job{}, map[int64]series{}
 			parkFinished(q, 10, time.Now(), func(j *Job) {
 				j.URL, j.Root, j.Status = url, 10, JobFailed
 				j.Items = []Item{{ErrorCode: tc.code}, {ErrorCode: tc.code}}
