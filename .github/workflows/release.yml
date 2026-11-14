@@ -170,6 +170,9 @@ jobs:
           g push origin "$commit:refs/tags/$VERSION"
           echo "main and $VERSION at $commit"
 
+      - name: End the notes with the Discord card
+        run: cat .github/release-footer.md >> /tmp/latest_changelog.md
+
       - name: Create the release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3
         with:
