@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -218,12 +219,69 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+var (
+	cssComment  = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	cssRule     = regexp.MustCompile(`([^{}]*)\{([^{}]*)\}`)
+	colorScheme = regexp.MustCompile(`(?i)(?:^|[^-\w])color-scheme\s*:\s*([a-z]+(?:\s+[a-z]+)*)\s*(?:!\s*important\s*)?(?:[;}]|$)`)
+)
+
+// SheetScheme is the color-scheme of a sheet's :root or html rule, else
+// the first one it declares anywhere, else fallback.
+func SheetScheme(sheet []byte, fallback string) string {
+	sheet = cssComment.ReplaceAll(sheet, []byte(" "))
+	for _, rule := range cssRule.FindAllSubmatch(sheet, -1) {
+		if v := declaredScheme(rule[2]); v != "" && rootSelector(string(rule[1])) {
+			return v
+		}
+	}
+	if v := declaredScheme(sheet); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func rootSelector(selectors string) bool {
+	for sel := range strings.SplitSeq(selectors, ",") {
+		if sel = strings.ToLower(strings.TrimSpace(sel)); sel == ":root" || sel == "html" {
+			return true
+		}
+	}
+	return false
+}
+
+func declaredScheme(css []byte) string {
+	if m := colorScheme.FindSubmatch(css); m != nil {
+		return strings.ToLower(string(m[1]))
+	}
+	return ""
+}
+
+// ThemeScheme reads t's sheet from where ServeThemeFile serves it; the
+// app's own sheet stays under a theme that declares none.
+func ThemeScheme(t Theme, builtin fs.FS, own string) string {
+	if t.Path == "" {
+		return own
+	}
+	var sheet []byte
+	if t.Builtin {
+		sheet, _ = fs.ReadFile(builtin, t.Path)
+	} else {
+		sheet, _ = os.ReadFile(t.Path)
+	}
+	return SheetScheme(sheet, own)
+}
+
 func ServeThemeFile(w http.ResponseWriter, r *http.Request, t Theme, path string, builtin fs.FS) {
 	if path == "" {
 		http.NotFound(w, r)
 		return
 	}
 	if t.Builtin {
+		// An embedded file has no modification time to revalidate on.
+		if body, err := fs.ReadFile(builtin, path); err == nil {
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("ETag", `"`+sha256Hex(body)[:12]+`"`)
+		}
 		http.ServeFileFS(w, r, builtin, path)
 		return
 	}

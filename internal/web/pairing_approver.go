@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -14,8 +15,6 @@ import (
 	"github.com/monbooru/monloader/internal/shared/session"
 	"github.com/monbooru/monloader/internal/shared/webui"
 )
-
-const appMonsender = "monsender"
 
 // Any origin is allowed, the extension's included: the operator's approval
 // is the real gate.
@@ -44,6 +43,25 @@ func (s *Server) removePairingLocal(peer string) error {
 	})
 }
 
+var errNoToken = errors.New("token not found")
+
+// Drops one token, so two devices paired under one name stay apart. The
+// monbooru link goes with the last token paired to it.
+func (s *Server) removeToken(id string) error {
+	return s.cfg.Update(func(c *config.Config) error {
+		tok := c.Auth.Tokens.ByID(id)
+		if tok == nil {
+			return errNoToken
+		}
+		peer := tok.Paired
+		c.Auth.Tokens.Remove(id)
+		if peer == contract.AppMonbooru && c.Auth.Tokens.Paired(peer) == nil {
+			c.Monbooru.APIToken, c.Monbooru.Paused = "", false
+		}
+		return nil
+	})
+}
+
 // Removes only locally: calling the peer back would loop.
 func (s *Server) extPairTeardown(w http.ResponseWriter, r *http.Request) {
 	setPairCORS(w, r)
@@ -55,7 +73,7 @@ func (s *Server) extPairTeardown(w http.ResponseWriter, r *http.Request) {
 		pairRefuse(w, pairing.NoPairingToken())
 		return
 	}
-	if err := s.removePairingLocal(tok.Paired); err != nil {
+	if err := s.removeToken(tok.ID); err != nil {
 		contract.WriteError(w, http.StatusInternalServerError, pairing.CodeRemoveFailed, err.Error())
 		return
 	}
@@ -137,9 +155,19 @@ func (s *Server) extPairData(r *http.Request) map[string]any {
 	return map[string]any{
 		"Pending":  pending,
 		"Awaiting": s.pairs.ListApproved(),
-		"Paired":   s.hasPairedToken(appMonsender),
+		"Paired":   s.pairedApps(),
+		"Sender":   s.senderOffer(r),
 		"Notice":   n,
 		"PairKey":  n.Key(),
+	}
+}
+
+func (s *Server) senderOffer(r *http.Request) map[string]any {
+	paired := slices.ContainsFunc(s.cfg.Current().Auth.Tokens, func(t apitoken.Token) bool { return t.Paired == "monsender" })
+	return map[string]any{
+		"Mascot":  themeMascots(s.activeTheme())["sparkle"],
+		"Firefox": strings.Contains(r.UserAgent(), "Firefox/"),
+		"Paired":  paired,
 	}
 }
 
@@ -151,16 +179,26 @@ func (s *Server) pairNotice() webui.PairNotice {
 	return n
 }
 
+// The apps paired here, monbooru aside: its link has a card of its own.
+func (s *Server) pairedApps() string {
+	var apps []string
+	for _, t := range s.cfg.Current().Auth.Tokens {
+		if t.Paired != "" && t.Paired != contract.AppMonbooru && !slices.Contains(apps, t.Paired) {
+			apps = append(apps, t.Paired)
+		}
+	}
+	return strings.Join(apps, ", ")
+}
+
 func (s *Server) monsenderPairingFragment(w http.ResponseWriter, r *http.Request) {
 	data := s.extPairData(r)
-	paired, _ := data["Paired"].(bool)
 	if r.URL.Query().Get("pair") == data["PairKey"] {
 		delete(data, "Notice")
 	}
 	s.render(w, "monsender_pairing", data)
-	// The poll sends the paired state it last rendered; a flip refreshes
-	// the token list too.
-	if was := r.URL.Query().Get("paired"); was != "" && (was == "true") != paired {
+	// The poll sends the apps it last rendered; a change refreshes the
+	// token list too.
+	if q := r.URL.Query(); q.Has("paired") && q.Get("paired") != data["Paired"] {
 		s.renderAuthTokensOOB(w)
 	}
 }
@@ -175,18 +213,6 @@ func (s *Server) monsenderPairApprove(w http.ResponseWriter, r *http.Request) {
 func (s *Server) monsenderPairDeny(w http.ResponseWriter, r *http.Request) {
 	s.pairs.SetState(r.PathValue("id"), pairing.Denied)
 	s.render(w, "monsender_pairing", s.extPairData(r))
-}
-
-func (s *Server) monsenderPairRemove(w http.ResponseWriter, r *http.Request) {
-	if err := s.removePairingLocal(appMonsender); err != nil {
-		logx.Errorf("pairing: remove failed: %v", err)
-		data := s.extPairData(r)
-		data["Message"] = "Could not save: " + err.Error()
-		s.render(w, "monsender_pairing", data)
-		return
-	}
-	s.render(w, "monsender_pairing", s.extPairData(r))
-	s.renderAuthTokensOOB(w)
 }
 
 func grantedScopes(requested []string) []string {

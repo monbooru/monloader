@@ -1,5 +1,27 @@
 # Changelog
 
+## [v1.14.1] - 2026-11-15
+### Added
+- Every token under API Tokens now has a Revoke button; revoking a paired one removes its pairing. ([#45](https://github.com/monbooru/monloader/issues/45))
+- The Apps panel in Settings -> Pairing links monsender in the Firefox and Chrome stores.
+
+### Changed
+- The Monsender block in Settings -> Pairing is now called Apps, and names each app paired or asking to pair.
+- The Desktop section saves without reloading the page.
+- The lookup chain is reordered by its grip or the arrow keys, instead of `[^]` and `[v]`. (shared with monbooru)
+
+### Fixed
+- A tag rule key with a `*` is refused instead of saved as a different tag.
+- Pages no longer flash white before a dark theme loads, and their styles are cached between pages.
+- Saving Settings no longer waits while the PTR index opens or closes.
+- The add-site search in Settings -> Sites keeps each name in its column correctly.
+- A dialog's `[x]` stays in its title bar when the title wraps on a phone.
+
+### Internal
+- Building from source needs Go 1.27.4 or newer.
+
+Thanks to @IkariDevGIT for the suggestion (https://github.com/monbooru/monloader/issues/45).
+
 ## [v1.14.0] - 2026-11-08
 ### Added
 - Blacklist rules, global or per site, to skip a matching post before download. ([#33](https://github.com/monbooru/monloader/issues/33))

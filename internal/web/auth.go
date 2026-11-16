@@ -65,6 +65,7 @@ func (s *Server) loginData(errMsg, next string) map[string]any {
 		"BooruName":    s.booruName(),
 		"BooruFavicon": themeFaviconURL(theme),
 		"Theme":        theme.Path != "",
+		"ColorScheme":  themeScheme(theme),
 		"Next":         next,
 		"Error":        errMsg,
 	}
@@ -204,50 +205,43 @@ func (s *Server) settingsTokenCreate(w http.ResponseWriter, r *http.Request) {
 	s.renderAuthTokensOOB(w)
 }
 
-// Only these two peers have a remove-pairing control, so a token paired
-// under any other name stays revocable from the list.
-func hasPairingTeardown(peer string) bool {
-	return peer == contract.AppMonbooru || peer == appMonsender
-}
-
 func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tok := s.cfg.Current().Auth.Tokens.ByID(id)
+	cfg := s.cfg.Current()
+	tok := cfg.Auth.Tokens.ByID(id)
 	if tok == nil {
 		flashFragment(w, "err", "Token not found.")
 		return
 	}
-	if hasPairingTeardown(tok.Paired) {
-		flashFragment(w, "err", "This token is managed by a pairing; remove the pairing instead.")
-		return
-	}
-	if err := s.cfg.Update(func(c *config.Config) error {
-		c.Auth.Tokens.Remove(id)
-		return nil
-	}); err != nil {
+	peer, peerToken := tok.Paired, cfg.Monbooru.APIToken
+	if err := s.removeToken(id); err != nil {
 		flashFragment(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: API token %s revoked from %s", id, session.ClientIP(r))
-	flashFragment(w, "ok", "Token revoked.")
-	s.renderAuthTokensOOB(w)
-}
-
-// The list's rows. A pairing with no remove control of its own clears Paired,
-// which is what the shared template hides Revoke on.
-func (s *Server) tokenRows() apitoken.List {
-	rows := slices.Clone(s.cfg.Current().Auth.Tokens)
-	for i := range rows {
-		if !hasPairingTeardown(rows[i].Paired) {
-			rows[i].Paired = ""
-		}
+	if peer != contract.AppMonbooru {
+		flashFragment(w, "ok", "Token revoked.")
+		s.renderAuthTokensOOB(w)
+		return
 	}
-	return rows
+	s.clearPairAttempt()
+	logx.Infof("pairing: removed monbooru pairing")
+	if err := s.notifyMonbooruTeardown(peerToken); err != nil {
+		logx.Errorf("pairing: could not notify monbooru of teardown: %v", err)
+		flashFragment(w, "warn", "Revoked here, but could not reach monbooru - remove the pairing in monbooru too.")
+	} else {
+		flashFragment(w, "ok", "Token revoked, monbooru pairing removed.")
+	}
+	s.renderAuthTokensOOB(w)
+	data := s.monbooruPairData(r, "")
+	data["OOB"] = true
+	s.render(w, "monbooru_pair", data)
+	s.renderDefaultGalleryOOB(w, r)
 }
 
 func (s *Server) renderAuthTokensOOB(w http.ResponseWriter) {
 	s.render(w, "webui/auth_tokens", map[string]any{
-		"Tokens": s.tokenRows(),
+		"Tokens": slices.Clone(s.cfg.Current().Auth.Tokens),
 		"OOB":    true,
 	})
 }

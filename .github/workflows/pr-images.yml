@@ -1,0 +1,51 @@
+name: Pull request images
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  prune:
+    name: Delete the images of the pull request
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      OWNER: ${{ github.repository_owner }}
+    steps:
+      - name: Delete every image tagged pr-${{ github.event.pull_request.number }}
+        run: |
+          name="${GITHUB_REPOSITORY#*/}"
+          name="${name,,}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          api="orgs/$OWNER/packages/container/$name/versions"
+          if ! versions="$(gh api --paginate "$api?per_page=100" --jq '.[] | [.id, .name, ((.metadata.container.tags // []) | join(" "))] | @tsv')"; then
+            echo "::warning::Cannot list the versions of $image; nothing deleted."
+            exit 0
+          fi
+          tagged="$(awk -F'\t' -v re="(^| )pr-$PR(-| |$)" '$3 ~ re { print $2 }' <<< "$versions")"
+          if [ -z "$tagged" ]; then
+            echo "No image tagged pr-$PR."
+            exit 0
+          fi
+          digests=()
+          walk() {
+            digests+=("$1")
+            local child
+            for child in $(docker buildx imagetools inspect --raw "$image@$1" | jq -r '.manifests[]?.digest'); do
+              walk "$child"
+            done
+          }
+          for d in $tagged; do
+            walk "$d"
+          done
+          for d in $(printf '%s\n' "${digests[@]}" | sort -u); do
+            id="$(awk -F'\t' -v d="$d" '$2 == d { print $1 }' <<< "$versions")"
+            [ -n "$id" ] || continue
+            gh api -X DELETE "$api/$id" > /dev/null
+            echo "deleted $d"
+          done

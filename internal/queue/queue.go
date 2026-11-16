@@ -103,6 +103,7 @@ type Queue struct {
 	cancels          map[int64]context.CancelFunc
 	finished         []*Job
 	index            map[int64]*Job
+	series           map[int64]series
 	maxFinished      int
 	retention        time.Duration
 	successRetention time.Duration
@@ -146,6 +147,7 @@ func New(proc Processor, workers, maxFinished int) *Queue {
 		running:     map[int64]*Job{},
 		cancels:     map[int64]context.CancelFunc{},
 		index:       map[int64]*Job{},
+		series:      map[int64]series{},
 		maxFinished: maxFinished,
 		proc:        proc,
 		workers:     workers,
@@ -212,7 +214,7 @@ func (q *Queue) UseStore(st *Store) {
 	q.nextID = max(q.nextID, high)
 	for _, j := range jobs {
 		q.nextID = max(q.nextID, j.ID)
-		q.index[j.ID] = j
+		q.indexLocked(j)
 		if j.Status == JobQueued {
 			q.pushPendingLocked(j)
 		} else {
@@ -336,7 +338,7 @@ func (q *Queue) enqueueLocked(url string, opts Options) *Job {
 			j.Force, j.ForceTo = true, reach
 		}
 	}
-	q.index[id] = j
+	q.indexLocked(j)
 	q.pushPendingLocked(j)
 	q.cond.Broadcast()
 	return j
@@ -381,7 +383,7 @@ func (q *Queue) RecordPTRLookup(gallery string, scheduled bool, asked int, match
 	}, now)
 	j.Root = j.ID
 	j.recordPTRLookup(gallery, asked, matched, now)
-	q.index[j.ID] = j
+	q.indexLocked(j)
 	evicted := q.pushFinishedLocked(j)
 	q.mu.Unlock()
 	q.persistKept(j)
@@ -522,13 +524,7 @@ func (q *Queue) RetrySeries(id int64, force bool) error {
 		q.mu.Unlock()
 		return ErrNotFound
 	}
-	root := src.seriesKey()
-	var ids []int64
-	for jid, j := range q.index {
-		if j.seriesKey() == root {
-			ids = append(ids, jid)
-		}
-	}
+	ids := q.series[src.seriesKey()].ids()
 	q.mu.Unlock()
 	slices.Sort(ids)
 	var requeued int
@@ -565,7 +561,7 @@ func (q *Queue) continueFrom(id int64, auto bool, target int) (int64, error) {
 	}
 	// From the series' furthest window, not this one's: continuing an
 	// earlier window must not re-fetch a later one.
-	high, window := q.seriesExtentLocked(src.seriesKey())
+	high, window := q.series[src.seriesKey()].extent()
 	if target > 0 {
 		if high >= target {
 			q.mu.Unlock()
@@ -600,18 +596,6 @@ func (q *Queue) continueFrom(id int64, auto bool, target int) (int64, error) {
 	return next.ID, nil
 }
 
-// widest is the widest window, not the last: a target cuts its last window
-// to what was left, which is no size anyone asked for.
-func (q *Queue) seriesExtentLocked(root int64) (high, widest int) {
-	for _, j := range q.index {
-		if j.seriesKey() == root {
-			high = max(high, j.windowEnd())
-			widest = max(widest, j.capOf())
-		}
-	}
-	return high, widest
-}
-
 // A canceled or failed window keeps its capped flag, so the status, not
 // the flag, ends the chain.
 func (q *Queue) autoContinue(j *Job) {
@@ -631,7 +615,7 @@ func (q *Queue) autoContinue(j *Job) {
 	}
 	// A retried earlier window has its chain ahead of it already.
 	q.mu.Lock()
-	high, _ := q.seriesExtentLocked(s.seriesKey())
+	high, _ := q.series[s.seriesKey()].extent()
 	q.mu.Unlock()
 	if j.windowEnd() < high {
 		return
@@ -653,12 +637,7 @@ func (q *Queue) settleEarlierWindow(j *Job) {
 	}
 	end := j.windowEnd()
 	q.mu.Lock()
-	var furthest *Job
-	for _, other := range q.index {
-		if other.seriesKey() == s.seriesKey() && other.windowEnd() > end && (furthest == nil || other.windowEnd() > furthest.windowEnd()) {
-			furthest = other
-		}
-	}
+	furthest := q.series[s.seriesKey()].furthestPast(end)
 	q.mu.Unlock()
 	if furthest == nil {
 		return
@@ -682,12 +661,7 @@ func (q *Queue) reconcileSeries(j *Job) {
 		return
 	}
 	q.mu.Lock()
-	var cleared []*Job
-	for _, other := range q.index {
-		if other.seriesKey() == s.Root && other.clearCapped() {
-			cleared = append(cleared, other)
-		}
-	}
+	cleared := q.series[s.seriesKey()].clearCapped()
 	q.mu.Unlock()
 	for _, other := range cleared {
 		q.persistKept(other)
@@ -713,17 +687,8 @@ func (q *Queue) seriesToCancel(id int64) (ids []int64, live bool, err error) {
 	if src == nil {
 		return nil, false, ErrNotFound
 	}
-	root := src.seriesKey()
 	live = q.isLiveLocked(id)
-	for jid, j := range q.index {
-		if j.seriesKey() != root {
-			continue
-		}
-		if live && !q.isLiveLocked(jid) {
-			continue
-		}
-		ids = append(ids, jid)
-	}
+	ids = slices.DeleteFunc(q.series[src.seriesKey()].ids(), func(jid int64) bool { return live && !q.isLiveLocked(jid) })
 	return ids, live, nil
 }
 
@@ -733,7 +698,7 @@ func (q *Queue) seriesToCancel(id int64) (ids []int64, live bool, err error) {
 func (q *Queue) CancelLive(id int64) error {
 	q.mu.Lock()
 	j := q.index[id]
-	live := j != nil && q.liveLocked(func(o *Job) bool { return o.seriesKey() == j.seriesKey() })
+	live := j != nil && slices.ContainsFunc(q.series[j.seriesKey()].ids(), q.isLiveLocked)
 	q.mu.Unlock()
 	switch {
 	case j == nil:
@@ -810,7 +775,7 @@ func (q *Queue) cancel(id int64, liveOnly bool) {
 	waiting := j.status() == JobQueued
 	q.removeFromPendingLocked(id)
 	q.removeFromFinishedLocked(id)
-	delete(q.index, id)
+	q.unindexLocked(id)
 	q.mu.Unlock()
 	q.settleDropped(j)
 	if waiting {
@@ -942,7 +907,7 @@ func (q *Queue) Clear() {
 	q.mu.Lock()
 	ids := make([]int64, 0, len(q.finished))
 	for _, j := range q.finished {
-		delete(q.index, j.ID)
+		q.unindexLocked(j.ID)
 		ids = append(ids, j.ID)
 	}
 	q.finished = nil
@@ -985,21 +950,12 @@ func (q *Queue) lastRunLocked(url string) *Job {
 	return nil
 }
 
-// A clean later window does not settle an earlier one, and a re-add owes as
-// far as the furthest window that did not finish clean.
 func (q *Queue) lastRunUnimportedLocked(url string) (reach int, unimported bool) {
 	last := q.lastRunLocked(url)
 	if last == nil {
 		return 0, false
 	}
-	root := last.seriesKey()
-	for _, j := range q.finished {
-		if j.seriesKey() == root && j.status() != JobSucceeded {
-			unimported = true
-			reach = max(reach, j.windowEnd())
-		}
-	}
-	return reach, unimported
+	return q.series[last.seriesKey()].unimported(q.isLiveLocked)
 }
 
 func (q *Queue) removeFromFinishedLocked(id int64) {
@@ -1022,23 +978,14 @@ func (q *Queue) sweepFinishedLocked(now time.Time) []int64 {
 	return q.dropFinishedLocked(stale)
 }
 
-// A series goes whole or not at all: the queue view sums it into one row.
 func (q *Queue) clearableLocked(cutoff time.Time) []int64 {
-	pinned := map[int64]bool{}
-	newest := map[int64]time.Time{}
-	for _, j := range q.index {
-		key := j.seriesKey()
-		if !j.noFollowUp() {
-			pinned[key] = true
-			continue
-		}
-		if t := j.finishedAt(); t.After(newest[key]) {
-			newest[key] = t
-		}
+	settled := make(map[int64]bool, len(q.series))
+	for key, s := range q.series {
+		settled[key] = s.settledBefore(cutoff)
 	}
 	var ids []int64
 	for _, j := range q.finished {
-		if key := j.seriesKey(); !pinned[key] && !newest[key].After(cutoff) {
+		if settled[j.seriesKey()] {
 			ids = append(ids, j.ID)
 		}
 	}
@@ -1056,7 +1003,7 @@ func (q *Queue) dropFinishedLocked(ids []int64) []int64 {
 	var taken []int64
 	for _, j := range q.finished {
 		if drop[j.ID] {
-			delete(q.index, j.ID)
+			q.unindexLocked(j.ID)
 			taken = append(taken, j.ID)
 		}
 	}
@@ -1076,7 +1023,7 @@ func (q *Queue) pushFinishedLocked(j *Job) []int64 {
 		// reachable from the backing array.
 		q.finished[0] = nil
 		q.finished = q.finished[1:]
-		delete(q.index, evicted.ID)
+		q.unindexLocked(evicted.ID)
 		evictedIDs = append(evictedIDs, evicted.ID)
 	}
 	return evictedIDs

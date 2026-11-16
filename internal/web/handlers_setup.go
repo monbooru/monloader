@@ -24,6 +24,7 @@ type setupData struct {
 	Title        string
 	BooruFavicon string
 	Theme        bool
+	ColorScheme  string
 	Mascot       string
 	Err          string
 	APIURL       string
@@ -115,6 +116,7 @@ func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, d setupData
 	d.Title = s.titleName() + " setup"
 	d.BooruFavicon = themeFaviconURL(theme)
 	d.Theme = theme.Path != ""
+	d.ColorScheme = themeScheme(theme)
 	face := "sleep"
 	if d.Found {
 		face = "sparkle"

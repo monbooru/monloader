@@ -3,7 +3,6 @@ package api
 import (
 	"net/http"
 
-	"github.com/monbooru/monloader/internal/contrib"
 	"github.com/monbooru/monloader/internal/outcome"
 
 	"github.com/monbooru/monloader/internal/shared/contract"
@@ -13,7 +12,7 @@ import (
 // text quotes them, so never respell one.
 const (
 	errInvalidRequest = contract.CodeInvalidRequest
-	errNotFound       = contrib.CodeNotFound
+	errNotFound       = "not_found"
 	errConflict       = "conflict"
 	errNamespaceReq   = contract.CodeNamespaceRequired
 
@@ -24,13 +23,14 @@ const (
 	errAccountExists        = "account_exists"
 	errPTRVelocity          = "ptr_velocity"
 	errPTRError             = "ptr_error"
+	errNotRescindable       = "not_rescindable"
 
 	// Shared with the item codes: a lookup or a contribution send refused
 	// up front and one that fails mid-job report the same string.
 	errPTRUnavailable = outcome.ErrCodePTRUnavailable
 	errPTRSyncing     = outcome.ErrCodePTRSyncing
 
-	errInternal   = contrib.CodeInternal
+	errInternal   = "internal_error"
 	errSaveFailed = "save_failed"
 )
 

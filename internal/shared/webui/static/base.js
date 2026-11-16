@@ -496,3 +496,125 @@ document.body.addEventListener('htmx:afterSwap', function(e) {
   if (!target) return;
   applyPeerGating(target.id === 'peer-light' || !target.isConnected ? document : target);
 });
+
+// A [data-reorder] container's children move by the .reorder-grip inside
+// them, dragged or with the arrow keys on the grip; containers that share a
+// data-reorder-group take each other's rows. Each kept move fires "reorder"
+// on the row's container, with detail.keyboard for a key; Escape or a
+// cancelled pointer puts the rows back.
+var _reorderDrag = null;
+
+function reorderRow(grip) {
+  var row = grip;
+  while (row.parentElement && !row.parentElement.hasAttribute('data-reorder')) row = row.parentElement;
+  return row;
+}
+
+function reorderLists(list) {
+  var group = list.dataset.reorderGroup;
+  if (!group) return [list];
+  return Array.from(document.querySelectorAll('[data-reorder-group]')).filter(function(l) { return l.dataset.reorderGroup === group; });
+}
+
+function reorderSnapshot(lists) {
+  return lists.map(function(l) { return [l, Array.from(l.children)]; });
+}
+
+function reorderMoved(snapshot) {
+  return snapshot.some(function(s) {
+    var now = s[0].children;
+    return now.length !== s[1].length || s[1].some(function(c, i) { return now[i] !== c; });
+  });
+}
+
+function reorderMidY(el) {
+  var r = el.getBoundingClientRect();
+  return r.top + r.height / 2;
+}
+
+// The neighbours move rather than the row: moving the row out of the DOM
+// would drop its focus.
+function reorderStep(row, up) {
+  var other = up ? row.previousElementSibling : row.nextElementSibling;
+  if (!other) return false;
+  row.parentNode.insertBefore(other, up ? row.nextElementSibling : row);
+  return true;
+}
+
+function reorderFollow() {
+  var d = _reorderDrag, row = d.row;
+  var into = d.lists.find(function(l) {
+    var r = l.getBoundingClientRect();
+    return d.x >= r.left && d.x <= r.right && d.y >= r.top && d.y <= r.bottom;
+  });
+  if (into && into !== row.parentNode) {
+    var next = Array.from(into.children).find(function(c) { return d.y < reorderMidY(c); });
+    into.insertBefore(row, next || null);
+    return;
+  }
+  while (row.previousElementSibling && d.y < reorderMidY(row.previousElementSibling)) reorderStep(row, true);
+  while (row.nextElementSibling && d.y > reorderMidY(row.nextElementSibling)) reorderStep(row, false);
+}
+
+function reorderScroller(el) {
+  for (var n = el.parentElement; n; n = n.parentElement) {
+    var oy = getComputedStyle(n).overflowY;
+    if ((oy === 'auto' || oy === 'scroll') && n.scrollHeight > n.clientHeight) return n;
+  }
+  return document.scrollingElement;
+}
+
+function reorderScroll() {
+  var d = _reorderDrag, scroller = reorderScroller(d.row);
+  var box = scroller === document.scrollingElement ? {top: 0, bottom: window.innerHeight} : scroller.getBoundingClientRect();
+  var step = d.y < box.top + 40 ? -12 : d.y > box.bottom - 40 ? 12 : 0;
+  if (!step) return;
+  scroller.scrollTop += step;
+  reorderFollow();
+}
+
+function reorderEnd(keep) {
+  var d = _reorderDrag;
+  if (!d) return;
+  _reorderDrag = null;
+  clearInterval(d.timer);
+  d.row.classList.remove('reorder-dragging');
+  if (!keep) {
+    d.before.forEach(function(s) { s[1].forEach(function(c) { s[0].appendChild(c); }); });
+  } else if (reorderMoved(d.before)) {
+    d.row.parentNode.dispatchEvent(new CustomEvent('reorder', {bubbles: true, detail: {row: d.row, keyboard: false}}));
+  }
+}
+
+document.addEventListener('pointerdown', function(e) {
+  var grip = e.target.closest && e.target.closest('[data-reorder] .reorder-grip');
+  if (!grip || e.button !== 0) return;
+  e.preventDefault();
+  grip.setPointerCapture(e.pointerId);
+  var row = reorderRow(grip), lists = reorderLists(row.parentNode);
+  _reorderDrag = {row: row, lists: lists, before: reorderSnapshot(lists), x: e.clientX, y: e.clientY, timer: setInterval(reorderScroll, 30)};
+  row.classList.add('reorder-dragging');
+});
+
+document.addEventListener('pointermove', function(e) {
+  if (!_reorderDrag) return;
+  _reorderDrag.x = e.clientX;
+  _reorderDrag.y = e.clientY;
+  reorderFollow();
+});
+
+document.addEventListener('pointerup', function() { reorderEnd(true); });
+document.addEventListener('pointercancel', function() { reorderEnd(false); });
+
+document.addEventListener('keydown', function(e) {
+  if (_reorderDrag && e.key === 'Escape') {
+    reorderEnd(false);
+    return;
+  }
+  var grip = e.target.closest && e.target.closest('[data-reorder] .reorder-grip');
+  if (!grip || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+  e.preventDefault();
+  var row = reorderRow(grip);
+  if (!reorderStep(row, e.key === 'ArrowUp')) return;
+  row.parentNode.dispatchEvent(new CustomEvent('reorder', {bubbles: true, detail: {row: row, keyboard: true}}));
+});

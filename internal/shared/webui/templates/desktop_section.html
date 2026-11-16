@@ -1,0 +1,41 @@
+{{define "webui/desktop_section"}}{{$dk := .Desktop}}<section id="desktop" class="settings-section">
+    {{template "webui/settings_section_header" dict "Title" "Desktop"}}
+    <div id="flash-desktop"></div>
+    <form id="desktop-switches" hx-post="/settings/desktop" hx-target="#flash-desktop" hx-swap="innerHTML">
+      <div class="settings-cols">
+        <div class="field">
+          <label>Folders</label>
+          <div class="desktop-folders">
+            {{range $kind := .Folders}}
+            <button type="button" class="btn-sm" hx-post="{{$.FolderURL}}" hx-params="kind"
+                    hx-vals='{"kind":"{{$kind}}"}'
+                    hx-target="#flash-desktop" hx-swap="innerHTML">{{$kind}}</button>
+            {{end}}
+          </div>
+        </div>
+        {{if $dk.Supported}}
+        <div class="field">
+          <label>Launching</label>
+          {{if $dk.MenuSupported}}
+          <label><input type="checkbox" name="menu_entry" {{if $dk.MenuEnabled}}checked{{end}}> Add to the applications menu</label>
+          {{end}}
+          {{if $dk.AutostartSupported}}
+          <label><input type="checkbox" name="start_at_login" {{if $dk.AutostartEnabled}}checked{{end}}> Start at login</label>
+          {{with $.StartHint}}<span class="field-hint">{{.}}</span>{{end}}
+          {{end}}
+        </div>
+        {{end}}
+        {{if $dk.TraySupported}}
+        <div class="field">
+          <label>Tray</label>
+          <label><input type="checkbox" name="tray" {{if $dk.TrayEnabled}}checked{{end}}> Show the tray icon</label>
+          <span class="field-hint">Takes effect after a restart.</span>
+        </div>
+        {{end}}
+      </div>
+    </form>
+    <div class="desktop-actions">
+      {{template "webui/desktop_power" .Power}}
+      {{if or $dk.Supported $dk.TraySupported}}<button type="submit" form="desktop-switches">Save</button>{{end}}
+    </div>
+  </section>{{end}}

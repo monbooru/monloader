@@ -1,0 +1,274 @@
+name: Test
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to test; empty tests the branch above
+        required: false
+      build:
+        description: With a pull request, build its images as :pr-<n> and :pr-<n>-<sha> once the tests pass
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  target:
+    name: The commit to test
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.pull_request &&
+       (startsWith(github.event.comment.body, '/test') || startsWith(github.event.comment.body, '/build')) &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      issues: write
+      statuses: write
+    outputs:
+      sha: ${{ steps.target.outputs.SHA }}
+      build: ${{ steps.target.outputs.BUILD }}
+      tags: ${{ steps.target.outputs.TAGS }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.issue.number || inputs.pr }}
+      BUILD: ${{ inputs.build }}
+      BODY: ${{ github.event.comment.body }}
+      COMMENT_ID: ${{ github.event.comment.id }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Resolve the commit
+        id: target
+        run: |
+          case "$PR" in
+            *[!0-9]*)
+              echo "::error::Not a pull request number: $PR"
+              exit 1 ;;
+          esac
+          want=""
+          build="$BUILD"
+          if [ "$GITHUB_EVENT_NAME" = issue_comment ]; then
+            body="${BODY//$'\r'/}"
+            body="${body#"${body%%[![:space:]]*}"}"
+            body="${body%"${body##*[![:space:]]}"}"
+            if [[ ! "$body" =~ ^/(test|build)([[:blank:]]+([^[:space:]]+))?$ ]]; then
+              echo "Not a /test or /build command; nothing to do."
+              exit 0
+            fi
+            [ "${BASH_REMATCH[1]}" = build ] && build=true || build=false
+            want="${BASH_REMATCH[3],,}"
+            if [ -n "$want" ] && [[ ! "$want" =~ ^[0-9a-f]{7,40}$ ]]; then
+              gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=-1 > /dev/null
+              echo "::error::/test and /build take nothing, or the head commit of the pull request as 7 to 40 hex digits."
+              exit 1
+            fi
+          fi
+          if [ -n "$PR" ]; then
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.sha)
+            echo "testing pull request #$PR at $sha"
+          else
+            sha="$GITHUB_SHA"
+            echo "testing $GITHUB_REF_NAME at $sha"
+          fi
+          if [ -n "$want" ] && [ "${sha#"$want"}" = "$sha" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=-1 > /dev/null
+            echo "::error::$want is not the head of pull request #$PR, which is now at ${sha:0:7}; nothing tested."
+            exit 1
+          fi
+          if [ "$build" = true ]; then
+            if [ -z "$PR" ]; then
+              echo "::error::The images are built for a pull request; give its number."
+              exit 1
+            fi
+            echo "BUILD=true" >> "$GITHUB_OUTPUT"
+            echo "TAGS=pr-$PR pr-$PR-${sha:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "SHA=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Acknowledge the comment
+        if: github.event_name == 'issue_comment' && steps.target.outputs.SHA != ''
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=rocket > /dev/null
+
+      - name: Mark the commit pending
+        if: steps.target.outputs.SHA != ''
+        env:
+          SHA: ${{ steps.target.outputs.SHA }}
+          IMAGES: ${{ steps.target.outputs.BUILD }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context=test -f description="Tests running on ${SHA:0:7}" -f target_url="$RUN_URL" > /dev/null
+          if [ "$IMAGES" = true ]; then
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context=build -f description="Images wait for the tests on ${SHA:0:7}" -f target_url="$RUN_URL" > /dev/null
+          fi
+
+  race:
+    name: Tests
+    needs: target
+    if: needs.target.outputs.sha != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.13"
+
+      - name: Install the pinned gallery-dl
+        run: |
+          . packaging/pins.env
+          pip install --no-cache-dir "gallery-dl==${GDL_VERSION}"
+          gallery-dl --version
+
+      - name: Test
+        run: go test -race -timeout 30m ./...
+
+  coverage:
+    name: Coverage floor
+    needs: target
+    if: needs.target.outputs.sha != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.13"
+
+      - name: Install the pinned gallery-dl
+        run: |
+          . packaging/pins.env
+          pip install --no-cache-dir "gallery-dl==${GDL_VERSION}"
+
+      - name: Coverage floor (>= 80%, excluding cmd/)
+        run: |
+          go test -coverprofile=coverage.out $(go list ./... | grep -v '/cmd/')
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
+          echo "total coverage: ${pct}%"
+          if awk "BEGIN {exit !(${pct} < 80)}"; then
+            echo "::error::coverage ${pct}% is below the 80% floor"
+            exit 1
+          fi
+
+  tray:
+    name: Linux tray
+    needs: target
+    if: needs.target.outputs.sha != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build the Linux tray
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pkg-config libgtk-3-dev libayatana-appindicator3-dev
+          make build-tray
+
+  test:
+    name: Status on the commit
+    needs: [target, race, coverage, tray]
+    if: always() && needs.target.result == 'success' && needs.target.outputs.sha != ''
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.target.outputs.sha }}
+      RESULTS: ${{ join(needs.*.result, ' ') }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Every part passed
+        run: |
+          state=success
+          description="Tests passed on ${SHA:0:7}"
+          case "$RESULTS" in
+            *failure*|*cancelled*|*skipped*)
+              state=failure
+              description="Tests failed on ${SHA:0:7}: $RESULTS" ;;
+          esac
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context=test -f description="$description" -f target_url="$RUN_URL" > /dev/null
+          [ "$state" = success ] || { echo "::error::$description"; exit 1; }
+
+  images:
+    name: Images
+    needs: [target, test]
+    if: needs.target.outputs.build == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.target.outputs.sha }}
+      image_tags: ${{ needs.target.outputs.tags }}
+      binaries: false
+      legacy: false
+
+  built:
+    name: Build status on the commit
+    needs: [target, test, images]
+    if: always() && needs.target.result == 'success' && needs.target.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.target.outputs.sha }}
+      TAGS: ${{ needs.target.outputs.tags }}
+      RESULT: ${{ needs.images.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: The images are pushed
+        run: |
+          set -- $TAGS
+          case "$RESULT" in
+            success)
+              state=success
+              description="Pushed ghcr.io/${GITHUB_REPOSITORY,,}:$1 and :$2" ;;
+            skipped)
+              state=failure
+              description="No images: the tests failed on ${SHA:0:7}" ;;
+            *)
+              state=failure
+              description="The images failed on ${SHA:0:7}: $RESULT" ;;
+          esac
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context=build -f description="$description" -f target_url="$RUN_URL" > /dev/null
+          [ "$state" = success ] || { echo "::error::$description"; exit 1; }

@@ -1,10 +1,11 @@
 {{define "webui/head"}}
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{with .ColorScheme}}<meta name="color-scheme" content="{{.}}">{{end}}
   <title>{{.Title}}</title>
   {{with .CSRFToken}}<meta name="csrf-token" content="{{.}}">{{end}}
   {{with .BooruFavicon}}<link rel="icon" type="image/png" href="{{.}}">{{end}}
-  <link rel="stylesheet" href="/static/shared/base.css">
-  <link rel="stylesheet" href="/static/main.css">
+  <link rel="stylesheet" href="{{static "/static/shared/base.css"}}">
+  <link rel="stylesheet" href="{{static "/static/main.css"}}">
   {{if .Theme}}<link rel="stylesheet" href="/theme.css">{{end}}
 {{end}}

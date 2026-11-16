@@ -56,6 +56,18 @@ const (
 
 const KindLookup = "lookup"
 
+// What a site's tag rules do to a tag, and the list a rule or a blacklist
+// line comes from, in a /api/v1/rules answer.
+const (
+	RuleNone   = "none"
+	RuleDrop   = "drop"
+	RuleRename = "rename"
+	RuleMove   = "move"
+
+	ListGlobal = "global"
+	ListSite   = "site"
+)
+
 // A lookup trail names each backend it tried; monbooru splits the trail on
 // these.
 const (

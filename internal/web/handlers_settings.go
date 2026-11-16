@@ -47,14 +47,12 @@ func setFlash(data map[string]any, kind, section, msg string) {
 func (s *Server) settingsData(r *http.Request) map[string]any {
 	data := s.base(r, "settings", "Settings - "+s.titleName())
 	data["Cfg"] = s.cfg.Current()
-	data["TokenRows"] = s.tokenRows()
 	local := s.desktopLocal(r)
 	data["DesktopProfile"] = local
 	if local {
 		data["DesktopFolders"] = s.availableFolders()
 		data["Desktop"] = s.desktopIntegration()
-		data["DesktopQuitPrompt"] = s.desktopQuitPrompt()
-		data["DesktopRestartPrompt"] = s.desktopRestartPrompt()
+		data["DesktopPower"] = s.desktopPower(r)
 	}
 	data["Defaults"] = config.Default()
 	data["MonbooruAPIHint"] = s.monbooruAPIHint()
@@ -85,7 +83,8 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 	data["MonbooruPairWaiting"] = s.getPairAttempt() != nil
 	data["MonsenderPending"] = s.pendingPairs()
 	data["MonsenderAwaiting"] = s.pairs.ListApproved()
-	data["MonsenderPaired"] = s.hasPairedToken(appMonsender)
+	data["MonsenderPaired"] = s.pairedApps()
+	data["MonsenderOffer"] = s.senderOffer(r)
 	// Empty except on a refused save; the fields read the typed values
 	// from here first.
 	data["Draft"] = map[string]string{}
@@ -258,13 +257,10 @@ func draftForm(r *http.Request) map[string]string {
 
 var settingsSections = map[string]string{
 	"monbooru": "monbooru", "downloader": "downloads", "rules": "rules", "lookup": "lookup", "ptr": "ptr",
-	"sites": "sites", "host-labels": "sites", "gallerydl": "advanced", "raw": "advanced", "desktop": "desktop",
+	"sites": "sites", "host-labels": "sites", "gallerydl": "advanced", "raw": "advanced",
 }
 
 func sectionForPath(path string) string {
-	if path == "/internal/open-folder" {
-		return "desktop"
-	}
 	section, _, _ := strings.Cut(strings.TrimPrefix(path, "/settings/"), "/")
 	return settingsSections[section]
 }

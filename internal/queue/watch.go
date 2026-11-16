@@ -95,14 +95,15 @@ func (q *Queue) AddWatch(url string, intervalHours, maxItems int, from *Job) (in
 		// The row stands for its whole series, not the window it was
 		// clicked on.
 		q.mu.Lock()
-		last = checkOfSeries(q.seriesSnapshotsLocked(from.seriesKey(), from))
-		last.OwedTo = q.seriesOwedToLocked(from)
+		s := q.series[from.seriesKey()]
+		last = checkOfSeries(s.snapshots(from))
+		last.OwedTo = s.owedTo(from)
 		last.Owed = last.OwedTo > 0
 		q.mu.Unlock()
 	} else {
 		q.mu.Lock()
 		if run := q.lastRunLocked(url); run != nil {
-			last.OwedTo = q.seriesOwedToLocked(run)
+			last.OwedTo = q.series[run.seriesKey()].owedTo(run)
 			last.Owed = last.OwedTo > 0
 		}
 		q.mu.Unlock()
@@ -281,8 +282,8 @@ func (q *Queue) recordWatch(j *Job) {
 		return
 	}
 	q.mu.Lock()
-	windows := q.seriesSnapshotsLocked(s.seriesKey(), s)
-	owedTo := q.seriesOwedToLocked(j)
+	windows := q.series[s.seriesKey()].snapshots(s)
+	owedTo := q.series[s.seriesKey()].owedTo(j)
 	rootGone := s.ID != s.seriesKey() && q.index[s.seriesKey()] == nil
 	q.mu.Unlock()
 	if j.forceCutShort() {
@@ -303,33 +304,6 @@ func (q *Queue) recordWatch(j *Job) {
 		c.Owed, c.OwedTo = owedTo > 0, owedTo
 		c.More = seriesReachesMore(windows, more)
 	})
-}
-
-// self stands in for its own entry: a quiet check has already left the
-// index when it is recorded.
-func (q *Queue) seriesSnapshotsLocked(root int64, self *Job) []*Job {
-	out := []*Job{self}
-	for id, j := range q.index {
-		if id != self.ID && j.seriesKey() == root {
-			out = append(out, j.snapshot(false))
-		}
-	}
-	return out
-}
-
-// j stands in for its own entry.
-func (q *Queue) seriesOwedToLocked(j *Job) int {
-	root := j.seriesKey()
-	var to int
-	if j.owesArchivedPost() {
-		to = j.windowEnd()
-	}
-	for id, other := range q.index {
-		if id != j.ID && other.seriesKey() == root && other.owesArchivedPost() {
-			to = max(to, other.windowEnd())
-		}
-	}
-	return to
 }
 
 // A file that failed to download is not in the archive, so the next check fetches

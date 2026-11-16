@@ -122,7 +122,7 @@ func (s *Server) RequestRestart() {
 
 func NewServer(cfg *config.Provider, configPath, stateDir, workRoot string, q *queue.Queue, client *monbooru.Client, runner gdl.Runner, mapper *mapping.Mapper, catalog *gdl.Catalog, siteState *sitestate.Tracker, ptrEngine *ptr.Engine, sim *similarity.Client, dk Desktop) (*Server, error) {
 	funcs := templateFuncs()
-	maps.Copy(funcs, webui.Funcs())
+	maps.Copy(funcs, webui.Funcs(assetVersion))
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(webFS.FS, "templates/*.html", "templates/partials/*.html")
 	if err == nil {
 		tmpl, err = tmpl.ParseFS(webui.Templates, "*.html")
@@ -165,8 +165,8 @@ func NewServer(cfg *config.Provider, configPath, stateDir, workRoot string, q *q
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.staticFS))))
-	mux.Handle("GET /static/shared/", http.StripPrefix("/static/shared/", http.FileServer(http.FS(webui.Static))))
+	mux.Handle("GET /static/", http.StripPrefix("/static/", webui.StaticHandler(s.staticFS, assetVersion)))
+	mux.Handle("GET /static/shared/", http.StripPrefix("/static/shared/", webui.StaticHandler(webui.Static, assetVersion)))
 	mux.HandleFunc("GET /theme.css", s.serveThemeCSS)
 	mux.HandleFunc("GET /theme.logo", s.serveThemeLogo)
 	mux.HandleFunc("GET /theme.favicon", s.serveThemeFavicon)
@@ -249,9 +249,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /setup", s.setupPage)
 	mux.HandleFunc("POST /setup", s.setupPost)
 	mux.HandleFunc("GET /internal/browse", s.localOnly(s.browseDirs))
-	mux.HandleFunc("POST /internal/open-folder", s.localOnly(s.settingsForm(s.openFolder)))
-	mux.HandleFunc("GET /internal/desktop-actions", s.localOnly(s.desktopActionsFragment))
-	mux.HandleFunc("POST /settings/desktop", s.localOnly(s.settingsForm(s.settingsDesktopPost)))
+	mux.HandleFunc("POST /internal/open-folder", s.localOnly(flashForm(s.openFolder)))
+	mux.HandleFunc("GET /internal/desktop-power", s.localOnly(s.desktopPowerFragment))
+	mux.HandleFunc("POST /settings/desktop", s.localOnly(flashForm(s.settingsDesktopPost)))
 	mux.HandleFunc("POST /settings/quit", s.localOnly(s.settingsQuit))
 	mux.HandleFunc("POST /settings/restart", s.localOnly(s.settingsRestart))
 	mux.HandleFunc("GET /settings/raw", s.revealRaw)
@@ -273,7 +273,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /internal/monsender-pairing", s.monsenderPairingFragment)
 	mux.HandleFunc("POST /settings/auth/pair/{id}/approve", s.monsenderPairApprove)
 	mux.HandleFunc("POST /settings/auth/pair/{id}/deny", s.monsenderPairDeny)
-	mux.HandleFunc("POST /settings/auth/pair/remove", s.monsenderPairRemove)
 
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginPost)
@@ -464,6 +463,7 @@ func (s *Server) base(r *http.Request, nav, title string) map[string]any {
 		"RepoURL":            RepoURL,
 		"DocURL":             DocURL,
 		"Theme":              theme.Path != "",
+		"ColorScheme":        themeScheme(theme),
 		"BooruName":          s.booruName(),
 		"BooruLogo":          themeLogoURL(theme),
 		"BooruFavicon":       themeFaviconURL(theme),

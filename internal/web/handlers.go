@@ -176,6 +176,11 @@ func retargetFlash(w http.ResponseWriter, target, msg string) {
 	flashFragment(w, "err", msg)
 }
 
+func writeInlineFlash(w http.ResponseWriter, kind, msg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<div class="flash flash-%s">%s</div>`, kind, html.EscapeString(msg))
+}
+
 func flashFragment(w http.ResponseWriter, kind, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<span class="flash-%s">%s</span>`, kind, html.EscapeString(msg))

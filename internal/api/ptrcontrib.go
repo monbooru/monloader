@@ -61,14 +61,16 @@ func (h *Handler) ptrContribPreview(w http.ResponseWriter, r *http.Request) {
 }
 
 func refuse(w http.ResponseWriter, r *contrib.Refusal) {
-	status := http.StatusConflict
-	switch r.Code {
-	case contrib.CodeNotFound:
-		status = http.StatusNotFound
-	case contrib.CodeInternal:
-		status = http.StatusInternalServerError
+	switch r.Kind {
+	case contrib.NotFound:
+		contract.WriteError(w, http.StatusNotFound, errNotFound, r.Msg)
+	case contrib.NotRescindable:
+		contract.WriteError(w, http.StatusConflict, errNotRescindable, r.Msg)
+	case contrib.Internal:
+		contract.WriteError(w, http.StatusInternalServerError, errInternal, r.Msg)
+	default:
+		contract.WriteError(w, http.StatusConflict, r.Code, r.Msg)
 	}
-	contract.WriteError(w, status, r.Code, r.Msg)
 }
 
 func (h *Handler) contribAccountGate(ctx context.Context, w http.ResponseWriter) bool {

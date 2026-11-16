@@ -198,7 +198,7 @@ func main() {
 		logx.Warnf("queue history store unavailable, falling back to in-memory only: %v", err)
 	} else {
 		q.UseStore(qs)
-		proc.UseStore(qs)
+		proc.UseBooks(qs)
 		defer func() { _ = qs.Close() }()
 	}
 	q.Start()
