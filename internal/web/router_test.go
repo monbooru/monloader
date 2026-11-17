@@ -122,6 +122,11 @@ func stubFolders(gallery string) []monbooru.Folder {
 
 func stubFolderLevel(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	if q.Get("gallery") == "ghost" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"unknown gallery: ghost","code":"invalid_gallery"}`))
+		return
+	}
 	all, path := stubFolders(q.Get("gallery")), q.Get("path")
 	if path != "" && !slices.ContainsFunc(all, func(f monbooru.Folder) bool { return f.Path == path }) {
 		w.WriteHeader(http.StatusNotFound)
@@ -546,6 +551,8 @@ func TestFolderPickerFragment(t *testing.T) {
 			[]string{`value="to/be/made"`, "Not in monbooru yet"}, nil},
 		{"no tree is drawn until browsed", "kind=site&gallery=second",
 			nil, []string{`data-folder-pick="second"`}},
+		{"a gallery monbooru does not have says so", "kind=site&gallery=ghost&folder=kept",
+			[]string{`value="kept"`, "(folders unavailable; unknown gallery: ghost)"}, []string{"monbooru unreachable", "[browse]"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -719,7 +726,7 @@ func TestFolderPickerWithMonbooruDownIsATextBox(t *testing.T) {
 		}
 	})
 	_, body := get(t, ts, "/settings/sites/danbooru/dialog")
-	wantInBody(t, body, []string{`id="sd-folder-input" name="folder" value="kept"`, "folders unavailable"}, []string{"[browse]", "folder-picker/suggest"})
+	wantInBody(t, body, []string{`id="sd-folder-input" name="folder" value="kept"`, "(folders unavailable; monbooru unreachable)"}, []string{"[browse]", "folder-picker/suggest"})
 }
 
 func TestQueuePaginates(t *testing.T) {
