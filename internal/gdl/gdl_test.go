@@ -470,6 +470,30 @@ func TestARefreshOnADeadContextKeepsTheVersion(t *testing.T) {
 	}
 }
 
+func TestARefreshKeepsTheExtractorsOnlyWhileABinaryAnswers(t *testing.T) {
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	cases := []struct {
+		name    string
+		ctx     context.Context
+		version string
+		want    int
+	}{
+		{"a dead context says nothing", dead, "", 1},
+		{"a binary that answers keeps them", context.Background(), "1.32.2", 1},
+		{"a binary that is gone clears them", context.Background(), "", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cat := NewCatalog("1.32.1", "1.32.1", false, []Extractor{{Category: "site_a"}}, nil)
+			cat.Refresh(c.ctx, versionRunner{version: c.version}, config.Default(), t.TempDir())
+			if got := len(cat.Extractors()); got != c.want {
+				t.Errorf("extractors after a failed listing = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
 func TestDownloadKeepsTwoFilesOfOneName(t *testing.T) {
 	bin, err := exec.LookPath("gallery-dl")
 	if err != nil {

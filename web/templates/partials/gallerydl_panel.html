@@ -20,7 +20,7 @@
       <button type="submit">Install</button>
       {{if .Installed}}<button type="submit" form="gdl-revert-form">Revert</button>{{end}}
     </form>
-    <span class="field-hint">Any release from PyPI. It stays installed across monloader updates.</span>
+    <span class="field-hint">Any release from PyPI, <code>nightly</code> for the newest nightly build, or a nightly's date like 2026.11.12. It stays installed across monloader updates.</span>
   </div>
   {{if .Installed}}
   <form method="POST" id="gdl-revert-form" action="/settings/gallerydl/revert" hx-confirm="Remove the installed gallery-dl and return to the bundled {{.BundledVersion}}?" data-confirm-ok="Revert">
@@ -28,5 +28,18 @@
   </form>
   {{end}}
   {{end}}
+</div>
+{{if .StatsOOB}}{{template "gallerydl_stats" dict "Version" .ActiveVersion "Extractors" .Extractors "OOB" true}}{{end}}
+{{end}}
+
+{{define "gallerydl_stats"}}
+<div class="settings-sub" id="gdl-stats"{{if .OOB}} hx-swap-oob="true"{{end}}>
+  <h4>gallery-dl</h4>
+  <table class="stats-table">
+    <tbody>
+      <tr><th>Version</th><td>{{if .Version}}{{.Version}}{{else}}not available{{end}}</td></tr>
+      <tr><th>Extractors</th><td>{{.Extractors}}</td></tr>
+    </tbody>
+  </table>
 </div>
 {{end}}
