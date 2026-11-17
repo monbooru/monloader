@@ -609,7 +609,6 @@ func (c *Client) ListGalleries(ctx context.Context) ([]Gallery, error) {
 	return galleries, nil
 }
 
-// An empty gallery is monbooru's active one.
 // One page of a folder's subfolders, as monbooru pages them.
 type FolderPage struct {
 	Page    int      `json:"page"`
