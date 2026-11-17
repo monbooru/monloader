@@ -153,7 +153,7 @@ func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 		"Auths":              mapping.ProfileAuths,
 		"Ratings":            mapping.RatingLevels,
 		"Categories":         mapping.TagCategories,
-		"Username":           "", "UserID": "", "Gallery": "", "Label": "", "Cookies": "", "UserAgent": "",
+		"Username":           "", "UserID": "", "Gallery": "", "Folder": "", "Label": "", "Cookies": "", "UserAgent": "",
 		"OptionsPrivate": "", "HasOptions": false, "HasPassword": false, "HasAPIKey": false, "CookieCount": 0,
 		"CookiesPaste": "", "Blacklist": "",
 		"GlobalRules": mapping.BlacklistRuleLines(s.cfg.Current().Tags.Blacklist),
@@ -163,6 +163,7 @@ func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 		data["Username"] = site.Username
 		data["UserID"] = site.UserID
 		data["Gallery"] = site.Gallery
+		data["Folder"] = site.Folder
 		data["Label"] = site.Label
 		data["Cookies"] = site.Cookies
 		data["UserAgent"] = site.Agent
@@ -267,7 +268,7 @@ func (s *Server) refuseSiteSave(w http.ResponseWriter, r *http.Request, name, ta
 		dialog["Profile"], _ = profileFromForm(r)
 	}
 	for field, key := range map[string]string{
-		"gallery": "Gallery", "label": "Label", "username": "Username",
+		"gallery": "Gallery", "folder": "Folder", "label": "Label", "username": "Username",
 		"user_id": "UserID", "cookies": "Cookies", "options": "OptionsPrivate",
 		"cookies_paste": "CookiesPaste", "blacklist": "Blacklist", "profile_options": "OptionsPublic",
 		"user_agent": "UserAgent",
@@ -468,6 +469,13 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		s.refuseSiteSave(w, r, name, "sd-auth-panel", "pasted cookies are not a Netscape cookies.txt export")
 		return
 	}
+	// monbooru refuses an absolute folder or a .. segment, which would
+	// fail every push.
+	folder := strings.TrimSpace(r.FormValue("folder"))
+	if !config.IsRelativeFolder(folder) {
+		s.refuseSiteSave(w, r, name, "sd-monbooru", "folder must be a relative path with no .. segment")
+		return
+	}
 	options := strings.TrimSpace(r.FormValue("options"))
 	if err := config.ValidateSiteOptions(options); err != nil {
 		s.refuseSiteSave(w, r, name, "sd-advanced", err.Error())
@@ -517,6 +525,9 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Form.Has("gallery") {
 			site.Gallery = strings.TrimSpace(r.FormValue("gallery"))
+		}
+		if r.Form.Has("folder") {
+			site.Folder = folder
 		}
 		if r.Form.Has("label") {
 			site.Label = strings.TrimSpace(r.FormValue("label"))

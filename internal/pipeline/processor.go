@@ -1060,7 +1060,8 @@ func skipItem(job *queue.Job, i int, oc outcome.Outcome, note string) {
 }
 
 func (p *Processor) folder(job *queue.Job) string {
-	return cmp.Or(job.Snapshot().Folder, p.cfg.Current().Downloader.DefaultFolder)
+	snap := job.Snapshot()
+	return cmp.Or(snap.Folder, p.mapper.Folder(snap.Site))
 }
 
 func (p *Processor) extras(job *queue.Job) mapping.Extras {

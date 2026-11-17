@@ -226,6 +226,8 @@ type Site struct {
 	APIKey   string `toml:"api_key"`
 	UserID   string `toml:"user_id"`
 	Gallery  string `toml:"gallery"`
+	// Under the gallery; empty falls back to [downloader].default_folder.
+	Folder string `toml:"folder,omitempty"`
 	// Stamped as the source on this site's pushes; empty keeps the category.
 	Label   string `toml:"label,omitempty"`
 	Cookies string `toml:"cookies"`
@@ -266,7 +268,7 @@ func (s *Site) accountAgent() string {
 // HasUserData ignores LookupOrder: the seeded chain gives untouched blocks one.
 func (s *Site) HasUserData() bool {
 	return s.Username != "" || s.Password != "" || s.APIKey != "" || s.UserID != "" ||
-		s.Gallery != "" || s.Label != "" || s.Cookies != "" || s.Agent != "" || s.Options != "" || len(s.Blacklist) > 0
+		s.Gallery != "" || s.Folder != "" || s.Label != "" || s.Cookies != "" || s.Agent != "" || s.Options != "" || len(s.Blacklist) > 0
 }
 
 // SitePTR is the reserved [[sites]] and profile name holding the PTR's mappings

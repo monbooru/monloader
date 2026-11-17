@@ -288,6 +288,14 @@ func (m *Mapper) Gallery(category string) string {
 	return m.cfg.Current().Monbooru.DefaultGallery
 }
 
+// Empty leaves the folder to monbooru's own default.
+func (m *Mapper) Folder(category string) string {
+	if site := m.cfg.Current().FindSite(category); site != nil && site.Folder != "" {
+		return site.Folder
+	}
+	return m.cfg.Current().Downloader.DefaultFolder
+}
+
 // SourceLabel keeps an unmatched name as-is, so no label lands that the
 // operator did not choose.
 func (m *Mapper) SourceLabel(name string) string {

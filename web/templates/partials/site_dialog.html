@@ -29,6 +29,10 @@
       <input type="text" name="gallery" value="{{.Gallery}}">
       {{end}}
     </div>
+    <div class="field"><label>Folder</label>
+      <input type="text" name="folder" value="{{.Folder}}" placeholder="(default folder)">
+      <span class="field-hint">Subfolder in the gallery. A folder picked when sending wins over this one.</span>
+    </div>
     <div class="field"><label>Source label</label>
       <input type="text" name="label" value="{{.Label}}" placeholder="(blank = the site name)">
       <span class="field-hint">The name monbooru shows as the source. Images already sent keep the old name, and sending one again adds the new name beside it.</span>
