@@ -155,17 +155,21 @@ func (s *Server) folderLevelOf(r *http.Request, p folderPicker, path string, pag
 	seen := false
 	for _, f := range fp.Results {
 		if f.Path == next {
+			seen = true
 			if page > 1 {
 				continue
 			}
-			seen = true
 		}
 		lv.Rows = append(lv.Rows, folderRowOf(f, value))
 	}
 	left := fp.Total - (page-1)*folderLevelRows - len(fp.Results)
-	if next != "" && page == 1 && !seen {
-		if f, _, ok := s.locateFolder(r, p.Gallery, path, next, fp.Total); ok {
-			lv.Rows = append(lv.Rows, folderRowOf(f, value))
+	if next != "" && !seen {
+		// Shown on the first page already, so not among those left when its
+		// own page is still ahead.
+		if f, at, ok := s.locateFolder(r, p.Gallery, path, next, fp.Total); ok && (page == 1 || at > page) {
+			if page == 1 {
+				lv.Rows = append(lv.Rows, folderRowOf(f, value))
+			}
 			left--
 		}
 	}
