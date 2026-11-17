@@ -153,10 +153,7 @@
         {{template "field" (dict "ID" "dl-max-items" "Label" "Max posts per search" "Name" "max_items_per_job"
           "Value" (draft .Draft "max_items_per_job" .Cfg.Downloader.MaxItemsPerJob)
           "Hint" (printf "A pool or a manga gallery always comes whole (default %v)" .Defaults.Downloader.MaxItemsPerJob))}}
-        {{template "field" (dict "ID" "dl-folder" "Label" "Default folder" "Name" "default_folder"
-          "Value" (draft .Draft "default_folder" .Cfg.Downloader.DefaultFolder)
-          "Placeholder" "(monbooru's default)"
-          "Hint" "Subfolder in monbooru. Blank = monbooru's \"Where received files go\"")}}
+        {{template "folder_picker" (.DefaultFolderPicker.WithValue (draft .Draft "default_folder" .Cfg.Downloader.DefaultFolder))}}
         {{template "field" (dict "ID" "dl-success-retention" "Label" "Clear succeeded jobs after (days)" "Name" "success_retention_days"
           "Value" (draft .Draft "success_retention_days" .Cfg.Downloader.SuccessRetentionDays)
           "Hint" (printf "Searches with more to fetch stay. 0 = never (default %v)" .Defaults.Downloader.SuccessRetentionDays))}}

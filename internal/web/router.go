@@ -82,6 +82,8 @@ type Server struct {
 	ptr       ptrEngine
 	sim       simService
 
+	folderTrees folderTreeCache
+
 	gdlMu        sync.Mutex
 	gdlJob       *gdlJob
 	gdlSwitching bool
@@ -234,6 +236,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/lookup/chain", s.settingsForm(s.saveLookupChain))
 	mux.HandleFunc("POST /settings/lookup/clear-key", s.clearSaucenaoKey)
 	mux.HandleFunc("POST /settings/lookup/test/{source}", s.testLookupSource)
+	mux.HandleFunc("GET /settings/folder-picker", s.folderPickerFragment)
+	mux.HandleFunc("GET /settings/folder-picker/level", s.folderPickerLevel)
+	mux.HandleFunc("GET /settings/folder-picker/suggest", s.folderPickerSuggest)
 	mux.HandleFunc("GET /settings/sites/search", s.searchSites)
 	mux.HandleFunc("GET /settings/sites/{name}/dialog", s.siteDialog)
 	mux.HandleFunc("GET /settings/sites/{name}/options", s.siteOptions)

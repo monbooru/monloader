@@ -183,6 +183,7 @@ func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 	}
 	data["TagOverrides"], data["RatingTomlOverrides"] = s.mapper.ActiveOverrides(name)
 	markMissingGallery(data)
+	s.markFolderPicker(r, data)
 	markCategoryOptions(data)
 	markDroppedTargets(data, s.cfg.Current().Tags.DropCategories)
 	s.markDefaultAgent(data)
@@ -260,6 +261,18 @@ func markMissingGallery(dialog map[string]any) {
 	dialog["GalleryMissing"] = galleries != nil && galleryMissing(name, galleries)
 }
 
+// Lists the folders of the gallery the dialog shows, or of the default
+// gallery for a site without its own. Skipped when the galleries could not
+// be listed: monbooru will not answer this either.
+func (s *Server) markFolderPicker(r *http.Request, dialog map[string]any) {
+	if dialog["Galleries"] == nil {
+		dialog["FolderPicker"] = folderPickerKinds["site"]
+		return
+	}
+	gallery, _ := dialog["Gallery"].(string)
+	dialog["FolderPicker"] = s.folderPicker(r, "site", cmp.Or(gallery, s.cfg.Current().Monbooru.DefaultGallery))
+}
+
 func (s *Server) refuseSiteSave(w http.ResponseWriter, r *http.Request, name, tab, msg string) {
 	dialog := s.siteDialogData(r, name)
 	dialog["Refusal"], dialog["RefusedTab"] = msg, tab
@@ -281,6 +294,10 @@ func (s *Server) refuseSiteSave(w http.ResponseWriter, r *http.Request, name, ta
 		dialog["HasOptions"] = false
 	}
 	markMissingGallery(dialog)
+	// The folders of the gallery it was sent, not the stored one.
+	if r.Form.Has("gallery") {
+		s.markFolderPicker(r, dialog)
+	}
 	markCategoryOptions(dialog)
 	markDroppedTargets(dialog, s.cfg.Current().Tags.DropCategories)
 	s.markDefaultAgent(dialog)

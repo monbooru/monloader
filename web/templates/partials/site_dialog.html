@@ -20,19 +20,16 @@
   <div class="dialog-panel" id="sd-monbooru">
     <div class="field"><label>Gallery</label>
       {{if .Galleries}}
-      <select name="gallery">
+      <select id="sd-gallery" name="gallery">
         <option value="">(default gallery)</option>
         {{if .GalleryMissing}}<option value="{{.Gallery}}" selected>{{.Gallery}} (not in monbooru)</option>{{end}}
         {{range .Galleries}}<option value="{{.Name}}"{{if eq .Name $.Gallery}} selected{{end}}>{{.Name}}</option>{{end}}
       </select>
       {{else}}
-      <input type="text" name="gallery" value="{{.Gallery}}">
+      <input type="text" id="sd-gallery" name="gallery" value="{{.Gallery}}">
       {{end}}
     </div>
-    <div class="field"><label>Folder</label>
-      <input type="text" name="folder" value="{{.Folder}}" placeholder="(default folder)">
-      <span class="field-hint">Subfolder in the gallery. A folder picked when sending wins over this one.</span>
-    </div>
+    {{template "folder_picker" (.FolderPicker.WithValue .Folder)}}
     <div class="field"><label>Source label</label>
       <input type="text" name="label" value="{{.Label}}" placeholder="(blank = the site name)">
       <span class="field-hint">The name monbooru shows as the source. Images already sent keep the old name, and sending one again adds the new name beside it.</span>

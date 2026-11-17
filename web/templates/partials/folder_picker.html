@@ -1,0 +1,75 @@
+{{define "folder_picker"}}
+<div class="field folder-picker" id="{{.ID}}" hx-get="/settings/folder-picker?kind={{.Kind}}" hx-trigger="change[target.id=='{{.GalleryID}}'] from:body"
+     hx-include="#{{.GalleryID}}, #{{.ID}}-input" hx-swap="outerHTML">
+  <label for="{{.ID}}-input">{{.Label}}</label>
+  <div class="folder-picker-input">
+    <input type="text" id="{{.ID}}-input" name="{{.Name}}" value="{{.Value}}" placeholder="{{.Blank}}" autocomplete="off"
+      {{- if .Listed}} hx-get="/settings/folder-picker/suggest?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}" hx-trigger="input changed delay:200ms"
+      hx-target="#{{.ID}}-suggest" hx-swap="innerHTML"{{end}}>
+    {{if .Listed}}
+    <button type="button" class="btn-link-accent" data-folder-browse="{{.ID}}"
+            hx-get="/settings/folder-picker/level?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}&amp;path=" hx-include="#{{.ID}}-input"
+            hx-trigger="click once" hx-target="#{{.ID}}-tree" hx-swap="innerHTML">[browse]</button>
+    {{end}}
+    <div class="suggest-dropdown" id="{{.ID}}-suggest"></div>
+  </div>
+  {{if .Listed}}
+  <div class="folder-picker-panel" id="{{.ID}}-panel" hidden>
+    <ul class="folder-tree">
+      <li class="folder-node-wrap">
+        <div class="folder-node-row{{if not .Value}} active{{end}}" data-folder-pick="">
+          <span class="folder-spacer"></span><span class="folder-link">{{.Blank}}</span>
+        </div>
+      </li>
+    </ul>
+    <ul class="folder-tree" id="{{.ID}}-tree"></ul>
+    <div class="folder-new-row">
+      <span class="folder-spacer"></span>
+      <button type="button" class="btn-link-accent" data-folder-new>[+ new folder]</button>
+      <span class="folder-new-form" hidden>
+        <span class="folder-new-under"></span><input type="text" class="folder-new-name" placeholder="name">
+        <button type="button" class="btn-link-accent" data-folder-new-ok>[ok]</button>
+      </span>
+    </div>
+  </div>
+  {{if .Missing}}<span class="field-hint">Not in monbooru yet; the first send there creates it.</span>{{end}}
+  {{else}}
+  <span class="field-hint">(folders unavailable; monbooru unreachable)</span>
+  {{end}}
+  <span class="field-hint">{{.Hint}}</span>
+</div>
+{{end}}
+
+{{define "folder_picker_rows"}}
+{{$lv := .}}
+{{range .Rows}}
+<li class="folder-node-wrap">
+  <div class="folder-node-row{{if .Active}} active{{end}}" data-folder-pick="{{.Path}}">
+    {{if .HasSub}}
+    <button type="button" class="folder-toggle-btn" data-folder-toggle
+      {{- if not .Sub}} hx-get="/settings/folder-picker/level?kind={{$lv.Kind}}&amp;gallery={{urlquery $lv.Gallery}}&amp;path={{urlquery .Path}}"
+      hx-trigger="click once" hx-target="next ul" hx-swap="innerHTML"{{end}}>{{if .Sub}}▼{{else}}▶{{end}}</button>
+    {{else}}<span class="folder-spacer"></span>{{end}}
+    <span class="folder-link" title="{{.Path}}/">{{.Name}}/</span>
+    <span class="folder-count" title="{{.Images}} images">{{.Count}}</span>
+  </div>
+  {{if .HasSub}}<ul class="folder-children"{{if not .Sub}} hidden{{end}}>{{with .Sub}}{{template "folder_picker_rows" .}}{{end}}</ul>{{end}}
+</li>
+{{end}}
+{{if .More}}
+<li class="folder-node-wrap">
+  <div class="folder-node-row">
+    <span class="folder-spacer"></span>
+    <button type="button" class="folder-more-btn" title="{{.Left}} more {{if eq .Left 1}}folder{{else}}folders{{end}}"
+            hx-get="/settings/folder-picker/level?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}&amp;path={{urlquery .Path}}&amp;offset={{.More}}"
+            hx-target="closest li" hx-swap="outerHTML">[more]</button>
+  </div>
+</li>
+{{end}}
+{{end}}
+
+{{define "folder_picker_suggest"}}
+{{if .}}<div class="suggest-list">
+  {{range .}}<button type="button" class="suggest-item" data-folder-suggest="{{.Path}}"><span>{{.Path}}/</span><span class="folder-count">{{.Count}}</span></button>{{end}}
+</div>{{end}}
+{{end}}
