@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/gdl"
 	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/queue"
 	"github.com/monbooru/monloader/internal/shared/apitoken"
@@ -121,18 +123,24 @@ func noSimMissing(string) (string, bool) { return "", false }
 // Answers the lists as set, and records the gallery a folder list asked for.
 type fakeMonbooru struct {
 	galleries []contract.Gallery
-	root      contract.Folder
+	level     monbooru.FolderPage
+	found     []contract.Folder
 	err       error
-	asked     string
+	asked     string // what the last folder call passed on
 }
 
 func (f *fakeMonbooru) ListGalleries(context.Context) ([]contract.Gallery, error) {
 	return f.galleries, f.err
 }
 
-func (f *fakeMonbooru) ListFolders(_ context.Context, gallery string) (contract.Folder, error) {
-	f.asked = gallery
-	return f.root, f.err
+func (f *fakeMonbooru) ListFolders(_ context.Context, gallery, path string, page, limit int) (monbooru.FolderPage, error) {
+	f.asked = fmt.Sprintf("gallery=%s path=%s page=%d limit=%d", gallery, path, page, limit)
+	return f.level, f.err
+}
+
+func (f *fakeMonbooru) SearchFolders(_ context.Context, gallery, q string, limit int) ([]contract.Folder, error) {
+	f.asked = fmt.Sprintf("gallery=%s q=%s limit=%d", gallery, q, limit)
+	return f.found, f.err
 }
 
 func serveProc(t *testing.T, cfg *config.Config, ptrService PTRService, proc queue.Processor) (*httptest.Server, *sitestate.Tracker) {
@@ -287,8 +295,12 @@ func TestGalleryRenameMovesTheTargets(t *testing.T) {
 }
 
 func TestGalleriesAndFoldersPassMonbooruThrough(t *testing.T) {
-	tree := contract.Folder{Images: 3, Children: []contract.Folder{{Path: "art", Name: "art", Images: 3, Children: []contract.Folder{}}}}
-	mb := &fakeMonbooru{galleries: []contract.Gallery{{Name: "default", Images: 3, Active: true}}, root: tree}
+	art := contract.Folder{Path: "art", Name: "art", Images: 3, Folders: 1}
+	mb := &fakeMonbooru{
+		galleries: []contract.Gallery{{Name: "default", Images: 3, Active: true}},
+		level:     monbooru.FolderPage{Page: 1, Limit: 500, Total: 1, Results: []contract.Folder{art}},
+		found:     []contract.Folder{art},
+	}
 	srv := serveMonbooru(t, testCfg(""), mb)
 
 	resp, out := doJSON(t, "GET", srv.URL+"/api/v1/galleries", "", "")
@@ -297,13 +309,39 @@ func TestGalleriesAndFoldersPassMonbooruThrough(t *testing.T) {
 		t.Errorf("galleries = %d %v", resp.StatusCode, out)
 	}
 
-	resp, out = doJSON(t, "GET", srv.URL+"/api/v1/folders?gallery=my+art", "", "")
-	children, _ := out["children"].([]any)
-	if resp.StatusCode != http.StatusOK || out["images"] != float64(3) || len(children) != 1 || children[0].(map[string]any)["path"] != "art" {
-		t.Errorf("folders = %d %v", resp.StatusCode, out)
+	cases := []struct {
+		query, asked string
+	}{
+		{"/api/v1/folders?gallery=my+art", "gallery=my art path= page=1 limit=500"},
+		{"/api/v1/folders?path=art&page=3&limit=20", "gallery= path=art page=3 limit=20"},
+		{"/api/v1/folders?page_size=9999", "gallery= path= page=1 limit=500"},
 	}
-	if mb.asked != "my art" {
-		t.Errorf("monbooru was asked for %q, want my art", mb.asked)
+	for _, tc := range cases {
+		resp, out := doJSON(t, "GET", srv.URL+tc.query, "", "")
+		results, _ := out["results"].([]any)
+		if resp.StatusCode != http.StatusOK || out["total"] != float64(1) || len(results) != 1 || results[0].(map[string]any)["folders"] != float64(1) {
+			t.Errorf("%s = %d %v", tc.query, resp.StatusCode, out)
+		}
+		if mb.asked != tc.asked {
+			t.Errorf("%s asked monbooru for %q, want %q", tc.query, mb.asked, tc.asked)
+		}
+	}
+
+	resp, out = doJSON(t, "GET", srv.URL+"/api/v1/folders/search?gallery=my+art&q=ar", "", "")
+	results, _ := out["results"].([]any)
+	if resp.StatusCode != http.StatusOK || len(results) != 1 || results[0].(map[string]any)["path"] != "art" {
+		t.Errorf("search = %d %v", resp.StatusCode, out)
+	}
+	if mb.asked != "gallery=my art q=ar limit=10" {
+		t.Errorf("search asked monbooru for %q", mb.asked)
+	}
+}
+
+func TestFoldersOfAPathMonbooruDoesNotHold(t *testing.T) {
+	srv := serveMonbooru(t, testCfg(""), &fakeMonbooru{err: monbooru.ErrFolderNotFound})
+	out := wantCode(t, "GET", srv.URL+"/api/v1/folders?path=gone", "", http.StatusNotFound, errNotFound)
+	if out["error"] != "folder not found: gone" {
+		t.Errorf("error = %v", out["error"])
 	}
 }
 
@@ -328,7 +366,7 @@ func TestGalleriesAndFoldersRefusals(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := serveMonbooru(t, tc.cfg, &fakeMonbooru{err: tc.err})
-			for _, path := range []string{"/api/v1/galleries", "/api/v1/folders"} {
+			for _, path := range []string{"/api/v1/galleries", "/api/v1/folders", "/api/v1/folders/search?q=a"} {
 				wantCode(t, "GET", srv.URL+path, "", tc.status, tc.code)
 			}
 		})
