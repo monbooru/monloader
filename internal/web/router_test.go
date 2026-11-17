@@ -85,6 +85,18 @@ func monbooruStub() *httptest.Server {
 // gallery is named in its folders, so a test sees which one was asked for.
 func stubFolders(gallery string) []monbooru.Folder {
 	g := cmp.Or(gallery, "active")
+	if g == "crowd" {
+		// "art" sits on the top level's second page, behind "ART" and its
+		// twelve subfolders, which a search for "art" lists first.
+		out := []monbooru.Folder{{Path: "ART", Name: "ART", Images: 12, Folders: 12}}
+		for i := range 12 {
+			out = append(out, monbooru.Folder{Path: fmt.Sprintf("ART/x%02d", i), Name: fmt.Sprintf("x%02d", i), Images: 1})
+		}
+		for i := range 500 {
+			out = append(out, monbooru.Folder{Path: fmt.Sprintf("a%03d", i), Name: fmt.Sprintf("a%03d", i), Images: 1})
+		}
+		return append(out, monbooru.Folder{Path: "art", Name: "art", Images: 1, Folders: 1}, monbooru.Folder{Path: "art/deep", Name: "deep", Images: 1})
+	}
 	if g != "wide" {
 		return []monbooru.Folder{{Path: g, Name: g, Images: 3, Folders: 1}, {Path: g + "/sub", Name: "sub", Images: 1}}
 	}
@@ -581,6 +593,8 @@ func TestFolderPickerLevel(t *testing.T) {
 			[]string{`data-folder-pick="f501"`, `▼`, `class="folder-node-row active" data-folder-pick="f501/deep"`}, nil},
 		{"a later page leaves it out", "gallery=wide&path=&page=2&folder=f501/deep",
 			[]string{`data-folder-pick="f500"`}, []string{`data-folder-pick="f501"`}},
+		{"found past look-alikes a search would list first", "gallery=crowd&path=&folder=art/deep",
+			[]string{`data-folder-pick="art"`, `class="folder-node-row active" data-folder-pick="art/deep"`}, nil},
 		{"a path monbooru no longer lists is empty", "gallery=second&path=gone", nil, []string{`folder-node-row`}},
 	}
 	for _, tc := range cases {
