@@ -164,7 +164,7 @@ func (s *Server) folderLevelOf(r *http.Request, p folderPicker, path string, pag
 	}
 	left := fp.Total - (page-1)*folderLevelRows - len(fp.Results)
 	if next != "" && page == 1 && !seen {
-		if f, ok := s.findFolder(r, p.Gallery, next); ok {
+		if f, _, ok := s.locateFolder(r, p.Gallery, path, next, fp.Total); ok {
 			lv.Rows = append(lv.Rows, folderRowOf(f, value))
 			left--
 		}
@@ -181,21 +181,32 @@ func (s *Server) folderLevelOf(r *http.Request, p folderPicker, path string, pag
 	return lv, nil
 }
 
-// A folder's own row when its page is not at hand: the search lists it
-// among those starting with its path.
-func (s *Server) findFolder(r *http.Request, gallery, path string) (monbooru.Folder, bool) {
-	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
-	defer cancel()
-	found, err := s.client.SearchFolders(ctx, gallery, path, folderSuggestRows)
-	if err != nil {
-		return monbooru.Folder{}, false
-	}
-	for _, f := range found {
-		if f.Path == path {
-			return f, true
+// The page of parent's level holding child, and child's row. monbooru
+// lists a level in byte order of path, so halving the pages finds it in a
+// few requests however wide the level.
+func (s *Server) locateFolder(r *http.Request, gallery, parent, child string, total int) (monbooru.Folder, int, bool) {
+	lo, hi := 1, (total+folderLevelRows-1)/folderLevelRows
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		fp, err := s.folderPage(r, gallery, parent, mid)
+		if err != nil || len(fp.Results) == 0 {
+			break
+		}
+		switch first, last := fp.Results[0].Path, fp.Results[len(fp.Results)-1].Path; {
+		case child < first:
+			hi = mid - 1
+		case child > last:
+			lo = mid + 1
+		default:
+			for _, f := range fp.Results {
+				if f.Path == child {
+					return f, mid, true
+				}
+			}
+			return monbooru.Folder{}, 0, false
 		}
 	}
-	return monbooru.Folder{}, false
+	return monbooru.Folder{}, 0, false
 }
 
 // As monbooru's sidebar counts: 4.2k, 12k, 1.3M.
