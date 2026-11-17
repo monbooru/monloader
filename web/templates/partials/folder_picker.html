@@ -34,7 +34,7 @@
   </div>
   {{if .Missing}}<span class="field-hint">Not in monbooru yet; the first send there creates it.</span>{{end}}
   {{else}}
-  <span class="field-hint">(folders unavailable; monbooru unreachable)</span>
+  <span class="field-hint">(folders unavailable; {{or .Unavailable "monbooru unreachable"}})</span>
   {{end}}
   <span class="field-hint">{{.Hint}}</span>
 </div>

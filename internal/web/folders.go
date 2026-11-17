@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/monbooru/monloader/internal/monbooru"
+	"github.com/monbooru/monloader/internal/outcome"
 )
 
 const (
@@ -78,9 +79,12 @@ type folderPicker struct {
 	// The gallery the folders are listed from, for the panel's requests.
 	Gallery string
 	Listed  bool
-	Value   string
-	Missing bool
-	held    func(path string) bool
+	// Why not, when monbooru answered with a refusal rather than nothing:
+	// an unknown gallery, or a monbooru without the folder routes.
+	Unavailable string
+	Value       string
+	Missing     bool
+	held        func(path string) bool
 }
 
 // WithValue lets the templates set the value they already resolve, a draft
@@ -107,6 +111,10 @@ func (s *Server) folderPicker(r *http.Request, kind, gallery string) folderPicke
 	p.Gallery = gallery
 	_, err := s.folderPage(r, gallery, "", 1)
 	p.Listed = err == nil
+	var ce *outcome.CodedError
+	if errors.As(err, &ce) && ce.Code == outcome.ErrCodeMonbooruRejected {
+		p.Unavailable = ce.Msg
+	}
 	// Only a clear "not there" marks a folder missing; a failed ask does not.
 	p.held = func(path string) bool {
 		_, err := s.folderPage(r, gallery, path, 1)
