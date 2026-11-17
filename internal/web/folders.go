@@ -50,14 +50,25 @@ func (s *Server) folderPage(r *http.Request, gallery, path string, page int) (mo
 	fp, err := s.client.ListFolders(ctx, gallery, path, page, folderLevelRows)
 	// A folder monbooru does not hold is an answer too; a failure is not.
 	if err == nil || errors.Is(err, monbooru.ErrFolderNotFound) {
-		c.mu.Lock()
-		if c.pages == nil {
-			c.pages = map[string]cachedFolderPage{}
-		}
-		c.pages[key] = cachedFolderPage{page: fp, err: err, at: time.Now()}
-		c.mu.Unlock()
+		c.store(key, cachedFolderPage{page: fp, err: err, at: time.Now()})
 	}
 	return fp, err
+}
+
+// Every branch opened is a key, so expired pages go as new ones come in:
+// the map holds the last TTL's worth, not all the browsing since start.
+func (c *folderPageCache) store(key string, page cachedFolderPage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pages == nil {
+		c.pages = map[string]cachedFolderPage{}
+	}
+	for k, p := range c.pages {
+		if page.at.Sub(p.at) >= folderPageTTL {
+			delete(c.pages, k)
+		}
+	}
+	c.pages[key] = page
 }
 
 // A folder field, on the site dialog and for the default folder. Listed is
