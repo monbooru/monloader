@@ -284,6 +284,7 @@ func (s *Server) Handler() http.Handler {
 	host := api.Host{
 		Pair:       api.PairHandlers{Request: s.extPairRequest, Status: s.extPairStatus, Teardown: s.extPairTeardown},
 		SimMissing: s.sim.Missing,
+		Monbooru:   s.client,
 	}
 	api.New(s.queue, s.runner, s.mapper, s.cfg, s.catalog, Version, s.siteState, s.ptr, host).Mount(mux)
 

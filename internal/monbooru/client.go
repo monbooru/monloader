@@ -54,6 +54,8 @@ type Result struct {
 
 type Gallery = contract.Gallery
 
+type Folder = contract.Folder
+
 // Client reads the API URL and token on every request, so a settings save
 // lands without a restart.
 type Client struct {
@@ -605,6 +607,26 @@ func (c *Client) ListGalleries(ctx context.Context) ([]Gallery, error) {
 		return nil, fmt.Errorf("decoding galleries: %w", err)
 	}
 	return galleries, nil
+}
+
+// An empty gallery is monbooru's active one.
+func (c *Client) ListFolders(ctx context.Context, gallery string) (Folder, error) {
+	resp, body, err := c.do(ctx, http.MethodGet, withGallery(c.base()+"/api/v1/folders", gallery), "", nil, c.token())
+	if err != nil {
+		return Folder{}, transportError(ctx, err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		return Folder{}, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: "this monbooru does not list folders yet; update it"}
+	default:
+		return Folder{}, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(body, resp.Status)}
+	}
+	var root Folder
+	if err := json.Unmarshal(body, &root); err != nil {
+		return Folder{}, notJSON(resp.Status)
+	}
+	return root, nil
 }
 
 // CustomCategories is the union over every gallery: monbooru keeps a catalog

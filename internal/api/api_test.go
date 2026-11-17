@@ -117,6 +117,23 @@ func serveCfgTracked(t *testing.T, cfg *config.Config, ptrService PTRService) (*
 
 func noSimMissing(string) (string, bool) { return "", false }
 
+// Answers the lists as set, and records the gallery a folder list asked for.
+type fakeMonbooru struct {
+	galleries []contract.Gallery
+	root      contract.Folder
+	err       error
+	asked     string
+}
+
+func (f *fakeMonbooru) ListGalleries(context.Context) ([]contract.Gallery, error) {
+	return f.galleries, f.err
+}
+
+func (f *fakeMonbooru) ListFolders(_ context.Context, gallery string) (contract.Folder, error) {
+	f.asked = gallery
+	return f.root, f.err
+}
+
 func serveProc(t *testing.T, cfg *config.Config, ptrService PTRService, proc queue.Processor) (*httptest.Server, *sitestate.Tracker) {
 	t.Helper()
 	if ptrService == nil {
@@ -150,7 +167,7 @@ func serveProc(t *testing.T, cfg *config.Config, ptrService PTRService, proc que
 			contract.WriteJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 		},
 	}
-	h := New(q, fakeRunner{probe: gdl.ProbeResult{Status: gdl.ProbeOK}}, mapper, config.NewProvider(cfg), gdl.NewCatalog("1.32.1", "1.32.1", false, extractors, supported), "v1.2.3", siteState, ptrService, Host{SimMissing: noSimMissing, Pair: pair})
+	h := New(q, fakeRunner{probe: gdl.ProbeResult{Status: gdl.ProbeOK}}, mapper, config.NewProvider(cfg), gdl.NewCatalog("1.32.1", "1.32.1", false, extractors, supported), "v1.2.3", siteState, ptrService, Host{SimMissing: noSimMissing, Pair: pair, Monbooru: &fakeMonbooru{}})
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)

@@ -27,6 +27,15 @@ type Gallery struct {
 	Active bool   `json:"active"`
 }
 
+// The root has an empty path and name. Images counts every descendant's,
+// and a folder holding only subfolders still gets a node.
+type Folder struct {
+	Path     string   `json:"path"`
+	Name     string   `json:"name"`
+	Images   int      `json:"images"`
+	Children []Folder `json:"children"`
+}
+
 type GalleryRename struct {
 	From string `json:"from"`
 	To   string `json:"to"`

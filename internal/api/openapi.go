@@ -601,6 +601,32 @@ func (h *Handler) endpoints() []endpoint {
 			Handler: h.galleryRename,
 		},
 		{
+			Method: "GET", Path: "/api/v1/galleries",
+			Summary: "List monbooru's galleries", OperationID: "listGalleries",
+			Description: "monbooru's own list, passed on, so a client can offer the galleries a send can target.",
+			Responses: []response{
+				{Status: "200", Description: "The galleries, as monbooru lists them", Props: []prop{
+					{Name: "galleries", Type: "array", Items: &prop{Ref: "Gallery"}},
+				}},
+				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
+				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable) or refused (monbooru_rejected)", Ref: "Error"},
+			},
+			Handler: h.listGalleries,
+		},
+		{
+			Method: "GET", Path: "/api/v1/folders",
+			Summary: "List a monbooru gallery's folders", OperationID: "listFolders",
+			Description: "monbooru's folder tree for the gallery, passed on. Only folders holding an image, or a folder " +
+				"under them, are listed; a send to a folder that does not exist yet still creates it.",
+			Params: []param{{Name: "gallery", In: "query", Description: "The gallery; empty for monbooru's active gallery"}},
+			Responses: []response{
+				{Status: "200", Description: "The folder tree from its root", Ref: "Folder"},
+				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
+				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable), or refused (monbooru_rejected): an unknown gallery, or a monbooru too old to list folders", Ref: "Error"},
+			},
+			Handler: h.listFolders,
+		},
+		{
 			Method: "GET", Path: "/api/v1/sites",
 			Summary: "List supported sites", OperationID: "listSites",
 			Params: []param{{Name: "q", In: "query", Description: "Substring filter on category/subcategory"}},
@@ -826,6 +852,18 @@ var apiSchemas = []apiSchema{
 	}},
 	{Name: "PauseState", Props: []prop{
 		{Name: "paused", Type: "boolean"},
+	}},
+	{Name: "Gallery", Props: []prop{
+		{Name: "name", Type: "string"},
+		{Name: "images", Type: "integer", Description: "Visible (non-missing) image count"},
+		{Name: "tags", Type: "integer", Description: "Non-alias tag count"},
+		{Name: "active", Type: "boolean", Description: "monbooru's active gallery, the one an empty gallery targets"},
+	}},
+	{Name: "Folder", Props: []prop{
+		{Name: "path", Type: "string", Description: "Relative to the gallery, /-separated; what a send's folder takes. Empty for the root"},
+		{Name: "name", Type: "string", Description: "The last path segment; empty for the root"},
+		{Name: "images", Type: "integer", Description: "Visible (non-missing) images in this folder and every folder under it"},
+		{Name: "children", Type: "array", Items: &prop{Ref: "Folder"}, Description: "Subfolders in path order"},
 	}},
 	{Name: "Site", Props: []prop{
 		{Name: "category", Type: "string"},
