@@ -67,6 +67,24 @@ func (m MonbooruConfig) Unconfigured() bool { return m.APIURL == "" || m.APIToke
 
 func (m MonbooruConfig) Held() bool { return m.Unconfigured() || m.Paused }
 
+func (cfg *Config) MonbooruWebBase() string {
+	if cfg.Monbooru.WebURL != "" {
+		return strings.TrimRight(cfg.Monbooru.WebURL, "/")
+	}
+	if !loopbackURL(cfg.Monbooru.APIURL) || !desktop.IsLoopbackAddr(cfg.Server.BindAddress) {
+		return ""
+	}
+	if cfg.Server.BaseURL != "" && !loopbackURL(cfg.Server.BaseURL) {
+		return ""
+	}
+	return strings.TrimRight(cfg.Monbooru.APIURL, "/")
+}
+
+func loopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Host != "" && desktop.IsLoopbackAddr(u.Host)
+}
+
 type DownloaderConfig struct {
 	Concurrency    int    `toml:"concurrency"`
 	MaxItemsPerJob int    `toml:"max_items_per_job"`
@@ -521,24 +539,6 @@ func Save(cfg *Config, path string) error {
 		}
 		return nil
 	})
-}
-
-func (cfg *Config) MonbooruWebBase() string {
-	if cfg.Monbooru.WebURL != "" {
-		return strings.TrimRight(cfg.Monbooru.WebURL, "/")
-	}
-	if !loopbackURL(cfg.Monbooru.APIURL) || !desktop.IsLoopbackAddr(cfg.Server.BindAddress) {
-		return ""
-	}
-	if cfg.Server.BaseURL != "" && !loopbackURL(cfg.Server.BaseURL) {
-		return ""
-	}
-	return strings.TrimRight(cfg.Monbooru.APIURL, "/")
-}
-
-func loopbackURL(raw string) bool {
-	u, err := url.Parse(raw)
-	return err == nil && u.Host != "" && desktop.IsLoopbackAddr(u.Host)
 }
 
 // Every element type is a plain value except Token.Scopes, the Tags lists
