@@ -81,7 +81,8 @@ document.addEventListener("click", function (e) {
     t.closest("[data-folder-browse]").textContent = panel.hidden ? "[browse]" : "[close]";
   } else if (t.closest("[data-folder-toggle]")) {
     var btn = t.closest("[data-folder-toggle]");
-    var kids = btn.closest("li").querySelector(":scope > ul");
+    // The branch's own list comes first, ahead of any deeper one.
+    var kids = btn.closest("li").querySelector(".folder-children");
     kids.hidden = !kids.hidden;
     btn.textContent = kids.hidden ? "▶" : "▼";
   } else if (t.closest("[data-folder-suggest]")) {
