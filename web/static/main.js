@@ -79,12 +79,19 @@ document.addEventListener("click", function (e) {
     var panel = picker.querySelector(".folder-picker-panel");
     panel.hidden = !panel.hidden;
     t.closest("[data-folder-browse]").textContent = panel.hidden ? "[browse]" : "[close]";
+    // Every opening reloads, so a folder made or removed since shows.
+    if (!panel.hidden) {
+      picker.querySelector(".folder-tree[id]").dispatchEvent(new CustomEvent("folder-open"));
+    }
   } else if (t.closest("[data-folder-toggle]")) {
     var btn = t.closest("[data-folder-toggle]");
     // The branch's own list comes first, ahead of any deeper one.
     var kids = btn.closest("li").querySelector(".folder-children");
     kids.hidden = !kids.hidden;
     btn.textContent = kids.hidden ? "▶" : "▼";
+    if (!kids.hidden) {
+      kids.dispatchEvent(new CustomEvent("folder-open"));
+    }
   } else if (t.closest("[data-folder-suggest]")) {
     folderPick(picker, t.closest("[data-folder-suggest]").dataset.folderSuggest);
   } else if (t.closest("[data-folder-new]")) {
