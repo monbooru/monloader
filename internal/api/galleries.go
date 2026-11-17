@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
@@ -54,6 +55,30 @@ func (h *Handler) listFolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	contract.WriteJSON(w, http.StatusOK, root)
+}
+
+type siteDefault struct {
+	Name    string `json:"name"`
+	Gallery string `json:"gallery"`
+	Folder  string `json:"folder"`
+}
+
+// Read off the settings alone, so it answers with monbooru down too. Only
+// sites setting a gallery or folder are listed; the rest take the defaults.
+func (h *Handler) defaults(w http.ResponseWriter, r *http.Request) {
+	c := h.cfg.Current()
+	sites := []siteDefault{}
+	for _, s := range c.Sites {
+		if s.Gallery != "" || s.Folder != "" {
+			sites = append(sites, siteDefault{Name: s.Name, Gallery: s.Gallery, Folder: s.Folder})
+		}
+	}
+	slices.SortFunc(sites, func(a, b siteDefault) int { return strings.Compare(a.Name, b.Name) })
+	contract.WriteJSON(w, http.StatusOK, map[string]any{
+		"gallery": c.Monbooru.DefaultGallery,
+		"folder":  c.Downloader.DefaultFolder,
+		"sites":   sites,
+	})
 }
 
 // A 502 either way: monloader is up, the monbooru behind it is not, or it
