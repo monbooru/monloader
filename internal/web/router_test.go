@@ -670,31 +670,47 @@ func TestAbbrevCount(t *testing.T) {
 	}
 }
 
-func TestFolderPageCacheDropsExpiredPages(t *testing.T) {
-	now := time.Now()
-	cases := []struct {
-		name string
-		age  time.Duration
-		kept bool
-	}{
-		{"a fresh page stays", time.Second, true},
-		{"one just short of the TTL stays", folderPageTTL - time.Millisecond, true},
-		{"one at the TTL goes", folderPageTTL, false},
-		{"an old one goes", time.Hour, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var c folderPageCache
-			c.store("old", cachedFolderPage{at: now.Add(-tc.age)})
-			c.store("new", cachedFolderPage{at: now})
-			if _, ok := c.pages["old"]; ok != tc.kept {
-				t.Errorf("old page kept = %v, want %v", ok, tc.kept)
+func TestFolderPickerShowsFolderChangesAtOnce(t *testing.T) {
+	var mu sync.Mutex
+	folders := []monbooru.Folder{{Path: "old", Name: "old", Images: 1}}
+	mb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/v1/galleries":
+			_, _ = w.Write([]byte(`[{"name":"default","images":1,"tags":0,"active":true}]`))
+		case "/api/v1/folders":
+			if p := r.URL.Query().Get("path"); p != "" && !slices.ContainsFunc(folders, func(f monbooru.Folder) bool { return f.Path == p }) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = fmt.Fprintf(w, `{"error":"folder not found: %s","code":"not_found"}`, p)
+				return
 			}
-			if _, ok := c.pages["new"]; !ok {
-				t.Error("the page just stored is gone")
-			}
-		})
+			_ = json.NewEncoder(w).Encode(monbooru.FolderPage{Page: 1, Limit: 500, Total: len(folders), Results: slices.Clone(folders)})
+		}
+	}))
+	t.Cleanup(mb.Close)
+	srv := newWebServer(t, mb.URL, "")
+	ts := newTestServer(t, srv)
+	pairMB(t, srv)
+	set := func(paths ...string) {
+		mu.Lock()
+		defer mu.Unlock()
+		folders = nil
+		for _, p := range paths {
+			folders = append(folders, monbooru.Folder{Path: p, Name: p, Images: 1})
+		}
 	}
+
+	_, body := get(t, ts, "/settings/folder-picker/level?kind=site&gallery=main&path=")
+	wantInBody(t, body, []string{`data-folder-pick="old"`}, nil)
+	_, body = get(t, ts, "/settings/folder-picker?kind=site&gallery=main&folder=made")
+	wantInBody(t, body, []string{"Not in monbooru yet"}, nil)
+
+	set("made")
+	_, body = get(t, ts, "/settings/folder-picker/level?kind=site&gallery=main&path=")
+	wantInBody(t, body, []string{`data-folder-pick="made"`}, []string{`data-folder-pick="old"`})
+	_, body = get(t, ts, "/settings/folder-picker?kind=site&gallery=main&folder=made")
+	wantInBody(t, body, nil, []string{"Not in monbooru yet"})
 }
 
 func TestFolderPickersOnTheirPages(t *testing.T) {
