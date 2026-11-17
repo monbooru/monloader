@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/monbooru/monloader/internal/monbooru"
@@ -18,58 +17,40 @@ const (
 	// monbooru's own page: a level shows this many rows, then [more].
 	folderLevelRows   = 500
 	folderSuggestRows = 10
-	// Opening a branch twice, or the field and its panel, asks for the same
-	// page; a short reuse spares monbooru without hiding a new folder long.
-	folderPageTTL = 30 * time.Second
 )
 
-type folderPageCache struct {
-	mu    sync.Mutex
-	pages map[string]cachedFolderPage
+// A gallery's folders as one render reads them. Pages are asked of monbooru
+// fresh for every render, which reads its own cached tree, and kept only
+// while the render runs: locating the held branch asks some twice.
+type folderReader struct {
+	s       *Server
+	r       *http.Request
+	gallery string
+	pages   map[string]folderAnswer
 }
 
-type cachedFolderPage struct {
+type folderAnswer struct {
 	page monbooru.FolderPage
 	err  error
-	at   time.Time
 }
 
-// An empty gallery is monbooru's active one, an empty path the top level.
-// The same short budget as the gallery list: the page must render when
-// monbooru is slow or down.
-func (s *Server) folderPage(r *http.Request, gallery, path string, page int) (monbooru.FolderPage, error) {
-	key := gallery + "\x00" + path + "\x00" + strconv.Itoa(page)
-	c := &s.folderPages
-	c.mu.Lock()
-	hit, ok := c.pages[key]
-	c.mu.Unlock()
-	if ok && time.Since(hit.at) < folderPageTTL {
-		return hit.page, hit.err
+// An empty gallery is monbooru's active one.
+func (s *Server) folderReader(r *http.Request, gallery string) *folderReader {
+	return &folderReader{s: s, r: r, gallery: gallery, pages: map[string]folderAnswer{}}
+}
+
+// An empty path is the top level. The same short budget as the gallery
+// list: the page must render when monbooru is slow or down.
+func (f *folderReader) page(path string, page int) (monbooru.FolderPage, error) {
+	key := path + "\x00" + strconv.Itoa(page)
+	if a, ok := f.pages[key]; ok {
+		return a.page, a.err
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(f.r.Context(), 4*time.Second)
 	defer cancel()
-	fp, err := s.client.ListFolders(ctx, gallery, path, page, folderLevelRows)
-	// A folder monbooru does not hold is an answer too; a failure is not.
-	if err == nil || errors.Is(err, monbooru.ErrFolderNotFound) {
-		c.store(key, cachedFolderPage{page: fp, err: err, at: time.Now()})
-	}
+	fp, err := f.s.client.ListFolders(ctx, f.gallery, path, page, folderLevelRows)
+	f.pages[key] = folderAnswer{page: fp, err: err}
 	return fp, err
-}
-
-// Every branch opened is a key, so expired pages go as new ones come in:
-// the map holds the last TTL's worth, not all the browsing since start.
-func (c *folderPageCache) store(key string, page cachedFolderPage) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.pages == nil {
-		c.pages = map[string]cachedFolderPage{}
-	}
-	for k, p := range c.pages {
-		if page.at.Sub(p.at) >= folderPageTTL {
-			delete(c.pages, k)
-		}
-	}
-	c.pages[key] = page
 }
 
 // A folder field, on the site dialog and for the default folder. Listed is
@@ -109,7 +90,8 @@ var folderPickerKinds = map[string]folderPicker{
 func (s *Server) folderPicker(r *http.Request, kind, gallery string) folderPicker {
 	p := folderPickerKinds[kind]
 	p.Gallery = gallery
-	_, err := s.folderPage(r, gallery, "", 1)
+	rd := s.folderReader(r, gallery)
+	_, err := rd.page("", 1)
 	p.Listed = err == nil
 	var ce *outcome.CodedError
 	if errors.As(err, &ce) && ce.Code == outcome.ErrCodeMonbooruRejected {
@@ -117,7 +99,7 @@ func (s *Server) folderPicker(r *http.Request, kind, gallery string) folderPicke
 	}
 	// Only a clear "not there" marks a folder missing; a failed ask does not.
 	p.held = func(path string) bool {
-		_, err := s.folderPage(r, gallery, path, 1)
+		_, err := rd.page(path, 1)
 		return !errors.Is(err, monbooru.ErrFolderNotFound)
 	}
 	return p
@@ -144,12 +126,12 @@ func folderRowOf(f monbooru.Folder, value string) folderRow {
 // One page of a level. The branch leading to value opens with it, and its
 // row joins the first page when monbooru pages it later, so later pages
 // leave it out.
-func (s *Server) folderLevelOf(r *http.Request, p folderPicker, path string, page int, value string) (*folderLevel, error) {
-	fp, err := s.folderPage(r, p.Gallery, path, page)
+func (f *folderReader) level(p folderPicker, path string, page int, value string) (*folderLevel, error) {
+	fp, err := f.page(path, page)
 	if err != nil {
 		return nil, err
 	}
-	lv := &folderLevel{Kind: p.Kind, ID: p.ID, Gallery: p.Gallery, Path: path}
+	lv := &folderLevel{Kind: p.Kind, ID: p.ID, Gallery: f.gallery, Path: path}
 	// The child of path on the way to value, if value is under path.
 	next := ""
 	if rest, ok := strings.CutPrefix(value, path+"/"); path == "" || ok {
@@ -161,22 +143,22 @@ func (s *Server) folderLevelOf(r *http.Request, p folderPicker, path string, pag
 		}
 	}
 	seen := false
-	for _, f := range fp.Results {
-		if f.Path == next {
+	for _, row := range fp.Results {
+		if row.Path == next {
 			seen = true
 			if page > 1 {
 				continue
 			}
 		}
-		lv.Rows = append(lv.Rows, folderRowOf(f, value))
+		lv.Rows = append(lv.Rows, folderRowOf(row, value))
 	}
 	left := fp.Total - (page-1)*folderLevelRows - len(fp.Results)
 	if next != "" && !seen {
 		// Shown on the first page already, so not among those left when its
 		// own page is still ahead.
-		if f, at, ok := s.locateFolder(r, p.Gallery, path, next, fp.Total); ok && (page == 1 || at > page) {
+		if row, at, ok := f.locate(path, next, fp.Total); ok && (page == 1 || at > page) {
 			if page == 1 {
-				lv.Rows = append(lv.Rows, folderRowOf(f, value))
+				lv.Rows = append(lv.Rows, folderRowOf(row, value))
 			}
 			left--
 		}
@@ -187,7 +169,7 @@ func (s *Server) folderLevelOf(r *http.Request, p folderPicker, path string, pag
 	for i := range lv.Rows {
 		row := &lv.Rows[i]
 		if row.HasSub && row.Path == next && value != next {
-			row.Sub, _ = s.folderLevelOf(r, p, row.Path, 1, value)
+			row.Sub, _ = f.level(p, row.Path, 1, value)
 		}
 	}
 	return lv, nil
@@ -196,11 +178,11 @@ func (s *Server) folderLevelOf(r *http.Request, p folderPicker, path string, pag
 // The page of parent's level holding child, and child's row. monbooru
 // lists a level in byte order of path, so halving the pages finds it in a
 // few requests however wide the level.
-func (s *Server) locateFolder(r *http.Request, gallery, parent, child string, total int) (monbooru.Folder, int, bool) {
+func (f *folderReader) locate(parent, child string, total int) (monbooru.Folder, int, bool) {
 	lo, hi := 1, (total+folderLevelRows-1)/folderLevelRows
 	for lo <= hi {
 		mid := (lo + hi) / 2
-		fp, err := s.folderPage(r, gallery, parent, mid)
+		fp, err := f.page(parent, mid)
 		if err != nil || len(fp.Results) == 0 {
 			break
 		}
@@ -210,9 +192,9 @@ func (s *Server) locateFolder(r *http.Request, gallery, parent, child string, to
 		case child > last:
 			lo = mid + 1
 		default:
-			for _, f := range fp.Results {
-				if f.Path == child {
-					return f, mid, true
+			for _, row := range fp.Results {
+				if row.Path == child {
+					return row, mid, true
 				}
 			}
 			return monbooru.Folder{}, 0, false
@@ -275,9 +257,8 @@ func (s *Server) folderPickerLevel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	p.Gallery = q.Get("gallery")
 	page, _ := strconv.Atoi(q.Get("page"))
-	lv, err := s.folderLevelOf(r, p, strings.Trim(q.Get("path"), "/"), max(page, 1), strings.TrimSpace(r.FormValue(p.Name)))
+	lv, err := s.folderReader(r, q.Get("gallery")).level(p, strings.Trim(q.Get("path"), "/"), max(page, 1), strings.TrimSpace(r.FormValue(p.Name)))
 	if err != nil {
 		return
 	}

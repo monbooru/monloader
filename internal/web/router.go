@@ -82,8 +82,6 @@ type Server struct {
 	ptr       ptrEngine
 	sim       simService
 
-	folderPages folderPageCache
-
 	gdlMu        sync.Mutex
 	gdlJob       *gdlJob
 	gdlSwitching bool
