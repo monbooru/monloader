@@ -693,15 +693,26 @@ func TestValidateSiteOptions(t *testing.T) {
 }
 
 func TestPureHelpers(t *testing.T) {
-	t.Run("WebBase", func(t *testing.T) {
-		for _, tc := range []struct{ web, api, want string }{
-			{"http://booru.example/", "http://internal:8080", "http://booru.example"},
-			{"", "http://internal:8080/", ""},
-			{"", "", ""},
+	t.Run("MonbooruWebBase", func(t *testing.T) {
+		for _, tc := range []struct{ web, api, bind, base, want string }{
+			{"http://booru.example/", "http://internal:8080", "0.0.0.0:8456", "", "http://booru.example"},
+			{"http://booru.example/", "http://127.0.0.1:8455", "127.0.0.1:8456", "", "http://booru.example"},
+			{"", "http://internal:8080/", "0.0.0.0:8456", "", ""},
+			{"", "", "127.0.0.1:8456", "", ""},
+			{"", "http://127.0.0.1:8455/", "127.0.0.1:8456", "http://localhost:8456", "http://127.0.0.1:8455"},
+			{"", "http://localhost:8455", "localhost:8456", "", "http://localhost:8455"},
+			{"", "http://[::1]:8455", "[::1]:8456", "", "http://[::1]:8455"},
+			{"", "http://127.0.0.1:8455", "0.0.0.0:8456", "", ""},
+			{"", "http://127.0.0.1:8455", ":8456", "", ""},
+			{"", "http://127.0.0.1:8455", "127.0.0.1:8456", "https://ml.example", ""},
+			{"", "http://monbooru:8455", "127.0.0.1:8456", "", ""},
 		} {
-			m := MonbooruConfig{WebURL: tc.web, APIURL: tc.api}
-			if got := m.WebBase(); got != tc.want {
-				t.Errorf("WebBase(web=%q api=%q) = %q, want %q", tc.web, tc.api, got, tc.want)
+			cfg := Config{
+				Server:   ServerConfig{BindAddress: tc.bind, BaseURL: tc.base},
+				Monbooru: MonbooruConfig{WebURL: tc.web, APIURL: tc.api},
+			}
+			if got := cfg.MonbooruWebBase(); got != tc.want {
+				t.Errorf("MonbooruWebBase(web=%q api=%q bind=%q base=%q) = %q, want %q", tc.web, tc.api, tc.bind, tc.base, got, tc.want)
 			}
 		}
 	})

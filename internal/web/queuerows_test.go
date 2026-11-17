@@ -417,6 +417,17 @@ func TestQueueRowsRendersItems(t *testing.T) {
 	}
 }
 
+func TestQueueItemsLinkThroughLoopbackAPIURL(t *testing.T) {
+	srv, ts := serveProc(t, itemsProc{})
+	srv.cfg.Current().Server.BindAddress = "127.0.0.1:8456"
+	id := finishJob(t, srv, "http://danbooru/pools/1")
+	_, items := get(t, ts, "/internal/queue-rows/"+itoa(id)+"/items")
+	api := srv.cfg.Current().Monbooru.APIURL
+	if !strings.Contains(items, `href="`+api+`/i/abc123"`) {
+		t.Errorf("a blank web_url on loopback should link through %s, got %q", api, items)
+	}
+}
+
 func TestQueueRowsShowWhyAJobFailed(t *testing.T) {
 	srv := serverWith(t, noopProc{})
 	failed := leadJob(1, queue.JobFailed, "u1")

@@ -40,7 +40,7 @@
         <div class="field">
           <label for="mb-web-url">Web URL</label>
           <input id="mb-web-url" type="text" name="web_url" value="{{draft .Draft "web_url" .Cfg.Monbooru.WebURL}}" placeholder="http://localhost:8455">
-          <p class="field-hint">The address your browser uses to open monbooru. Blank = no links to it.</p>
+          <p class="field-hint">The address your browser uses to open monbooru. Blank = the API URL when both run on this machine.</p>
         </div>
       </div>
       {{template "monbooru_gallery" (dict "Paired" .MonbooruPaired "Galleries" .Galleries "DefaultGallery" (draft .Draft "default_gallery" .Cfg.Monbooru.DefaultGallery) "GalleryWarn" .GalleryWarn "GalleryMissing" .GalleryMissing)}}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/monbooru/monloader/internal/shared/apitoken"
 	"github.com/monbooru/monloader/internal/shared/contract"
+	"github.com/monbooru/monloader/internal/shared/desktop"
 	"github.com/monbooru/monloader/internal/shared/fsx"
 	"github.com/monbooru/monloader/internal/shared/logx"
 )
@@ -51,8 +52,9 @@ type ServerConfig struct {
 type MonbooruConfig struct {
 	APIURL   string `toml:"api_url"`
 	APIToken string `toml:"api_token"`
-	// Browser-facing, for links; empty leaves them plain text, since
-	// APIURL may name a host only monloader resolves.
+	// Browser-facing, for links. Empty falls back to APIURL only when both
+	// apps and the browser are on loopback: APIURL may name a host only
+	// monloader resolves.
 	WebURL         string `toml:"web_url"`
 	DefaultGallery string `toml:"default_gallery"`
 	// Pausing keeps the pairing on disk, so resuming needs no re-pair.
@@ -64,10 +66,6 @@ type MonbooruConfig struct {
 func (m MonbooruConfig) Unconfigured() bool { return m.APIURL == "" || m.APIToken == "" }
 
 func (m MonbooruConfig) Held() bool { return m.Unconfigured() || m.Paused }
-
-func (m MonbooruConfig) WebBase() string {
-	return strings.TrimRight(m.WebURL, "/")
-}
 
 type DownloaderConfig struct {
 	Concurrency    int    `toml:"concurrency"`
@@ -523,6 +521,24 @@ func Save(cfg *Config, path string) error {
 		}
 		return nil
 	})
+}
+
+func (cfg *Config) MonbooruWebBase() string {
+	if cfg.Monbooru.WebURL != "" {
+		return strings.TrimRight(cfg.Monbooru.WebURL, "/")
+	}
+	if !loopbackURL(cfg.Monbooru.APIURL) || !desktop.IsLoopbackAddr(cfg.Server.BindAddress) {
+		return ""
+	}
+	if cfg.Server.BaseURL != "" && !loopbackURL(cfg.Server.BaseURL) {
+		return ""
+	}
+	return strings.TrimRight(cfg.Monbooru.APIURL, "/")
+}
+
+func loopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Host != "" && desktop.IsLoopbackAddr(u.Host)
 }
 
 // Every element type is a plain value except Token.Scopes, the Tags lists

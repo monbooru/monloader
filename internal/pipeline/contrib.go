@@ -190,7 +190,7 @@ type contribUpload struct {
 
 func (p *Processor) newContribUpload(job *queue.Job, sender ContribSender, store *ptr.ContribStore, chunks []contribChunk, denied []ptr.ContribItem) *contribUpload {
 	up := &contribUpload{p: p, job: job, sender: sender, store: store, chunks: chunks, spans: make([][2]int, len(chunks))}
-	base := p.cfg.Current().Monbooru.WebBase()
+	base := p.cfg.Current().MonbooruWebBase()
 	var jobItems []queue.Item
 	for ci, c := range chunks {
 		up.spans[ci][0] = len(jobItems)

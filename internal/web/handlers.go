@@ -187,7 +187,7 @@ func flashFragment(w http.ResponseWriter, kind, msg string) {
 }
 
 func (s *Server) monbooruWebBase() string {
-	return s.cfg.Current().Monbooru.WebBase()
+	return s.cfg.Current().MonbooruWebBase()
 }
 
 func (s *Server) monbooruStatus(w http.ResponseWriter, r *http.Request) {
