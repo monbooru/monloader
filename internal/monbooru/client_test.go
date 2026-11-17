@@ -819,6 +819,48 @@ func TestListGalleries(t *testing.T) {
 	}
 }
 
+func TestListFolders(t *testing.T) {
+	tree := Folder{Images: 3, Children: []Folder{{Path: "art", Name: "art", Images: 2, Children: []Folder{}}}}
+	cases := []struct {
+		name, gallery, wantQuery string
+		status                   int
+		body                     any
+		wantErr                  string // empty for success
+	}{
+		{"the active gallery", "", "", http.StatusOK, tree, ""},
+		{"a named gallery", "my art", "gallery=my+art", http.StatusOK, tree, ""},
+		{"an unknown gallery", "ghost", "gallery=ghost", http.StatusBadRequest,
+			map[string]string{"error": "unknown gallery: ghost", "code": "invalid_gallery"}, "unknown gallery: ghost"},
+		{"a monbooru without the route", "", "", http.StatusNotFound,
+			map[string]string{"error": "endpoint not found", "code": "not_found"}, "does not list folders yet"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/folders" || r.URL.RawQuery != tc.wantQuery {
+					t.Errorf("asked %s?%s, want /api/v1/folders?%s", r.URL.Path, r.URL.RawQuery, tc.wantQuery)
+				}
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(tc.body)
+			}))
+			root, err := testClient(srv.URL, "tok").ListFolders(context.Background(), tc.gallery)
+			if tc.wantErr != "" {
+				wantCode(t, err, outcome.ErrCodeMonbooruRejected)
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("err = %v, want it to say %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ListFolders: %v", err)
+			}
+			if root.Images != 3 || len(root.Children) != 1 || root.Children[0].Path != "art" || root.Children[0].Images != 2 {
+				t.Errorf("tree = %+v", root)
+			}
+		})
+	}
+}
+
 func TestCustomCategories(t *testing.T) {
 	srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

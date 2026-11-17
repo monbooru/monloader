@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -136,6 +137,17 @@ func (f *fakeMonbooru) ListFolders(_ context.Context, gallery string) (contract.
 
 func serveProc(t *testing.T, cfg *config.Config, ptrService PTRService, proc queue.Processor) (*httptest.Server, *sitestate.Tracker) {
 	t.Helper()
+	return serveFull(t, cfg, ptrService, proc, &fakeMonbooru{})
+}
+
+func serveMonbooru(t *testing.T, cfg *config.Config, mb MonbooruLister) *httptest.Server {
+	t.Helper()
+	srv, _ := serveFull(t, cfg, nil, fakeProc{}, mb)
+	return srv
+}
+
+func serveFull(t *testing.T, cfg *config.Config, ptrService PTRService, proc queue.Processor, mb MonbooruLister) (*httptest.Server, *sitestate.Tracker) {
+	t.Helper()
 	if ptrService == nil {
 		ptrService = disabledPTR()
 	}
@@ -167,7 +179,7 @@ func serveProc(t *testing.T, cfg *config.Config, ptrService PTRService, proc que
 			contract.WriteJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 		},
 	}
-	h := New(q, fakeRunner{probe: gdl.ProbeResult{Status: gdl.ProbeOK}}, mapper, config.NewProvider(cfg), gdl.NewCatalog("1.32.1", "1.32.1", false, extractors, supported), "v1.2.3", siteState, ptrService, Host{SimMissing: noSimMissing, Pair: pair, Monbooru: &fakeMonbooru{}})
+	h := New(q, fakeRunner{probe: gdl.ProbeResult{Status: gdl.ProbeOK}}, mapper, config.NewProvider(cfg), gdl.NewCatalog("1.32.1", "1.32.1", false, extractors, supported), "v1.2.3", siteState, ptrService, Host{SimMissing: noSimMissing, Pair: pair, Monbooru: mb})
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)
@@ -272,6 +284,96 @@ func TestGalleryRenameMovesTheTargets(t *testing.T) {
 	}
 
 	wantCode(t, "POST", srv.URL+"/api/v1/galleries/rename", `{"from":"art"}`, http.StatusBadRequest, errInvalidRequest)
+}
+
+func TestGalleriesAndFoldersPassMonbooruThrough(t *testing.T) {
+	tree := contract.Folder{Images: 3, Children: []contract.Folder{{Path: "art", Name: "art", Images: 3, Children: []contract.Folder{}}}}
+	mb := &fakeMonbooru{galleries: []contract.Gallery{{Name: "default", Images: 3, Active: true}}, root: tree}
+	srv := serveMonbooru(t, testCfg(""), mb)
+
+	resp, out := doJSON(t, "GET", srv.URL+"/api/v1/galleries", "", "")
+	galleries, _ := out["galleries"].([]any)
+	if resp.StatusCode != http.StatusOK || len(galleries) != 1 || galleries[0].(map[string]any)["name"] != "default" {
+		t.Errorf("galleries = %d %v", resp.StatusCode, out)
+	}
+
+	resp, out = doJSON(t, "GET", srv.URL+"/api/v1/folders?gallery=my+art", "", "")
+	children, _ := out["children"].([]any)
+	if resp.StatusCode != http.StatusOK || out["images"] != float64(3) || len(children) != 1 || children[0].(map[string]any)["path"] != "art" {
+		t.Errorf("folders = %d %v", resp.StatusCode, out)
+	}
+	if mb.asked != "my art" {
+		t.Errorf("monbooru was asked for %q, want my art", mb.asked)
+	}
+}
+
+func TestGalleriesAndFoldersRefusals(t *testing.T) {
+	unconfigured := testCfg("")
+	unconfigured.Monbooru.APIURL = ""
+	paused := testCfg("")
+	paused.Monbooru.Paused = true
+	cases := []struct {
+		name   string
+		cfg    *config.Config
+		err    error
+		status int
+		code   string
+	}{
+		{"no monbooru", unconfigured, nil, http.StatusConflict, errMonbooruUnconfigured},
+		{"a paused link", paused, nil, http.StatusConflict, errMonbooruPaused},
+		{"monbooru down", testCfg(""), &outcome.CodedError{Code: outcome.ErrCodeMonbooruUnreachable, Msg: "connection refused"}, http.StatusBadGateway, outcome.ErrCodeMonbooruUnreachable},
+		{"monbooru refusing", testCfg(""), &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: "unknown gallery: ghost"}, http.StatusBadGateway, outcome.ErrCodeMonbooruRejected},
+		{"an uncoded failure", testCfg(""), errors.New("decoding galleries"), http.StatusBadGateway, outcome.ErrCodeMonbooruRejected},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := serveMonbooru(t, tc.cfg, &fakeMonbooru{err: tc.err})
+			for _, path := range []string{"/api/v1/galleries", "/api/v1/folders"} {
+				wantCode(t, "GET", srv.URL+path, "", tc.status, tc.code)
+			}
+		})
+	}
+}
+
+func TestDefaults(t *testing.T) {
+	cases := []struct {
+		name      string
+		gallery   string
+		folder    string
+		sites     []config.Site
+		wantSites string
+	}{
+		{"nothing set", "", "", nil, `[]`},
+		{
+			"only sites setting a target, by name",
+			"main", "inbox",
+			[]config.Site{
+				{Name: "gelbooru", Folder: "art/gel"},
+				{Name: "user_a_site", Username: "user_a"},
+				{Name: "danbooru", Gallery: "anime"},
+			},
+			`[{"folder":"","gallery":"anime","name":"danbooru"},{"folder":"art/gel","gallery":"","name":"gelbooru"}]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testCfg("")
+			cfg.Monbooru.DefaultGallery = tc.gallery
+			cfg.Downloader.DefaultFolder = tc.folder
+			cfg.Sites = tc.sites
+			// No monbooru needed: the defaults are monloader's own settings.
+			cfg.Monbooru.APIURL = ""
+			srv := serveCfg(t, cfg)
+
+			resp, out := doJSON(t, "GET", srv.URL+"/api/v1/defaults", "", "")
+			if resp.StatusCode != http.StatusOK || out["gallery"] != tc.gallery || out["folder"] != tc.folder {
+				t.Errorf("defaults = %d %v", resp.StatusCode, out)
+			}
+			if sites, _ := json.Marshal(out["sites"]); string(sites) != tc.wantSites {
+				t.Errorf("sites = %s, want %s", sites, tc.wantSites)
+			}
+		})
+	}
 }
 
 func TestHealthNoAuth(t *testing.T) {
