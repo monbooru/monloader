@@ -71,23 +71,73 @@ func monbooruStub() *httptest.Server {
 		case "/api/v1/categories":
 			_, _ = w.Write([]byte(`[{"name":"general","is_builtin":true},{"name":"va"}]`))
 		case "/api/v1/folders":
-			g := cmp.Or(r.URL.Query().Get("gallery"), "active")
-			if g == "wide" {
-				// Past a level's page: f000 to f501, one image each.
-				root := monbooru.Folder{Images: 502, Children: []monbooru.Folder{}}
-				for i := range 502 {
-					name := fmt.Sprintf("f%03d", i)
-					root.Children = append(root.Children, monbooru.Folder{Path: name, Name: name, Images: 1, Children: []monbooru.Folder{}})
-				}
-				_ = json.NewEncoder(w).Encode(root)
-				return
-			}
-			// Named after the gallery asked for, so a test sees which one it was.
-			_, _ = fmt.Fprintf(w, `{"path":"","name":"","images":3,"children":[{"path":"%[1]s","name":"%[1]s","images":3,"children":[{"path":"%[1]s/sub","name":"sub","images":1,"children":[]}]}]}`, g)
+			stubFolderLevel(w, r)
+		case "/api/v1/folders/search":
+			stubFolderSearch(w, r)
 		default:
 			_, _ = w.Write([]byte(`{"api":"monbooru","version":"v9.9.9"}`))
 		}
 	}))
+}
+
+// A gallery's folders in path order, as monbooru's tree holds them. "wide"
+// runs past a level's page: f000 to f501, f501 with a subfolder. Any other
+// gallery is named in its folders, so a test sees which one was asked for.
+func stubFolders(gallery string) []monbooru.Folder {
+	g := cmp.Or(gallery, "active")
+	if g != "wide" {
+		return []monbooru.Folder{{Path: g, Name: g, Images: 3, Folders: 1}, {Path: g + "/sub", Name: "sub", Images: 1}}
+	}
+	var out []monbooru.Folder
+	for i := range 502 {
+		name := fmt.Sprintf("f%03d", i)
+		out = append(out, monbooru.Folder{Path: name, Name: name, Images: 1})
+	}
+	out[501].Folders, out[501].Images = 1, 2
+	return append(out, monbooru.Folder{Path: "f501/deep", Name: "deep", Images: 1})
+}
+
+func stubFolderLevel(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	all, path := stubFolders(q.Get("gallery")), q.Get("path")
+	if path != "" && !slices.ContainsFunc(all, func(f monbooru.Folder) bool { return f.Path == path }) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprintf(w, `{"error":"folder not found: %s","code":"not_found"}`, path)
+		return
+	}
+	var kids []monbooru.Folder
+	for _, f := range all {
+		parent := ""
+		if i := strings.LastIndex(f.Path, "/"); i >= 0 {
+			parent = f.Path[:i]
+		}
+		if parent == path {
+			kids = append(kids, f)
+		}
+	}
+	page, _ := strconv.Atoi(q.Get("page"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	page, limit = max(page, 1), max(limit, 1)
+	from := min((page-1)*limit, len(kids))
+	_ = json.NewEncoder(w).Encode(monbooru.FolderPage{Page: page, Limit: limit, Total: len(kids), Results: append([]monbooru.Folder{}, kids[from:min(from+limit, len(kids))]...)})
+}
+
+func stubFolderSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	needle := strings.ToLower(q.Get("q"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	var starts, holds []monbooru.Folder
+	for _, f := range stubFolders(q.Get("gallery")) {
+		switch p := strings.ToLower(f.Path); {
+		case needle == "":
+		case strings.HasPrefix(p, needle):
+			starts = append(starts, f)
+		case strings.Contains(p, needle):
+			holds = append(holds, f)
+		}
+	}
+	found := append(append([]monbooru.Folder{}, starts...), holds...)
+	_ = json.NewEncoder(w).Encode(map[string]any{"results": found[:min(len(found), max(limit, 1))]})
 }
 
 func stubbedServer(t *testing.T, password string) *Server {
@@ -522,11 +572,15 @@ func TestFolderPickerLevel(t *testing.T) {
 		{"the branch holding the folder starts open", "gallery=second&path=&folder=second/sub",
 			[]string{`▼`, `class="folder-node-row active" data-folder-pick="second/sub"`}, nil},
 		{"a page holds 500, then [more]", "gallery=wide&path=",
-			[]string{`data-folder-pick="f499"`, `offset=500`, `title="2 more folders"`}, []string{`data-folder-pick="f500"`}},
-		{"the next page", "gallery=wide&path=&offset=500",
+			[]string{`data-folder-pick="f499"`, `page=2"`, `title="2 more folders"`}, []string{`data-folder-pick="f500"`}},
+		{"the next page", "gallery=wide&path=&page=2",
 			[]string{`data-folder-pick="f500"`, `data-folder-pick="f501"`}, []string{`data-folder-pick="f499"`, `[more]`}},
-		{"the folder held stays on the first page", "gallery=wide&path=&folder=f501",
+		{"the folder held joins the first page", "gallery=wide&path=&folder=f501",
 			[]string{`class="folder-node-row active" data-folder-pick="f501"`, `title="1 more folder"`}, nil},
+		{"and its branch opens there", "gallery=wide&path=&folder=f501/deep",
+			[]string{`data-folder-pick="f501"`, `▼`, `class="folder-node-row active" data-folder-pick="f501/deep"`}, nil},
+		{"a later page leaves it out", "gallery=wide&path=&page=2&folder=f501/deep",
+			[]string{`data-folder-pick="f500"`}, []string{`data-folder-pick="f501"`}},
 		{"a path monbooru no longer lists is empty", "gallery=second&path=gone", nil, []string{`folder-node-row`}},
 	}
 	for _, tc := range cases {
