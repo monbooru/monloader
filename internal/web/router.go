@@ -82,7 +82,7 @@ type Server struct {
 	ptr       ptrEngine
 	sim       simService
 
-	folderTrees folderTreeCache
+	folderPages folderPageCache
 
 	gdlMu        sync.Mutex
 	gdlJob       *gdlJob

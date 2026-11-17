@@ -2,9 +2,9 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,63 +14,50 @@ import (
 )
 
 const (
-	// As monbooru's sidebar: a level shows this many rows, then [more].
+	// monbooru's own page: a level shows this many rows, then [more].
 	folderLevelRows   = 500
 	folderSuggestRows = 10
-	// Opening a branch asks for the same tree again; a short reuse spares
-	// monbooru the walk without hiding a folder made a minute ago.
-	folderTreeTTL = 30 * time.Second
+	// Opening a branch twice, or the field and its panel, asks for the same
+	// page; a short reuse spares monbooru without hiding a new folder long.
+	folderPageTTL = 30 * time.Second
 )
 
-type folderTreeCache struct {
+type folderPageCache struct {
 	mu    sync.Mutex
-	trees map[string]cachedFolderTree
+	pages map[string]cachedFolderPage
 }
 
-type cachedFolderTree struct {
-	root monbooru.Folder
+type cachedFolderPage struct {
+	page monbooru.FolderPage
+	err  error
 	at   time.Time
 }
 
-// An empty gallery is monbooru's active one. The same short budget as the
-// gallery list: the page must render when monbooru is slow or down.
-func (s *Server) folderTree(r *http.Request, gallery string) (monbooru.Folder, bool) {
-	c := &s.folderTrees
+// An empty gallery is monbooru's active one, an empty path the top level.
+// The same short budget as the gallery list: the page must render when
+// monbooru is slow or down.
+func (s *Server) folderPage(r *http.Request, gallery, path string, page int) (monbooru.FolderPage, error) {
+	key := gallery + "\x00" + path + "\x00" + strconv.Itoa(page)
+	c := &s.folderPages
 	c.mu.Lock()
-	hit, ok := c.trees[gallery]
+	hit, ok := c.pages[key]
 	c.mu.Unlock()
-	if ok && time.Since(hit.at) < folderTreeTTL {
-		return hit.root, true
+	if ok && time.Since(hit.at) < folderPageTTL {
+		return hit.page, hit.err
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	root, err := s.client.ListFolders(ctx, gallery)
-	if err != nil {
-		return monbooru.Folder{}, false
-	}
-	c.mu.Lock()
-	if c.trees == nil {
-		c.trees = map[string]cachedFolderTree{}
-	}
-	c.trees[gallery] = cachedFolderTree{root: root, at: time.Now()}
-	c.mu.Unlock()
-	return root, true
-}
-
-func findFolder(root *monbooru.Folder, path string) *monbooru.Folder {
-	if path == "" {
-		return root
-	}
-	for i := range root.Children {
-		c := &root.Children[i]
-		if c.Path == path {
-			return c
+	fp, err := s.client.ListFolders(ctx, gallery, path, page, folderLevelRows)
+	// A folder monbooru does not hold is an answer too; a failure is not.
+	if err == nil || errors.Is(err, monbooru.ErrFolderNotFound) {
+		c.mu.Lock()
+		if c.pages == nil {
+			c.pages = map[string]cachedFolderPage{}
 		}
-		if strings.HasPrefix(path, c.Path+"/") {
-			return findFolder(c, path)
-		}
+		c.pages[key] = cachedFolderPage{page: fp, err: err, at: time.Now()}
+		c.mu.Unlock()
 	}
-	return nil
+	return fp, err
 }
 
 // A folder field, on the site dialog and for the default folder. Listed is
@@ -82,14 +69,14 @@ type folderPicker struct {
 	Listed  bool
 	Value   string
 	Missing bool
-	root    monbooru.Folder
+	held    func(path string) bool
 }
 
 // WithValue lets the templates set the value they already resolve, a draft
 // or the stored setting.
 func (p folderPicker) WithValue(v string) folderPicker {
 	p.Value = v
-	p.Missing = p.Listed && v != "" && findFolder(&p.root, v) == nil
+	p.Missing = p.Listed && v != "" && !p.held(v)
 	return p
 }
 
@@ -107,7 +94,13 @@ var folderPickerKinds = map[string]folderPicker{
 func (s *Server) folderPicker(r *http.Request, kind, gallery string) folderPicker {
 	p := folderPickerKinds[kind]
 	p.Gallery = gallery
-	p.root, p.Listed = s.folderTree(r, gallery)
+	_, err := s.folderPage(r, gallery, "", 1)
+	p.Listed = err == nil
+	// Only a clear "not there" marks a folder missing; a failed ask does not.
+	p.held = func(path string) bool {
+		_, err := s.folderPage(r, gallery, path, 1)
+		return !errors.Is(err, monbooru.ErrFolderNotFound)
+	}
 	return p
 }
 
@@ -120,77 +113,78 @@ type folderRow struct {
 }
 
 type folderLevel struct {
-	Kind, Gallery, Path string
-	Rows                []folderRow
-	More, Left          int
+	Kind, ID, Gallery, Path string
+	Rows                    []folderRow
+	More, Left              int
 }
 
-// One level of the panel. The branch leading to value opens with it, and
-// its row stays on the first page even past the cap.
-func folderLevelOf(kind, gallery string, node *monbooru.Folder, offset int, value string) *folderLevel {
-	lv := &folderLevel{Kind: kind, Gallery: gallery, Path: node.Path}
-	onPath := func(path string) bool { return value == path || strings.HasPrefix(value, path+"/") }
-	kids := node.Children
-	pin := -1
-	if value != "" {
-		pin = slices.IndexFunc(kids, func(c monbooru.Folder) bool { return onPath(c.Path) })
+func folderRowOf(f monbooru.Folder, value string) folderRow {
+	return folderRow{Path: f.Path, Name: f.Name, Images: f.Images, Count: abbrevCount(f.Images), HasSub: f.Folders > 0, Active: f.Path == value}
+}
+
+// One page of a level. The branch leading to value opens with it, and its
+// row joins the first page when monbooru pages it later, so later pages
+// leave it out.
+func (s *Server) folderLevelOf(r *http.Request, p folderPicker, path string, page int, value string) (*folderLevel, error) {
+	fp, err := s.folderPage(r, p.Gallery, path, page)
+	if err != nil {
+		return nil, err
 	}
-	end := min(offset+folderLevelRows, len(kids))
-	var shown []int
-	for i := offset; i < end; i++ {
-		if offset == 0 || i != pin {
-			shown = append(shown, i)
+	lv := &folderLevel{Kind: p.Kind, ID: p.ID, Gallery: p.Gallery, Path: path}
+	// The child of path on the way to value, if value is under path.
+	next := ""
+	if rest, ok := strings.CutPrefix(value, path+"/"); path == "" || ok {
+		if path == "" {
+			rest = value
+		}
+		if seg, _, _ := strings.Cut(rest, "/"); seg != "" {
+			next = strings.TrimPrefix(path+"/"+seg, "/")
 		}
 	}
-	left := len(kids) - max(end, offset)
-	if pin >= end {
-		left--
-		if offset == 0 {
-			shown = append(shown, pin)
+	seen := false
+	for _, f := range fp.Results {
+		if f.Path == next {
+			if page > 1 {
+				continue
+			}
+			seen = true
+		}
+		lv.Rows = append(lv.Rows, folderRowOf(f, value))
+	}
+	left := fp.Total - (page-1)*folderLevelRows - len(fp.Results)
+	if next != "" && page == 1 && !seen {
+		if f, ok := s.findFolder(r, p.Gallery, next); ok {
+			lv.Rows = append(lv.Rows, folderRowOf(f, value))
+			left--
 		}
 	}
 	if left > 0 {
-		lv.More, lv.Left = end, left
+		lv.More, lv.Left = page+1, left
 	}
-	for _, i := range shown {
-		c := &kids[i]
-		row := folderRow{Path: c.Path, Name: c.Name, Images: c.Images, Count: abbrevCount(c.Images), HasSub: len(c.Children) > 0, Active: c.Path == value}
-		if row.HasSub && value != "" && strings.HasPrefix(value, c.Path+"/") {
-			row.Sub = folderLevelOf(kind, gallery, c, 0, value)
+	for i := range lv.Rows {
+		row := &lv.Rows[i]
+		if row.HasSub && row.Path == next && value != next {
+			row.Sub, _ = s.folderLevelOf(r, p, row.Path, 1, value)
 		}
-		lv.Rows = append(lv.Rows, row)
 	}
-	return lv
+	return lv, nil
 }
 
-// The folders whose path holds q, those starting with it first.
-func folderSuggestions(root *monbooru.Folder, q string) []folderRow {
-	q = strings.ToLower(strings.TrimSpace(q))
-	if q == "" {
-		return nil
+// A folder's own row when its page is not at hand: the search lists it
+// among those starting with its path.
+func (s *Server) findFolder(r *http.Request, gallery, path string) (monbooru.Folder, bool) {
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	found, err := s.client.SearchFolders(ctx, gallery, path, folderSuggestRows)
+	if err != nil {
+		return monbooru.Folder{}, false
 	}
-	var starts, holds []folderRow
-	var walk func(f *monbooru.Folder)
-	walk = func(f *monbooru.Folder) {
-		for i := range f.Children {
-			c := &f.Children[i]
-			path := strings.ToLower(c.Path)
-			row := folderRow{Path: c.Path, Images: c.Images, Count: abbrevCount(c.Images)}
-			switch {
-			case strings.HasPrefix(path, q):
-				starts = append(starts, row)
-			case strings.Contains(path, q):
-				holds = append(holds, row)
-			}
-			if len(starts) >= folderSuggestRows {
-				return
-			}
-			walk(c)
+	for _, f := range found {
+		if f.Path == path {
+			return f, true
 		}
 	}
-	walk(root)
-	out := append(starts, holds...)
-	return out[:min(len(out), folderSuggestRows)]
+	return monbooru.Folder{}, false
 }
 
 // As monbooru's sidebar counts: 4.2k, 12k, 1.3M.
@@ -240,21 +234,20 @@ func (s *Server) folderPickerFragment(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "folder_picker", s.folderPicker(r, p.Kind, gallery).WithValue(strings.TrimSpace(r.FormValue(p.Name))))
 }
 
-// A level of the panel; a path monbooru no longer lists answers no rows.
+// A page of the panel; a path monbooru no longer holds answers no rows.
 func (s *Server) folderPickerLevel(w http.ResponseWriter, r *http.Request) {
 	p, ok := folderPickerKind(w, r)
 	if !ok {
 		return
 	}
 	q := r.URL.Query()
-	gallery := q.Get("gallery")
-	root, ok := s.folderTree(r, gallery)
-	node := findFolder(&root, q.Get("path"))
-	if !ok || node == nil {
+	p.Gallery = q.Get("gallery")
+	page, _ := strconv.Atoi(q.Get("page"))
+	lv, err := s.folderLevelOf(r, p, strings.Trim(q.Get("path"), "/"), max(page, 1), strings.TrimSpace(r.FormValue(p.Name)))
+	if err != nil {
 		return
 	}
-	offset, _ := strconv.Atoi(q.Get("offset"))
-	s.render(w, "folder_picker_rows", folderLevelOf(p.Kind, gallery, node, max(offset, 0), strings.TrimSpace(r.FormValue(p.Name))))
+	s.render(w, "folder_picker_rows", lv)
 }
 
 func (s *Server) folderPickerSuggest(w http.ResponseWriter, r *http.Request) {
@@ -262,9 +255,19 @@ func (s *Server) folderPickerSuggest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	root, ok := s.folderTree(r, r.URL.Query().Get("gallery"))
-	if !ok {
+	q := strings.TrimSpace(r.FormValue(p.Name))
+	if q == "" {
 		return
 	}
-	s.render(w, "folder_picker_suggest", folderSuggestions(&root, r.FormValue(p.Name)))
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	found, err := s.client.SearchFolders(ctx, r.URL.Query().Get("gallery"), q, folderSuggestRows)
+	if err != nil {
+		return
+	}
+	rows := make([]folderRow, len(found))
+	for i, f := range found {
+		rows[i] = folderRowOf(f, "")
+	}
+	s.render(w, "folder_picker_suggest", rows)
 }

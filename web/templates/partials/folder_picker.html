@@ -61,8 +61,8 @@
   <div class="folder-node-row">
     <span class="folder-spacer"></span>
     <button type="button" class="folder-more-btn" title="{{.Left}} more {{if eq .Left 1}}folder{{else}}folders{{end}}"
-            hx-get="/settings/folder-picker/level?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}&amp;path={{urlquery .Path}}&amp;offset={{.More}}"
-            hx-target="closest li" hx-swap="outerHTML">[more]</button>
+            hx-get="/settings/folder-picker/level?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}&amp;path={{urlquery .Path}}&amp;page={{.More}}"
+            hx-include="#{{.ID}}-input" hx-target="closest li" hx-swap="outerHTML">[more]</button>
   </div>
 </li>
 {{end}}
