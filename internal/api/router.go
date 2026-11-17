@@ -8,6 +8,7 @@ import (
 	"github.com/monbooru/monloader/internal/contrib"
 	"github.com/monbooru/monloader/internal/gdl"
 	"github.com/monbooru/monloader/internal/mapping"
+	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/queue"
 	"github.com/monbooru/monloader/internal/shared/contract"
@@ -31,7 +32,8 @@ type PairHandlers struct {
 // on as monbooru answers them.
 type MonbooruLister interface {
 	ListGalleries(ctx context.Context) ([]contract.Gallery, error)
-	ListFolders(ctx context.Context, gallery string) (contract.Folder, error)
+	ListFolders(ctx context.Context, gallery, path string, page, limit int) (monbooru.FolderPage, error)
+	SearchFolders(ctx context.Context, gallery, q string, limit int) ([]contract.Folder, error)
 }
 
 type Host struct {

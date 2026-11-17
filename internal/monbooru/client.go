@@ -610,23 +610,61 @@ func (c *Client) ListGalleries(ctx context.Context) ([]Gallery, error) {
 }
 
 // An empty gallery is monbooru's active one.
-func (c *Client) ListFolders(ctx context.Context, gallery string) (Folder, error) {
-	resp, body, err := c.do(ctx, http.MethodGet, withGallery(c.base()+"/api/v1/folders", gallery), "", nil, c.token())
+// One page of a folder's subfolders, as monbooru pages them.
+type FolderPage struct {
+	Page    int      `json:"page"`
+	Limit   int      `json:"limit"`
+	Total   int      `json:"total"`
+	Results []Folder `json:"results"`
+}
+
+// ErrFolderNotFound: monbooru holds no visible image at or under the path.
+var ErrFolderNotFound = errors.New("folder not found")
+
+// An empty gallery is monbooru's active one, an empty path the top level.
+func (c *Client) ListFolders(ctx context.Context, gallery, path string, page, limit int) (FolderPage, error) {
+	q := url.Values{"path": {path}, "page": {strconv.Itoa(page)}, "limit": {strconv.Itoa(limit)}}
+	var out FolderPage
+	if err := c.getFolders(ctx, "/api/v1/folders", gallery, q, &out); err != nil {
+		return FolderPage{}, err
+	}
+	return out, nil
+}
+
+// Folders whose path holds q, those starting with it first.
+func (c *Client) SearchFolders(ctx context.Context, gallery, q string, limit int) ([]Folder, error) {
+	var out struct {
+		Results []Folder `json:"results"`
+	}
+	if err := c.getFolders(ctx, "/api/v1/folders/search", gallery, url.Values{"q": {q}, "limit": {strconv.Itoa(limit)}}, &out); err != nil {
+		return nil, err
+	}
+	return out.Results, nil
+}
+
+// A 404 is either a path monbooru does not hold or a monbooru without the
+// route; only the route's own message tells them apart.
+func (c *Client) getFolders(ctx context.Context, route, gallery string, q url.Values, out any) error {
+	if gallery != "" {
+		q.Set("gallery", gallery)
+	}
+	resp, body, err := c.do(ctx, http.MethodGet, c.base()+route+"?"+q.Encode(), "", nil, c.token())
 	if err != nil {
-		return Folder{}, transportError(ctx, err)
+		return transportError(ctx, err)
 	}
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusNotFound, http.StatusMethodNotAllowed:
-		return Folder{}, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: "this monbooru does not list folders yet; update it"}
+	switch msg := apiErrMessage(body, resp.Status); {
+	case resp.StatusCode == http.StatusOK:
+	case resp.StatusCode == http.StatusNotFound && strings.HasPrefix(msg, "folder not found"):
+		return ErrFolderNotFound
+	case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed:
+		return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: "this monbooru does not list folders yet; update it"}
 	default:
-		return Folder{}, &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: apiErrMessage(body, resp.Status)}
+		return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: msg}
 	}
-	var root Folder
-	if err := json.Unmarshal(body, &root); err != nil {
-		return Folder{}, notJSON(resp.Status)
+	if err := json.Unmarshal(body, out); err != nil {
+		return notJSON(resp.Status)
 	}
-	return root, nil
+	return nil
 }
 
 // CustomCategories is the union over every gallery: monbooru keeps a catalog

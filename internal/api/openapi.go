@@ -615,16 +615,45 @@ func (h *Handler) endpoints() []endpoint {
 		},
 		{
 			Method: "GET", Path: "/api/v1/folders",
-			Summary: "List a monbooru gallery's folders", OperationID: "listFolders",
-			Description: "monbooru's folder tree for the gallery, passed on. Only folders holding an image, or a folder " +
-				"under them, are listed; a send to a folder that does not exist yet still creates it.",
-			Params: []param{{Name: "gallery", In: "query", Description: "The gallery; empty for monbooru's active gallery"}},
+			Summary: "List a monbooru folder's subfolders", OperationID: "listFolders",
+			Description: "One level of monbooru's folders, passed on, a page at a time. Only folders holding an image, or a " +
+				"folder under them, are listed; a send to a folder that does not exist yet still creates it.",
+			Params: []param{
+				{Name: "gallery", In: "query", Description: "The gallery; empty for monbooru's active gallery"},
+				{Name: "path", In: "query", Description: "The folder to list; empty for the top level"},
+				{Name: "page", In: "query", Type: "integer", Description: "Page number"},
+				{Name: "limit", In: "query", Type: "integer", Description: "Results per page (default and max 500)"},
+			},
 			Responses: []response{
-				{Status: "200", Description: "The folder tree from its root", Ref: "Folder"},
+				{Status: "200", Description: "One level, in path order", Props: []prop{
+					{Name: "page", Type: "integer"},
+					{Name: "limit", Type: "integer"},
+					{Name: "total", Type: "integer", Description: "How many subfolders path has"},
+					{Name: "results", Type: "array", Items: &prop{Ref: "Folder"}},
+				}},
+				{Status: "404", Description: "monbooru holds no image at or under path (not_found)", Ref: "Error"},
 				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
 				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable), or refused (monbooru_rejected): an unknown gallery, or a monbooru too old to list folders", Ref: "Error"},
 			},
 			Handler: h.listFolders,
+		},
+		{
+			Method: "GET", Path: "/api/v1/folders/search",
+			Summary: "Search a monbooru gallery's folders", OperationID: "searchFolders",
+			Description: "Folders whose path starts with q, then those holding it elsewhere, any case, as monbooru finds them.",
+			Params: []param{
+				{Name: "gallery", In: "query", Description: "The gallery; empty for monbooru's active gallery"},
+				{Name: "q", In: "query", Description: "Part of the path; empty finds nothing"},
+				{Name: "limit", In: "query", Type: "integer", Description: "Results (default 10, max 100)"},
+			},
+			Responses: []response{
+				{Status: "200", Description: "The folders found", Props: []prop{
+					{Name: "results", Type: "array", Items: &prop{Ref: "Folder"}},
+				}},
+				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
+				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable), or refused (monbooru_rejected): an unknown gallery, or a monbooru too old to search folders", Ref: "Error"},
+			},
+			Handler: h.searchFolders,
 		},
 		{
 			Method: "GET", Path: "/api/v1/defaults",
@@ -874,10 +903,10 @@ var apiSchemas = []apiSchema{
 		{Name: "active", Type: "boolean", Description: "monbooru's active gallery, the one an empty gallery targets"},
 	}},
 	{Name: "Folder", Props: []prop{
-		{Name: "path", Type: "string", Description: "Relative to the gallery, /-separated; what a send's folder takes. Empty for the root"},
-		{Name: "name", Type: "string", Description: "The last path segment; empty for the root"},
+		{Name: "path", Type: "string", Description: "Relative to the gallery, /-separated; what a send's folder and a listing's path take"},
+		{Name: "name", Type: "string", Description: "The last path segment"},
 		{Name: "images", Type: "integer", Description: "Visible (non-missing) images in this folder and every folder under it"},
-		{Name: "children", Type: "array", Items: &prop{Ref: "Folder"}, Description: "Subfolders in path order"},
+		{Name: "folders", Type: "integer", Description: "How many subfolders it has; 0 for a leaf"},
 	}},
 	{Name: "SiteDefault", Props: []prop{
 		{Name: "name", Type: "string", Description: "The gallery-dl category"},

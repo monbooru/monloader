@@ -1,12 +1,14 @@
 package api
 
 import (
+	"cmp"
 	"errors"
 	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/outcome"
 	"github.com/monbooru/monloader/internal/shared/contract"
 )
@@ -49,13 +51,40 @@ func (h *Handler) listFolders(w http.ResponseWriter, r *http.Request) {
 	if !h.monbooruReady(w) {
 		return
 	}
-	root, err := h.host.Monbooru.ListFolders(r.Context(), strings.TrimSpace(r.URL.Query().Get("gallery")))
+	q := r.URL.Query()
+	page, limit := contract.PageParams(q.Get("page"), cmp.Or(q.Get("limit"), q.Get("page_size")), folderPageSize, folderPageSize)
+	level, err := h.host.Monbooru.ListFolders(r.Context(), strings.TrimSpace(q.Get("gallery")), strings.TrimSpace(q.Get("path")), page, limit)
+	if errors.Is(err, monbooru.ErrFolderNotFound) {
+		contract.WriteError(w, http.StatusNotFound, errNotFound, "folder not found: "+q.Get("path"))
+		return
+	}
 	if err != nil {
 		writeMonbooruError(w, r, err)
 		return
 	}
-	contract.WriteJSON(w, http.StatusOK, root)
+	contract.WriteJSON(w, http.StatusOK, level)
 }
+
+func (h *Handler) searchFolders(w http.ResponseWriter, r *http.Request) {
+	if !h.monbooruReady(w) {
+		return
+	}
+	q := r.URL.Query()
+	_, limit := contract.PageParams("", q.Get("limit"), folderSearchLimit, folderSearchMax)
+	found, err := h.host.Monbooru.SearchFolders(r.Context(), strings.TrimSpace(q.Get("gallery")), q.Get("q"), limit)
+	if err != nil {
+		writeMonbooruError(w, r, err)
+		return
+	}
+	contract.WriteJSON(w, http.StatusOK, map[string]any{"results": found})
+}
+
+// monbooru's own bounds, so a client sees the same pages either way.
+const (
+	folderPageSize    = 500
+	folderSearchLimit = 10
+	folderSearchMax   = 100
+)
 
 type siteDefault struct {
 	Name    string `json:"name"`
