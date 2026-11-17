@@ -85,6 +85,17 @@ func monbooruStub() *httptest.Server {
 // gallery is named in its folders, so a test sees which one was asked for.
 func stubFolders(gallery string) []monbooru.Folder {
 	g := cmp.Or(gallery, "active")
+	if n, err := strconv.Atoi(strings.TrimPrefix(g, "long")); err == nil {
+		// long<N>: N top-level folders, the last with a subfolder.
+		var out []monbooru.Folder
+		for i := range n {
+			name := fmt.Sprintf("f%04d", i)
+			out = append(out, monbooru.Folder{Path: name, Name: name, Images: 1})
+		}
+		last := out[n-1].Path
+		out[n-1].Folders = 1
+		return append(out, monbooru.Folder{Path: last + "/sub", Name: "sub", Images: 1})
+	}
 	if g == "crowd" {
 		// "art" sits on the top level's second page, behind "ART" and its
 		// twelve subfolders, which a search for "art" lists first.
@@ -595,6 +606,14 @@ func TestFolderPickerLevel(t *testing.T) {
 			[]string{`data-folder-pick="f500"`}, []string{`data-folder-pick="f501"`}},
 		{"found past look-alikes a search would list first", "gallery=crowd&path=&folder=art/deep",
 			[]string{`data-folder-pick="art"`, `class="folder-node-row active" data-folder-pick="art/deep"`}, nil},
+		{"the first page counts it as shown", "gallery=long1200&path=&folder=f1199/sub",
+			[]string{`data-folder-pick="f1199"`, `title="699 more folders"`}, nil},
+		{"a page before its own leaves it out of those left", "gallery=long1200&path=&page=2&folder=f1199/sub",
+			[]string{`title="199 more folders"`}, []string{`data-folder-pick="f1199"`}},
+		{"its own page skips it, nothing left", "gallery=long1200&path=&page=3&folder=f1199/sub",
+			[]string{`data-folder-pick="f1198"`}, []string{`data-folder-pick="f1199"`, `[more]`}},
+		{"no [more] for a page holding only it", "gallery=long1001&path=&page=2&folder=f1000/sub",
+			[]string{`data-folder-pick="f0999"`}, []string{`[more]`}},
 		{"a path monbooru no longer lists is empty", "gallery=second&path=gone", nil, []string{`folder-node-row`}},
 	}
 	for _, tc := range cases {
