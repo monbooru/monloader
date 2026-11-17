@@ -403,6 +403,41 @@ func TestSiteDialogKeepsAGalleryMonbooruDoesNotList(t *testing.T) {
 	}
 }
 
+func TestSiteFolderSave(t *testing.T) {
+	cases := []struct {
+		name, folder, want string
+		refused            bool
+	}{
+		{"a relative folder is stored", " art/e621 ", "art/e621", false},
+		{"blank clears it", "", "", false},
+		{"an absolute folder is refused", "/abs", "kept", true},
+		{"a .. segment is refused", "art/../up", "kept", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, ts := serveWeb(t, "")
+			mustUpdate(t, srv, func(c *config.Config) {
+				if site := c.FindSite("danbooru"); site != nil {
+					site.Folder = "kept"
+				} else {
+					c.Sites = append(c.Sites, config.Site{Name: "danbooru", Folder: "kept"})
+				}
+			})
+			resp := postForm(t, ts, srv, "/settings/sites/danbooru", url.Values{"folder": {tc.folder}})
+			if tc.refused {
+				if body := refusedSave(t, resp); !strings.Contains(body, `name="folder" value="`+tc.folder+`"`) {
+					t.Error("a refused save should hand the typed folder back")
+				}
+			} else {
+				resp.Body.Close()
+			}
+			if got := srv.cfg.Current().FindSite("danbooru").Folder; got != tc.want {
+				t.Errorf("folder = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestQueuePaginates(t *testing.T) {
 	web, ts := serveWeb(t, "")
 

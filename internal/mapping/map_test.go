@@ -1084,6 +1084,30 @@ func TestPerSiteGallery(t *testing.T) {
 	}
 }
 
+func TestPerSiteFolder(t *testing.T) {
+	cases := []struct {
+		name, siteFolder, defaultFolder, want string
+	}{
+		{"the site's folder wins", "art/e621", "inbox", "art/e621"},
+		{"a blank site folder falls back to the default", "", "inbox", "inbox"},
+		{"no folder anywhere leaves it to monbooru", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Downloader.DefaultFolder = tc.defaultFolder
+			cfg.Sites = []config.Site{{Name: "e621", Folder: tc.siteFolder}}
+			m := newMapper(t, cfg)
+			if got := m.Folder("e621"); got != tc.want {
+				t.Errorf("e621 folder = %q, want %q", got, tc.want)
+			}
+			if got := m.Folder("danbooru"); got != tc.defaultFolder {
+				t.Errorf("danbooru folder = %q, want the default %q", got, tc.defaultFolder)
+			}
+		})
+	}
+}
+
 func TestFlatTagSites(t *testing.T) {
 	got := newMapper(t, nil).FlatTagSites()
 	for _, want := range []string{"gelbooru", "rule34", "safebooru", "realbooru", "konachan", "yandere", "sakugabooru", "sankaku", "idolcomplex"} {
