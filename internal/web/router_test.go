@@ -630,6 +630,33 @@ func TestAbbrevCount(t *testing.T) {
 	}
 }
 
+func TestFolderPageCacheDropsExpiredPages(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name string
+		age  time.Duration
+		kept bool
+	}{
+		{"a fresh page stays", time.Second, true},
+		{"one just short of the TTL stays", folderPageTTL - time.Millisecond, true},
+		{"one at the TTL goes", folderPageTTL, false},
+		{"an old one goes", time.Hour, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var c folderPageCache
+			c.store("old", cachedFolderPage{at: now.Add(-tc.age)})
+			c.store("new", cachedFolderPage{at: now})
+			if _, ok := c.pages["old"]; ok != tc.kept {
+				t.Errorf("old page kept = %v, want %v", ok, tc.kept)
+			}
+			if _, ok := c.pages["new"]; !ok {
+				t.Error("the page just stored is gone")
+			}
+		})
+	}
+}
+
 func TestFolderPickersOnTheirPages(t *testing.T) {
 	srv, ts := serveWeb(t, "")
 	pairMB(t, srv)
