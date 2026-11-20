@@ -623,6 +623,7 @@ func (h *Handler) endpoints() []endpoint {
 				{Name: "path", In: "query", Description: "The folder to list; empty for the top level"},
 				{Name: "page", In: "query", Type: "integer", Description: "Page number"},
 				{Name: "limit", In: "query", Type: "integer", Description: "Results per page (default and max 500)"},
+				{Name: "page_size", In: "query", Type: "integer", Description: "Synonym for limit"},
 			},
 			Responses: []response{
 				{Status: "200", Description: "One level, in path order", Props: []prop{
