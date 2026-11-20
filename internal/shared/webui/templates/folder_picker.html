@@ -19,7 +19,7 @@
         </div>
       </li>
     </ul>
-    <ul class="folder-tree" id="{{.ID}}-tree" hx-trigger="folder-open" hx-swap="innerHTML" hx-include="#{{.ID}}-input"
+    <ul class="folder-tree" id="{{.ID}}-tree" hx-trigger="folder-open" hx-target="this" hx-swap="innerHTML" hx-include="#{{.ID}}-input"
         hx-get="{{.Route}}/level?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}&amp;path="></ul>
     <div class="folder-new-row">
       <span class="folder-spacer"></span>
@@ -49,7 +49,7 @@
     <span class="folder-link" title="{{.Path}}/">{{.Name}}/</span>
     <span class="folder-count" title="{{.Images}} images">{{abbrevCount .Images}}</span>
   </div>
-  {{if .HasSub}}<ul class="folder-children"{{if not .Sub}} hidden{{end}} hx-trigger="folder-open" hx-swap="innerHTML" hx-include="#{{$lv.ID}}-input"
+  {{if .HasSub}}<ul class="folder-children"{{if not .Sub}} hidden{{end}} hx-trigger="folder-open" hx-target="this" hx-swap="innerHTML" hx-include="#{{$lv.ID}}-input"
       hx-get="{{$lv.Route}}/level?kind={{$lv.Kind}}&amp;gallery={{urlquery $lv.Gallery}}&amp;path={{urlquery .Path}}">{{with .Sub}}{{template "webui/folder_picker_rows" .}}{{end}}</ul>{{end}}
 </li>
 {{end}}
