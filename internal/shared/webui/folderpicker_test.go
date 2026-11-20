@@ -191,6 +191,9 @@ func TestFolderPickerTemplate(t *testing.T) {
 		{"the app's routes", "webui/folder_picker", base,
 			[]string{`hx-get="/r/suggest?kind=k&amp;gallery=my&#43;art"`, `hx-get="/r/level?kind=k&amp;gallery=my&#43;art&amp;path="`, `[browse]`},
 			[]string{`hx-trigger="change`}},
+		// A form around the field may set a target its requests would inherit.
+		{"the tree swaps into itself", "webui/folder_picker", base,
+			[]string{`id="f-tree" hx-trigger="folder-open" hx-target="this"`}, nil},
 		{"redrawn when its gallery changes", "webui/folder_picker", withGallery,
 			[]string{`hx-get="/r?kind=k"`, `hx-trigger="change[target.id=='g-select'] from:body"`, `hx-include="#g-select, #f-input"`}, nil},
 		{"a text box with the reason when not listed", "webui/folder_picker", unlisted,
@@ -199,7 +202,7 @@ func TestFolderPickerTemplate(t *testing.T) {
 			[]string{`value="new"`, `Not there yet.`}, nil},
 		{"rows on the app's route, counts abbreviated", "webui/folder_picker_rows",
 			&FolderLevel{Route: "/r", Kind: "k", ID: "f", Gallery: "g", Rows: []FolderRow{{Path: "art", Name: "art", Images: 4250, HasSub: true}}, More: 2, Left: 3},
-			[]string{`data-folder-pick="art"`, `>4.3k<`, `hx-get="/r/level?kind=k&amp;gallery=g&amp;path=art"`, `page=2`, `title="3 more folders"`}, nil},
+			[]string{`data-folder-pick="art"`, `>4.3k<`, `hx-get="/r/level?kind=k&amp;gallery=g&amp;path=art"`, `hx-target="this"`, `page=2`, `title="3 more folders"`}, nil},
 		{"suggestions", "webui/folder_picker_suggest", []FolderRow{{Path: "art/sky", Images: 12}},
 			[]string{`data-folder-suggest="art/sky"`, `>art/sky/<`, `>12<`}, nil},
 	}
