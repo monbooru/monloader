@@ -647,3 +647,33 @@ a.btn-sm:hover { text-decoration: none; }
 .reorder-grip:focus-visible { outline: 1px solid var(--link); outline-offset: 1px; }
 .reorder-dragging { outline: 1px dashed var(--fg); outline-offset: -1px; }
 .reorder-dragging .reorder-grip { color: var(--accent); cursor: grabbing; }
+
+/* Folder fields: a gallery's folders as a tree in a panel under the text
+   box. Scoped to the field, as an app's sidebar tree may use the same names. */
+.folder-picker > label { display: inline-block; }
+.folder-picker > [data-folder-browse] { margin-left: 8px; font-size: 12px; }
+.folder-picker-input { position: relative; max-width: 300px; }
+.field .folder-picker-input input[type="text"] { max-width: none; }
+dialog .folder-picker-input, dialog .folder-picker-panel { max-width: none; }
+.folder-picker-panel { max-width: 300px; max-height: 260px; overflow-y: auto; margin-top: 4px; padding: 2px 0; border: 1px solid var(--border); }
+.folder-picker .folder-tree, .folder-picker .folder-children { list-style: none; margin: 0; padding: 0; }
+.folder-picker .folder-children { padding-left: 12px; }
+.folder-picker .folder-node-row { display: flex; align-items: baseline; gap: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
+.folder-picker .folder-node-row:hover { background: var(--bg-input); }
+.folder-picker .folder-link { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.folder-picker .folder-node-row:hover .folder-link { text-decoration: underline; color: var(--link); }
+.folder-picker .folder-node-row.active .folder-link { color: var(--link); }
+.folder-picker .folder-count { color: var(--fg-dim); font-size: 11px; min-width: 0; flex-shrink: 0; }
+.folder-picker .folder-toggle-btn { background: none; border: none; padding: 0; width: 12px; flex-shrink: 0; color: var(--fg-dim); font-size: 10px; }
+.folder-picker .folder-spacer { display: inline-block; width: 12px; flex-shrink: 0; }
+.folder-picker .folder-more-btn { background: none; border: none; padding: 0; color: var(--fg-dim); font-size: 11px; }
+.folder-picker .folder-more-btn:hover, .folder-picker .folder-toggle-btn:hover { color: var(--link); }
+.folder-new-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; font-size: 12px; }
+.folder-new-form:not([hidden]) { display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px 26px; font-size: 12px; }
+.folder-new-row .folder-new-form:not([hidden]) { padding: 0; }
+.folder-new-under { color: var(--fg-dim); }
+.field .folder-new-form input[type="text"] { width: 140px; padding: 1px 4px; font-size: 12px; }
+.folder-picker .suggest-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 200; }
+.folder-picker .suggest-list { position: static; min-width: 0; max-height: 200px; overflow-y: auto; background: var(--bg-surface); border: 1px solid var(--border); }
+.folder-picker .suggest-item { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 3px 8px; border: none; border-bottom: 1px solid var(--border); background: none; color: var(--fg); font-size: 12px; text-align: left; cursor: pointer; }
+.folder-picker .suggest-item:hover { background: var(--bg-input); }

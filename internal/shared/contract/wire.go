@@ -37,6 +37,14 @@ type Folder struct {
 	Folders int    `json:"folders"`
 }
 
+// A folder listing is one level a page at a time, as the sidebar: a
+// {hash:4} layout holds tens of thousands of folders.
+const (
+	FolderPageSize    = 500
+	FolderSearchLimit = 10
+	FolderSearchMax   = 100
+)
+
 type GalleryRename struct {
 	From string `json:"from"`
 	To   string `json:"to"`
