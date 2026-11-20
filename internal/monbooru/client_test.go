@@ -819,6 +819,74 @@ func TestListGalleries(t *testing.T) {
 	}
 }
 
+func TestListFolders(t *testing.T) {
+	level := FolderPage{Page: 2, Limit: 1, Total: 3, Results: []Folder{{Path: "art/b", Name: "b", Images: 2, Folders: 1}}}
+	cases := []struct {
+		name, gallery, path, wantQuery string
+		status                         int
+		body                           any
+		wantErr                        error  // ErrFolderNotFound
+		wantMsg                        string // a monbooru_rejected's message
+	}{
+		{"the active gallery's top level", "", "", "limit=1&page=2&path=", http.StatusOK, level, nil, ""},
+		{"a named gallery's folder", "my art", "art", "gallery=my+art&limit=1&page=2&path=art", http.StatusOK, level, nil, ""},
+		{"a folder monbooru does not hold", "", "gone", "limit=1&page=2&path=gone", http.StatusNotFound,
+			map[string]string{"error": "folder not found: gone", "code": "not_found"}, ErrFolderNotFound, ""},
+		{"an unknown gallery", "ghost", "", "gallery=ghost&limit=1&page=2&path=", http.StatusBadRequest,
+			map[string]string{"error": "unknown gallery: ghost", "code": "invalid_gallery"}, nil, "unknown gallery: ghost"},
+		{"a monbooru without the route", "", "", "limit=1&page=2&path=", http.StatusNotFound,
+			map[string]string{"error": "endpoint not found: GET /api/v1/folders", "code": "not_found"}, nil, "does not list folders yet"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/folders" || r.URL.RawQuery != tc.wantQuery {
+					t.Errorf("asked %s?%s, want /api/v1/folders?%s", r.URL.Path, r.URL.RawQuery, tc.wantQuery)
+				}
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(tc.body)
+			}))
+			got, err := testClient(srv.URL, "tok").ListFolders(context.Background(), tc.gallery, tc.path, 2, 1)
+			switch {
+			case tc.wantErr != nil:
+				if !errors.Is(err, tc.wantErr) {
+					t.Errorf("err = %v, want %v", err, tc.wantErr)
+				}
+			case tc.wantMsg != "":
+				wantCode(t, err, outcome.ErrCodeMonbooruRejected)
+				if err == nil || !strings.Contains(err.Error(), tc.wantMsg) {
+					t.Errorf("err = %v, want it to say %q", err, tc.wantMsg)
+				}
+			case err != nil:
+				t.Fatalf("ListFolders: %v", err)
+			case !reflect.DeepEqual(got, level):
+				t.Errorf("level = %+v, want %+v", got, level)
+			}
+		})
+	}
+}
+
+func TestSearchFolders(t *testing.T) {
+	found := []Folder{{Path: "art", Name: "art", Images: 3, Folders: 1}, {Path: "art/b", Name: "b", Images: 2}}
+	srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/folders/search" || r.URL.RawQuery != "gallery=my+art&limit=10&q=ar+t" {
+			t.Errorf("asked %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": found})
+	}))
+	got, err := testClient(srv.URL, "tok").SearchFolders(context.Background(), "my art", "ar t", 10)
+	if err != nil || !reflect.DeepEqual(got, found) {
+		t.Errorf("SearchFolders = %+v, %v; want %+v", got, err, found)
+	}
+
+	old := stubJSON(t, http.StatusNotFound, map[string]string{"error": "endpoint not found: GET /api/v1/folders/search", "code": "not_found"})
+	_, err = testClient(old.URL, "tok").SearchFolders(context.Background(), "", "a", 10)
+	wantCode(t, err, outcome.ErrCodeMonbooruRejected)
+	if err == nil || !strings.Contains(err.Error(), "does not list folders yet") {
+		t.Errorf("err = %v, want it to name the monbooru the route needs", err)
+	}
+}
+
 func TestCustomCategories(t *testing.T) {
 	srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

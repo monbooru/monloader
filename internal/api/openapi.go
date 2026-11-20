@@ -601,6 +601,76 @@ func (h *Handler) endpoints() []endpoint {
 			Handler: h.galleryRename,
 		},
 		{
+			Method: "GET", Path: "/api/v1/galleries",
+			Summary: "List monbooru's galleries", OperationID: "listGalleries",
+			Description: "monbooru's own list, passed on, so a client can offer the galleries a send can target.",
+			Responses: []response{
+				{Status: "200", Description: "The galleries, as monbooru lists them", Props: []prop{
+					{Name: "galleries", Type: "array", Items: &prop{Ref: "Gallery"}},
+				}},
+				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
+				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable) or refused (monbooru_rejected)", Ref: "Error"},
+			},
+			Handler: h.listGalleries,
+		},
+		{
+			Method: "GET", Path: "/api/v1/folders",
+			Summary: "List a monbooru folder's subfolders", OperationID: "listFolders",
+			Description: "One level of monbooru's folders, passed on, a page at a time. Only folders holding an image, or a " +
+				"folder under them, are listed; a send to a folder that does not exist yet still creates it.",
+			Params: []param{
+				{Name: "gallery", In: "query", Description: "The gallery; empty for monbooru's active gallery"},
+				{Name: "path", In: "query", Description: "The folder to list; empty for the top level"},
+				{Name: "page", In: "query", Type: "integer", Description: "Page number"},
+				{Name: "limit", In: "query", Type: "integer", Description: "Results per page (default and max 500)"},
+				{Name: "page_size", In: "query", Type: "integer", Description: "Synonym for limit"},
+			},
+			Responses: []response{
+				{Status: "200", Description: "One level, in path order", Props: []prop{
+					{Name: "page", Type: "integer"},
+					{Name: "limit", Type: "integer"},
+					{Name: "total", Type: "integer", Description: "How many subfolders path has"},
+					{Name: "results", Type: "array", Items: &prop{Ref: "Folder"}},
+				}},
+				{Status: "404", Description: "monbooru holds no image at or under path (not_found)", Ref: "Error"},
+				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
+				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable), or refused (monbooru_rejected): an unknown gallery, or a monbooru too old to list folders", Ref: "Error"},
+			},
+			Handler: h.listFolders,
+		},
+		{
+			Method: "GET", Path: "/api/v1/folders/search",
+			Summary: "Search a monbooru gallery's folders", OperationID: "searchFolders",
+			Description: "Folders whose path starts with q, then those holding it elsewhere, any case, as monbooru finds them.",
+			Params: []param{
+				{Name: "gallery", In: "query", Description: "The gallery; empty for monbooru's active gallery"},
+				{Name: "q", In: "query", Description: "Part of the path; empty finds nothing"},
+				{Name: "limit", In: "query", Type: "integer", Description: "Results (default 10, max 100)"},
+			},
+			Responses: []response{
+				{Status: "200", Description: "The folders found", Props: []prop{
+					{Name: "results", Type: "array", Items: &prop{Ref: "Folder"}},
+				}},
+				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
+				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable), or refused (monbooru_rejected): an unknown gallery, or a monbooru too old to search folders", Ref: "Error"},
+			},
+			Handler: h.searchFolders,
+		},
+		{
+			Method: "GET", Path: "/api/v1/defaults",
+			Summary: "Where a send lands by default", OperationID: "defaults",
+			Description: "The default gallery and folder, and each site's own. A send's gallery and folder options win, " +
+				"then the site's, then these defaults; an empty one leaves the choice to monbooru.",
+			Responses: []response{
+				{Status: "200", Description: "The settings as saved", Props: []prop{
+					{Name: "gallery", Type: "string", Description: "The default gallery; empty for monbooru's active gallery"},
+					{Name: "folder", Type: "string", Description: "The default folder; empty for monbooru's folder for received files"},
+					{Name: "sites", Type: "array", Items: &prop{Ref: "SiteDefault"}, Description: "Sites setting a gallery or folder of their own, by name; the others take the defaults"},
+				}},
+			},
+			Handler: h.defaults,
+		},
+		{
 			Method: "GET", Path: "/api/v1/sites",
 			Summary: "List supported sites", OperationID: "listSites",
 			Params: []param{{Name: "q", In: "query", Description: "Substring filter on category/subcategory"}},
@@ -826,6 +896,23 @@ var apiSchemas = []apiSchema{
 	}},
 	{Name: "PauseState", Props: []prop{
 		{Name: "paused", Type: "boolean"},
+	}},
+	{Name: "Gallery", Props: []prop{
+		{Name: "name", Type: "string"},
+		{Name: "images", Type: "integer", Description: "Visible (non-missing) image count"},
+		{Name: "tags", Type: "integer", Description: "Non-alias tag count"},
+		{Name: "active", Type: "boolean", Description: "monbooru's active gallery, the one an empty gallery targets"},
+	}},
+	{Name: "Folder", Props: []prop{
+		{Name: "path", Type: "string", Description: "Relative to the gallery, /-separated; what a send's folder and a listing's path take"},
+		{Name: "name", Type: "string", Description: "The last path segment"},
+		{Name: "images", Type: "integer", Description: "Visible (non-missing) images in this folder and every folder under it"},
+		{Name: "folders", Type: "integer", Description: "How many subfolders it has; 0 for a leaf"},
+	}},
+	{Name: "SiteDefault", Props: []prop{
+		{Name: "name", Type: "string", Description: "The gallery-dl category"},
+		{Name: "gallery", Type: "string", Description: "The site's gallery; empty takes the default gallery"},
+		{Name: "folder", Type: "string", Description: "The site's folder; empty takes the default folder"},
 	}},
 	{Name: "Site", Props: []prop{
 		{Name: "category", Type: "string"},

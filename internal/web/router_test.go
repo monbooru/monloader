@@ -1,7 +1,10 @@
 package web
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -10,6 +13,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,10 +70,102 @@ func monbooruStub() *httptest.Server {
 			_, _ = w.Write([]byte(`[{"name":"default","images":3,"tags":2,"active":true}]`))
 		case "/api/v1/categories":
 			_, _ = w.Write([]byte(`[{"name":"general","is_builtin":true},{"name":"va"}]`))
+		case "/api/v1/folders":
+			stubFolderLevel(w, r)
+		case "/api/v1/folders/search":
+			stubFolderSearch(w, r)
 		default:
 			_, _ = w.Write([]byte(`{"api":"monbooru","version":"v9.9.9"}`))
 		}
 	}))
+}
+
+// A gallery's folders in path order, as monbooru's tree holds them. "wide"
+// runs past a level's page: f000 to f501, f501 with a subfolder. Any other
+// gallery is named in its folders, so a test sees which one was asked for.
+func stubFolders(gallery string) []monbooru.Folder {
+	g := cmp.Or(gallery, "active")
+	if n, err := strconv.Atoi(strings.TrimPrefix(g, "long")); err == nil {
+		// long<N>: N top-level folders, the last with a subfolder.
+		var out []monbooru.Folder
+		for i := range n {
+			name := fmt.Sprintf("f%04d", i)
+			out = append(out, monbooru.Folder{Path: name, Name: name, Images: 1})
+		}
+		last := out[n-1].Path
+		out[n-1].Folders = 1
+		return append(out, monbooru.Folder{Path: last + "/sub", Name: "sub", Images: 1})
+	}
+	if g == "crowd" {
+		// "art" sits on the top level's second page, behind "ART" and its
+		// twelve subfolders, which a search for "art" lists first.
+		out := []monbooru.Folder{{Path: "ART", Name: "ART", Images: 12, Folders: 12}}
+		for i := range 12 {
+			out = append(out, monbooru.Folder{Path: fmt.Sprintf("ART/x%02d", i), Name: fmt.Sprintf("x%02d", i), Images: 1})
+		}
+		for i := range 500 {
+			out = append(out, monbooru.Folder{Path: fmt.Sprintf("a%03d", i), Name: fmt.Sprintf("a%03d", i), Images: 1})
+		}
+		return append(out, monbooru.Folder{Path: "art", Name: "art", Images: 1, Folders: 1}, monbooru.Folder{Path: "art/deep", Name: "deep", Images: 1})
+	}
+	if g != "wide" {
+		return []monbooru.Folder{{Path: g, Name: g, Images: 3, Folders: 1}, {Path: g + "/sub", Name: "sub", Images: 1}}
+	}
+	var out []monbooru.Folder
+	for i := range 502 {
+		name := fmt.Sprintf("f%03d", i)
+		out = append(out, monbooru.Folder{Path: name, Name: name, Images: 1})
+	}
+	out[501].Folders, out[501].Images = 1, 2
+	return append(out, monbooru.Folder{Path: "f501/deep", Name: "deep", Images: 1})
+}
+
+func stubFolderLevel(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if q.Get("gallery") == "ghost" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"unknown gallery: ghost","code":"invalid_gallery"}`))
+		return
+	}
+	all, path := stubFolders(q.Get("gallery")), q.Get("path")
+	if path != "" && !slices.ContainsFunc(all, func(f monbooru.Folder) bool { return f.Path == path }) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprintf(w, `{"error":"folder not found: %s","code":"not_found"}`, path)
+		return
+	}
+	var kids []monbooru.Folder
+	for _, f := range all {
+		parent := ""
+		if i := strings.LastIndex(f.Path, "/"); i >= 0 {
+			parent = f.Path[:i]
+		}
+		if parent == path {
+			kids = append(kids, f)
+		}
+	}
+	page, _ := strconv.Atoi(q.Get("page"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	page, limit = max(page, 1), max(limit, 1)
+	from := min((page-1)*limit, len(kids))
+	_ = json.NewEncoder(w).Encode(monbooru.FolderPage{Page: page, Limit: limit, Total: len(kids), Results: append([]monbooru.Folder{}, kids[from:min(from+limit, len(kids))]...)})
+}
+
+func stubFolderSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	needle := strings.ToLower(q.Get("q"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	var starts, holds []monbooru.Folder
+	for _, f := range stubFolders(q.Get("gallery")) {
+		switch p := strings.ToLower(f.Path); {
+		case needle == "":
+		case strings.HasPrefix(p, needle):
+			starts = append(starts, f)
+		case strings.Contains(p, needle):
+			holds = append(holds, f)
+		}
+	}
+	found := append(append([]monbooru.Folder{}, starts...), holds...)
+	_ = json.NewEncoder(w).Encode(map[string]any{"results": found[:min(len(found), max(limit, 1))]})
 }
 
 func stubbedServer(t *testing.T, password string) *Server {
@@ -373,17 +469,23 @@ func mustProfile(t *testing.T, srv *Server, name string) mapping.Profile {
 	return p
 }
 
+// setSite edits the named site, adding it when the defaults do not seed it.
+func setSite(c *config.Config, name string, edit func(*config.Site)) {
+	site := c.FindSite(name)
+	if site == nil {
+		c.Sites = append(c.Sites, config.Site{Name: name})
+		site = &c.Sites[len(c.Sites)-1]
+	}
+	edit(site)
+}
+
 func TestSiteDialogKeepsAGalleryMonbooruDoesNotList(t *testing.T) {
 	srv, ts := serveWeb(t, "")
 	pairMB(t, srv)
 	setGallery := func(name string) {
 		t.Helper()
 		mustUpdate(t, srv, func(c *config.Config) {
-			if site := c.FindSite("danbooru"); site != nil {
-				site.Gallery = name
-			} else {
-				c.Sites = append(c.Sites, config.Site{Name: "danbooru", Gallery: name})
-			}
+			setSite(c, "danbooru", func(s *config.Site) { s.Gallery = name })
 		})
 	}
 
@@ -401,6 +503,240 @@ func TestSiteDialogKeepsAGalleryMonbooruDoesNotList(t *testing.T) {
 	if _, body := get(t, ts, "/settings/sites/danbooru/dialog"); strings.Contains(body, "not in monbooru") {
 		t.Error("a gallery monbooru lists should not be marked missing")
 	}
+}
+
+func TestSiteFolderSave(t *testing.T) {
+	cases := []struct {
+		name, folder, want string
+		refused            bool
+	}{
+		{"a relative folder is stored", " art/e621 ", "art/e621", false},
+		{"blank clears it", "", "", false},
+		{"an absolute folder is refused", "/abs", "kept", true},
+		{"a .. segment is refused", "art/../up", "kept", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, ts := serveWeb(t, "")
+			mustUpdate(t, srv, func(c *config.Config) {
+				setSite(c, "danbooru", func(s *config.Site) { s.Folder = "kept" })
+			})
+			resp := postForm(t, ts, srv, "/settings/sites/danbooru", url.Values{"folder": {tc.folder}})
+			if tc.refused {
+				if body := refusedSave(t, resp); !strings.Contains(body, `id="sd-folder-input" name="folder" value="`+tc.folder+`"`) {
+					t.Error("a refused save should hand the typed folder back")
+				}
+			} else {
+				resp.Body.Close()
+			}
+			if got := srv.cfg.Current().FindSite("danbooru").Folder; got != tc.want {
+				t.Errorf("folder = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFolderPickerFragment(t *testing.T) {
+	cases := []struct {
+		name, query   string
+		want, wantNot []string
+	}{
+		{"a site's gallery", "kind=site&gallery=second",
+			[]string{`/settings/folder-picker/level?kind=site&amp;gallery=second&amp;path=`, `[browse]`, `[+ new folder]`}, nil},
+		{"a site without one takes the default gallery", "kind=site&gallery=",
+			[]string{`level?kind=site&amp;gallery=main&amp;path=`}, nil},
+		{"the default folder follows the default gallery picked", "kind=default&default_gallery=",
+			[]string{`id="dl-folder-input" name="default_folder"`, `level?kind=default&amp;gallery=&amp;path=`}, nil},
+		{"the folder it had stays in the box", "kind=site&gallery=second&folder=second/sub",
+			[]string{`id="sd-folder-input" name="folder" value="second/sub"`}, []string{"Not in monbooru yet"}},
+		{"one monbooru does not list yet says so", "kind=site&gallery=second&folder=to/be/made",
+			[]string{`value="to/be/made"`, "Not in monbooru yet"}, nil},
+		{"no tree is drawn until browsed", "kind=site&gallery=second",
+			nil, []string{`data-folder-pick="second"`}},
+		{"a gallery monbooru does not have says so", "kind=site&gallery=ghost&folder=kept",
+			[]string{`value="kept"`, "(folders unavailable; unknown gallery: ghost)"}, []string{"monbooru unreachable", "[browse]"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, ts := serveWeb(t, "")
+			pairMB(t, srv)
+			mustUpdate(t, srv, func(c *config.Config) { c.Monbooru.DefaultGallery = "main" })
+			code, body := get(t, ts, "/settings/folder-picker?"+tc.query)
+			if code != http.StatusOK {
+				t.Fatalf("status = %d", code)
+			}
+			wantInBody(t, body, tc.want, tc.wantNot)
+		})
+	}
+
+	_, ts := serveWeb(t, "")
+	for _, p := range []string{"/settings/folder-picker", "/settings/folder-picker/level", "/settings/folder-picker/suggest"} {
+		if code, _ := get(t, ts, p+"?kind=nope"); code != http.StatusNotFound {
+			t.Errorf("%s with an unknown kind = %d, want 404", p, code)
+		}
+	}
+}
+
+func wantInBody(t *testing.T, body string, want, wantNot []string) {
+	t.Helper()
+	for _, w := range want {
+		if !strings.Contains(body, w) {
+			t.Errorf("missing %s in %q", w, truncate(body))
+		}
+	}
+	for _, w := range wantNot {
+		if strings.Contains(body, w) {
+			t.Errorf("unexpected %s in %q", w, truncate(body))
+		}
+	}
+}
+
+func TestFolderPickerLevel(t *testing.T) {
+	cases := []struct {
+		name, query   string
+		want, wantNot []string
+	}{
+		{"one level, closed", "gallery=second&path=",
+			[]string{`data-folder-pick="second"`, `level?kind=site&amp;gallery=second&amp;path=second"`, `>second/</span>`},
+			[]string{`data-folder-pick="second/sub"`, `[more]`}},
+		{"a branch opens on demand", "gallery=second&path=second",
+			[]string{`data-folder-pick="second/sub"`, `>sub/</span>`}, nil},
+		{"the branch holding the folder starts open", "gallery=second&path=&folder=second/sub",
+			[]string{`▼`, `class="folder-node-row active" data-folder-pick="second/sub"`}, nil},
+		{"a page holds 500, then [more]", "gallery=wide&path=",
+			[]string{`data-folder-pick="f499"`, `page=2"`, `title="2 more folders"`}, []string{`data-folder-pick="f500"`}},
+		{"the next page", "gallery=wide&path=&page=2",
+			[]string{`data-folder-pick="f500"`, `data-folder-pick="f501"`}, []string{`data-folder-pick="f499"`, `[more]`}},
+		{"the folder held joins the first page", "gallery=wide&path=&folder=f501",
+			[]string{`class="folder-node-row active" data-folder-pick="f501"`, `title="1 more folder"`}, nil},
+		{"and its branch opens there", "gallery=wide&path=&folder=f501/deep",
+			[]string{`data-folder-pick="f501"`, `▼`, `class="folder-node-row active" data-folder-pick="f501/deep"`}, nil},
+		{"a later page leaves it out", "gallery=wide&path=&page=2&folder=f501/deep",
+			[]string{`data-folder-pick="f500"`}, []string{`data-folder-pick="f501"`}},
+		{"found past look-alikes a search would list first", "gallery=crowd&path=&folder=art/deep",
+			[]string{`data-folder-pick="art"`, `class="folder-node-row active" data-folder-pick="art/deep"`}, nil},
+		{"the first page counts it as shown", "gallery=long1200&path=&folder=f1199/sub",
+			[]string{`data-folder-pick="f1199"`, `title="699 more folders"`}, nil},
+		{"a page before its own leaves it out of those left", "gallery=long1200&path=&page=2&folder=f1199/sub",
+			[]string{`title="199 more folders"`}, []string{`data-folder-pick="f1199"`}},
+		{"its own page skips it, nothing left", "gallery=long1200&path=&page=3&folder=f1199/sub",
+			[]string{`data-folder-pick="f1198"`}, []string{`data-folder-pick="f1199"`, `[more]`}},
+		{"no [more] for a page holding only it", "gallery=long1001&path=&page=2&folder=f1000/sub",
+			[]string{`data-folder-pick="f0999"`}, []string{`[more]`}},
+		{"a path monbooru no longer lists is empty", "gallery=second&path=gone", nil, []string{`folder-node-row`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, ts := serveWeb(t, "")
+			pairMB(t, srv)
+			code, body := get(t, ts, "/settings/folder-picker/level?kind=site&"+tc.query)
+			if code != http.StatusOK {
+				t.Fatalf("status = %d", code)
+			}
+			wantInBody(t, body, tc.want, tc.wantNot)
+		})
+	}
+}
+
+func TestFolderPickerSuggest(t *testing.T) {
+	cases := []struct {
+		name, query string
+		want        []string // in order
+	}{
+		{"by any part of the path", "gallery=second&folder=sub", []string{"second/sub"}},
+		{"those starting with it first, any case", "gallery=second&folder=SEC", []string{"second", "second/sub"}},
+		{"nothing typed, nothing listed", "gallery=second&folder=", nil},
+		{"at most ten", "gallery=wide&folder=f", []string{"f000", "f001", "f002", "f003", "f004", "f005", "f006", "f007", "f008", "f009"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, ts := serveWeb(t, "")
+			pairMB(t, srv)
+			_, body := get(t, ts, "/settings/folder-picker/suggest?kind=site&"+tc.query)
+			var got []string
+			for _, m := range regexp.MustCompile(`data-folder-suggest="([^"]*)"`).FindAllStringSubmatch(body, -1) {
+				got = append(got, m[1])
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("suggestions = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAbbrevCount(t *testing.T) {
+	for n, want := range map[int]string{0: "0", 999: "999", 1000: "1.0k", 4250: "4.3k", 12000: "12k", 999499: "999k", 999500: "1.0M", 12_400_000: "12M"} {
+		if got := abbrevCount(n); got != want {
+			t.Errorf("abbrevCount(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestFolderPickerShowsFolderChangesAtOnce(t *testing.T) {
+	var mu sync.Mutex
+	folders := []monbooru.Folder{{Path: "old", Name: "old", Images: 1}}
+	mb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/v1/galleries":
+			_, _ = w.Write([]byte(`[{"name":"default","images":1,"tags":0,"active":true}]`))
+		case "/api/v1/folders":
+			if p := r.URL.Query().Get("path"); p != "" && !slices.ContainsFunc(folders, func(f monbooru.Folder) bool { return f.Path == p }) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = fmt.Fprintf(w, `{"error":"folder not found: %s","code":"not_found"}`, p)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(monbooru.FolderPage{Page: 1, Limit: 500, Total: len(folders), Results: slices.Clone(folders)})
+		}
+	}))
+	t.Cleanup(mb.Close)
+	srv := newWebServer(t, mb.URL, "")
+	ts := newTestServer(t, srv)
+	pairMB(t, srv)
+	set := func(paths ...string) {
+		mu.Lock()
+		defer mu.Unlock()
+		folders = nil
+		for _, p := range paths {
+			folders = append(folders, monbooru.Folder{Path: p, Name: p, Images: 1})
+		}
+	}
+
+	_, body := get(t, ts, "/settings/folder-picker/level?kind=site&gallery=main&path=")
+	wantInBody(t, body, []string{`data-folder-pick="old"`}, nil)
+	_, body = get(t, ts, "/settings/folder-picker?kind=site&gallery=main&folder=made")
+	wantInBody(t, body, []string{"Not in monbooru yet"}, nil)
+
+	set("made")
+	_, body = get(t, ts, "/settings/folder-picker/level?kind=site&gallery=main&path=")
+	wantInBody(t, body, []string{`data-folder-pick="made"`}, []string{`data-folder-pick="old"`})
+	_, body = get(t, ts, "/settings/folder-picker?kind=site&gallery=main&folder=made")
+	wantInBody(t, body, nil, []string{"Not in monbooru yet"})
+}
+
+func TestFolderPickersOnTheirPages(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+	pairMB(t, srv)
+	mustUpdate(t, srv, func(c *config.Config) {
+		c.Monbooru.DefaultGallery = "main"
+		c.Downloader.DefaultFolder = "main/sub"
+		setSite(c, "danbooru", func(s *config.Site) { s.Gallery, s.Folder = "second", "second/sub" })
+	})
+	_, body := get(t, ts, "/settings/sites/danbooru/dialog")
+	wantInBody(t, body, []string{`id="sd-folder-input" name="folder" value="second/sub"`, `level?kind=site&amp;gallery=second&amp;path=`}, nil)
+	_, body = get(t, ts, "/settings")
+	wantInBody(t, body, []string{`id="dl-folder-input" name="default_folder" value="main/sub"`, `level?kind=default&amp;gallery=main&amp;path=`}, nil)
+}
+
+func TestFolderPickerWithMonbooruDownIsATextBox(t *testing.T) {
+	srv := newWebServer(t, "http://127.0.0.1:1", "")
+	ts := newTestServer(t, srv)
+	mustUpdate(t, srv, func(c *config.Config) {
+		setSite(c, "danbooru", func(s *config.Site) { s.Folder = "kept" })
+	})
+	_, body := get(t, ts, "/settings/sites/danbooru/dialog")
+	wantInBody(t, body, []string{`id="sd-folder-input" name="folder" value="kept"`, "(folders unavailable; monbooru unreachable)"}, []string{"[browse]", "folder-picker/suggest"})
 }
 
 func TestQueuePaginates(t *testing.T) {

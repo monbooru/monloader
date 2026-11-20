@@ -234,6 +234,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/lookup/chain", s.settingsForm(s.saveLookupChain))
 	mux.HandleFunc("POST /settings/lookup/clear-key", s.clearSaucenaoKey)
 	mux.HandleFunc("POST /settings/lookup/test/{source}", s.testLookupSource)
+	mux.HandleFunc("GET /settings/folder-picker", s.folderPickerFragment)
+	mux.HandleFunc("GET /settings/folder-picker/level", s.folderPickerLevel)
+	mux.HandleFunc("GET /settings/folder-picker/suggest", s.folderPickerSuggest)
 	mux.HandleFunc("GET /settings/sites/search", s.searchSites)
 	mux.HandleFunc("GET /settings/sites/{name}/dialog", s.siteDialog)
 	mux.HandleFunc("GET /settings/sites/{name}/options", s.siteOptions)
@@ -283,6 +286,7 @@ func (s *Server) Handler() http.Handler {
 	host := api.Host{
 		Pair:       api.PairHandlers{Request: s.extPairRequest, Status: s.extPairStatus, Teardown: s.extPairTeardown},
 		SimMissing: s.sim.Missing,
+		Monbooru:   s.client,
 	}
 	api.New(s.queue, s.runner, s.mapper, s.cfg, s.catalog, Version, s.siteState, s.ptr, host).Mount(mux)
 

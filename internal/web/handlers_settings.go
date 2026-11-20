@@ -58,6 +58,14 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 	data["MonbooruAPIHint"] = s.monbooruAPIHint()
 
 	s.fillGalleryFields(r, data)
+	data["DefaultFolderPicker"] = folderPickerKinds["default"]
+	if data["Galleries"] != nil {
+		gallery := s.cfg.Current().Monbooru.DefaultGallery
+		if r.Form.Has("default_gallery") {
+			gallery = strings.TrimSpace(r.FormValue("default_gallery"))
+		}
+		data["DefaultFolderPicker"] = s.folderPicker(r, "default", gallery)
+	}
 	data["TagCategories"] = s.tagCategoryRows(r, data["Galleries"] != nil)
 	data["SiteBlacklists"] = siteBlacklists(s.cfg.Current().Sites)
 	data["MonbooruURL"] = s.monbooruWebBase()

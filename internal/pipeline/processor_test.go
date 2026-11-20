@@ -1769,6 +1769,34 @@ func TestPipelineDefaultPushLeavesTheFolderToMonbooru(t *testing.T) {
 	}
 }
 
+func TestPipelinePushFolderPrecedence(t *testing.T) {
+	cases := []struct {
+		name, picked, site, dflt, want string
+	}{
+		{"the picked folder wins", "picked", "site", "default", "picked"},
+		{"then the site's folder", "", "site", "default", "site"},
+		{"then the default folder", "", "", "default", "default"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Downloader.DefaultFolder = tc.dflt
+			cfg.Sites = append(cfg.Sites, config.Site{Name: "directlink", Folder: tc.site})
+			fake := &fakeRunner{resolved: []gdl.Item{directlinkItem()}, writeIdx: []int{0}}
+			var gotFolder string
+			q := lookupEnvCfg(t, fake, capturePush(1, map[string]*string{"folder": &gotFolder}), cfg, nil, nil)
+
+			job := waitJob(t, q, q.Enqueue("https://cdn.example/file.png", queue.Options{Folder: tc.picked}))
+			if job.Status != queue.JobSucceeded {
+				t.Fatalf("status = %s, want succeeded", job.Status)
+			}
+			if gotFolder != tc.want {
+				t.Errorf("push folder = %q, want %q", gotFolder, tc.want)
+			}
+		})
+	}
+}
+
 func TestPipelineMangaExemptFromCap(t *testing.T) {
 	fake := &fakeRunner{
 		resolved: []gdl.Item{mangaPage("654738", 1), mangaPage("654738", 2), mangaPage("654738", 3)},
