@@ -339,9 +339,11 @@ func TestGalleriesAndFoldersPassMonbooruThrough(t *testing.T) {
 
 func TestFoldersOfAPathMonbooruDoesNotHold(t *testing.T) {
 	srv := serveMonbooru(t, testCfg(""), &fakeMonbooru{err: monbooru.ErrFolderNotFound})
-	out := wantCode(t, "GET", srv.URL+"/api/v1/folders?path=gone", "", http.StatusNotFound, errNotFound)
-	if out["error"] != "folder not found: gone" {
-		t.Errorf("error = %v", out["error"])
+	for _, path := range []string{"gone", "%20gone%20"} {
+		out := wantCode(t, "GET", srv.URL+"/api/v1/folders?path="+path, "", http.StatusNotFound, errNotFound)
+		if out["error"] != "folder not found: gone" {
+			t.Errorf("path %s: error = %q", path, out["error"])
+		}
 	}
 }
 
