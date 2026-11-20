@@ -35,10 +35,13 @@ type offerBody interface{ body() *RequestBody }
 func (b *RequestBody) body() *RequestBody { return b }
 
 // DecodeOffer reads a pairing request into dst, a *RequestBody or a pointer
-// to a struct embedding one.
+// to a struct embedding one. A label, when given, meets the app name rule.
 func DecodeOffer(w http.ResponseWriter, r *http.Request, dst offerBody) *Refusal {
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxOfferBody)).Decode(dst); err != nil || dst.body().App == "" {
 		return &Refusal{http.StatusBadRequest, CodeInvalidRequest, "app and a JSON body are required"}
+	}
+	if l := dst.body().Label; l != "" && !ValidApp(l) {
+		return &Refusal{http.StatusBadRequest, CodeInvalidRequest, "label must match [A-Za-z0-9_-]{1,32}"}
 	}
 	return nil
 }

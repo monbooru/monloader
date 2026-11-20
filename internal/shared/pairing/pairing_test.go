@@ -63,6 +63,25 @@ func TestARepeatRequestReplacesThePendingOne(t *testing.T) {
 	}
 }
 
+func TestTwoLabelsOfOneAppWaitSideBySide(t *testing.T) {
+	s := NewStore[Request]()
+	gpu, _ := s.Create(Request{App: "monworker", Label: "gpu-box"})
+	desk, _ := s.Create(Request{App: "monworker", Label: "desktop"})
+	again, _ := s.Create(Request{App: "monworker", Label: "gpu-box"})
+	if _, ok := s.Get(gpu); ok {
+		t.Error("a repeat under the same label kept the earlier request")
+	}
+	for _, id := range []string{desk, again} {
+		if _, ok := s.Get(id); !ok {
+			t.Errorf("request %s was dropped", id)
+		}
+	}
+	s.DropPending("monworker")
+	if p := s.ListPending(); len(p) != 0 {
+		t.Errorf("DropPending left %+v", p)
+	}
+}
+
 func TestADecidedRequestSurvivesARepeat(t *testing.T) {
 	s := NewStore[Request]()
 	first, _ := s.Create(Request{App: "monsender"})

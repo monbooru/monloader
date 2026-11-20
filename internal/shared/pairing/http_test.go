@@ -69,7 +69,12 @@ func TestDecodeOfferFillsAnEmbeddingBody(t *testing.T) {
 	if f := DecodeOffer(httptest.NewRecorder(), r, &body); f != nil || body.App != "monedit" || body.Contract != 2 {
 		t.Fatalf("decode = %+v %+v", f, body)
 	}
-	for _, in := range []string{`{}`, `{"app":""}`, `not json`, `{"app":"x","pad":"` + strings.Repeat("a", maxOfferBody) + `"}`} {
+	r = httptest.NewRequest("POST", "/", strings.NewReader(`{"app":"monworker","label":"gpu-box"}`))
+	var labelled RequestBody
+	if f := DecodeOffer(httptest.NewRecorder(), r, &labelled); f != nil || labelled.Label != "gpu-box" {
+		t.Fatalf("decode = %+v %+v", f, labelled)
+	}
+	for _, in := range []string{`{}`, `{"app":""}`, `not json`, `{"app":"monworker","label":"gpu box"}`, `{"app":"x","pad":"` + strings.Repeat("a", maxOfferBody) + `"}`} {
 		var b RequestBody
 		r := httptest.NewRequest("POST", "/", strings.NewReader(in))
 		if f := DecodeOffer(httptest.NewRecorder(), r, &b); f == nil || f.Status != http.StatusBadRequest || f.Code != CodeInvalidRequest {
