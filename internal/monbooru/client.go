@@ -609,14 +609,6 @@ func (c *Client) ListGalleries(ctx context.Context) ([]Gallery, error) {
 	return galleries, nil
 }
 
-// monbooru's own folder bounds, so a page asked through monloader is the
-// same as one asked of monbooru.
-const (
-	FolderPageSize    = 500
-	FolderSearchLimit = 10
-	FolderSearchMax   = 100
-)
-
 // One page of a folder's subfolders, as monbooru pages them.
 type FolderPage struct {
 	Page    int      `json:"page"`
