@@ -5,7 +5,9 @@ package gdl
 import (
 	"context"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -50,6 +52,41 @@ func TestInstallManagedLive(t *testing.T) {
 	}
 	if ManagedBinary(ManagedRoot(dir)) != "" {
 		t.Fatal("managed binary still present after revert")
+	}
+}
+
+func TestInstallNightlyLive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live install skipped in -short")
+	}
+	if _, err := nightlyAsset(); err != nil {
+		t.Skip(err)
+	}
+	skipUnlessReachable(t, "https://api.github.com", "https://codeberg.org")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	tag, err := LatestNightly(ctx)
+	if err != nil {
+		t.Fatalf("latest nightly: %v", err)
+	}
+	dir := t.TempDir()
+	if err := InstallManaged(ctx, dir, tag, nil); err != nil {
+		t.Fatalf("install %s: %v", tag, err)
+	}
+	bin := ManagedBinary(ManagedRoot(dir))
+	if bin == "" {
+		t.Fatal("no managed binary after install")
+	}
+	if got := BinaryVersion(ctx, bin); !strings.Contains(got, tag) {
+		t.Errorf("installed version %q, want the build of %s", got, tag)
+	}
+	if _, err := os.Stat(filepath.Join(ManagedRoot(dir), "supportedsites.md")); err != nil {
+		t.Errorf("no site list beside the nightly, so its release notes no longer link a commit: %v", err)
+	}
+	if err := RevertManaged(dir); err != nil {
+		t.Fatalf("revert: %v", err)
 	}
 }
 
