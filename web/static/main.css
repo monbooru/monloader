@@ -316,9 +316,12 @@ dialog textarea { resize: vertical; max-height: 60vh; }
 .maprow .hint-warn { flex-basis: 100%; }
 
 /* Folder fields: monbooru's sidebar tree, in a panel under the text box. */
-.folder-picker-input { position: relative; display: flex; gap: 8px; align-items: center; max-width: 360px; }
-.field .folder-picker-input input[type="text"] { flex: 1; min-width: 0; max-width: none; }
-.folder-picker-panel { max-width: 360px; max-height: 260px; overflow-y: auto; margin-top: 4px; padding: 2px 0; border: 1px solid var(--border); }
+.folder-picker > label { display: inline-block; }
+.folder-picker > [data-folder-browse] { margin-left: 8px; font-size: 12px; }
+.folder-picker-input { position: relative; max-width: 300px; }
+.field .folder-picker-input input[type="text"] { max-width: none; }
+dialog .folder-picker-input, dialog .folder-picker-panel { max-width: none; }
+.folder-picker-panel { max-width: 300px; max-height: 260px; overflow-y: auto; margin-top: 4px; padding: 2px 0; border: 1px solid var(--border); }
 .folder-tree, .folder-children { list-style: none; margin: 0; padding: 0; }
 .folder-children { padding-left: 12px; }
 .folder-node-row { display: flex; align-items: baseline; gap: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer; }

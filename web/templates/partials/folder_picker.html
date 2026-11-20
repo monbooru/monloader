@@ -2,13 +2,11 @@
 <div class="field folder-picker" id="{{.ID}}" hx-get="/settings/folder-picker?kind={{.Kind}}" hx-trigger="change[target.id=='{{.GalleryID}}'] from:body"
      hx-include="#{{.GalleryID}}, #{{.ID}}-input" hx-swap="outerHTML">
   <label for="{{.ID}}-input">{{.Label}}</label>
+  {{- if .Listed}}<button type="button" class="btn-link-accent" data-folder-browse="{{.ID}}">[browse]</button>{{end}}
   <div class="folder-picker-input">
     <input type="text" id="{{.ID}}-input" name="{{.Name}}" value="{{.Value}}" placeholder="{{.Blank}}" autocomplete="off"
       {{- if .Listed}} hx-get="/settings/folder-picker/suggest?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}" hx-trigger="input changed delay:200ms"
       hx-target="#{{.ID}}-suggest" hx-swap="innerHTML"{{end}}>
-    {{if .Listed}}
-    <button type="button" class="btn-link-accent" data-folder-browse="{{.ID}}">[browse]</button>
-    {{end}}
     <div class="suggest-dropdown" id="{{.ID}}-suggest"></div>
   </div>
   {{if .Listed}}
