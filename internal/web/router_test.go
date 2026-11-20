@@ -469,17 +469,23 @@ func mustProfile(t *testing.T, srv *Server, name string) mapping.Profile {
 	return p
 }
 
+// setSite edits the named site, adding it when the defaults do not seed it.
+func setSite(c *config.Config, name string, edit func(*config.Site)) {
+	site := c.FindSite(name)
+	if site == nil {
+		c.Sites = append(c.Sites, config.Site{Name: name})
+		site = &c.Sites[len(c.Sites)-1]
+	}
+	edit(site)
+}
+
 func TestSiteDialogKeepsAGalleryMonbooruDoesNotList(t *testing.T) {
 	srv, ts := serveWeb(t, "")
 	pairMB(t, srv)
 	setGallery := func(name string) {
 		t.Helper()
 		mustUpdate(t, srv, func(c *config.Config) {
-			if site := c.FindSite("danbooru"); site != nil {
-				site.Gallery = name
-			} else {
-				c.Sites = append(c.Sites, config.Site{Name: "danbooru", Gallery: name})
-			}
+			setSite(c, "danbooru", func(s *config.Site) { s.Gallery = name })
 		})
 	}
 
@@ -513,11 +519,7 @@ func TestSiteFolderSave(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, ts := serveWeb(t, "")
 			mustUpdate(t, srv, func(c *config.Config) {
-				if site := c.FindSite("danbooru"); site != nil {
-					site.Folder = "kept"
-				} else {
-					c.Sites = append(c.Sites, config.Site{Name: "danbooru", Folder: "kept"})
-				}
+				setSite(c, "danbooru", func(s *config.Site) { s.Folder = "kept" })
 			})
 			resp := postForm(t, ts, srv, "/settings/sites/danbooru", url.Values{"folder": {tc.folder}})
 			if tc.refused {
@@ -719,11 +721,7 @@ func TestFolderPickersOnTheirPages(t *testing.T) {
 	mustUpdate(t, srv, func(c *config.Config) {
 		c.Monbooru.DefaultGallery = "main"
 		c.Downloader.DefaultFolder = "main/sub"
-		if site := c.FindSite("danbooru"); site != nil {
-			site.Gallery, site.Folder = "second", "second/sub"
-		} else {
-			c.Sites = append(c.Sites, config.Site{Name: "danbooru", Gallery: "second", Folder: "second/sub"})
-		}
+		setSite(c, "danbooru", func(s *config.Site) { s.Gallery, s.Folder = "second", "second/sub" })
 	})
 	_, body := get(t, ts, "/settings/sites/danbooru/dialog")
 	wantInBody(t, body, []string{`id="sd-folder-input" name="folder" value="second/sub"`, `level?kind=site&amp;gallery=second&amp;path=`}, nil)
@@ -735,11 +733,7 @@ func TestFolderPickerWithMonbooruDownIsATextBox(t *testing.T) {
 	srv := newWebServer(t, "http://127.0.0.1:1", "")
 	ts := newTestServer(t, srv)
 	mustUpdate(t, srv, func(c *config.Config) {
-		if site := c.FindSite("danbooru"); site != nil {
-			site.Folder = "kept"
-		} else {
-			c.Sites = append(c.Sites, config.Site{Name: "danbooru", Folder: "kept"})
-		}
+		setSite(c, "danbooru", func(s *config.Site) { s.Folder = "kept" })
 	})
 	_, body := get(t, ts, "/settings/sites/danbooru/dialog")
 	wantInBody(t, body, []string{`id="sd-folder-input" name="folder" value="kept"`, "(folders unavailable; monbooru unreachable)"}, []string{"[browse]", "folder-picker/suggest"})
