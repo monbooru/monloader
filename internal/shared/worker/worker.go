@@ -60,6 +60,8 @@ type Info struct {
 	Threads   int      `json:"threads"`
 	Slots     int      `json:"slots"`
 	Device    string   `json:"device,omitempty"`
+	// ModelsDir is the folder the worker reads, where a model is installed.
+	ModelsDir string   `json:"models_dir,omitempty"`
 	Tasks     []string `json:"tasks"`
 	// Loaded names the models with a live session.
 	Loaded []string `json:"loaded"`
