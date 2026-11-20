@@ -80,13 +80,10 @@ func monbooruStub() *httptest.Server {
 	}))
 }
 
-// A gallery's folders in path order, as monbooru's tree holds them. "wide"
-// runs past a level's page: f000 to f501, f501 with a subfolder. Any other
-// gallery is named in its folders, so a test sees which one was asked for.
 func stubFolders(gallery string) []monbooru.Folder {
 	g := cmp.Or(gallery, "active")
 	if n, err := strconv.Atoi(strings.TrimPrefix(g, "long")); err == nil {
-		// long<N>: N top-level folders, the last with a subfolder.
+
 		var out []monbooru.Folder
 		for i := range n {
 			name := fmt.Sprintf("f%04d", i)
@@ -97,8 +94,7 @@ func stubFolders(gallery string) []monbooru.Folder {
 		return append(out, monbooru.Folder{Path: last + "/sub", Name: "sub", Images: 1})
 	}
 	if g == "crowd" {
-		// "art" sits on the top level's second page, behind "ART" and its
-		// twelve subfolders, which a search for "art" lists first.
+
 		out := []monbooru.Folder{{Path: "ART", Name: "ART", Images: 12, Folders: 12}}
 		for i := range 12 {
 			out = append(out, monbooru.Folder{Path: fmt.Sprintf("ART/x%02d", i), Name: fmt.Sprintf("x%02d", i), Images: 1})
@@ -469,7 +465,6 @@ func mustProfile(t *testing.T, srv *Server, name string) mapping.Profile {
 	return p
 }
 
-// setSite edits the named site, adding it when the defaults do not seed it.
 func setSite(c *config.Config, name string, edit func(*config.Site)) {
 	site := c.FindSite(name)
 	if site == nil {
@@ -641,7 +636,7 @@ func TestFolderPickerLevel(t *testing.T) {
 func TestFolderPickerSuggest(t *testing.T) {
 	cases := []struct {
 		name, query string
-		want        []string // in order
+		want        []string
 	}{
 		{"by any part of the path", "gallery=second&folder=sub", []string{"second/sub"}},
 		{"those starting with it first, any case", "gallery=second&folder=SEC", []string{"second", "second/sub"}},

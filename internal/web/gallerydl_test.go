@@ -108,7 +108,7 @@ func TestGDLInstallNightly(t *testing.T) {
 		name    string
 		input   string
 		lookup  error
-		version string // what reaches the installer; empty when nothing should
+		version string
 		want    string
 	}{
 		{"the keyword takes the newest build", "nightly", nil, "2026.11.12", "nightly 2026.11.12"},

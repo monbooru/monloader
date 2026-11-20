@@ -16,8 +16,6 @@ import (
 
 const stubNightlyCommit = "8c1cb63f6d49e01d75268364f42e3ecf2d906c17"
 
-// stubNightly serves one nightly release the way GitHub's API and download
-// host answer for it.
 func stubNightly(t *testing.T, tag string, corrupt bool) {
 	t.Helper()
 	payload := []byte("#!/bin/sh\necho 1.33.0-dev\n")

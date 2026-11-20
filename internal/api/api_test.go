@@ -120,13 +120,12 @@ func serveCfgTracked(t *testing.T, cfg *config.Config, ptrService PTRService) (*
 
 func noSimMissing(string) (string, bool) { return "", false }
 
-// Answers the lists as set, and records the gallery a folder list asked for.
 type fakeMonbooru struct {
 	galleries []contract.Gallery
 	level     monbooru.FolderPage
 	found     []contract.Folder
 	err       error
-	asked     string // what the last folder call passed on
+	asked     string
 }
 
 func (f *fakeMonbooru) ListGalleries(context.Context) ([]contract.Gallery, error) {
@@ -401,7 +400,7 @@ func TestDefaults(t *testing.T) {
 			cfg.Monbooru.DefaultGallery = tc.gallery
 			cfg.Downloader.DefaultFolder = tc.folder
 			cfg.Sites = tc.sites
-			// No monbooru needed: the defaults are monloader's own settings.
+
 			cfg.Monbooru.APIURL = ""
 			srv := serveCfg(t, cfg)
 

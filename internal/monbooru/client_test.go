@@ -825,8 +825,8 @@ func TestListFolders(t *testing.T) {
 		name, gallery, path, wantQuery string
 		status                         int
 		body                           any
-		wantErr                        error  // ErrFolderNotFound
-		wantMsg                        string // a monbooru_rejected's message
+		wantErr                        error
+		wantMsg                        string
 	}{
 		{"the active gallery's top level", "", "", "limit=1&page=2&path=", http.StatusOK, level, nil, ""},
 		{"a named gallery's folder", "my art", "art", "gallery=my+art&limit=1&page=2&path=art", http.StatusOK, level, nil, ""},
