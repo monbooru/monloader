@@ -85,6 +85,8 @@ const (
 
 const CodeSetupRequired = "setup_required"
 
+const CodeFolderNotFound = "folder_not_found"
+
 const (
 	AppMonbooru  = "monbooru"
 	AppMonloader = "monloader"
