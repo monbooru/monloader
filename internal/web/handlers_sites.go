@@ -156,8 +156,9 @@ func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 		"Username":           "", "UserID": "", "Gallery": "", "Folder": "", "Label": "", "Cookies": "", "UserAgent": "",
 		"OptionsPrivate": "", "HasOptions": false, "HasPassword": false, "HasAPIKey": false, "CookieCount": 0,
 		"CookiesPaste": "", "Blacklist": "",
-		"GlobalRules": mapping.BlacklistRuleLines(s.cfg.Current().Tags.Blacklist),
-		"MonbooruURL": s.monbooruWebBase(),
+		"GlobalRules":    mapping.BlacklistRuleLines(s.cfg.Current().Tags.Blacklist),
+		"GlobalTagRules": tagRuleRows(r, config.TagsConfig{Rules: s.cfg.Current().Tags.Rules}),
+		"MonbooruURL":    s.monbooruWebBase(),
 	}
 	if site := s.cfg.Current().FindSite(name); site != nil {
 		data["Username"] = site.Username
@@ -393,20 +394,8 @@ func profileFromForm(r *http.Request) (mapping.Profile, error) {
 	foldKey := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 	p.RatingOverrides = formPairs(r, "rating_from", "rating_to", foldKey, nil)
 	p.CategoryOverrides = formPairs(r, "cat_from", "cat_to", foldKey, nil)
-	// A key holding a * stays as typed, target included: folded, the check
-	// that refuses it would never see the *.
-	foldTag := func(s string) string {
-		if s = strings.TrimSpace(s); strings.Contains(s, "*") {
-			return s
-		}
-		return mapping.NormalizeTag(s)
-	}
+	foldTag := func(s string) string { return mapping.NormalizeRuleKey(strings.TrimSpace(s)) }
 	p.TagRules = formPairs(r, "rule_from", "rule_to", foldTag, mapping.NormalizeRuleTarget)
-	for i, from := range r.Form["rule_from"] {
-		if tos := r.Form["rule_to"]; strings.Contains(from, "*") && i < len(tos) {
-			p.TagRules[foldTag(from)] = strings.TrimSpace(tos[i])
-		}
-	}
 	if raw := strings.TrimSpace(r.FormValue("profile_options")); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &p.Options); err != nil {
 			return p, fmt.Errorf("public gallery-dl options must be a JSON object: %w", err)

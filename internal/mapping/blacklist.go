@@ -6,9 +6,11 @@ import (
 	"strings"
 
 	"github.com/monbooru/monloader/internal/kwdict"
+	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
 type blacklistToken struct {
+	raw      string
 	negate   bool
 	category string
 	rating   string
@@ -29,7 +31,7 @@ var blacklistRatings = map[string]string{
 }
 
 func parseBlacklistToken(raw string) (blacklistToken, bool) {
-	var t blacklistToken
+	t := blacklistToken{raw: raw}
 	body, negate := strings.CutPrefix(raw, "-")
 	t.negate = negate
 	if body == "" || strings.HasPrefix(body, "~") {
@@ -153,7 +155,7 @@ func parseBlacklistRules(list string, lines []string) []blacklistRule {
 
 func (m *Mapper) blacklistRules(category string) []blacklistRule {
 	cfg := m.cfg.Current()
-	rules := parseBlacklistRules("global", cfg.Tags.Blacklist)
+	rules := parseBlacklistRules(contract.ListGlobal, cfg.Tags.Blacklist)
 	if site := cfg.FindSite(category); site != nil {
 		rules = append(rules, parseBlacklistRules(site.Name, site.Blacklist)...)
 	}
@@ -170,9 +172,10 @@ func (m *Mapper) Blacklisted(meta map[string]any) (note string, blacklisted bool
 		return "", false
 	}
 	profile := m.profileFor(category)
+	tagRules := m.rulesFor(profile)
 	var tags []postTag
 	m.eachTag(category, profile, meta, func(_, s string) {
-		for _, read := range blacklistReads(profile, s) {
+		for _, read := range blacklistReads(tagRules, s) {
 			tags = append(tags, splitPostTag(read))
 		}
 	}, func(_, s string) {
@@ -187,10 +190,10 @@ func (m *Mapper) Blacklisted(meta map[string]any) (note string, blacklisted bool
 
 func (r blacklistRule) note() string { return r.list + " rule: " + r.text }
 
-func blacklistReads(profile Profile, tag string) []string {
+func blacklistReads(rules tagRules, tag string) []string {
 	source := normalizeTag(tag)
 	reads := []string{source}
-	if mapped := applyTagRule(profile.TagRules, source); mapped != "" && mapped != source {
+	if mapped := rules.apply(source); mapped != "" && mapped != source {
 		reads = append(reads, mapped)
 	}
 	return reads

@@ -143,7 +143,7 @@
         {{range .TagOverrides}}<span class="hint-warn">monloader.toml [[tag_overrides]] {{if .To}}sends {{.From}} to {{.To}}{{else}}drops {{.From}}{{end}} and wins over this map</span>{{end}}
         {{if not .CategoriesKnown}}<span class="field-hint">monbooru is unreachable, so only the built-in categories are listed; a saved rule keeps its target</span>{{end}}
       </div>
-      <div class="field"><label>Tag rules <span class="field-hint">(rename, move to a category, or leave blank to drop the tag{{if not .PTR}}; the post still downloads{{end}})</span></label>
+      <div class="field"><label>Tag rules <span class="field-hint">(rename, move to a category, or leave blank to drop the tag{{if not .PTR}}; the post still downloads{{end}})<br>One * in the tag matches any text, and * on the right puts it back.</span></label>
         <div class="maprows" id="sd-rules">
           <template>
             <div class="maprow"><input type="text" name="rule_from" placeholder="tag"><span class="field-hint">-&gt;</span>
@@ -158,6 +158,7 @@
           {{end}}
         </div>
         <button type="button" class="btn-link-accent add-maprow" data-rows="sd-rules">[+ add rule]</button>
+        {{with .GlobalTagRules}}<div class="field-hint global-rules">Also applied to a tag no rule here matches, from <a href="/settings#rules" onclick="document.getElementById('site-edit-dialog').close()">Rules</a>:{{range .}}<code>{{.From}} -&gt; {{if .To}}{{.To}}{{else}}(drop){{end}}</code>{{end}}</div>{{end}}
       </div>
     </div>
     <div class="flow-part-2">

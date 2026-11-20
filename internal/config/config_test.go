@@ -75,6 +75,7 @@ func fullConfig() *Config {
 		RatingOverrides: []RatingOverride{
 			{Site: "danbooru", From: "s", To: "sensitive"},
 		},
+		Tags: TagsConfig{Rules: map[string]string{"*_(va)": "va:*", "artist:some \"one\"": "", "tagme": ""}},
 	}
 }
 
@@ -556,6 +557,7 @@ func TestProviderAndClone(t *testing.T) {
 	cfg.Sites = []Site{{Name: "gelbooru", APIKey: "k"}}
 	cfg.TagOverrides = []TagOverride{{Site: "x", From: "a", To: "b"}}
 	cfg.Auth.Tokens = apitoken.List{{ID: "1", Name: "a", Scopes: []string{ScopeRead}}}
+	cfg.Tags.Rules = map[string]string{"a": "b"}
 
 	p := NewProvider(cfg)
 	if p.Current() != cfg {
@@ -573,6 +575,9 @@ func TestProviderAndClone(t *testing.T) {
 	}
 	if cfg.Auth.Tokens[0].Scopes[0] != ScopeRead {
 		t.Error("Clone shared the token's scopes slice with the original")
+	}
+	if clone.Tags.Rules["a"] = "c"; cfg.Tags.Rules["a"] != "b" {
+		t.Error("Clone shared the tag rules with the original")
 	}
 
 	p.Store(clone)

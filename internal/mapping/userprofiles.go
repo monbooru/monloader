@@ -117,21 +117,6 @@ func ValidateProfile(p Profile) error {
 	return CheckTagRules(p.TagRules)
 }
 
-func CheckTagRules(rules map[string]string) error {
-	for from, to := range rules {
-		if strings.Contains(from, "*") {
-			return fmt.Errorf("tag rule %q has a *: a tag rule names one exact tag", from)
-		}
-		if from == "" || normalizeTag(from) != from {
-			return fmt.Errorf("tag rule %q is not a normalized tag name", from)
-		}
-		if to != "" && NormalizeRuleTarget(to) != to {
-			return fmt.Errorf("tag rule %q has a replacement that is not a normalized tag name", from)
-		}
-	}
-	return nil
-}
-
 // A bad file is skipped with a warning, never a boot failure: the
 // built-in or generic profile applies until it is fixed.
 func loadUserProfiles(dir string) map[string]Profile {

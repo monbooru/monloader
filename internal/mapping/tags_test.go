@@ -70,6 +70,58 @@ func TestApplyTagRuleCustomCategory(t *testing.T) {
 	}
 }
 
+func TestApplyTagRuleStar(t *testing.T) {
+	withCustomCategories(t, "va")
+	rules := map[string]string{
+		"*_(va)":            "va:*",
+		"artist:*_(studio)": "copyright:*",
+		"*_(cosplay)":       "",
+		"*_(style)":         "style",
+		"bad_*":             "worse_*",
+		"bad_*_(va)":        "va:bad_*",
+		"x_(va)":            "kept",
+		"a*z":               "first",
+		"*bz":               "second",
+	}
+	for tag, want := range map[string]string{
+		"artist:soandso_(va)":  "va:soandso",
+		"soandso_(va)":         "va:soandso",
+		"_(va)":                "_(va)",
+		"artist:kyo_(studio)":  "copyright:kyo",
+		"kyo_(studio)":         "kyo_(studio)",
+		"reimu_(cosplay)":      "",
+		"artist:ink_(style)":   "artist:style",
+		"bad_hands":            "worse_hands",
+		"character:bad_apple":  "character:worse_apple",
+		"artist:bad_egg_(va)":  "va:bad_egg",
+		"artist:x_(va)":        "artist:kept",
+		"abz":                  "second",
+		"smile":                "smile",
+		"character:(va)_first": "character:(va)_first",
+	} {
+		if got := applyTagRule(rules, tag); got != want {
+			t.Errorf("%q = %q, want %q", tag, got, want)
+		}
+	}
+}
+
+func TestRuleKeyFoldKeepsTheStar(t *testing.T) {
+	for in, want := range map[string]string{"*_(VA)": "*_(va)", "Artist: * (va)": "artist:*_(va)", " smile ": "smile"} {
+		if got := NormalizeRuleKey(in); got != want {
+			t.Errorf("key %q = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{"VA:*": "va:*", "general:*": "general:*", "a * b": "a_*_b"} {
+		withCustomCategories(t, "va")
+		if got := NormalizeRuleTarget(in); got != want {
+			t.Errorf("target %q = %q, want %q", in, got, want)
+		}
+	}
+	if got := normalizeTag("*_(va)"); got != "(va)" {
+		t.Errorf("a tag = %q, want its * still folded", got)
+	}
+}
+
 func TestBaseCategoryNamesMonboorusCategories(t *testing.T) {
 	newMapper(t, nil).LearnCustomCategories([]string{"fashion"}, false)
 	for suffix, want := range map[string]string{

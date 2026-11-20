@@ -22,9 +22,10 @@ func (m *Mapper) MapPTR(raw []string) []string {
 func (m *Mapper) MapPTRWithheld(raw []string) (tags, withheld []string) {
 	profile := m.profileFor(config.SitePTR)
 	drop := m.cfg.Current().Tags.DropCategories
+	rules := m.rulesFor(profile)
 	for _, tag := range raw {
 		mapped := m.ptrMapped(profile, tag)
-		s := applyTagRule(profile.TagRules, mapped)
+		s := rules.apply(mapped)
 		switch {
 		case s != "":
 			if !categoryDropped(drop, s) {
@@ -51,6 +52,7 @@ func (m *Mapper) PTRBlacklisted(raw []string) (note string, blacklisted bool) {
 		return "", false
 	}
 	profile := m.profileFor(config.SitePTR)
+	tagRules := m.rulesFor(profile)
 	var tags []postTag
 	var rating string
 	for _, tag := range raw {
@@ -60,7 +62,7 @@ func (m *Mapper) PTRBlacklisted(raw []string) (note string, blacklisted bool) {
 			rating = Stricter(rating, level)
 			continue
 		}
-		for _, read := range append(blacklistReads(profile, mapped), MapPTRTag(tag)) {
+		for _, read := range append(blacklistReads(tagRules, mapped), MapPTRTag(tag)) {
 			if read != "" {
 				tags = append(tags, splitPostTag(read))
 			}

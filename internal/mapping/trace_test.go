@@ -186,3 +186,55 @@ func TestTraceListsTheRatingThePushReads(t *testing.T) {
 		}
 	}
 }
+
+func TestGlobalTagRulesComeAfterASitesOwn(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "danbooru.json", `{"family":"danbooru","auth":"none",
+		"tag_rules":{"smile":"smiling","*_(cosplay)":"cosplay_of_*","kept_(va)":"kept_(va)"}}`)
+	cfg := config.Default()
+	cfg.Tags.Rules = map[string]string{
+		"smile": "grin", "smiling": "beaming", "tagme": "", "*_(va)": "character:*",
+		"reimu_(cosplay)": "", "bad key": "x", "a*b*c": "x",
+	}
+	m := newMapperDir(t, cfg, dir)
+	post := func(site string) map[string]any {
+		return map[string]any{
+			"category": site, "id": float64(7), "rating": "g",
+			"tags_general": []any{"smile", "tagme", "reimu_(cosplay)", "bad_key"},
+			"tags_artist":  []any{"soandso_(va)", "kept_(va)"},
+		}
+	}
+
+	assertTags(t, m.Map(post("danbooru")).Tags,
+		"smiling", "cosplay_of_reimu", "bad_key", "character:soandso", "artist:kept_(va)", "rating:general")
+	assertTags(t, m.Map(post("gelbooru")).Tags,
+		"grin", "bad_key", "character:soandso", "character:kept", "rating:general")
+	assertTags(t, m.MapPTR([]string{"smile", "creator:soandso_(va)", "tagme"}), "grin", "character:soandso")
+
+	tr := m.Trace(post("danbooru"))
+	if r := traceRow(t, tr, "smile"); r.Ruled != "smiling" || r.RuleGlobal {
+		t.Errorf("smile on danbooru = %+v, want the site's own rule", r)
+	}
+	if r := traceRow(t, tr, "soandso_(va)"); r.Ruled != "character:soandso" || !r.RuleGlobal {
+		t.Errorf("soandso_(va) on danbooru = %+v, want the rule for all sites named", r)
+	}
+	if r := traceRow(t, tr, "tagme"); !r.RuleDropped || !r.RuleGlobal {
+		t.Errorf("tagme on danbooru = %+v, want it dropped by the rule for all sites", r)
+	}
+}
+
+func TestTraceLinksOnlyAListingsFirstPost(t *testing.T) {
+	m := traceFixture(t, nil, nil)
+	search := map[string]any{"category": "danbooru", "subcategory": "tag", "id": float64(7), "post_url": "https://danbooru.donmai.us/posts/7"}
+	if got := m.Trace(search).PostURL; got == "" {
+		t.Error("a search's trace links no first post")
+	}
+	post := map[string]any{"category": "danbooru", "subcategory": "post", "id": float64(7), "post_url": "https://danbooru.donmai.us/posts/7"}
+	if got := m.Trace(post).PostURL; got != "" {
+		t.Errorf("a post's trace links %q, the URL it traced", got)
+	}
+	file := map[string]any{"category": CategoryDirectlink, "post_url": "https://example.com/a.png"}
+	if got := m.Trace(file).PostURL; got != "" {
+		t.Errorf("a bare file's trace links %q", got)
+	}
+}

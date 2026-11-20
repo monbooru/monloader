@@ -594,6 +594,60 @@ func TestSiteDialogMappingTabNamesItsSteps(t *testing.T) {
 	}
 }
 
+func TestSaveTagsRules(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+	pairMB(t, srv)
+	postForm(t, ts, srv, "/settings/rules", url.Values{
+		"rules_shown": {"1"}, "rule_from": {" *_(VA) ", "tagme", ""}, "rule_to": {"VA:*", "", "orphan"},
+	}).Body.Close()
+	want := map[string]string{"*_(va)": "va:*", "tagme": ""}
+	if got := srv.cfg.Current().Tags.Rules; !maps.Equal(got, want) {
+		t.Errorf("rules = %q, want %q", got, want)
+	}
+	_, body := get(t, ts, "/settings")
+	for _, want := range []string{`name="rule_from" value="*_(va)"`, `name="rule_to" value="va:*"`, `name="rule_from" value="tagme"`, "A site's own rule for the same tag wins."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the Rules section lacks %q", want)
+		}
+	}
+	_, dialog := get(t, ts, "/settings/sites/danbooru/dialog")
+	for _, want := range []string{"<code>*_(va) -&gt; va:*</code>", "<code>tagme -&gt; (drop)</code>"} {
+		if !strings.Contains(dialog, want) {
+			t.Errorf("a site dialog should list the rules for all sites, lacks %q", want)
+		}
+	}
+
+	postForm(t, ts, srv, "/settings/rules", url.Values{"blacklist": {"guro"}}).Body.Close()
+	if got := srv.cfg.Current().Tags.Rules; !maps.Equal(got, want) {
+		t.Errorf("a save without the rows changed the rules: %q", got)
+	}
+
+	body = refusedSave(t, postForm(t, ts, srv, "/settings/rules", url.Values{
+		"rules_shown": {"1"}, "rule_from": {"*_(va)", "a*b*c"}, "rule_to": {"va:*", "x"}, "blacklist": {"gore"},
+	}))
+	for _, want := range []string{"more than one *", "nothing was saved", `name="rule_from" value="a*b*c"`, `name="rule_to" value="x"`, ">gore</textarea>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the refused page lacks %q, got %q", want, truncate(body))
+		}
+	}
+	if got := srv.cfg.Current().Tags; !maps.Equal(got.Rules, want) || !slices.Equal(got.Blacklist, []string{"guro"}) {
+		t.Errorf("a refused save changed the config: %+v", got)
+	}
+
+	srv.runner = &traceRunner{meta: map[string]any{
+		"category": "danbooru", "id": float64(7), "rating": "s", "tags_artist": []any{"soandso_(va)"},
+	}}
+	resp := postForm(t, ts, srv, "/settings/rules/trace", url.Values{"url": {"https://danbooru.donmai.us/posts/7"}})
+	if body := readBody(t, resp); !strings.Contains(body, `-&gt; va:soandso <span class="status-dim">(all sites)</span>`) {
+		t.Errorf("the trace should name the list the rule came from, got %q", truncate(body))
+	}
+
+	postForm(t, ts, srv, "/settings/rules", url.Values{"rules_shown": {"1"}}).Body.Close()
+	if got := srv.cfg.Current().Tags.Rules; len(got) != 0 {
+		t.Errorf("removing every row should clear the rules, got %q", got)
+	}
+}
+
 func TestSaveTagsBlacklist(t *testing.T) {
 	srv, ts := serveWeb(t, "")
 	pairMB(t, srv)
@@ -2209,20 +2263,33 @@ func TestSaveSiteRefusalWritesNothing(t *testing.T) {
 	}
 }
 
-func TestSaveSiteRefusesStarInTagRuleKey(t *testing.T) {
+func TestSaveSiteTagRuleStar(t *testing.T) {
 	srv, ts := serveWeb(t, "")
+	form := func(from, to string) url.Values {
+		return url.Values{
+			"family": {"generic"}, "kind": {"other"}, "auth": {"none"},
+			"rule_from": {from}, "rule_to": {to},
+		}
+	}
 
-	body := refusedSave(t, postForm(t, ts, srv, "/settings/sites/newgrounds", url.Values{
-		"family": {"generic"}, "kind": {"other"}, "auth": {"none"},
-		"rule_from": {"*_(va)"}, "rule_to": {"va:*"},
-	}))
-	for _, want := range []string{`data-refused-tab="sd-mapping"`, `value="*_(va)"`, `value="va:*"`, "names one exact tag"} {
+	body := refusedSave(t, postForm(t, ts, srv, "/settings/sites/newgrounds", form("*_*", "va:*")))
+	for _, want := range []string{`data-refused-tab="sd-mapping"`, `value="*_*"`, `value="va:*"`, "more than one *"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the refused dialog lacks %q, got %q", want, truncate(body))
 		}
 	}
 	if srv.mapper.CustomProfile("newgrounds") {
 		t.Error("a refused save wrote the mapping profile")
+	}
+
+	resp := postForm(t, ts, srv, "/settings/sites/newgrounds", form("*_(VA)", "artist:*"))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("a rule with one * answered %d, want it saved", resp.StatusCode)
+	}
+	p, _ := srv.mapper.Lookup("newgrounds")
+	if got := p.TagRules["*_(va)"]; got != "artist:*" {
+		t.Errorf("stored rule = %q, want the * kept on both sides", got)
 	}
 }
 

@@ -1606,6 +1606,12 @@ func TestTagRulesListsTheConfiguredSitesThenThePTR(t *testing.T) {
 	if !slices.Equal(blacklists, []string{"", "site", ""}) {
 		t.Errorf("blacklists = %v, want gelbooru's own list alone", blacklists)
 	}
+	if cond, ok := sites[1].(map[string]any)["blacklist_condition"]; !ok || cond != "" {
+		t.Errorf("gelbooru = %v, want an empty blacklist_condition for a line naming the tag alone", sites[1])
+	}
+	if _, ok := sites[0].(map[string]any)["blacklist_condition"]; ok {
+		t.Errorf("danbooru = %v, want no blacklist_condition where no line names the tag", sites[0])
+	}
 	if body := wantJSON(t, "GET", srv.URL+"/api/v1/rules?tag=highres&category=meta", "", 200); body["category_kept"] != false {
 		t.Errorf("meta:highres = %v, want category_kept false", body)
 	}

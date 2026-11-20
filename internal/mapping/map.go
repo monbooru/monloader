@@ -79,6 +79,11 @@ func New(cfg *config.Provider, profilesDir string) (*Mapper, error) {
 			logx.Warnf("tags.drop_categories names %q, no tag category (%s); it is skipped", name, strings.Join(TagCategories, ", "))
 		}
 	}
+	for from, to := range cfg.Current().Tags.Rules {
+		if err := CheckTagRules(map[string]string{from: to}); err != nil {
+			logx.Warnf("tags.rules: %v; it is skipped", err)
+		}
+	}
 	for _, o := range cfg.Current().TagOverrides {
 		if !validCategoryTarget(o.To) {
 			logx.Warnf("tag override %s %q -> %q names no tag category (%s); it is skipped", o.Site, o.From, o.To, strings.Join(TagCategories, ", "))
@@ -95,7 +100,7 @@ func New(cfg *config.Provider, profilesDir string) (*Mapper, error) {
 func (m *Mapper) view() *profileSet { return m.ps.Load() }
 
 // Only once a list has been read: before that nothing is known about a name.
-func unknownTargets(profile Profile, tags []string) []string {
+func unknownTargets(profile Profile, global map[string]string, tags []string) []string {
 	customCategoriesMu.RLock()
 	learned := customCategoriesLearned
 	customCategoriesMu.RUnlock()
@@ -118,9 +123,11 @@ func unknownTargets(profile Profile, tags []string) []string {
 	for _, to := range profile.CategoryOverrides {
 		note(to)
 	}
-	for _, to := range profile.TagRules {
-		if prefix, _, found := strings.Cut(to, ":"); found {
-			note(prefix)
+	for _, rules := range []map[string]string{profile.TagRules, global} {
+		for _, to := range rules {
+			if prefix, _, found := strings.Cut(to, ":"); found {
+				note(prefix)
+			}
 		}
 	}
 	slices.Sort(out)
@@ -164,6 +171,11 @@ func (m *Mapper) CategoryListMissing() bool {
 			if prefix, _, found := strings.Cut(to, ":"); found && unknown(prefix) {
 				return true
 			}
+		}
+	}
+	for _, to := range m.globalTagRules() {
+		if prefix, _, found := strings.Cut(to, ":"); found && unknown(prefix) {
+			return true
 		}
 	}
 	return false
@@ -369,9 +381,10 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	var tags []string
 	drop := m.cfg.Current().Tags.DropCategories
 	var withheld []string
+	rules := m.rulesFor(profile)
 	add := func(_, s string) {
 		listed := normalizeTag(s)
-		s = applyTagRule(profile.TagRules, listed)
+		s = rules.apply(listed)
 		if s == "" && listed != "" {
 			withheld = append(withheld, listed)
 		}
@@ -392,7 +405,7 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	pf.Tags = slices.Compact(tags)
 	slices.Sort(withheld)
 	pf.WithheldTags = slices.Compact(withheld)
-	pf.UnknownTargets = unknownTargets(profile, pf.Tags)
+	pf.UnknownTargets = unknownTargets(profile, rules.global, pf.Tags)
 
 	if kwdict.String(meta, "subcategory") == "pool" {
 		pf.Collection = PoolName(meta)

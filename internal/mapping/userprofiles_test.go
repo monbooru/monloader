@@ -148,14 +148,27 @@ func TestValidateProfileOnTagRuleTargets(t *testing.T) {
 	}
 }
 
-func TestCheckTagRulesRefusesStarInKey(t *testing.T) {
-	for _, key := range []string{"*_(va)", "artist:*_(va)", "a*b"} {
-		err := CheckTagRules(map[string]string{key: "va:x"})
-		if err == nil || !strings.Contains(err.Error(), "names one exact tag") {
-			t.Errorf("key %q: err = %v", key, err)
+func TestCheckTagRulesStar(t *testing.T) {
+	withCustomCategories(t, "va")
+	for rule, want := range map[[2]string]string{
+		{"*_(va)", "va:*"}:             "",
+		{"artist:*_(va)", "va:*"}:      "",
+		{"*_(va)", "voice_actor"}:      "",
+		{"*_(cosplay)", ""}:            "",
+		{"soandso_(va)", "va:soandso"}: "",
+		{"*", "va:*"}:                  "matches every tag",
+		{"artist:*", "va:*"}:           "matches every tag",
+		{"*_*", "x"}:                   "more than one *",
+		{"*_(va)", "*:*"}:              "more than one *",
+		{"smile", "smiling_*"}:         "none in the tag",
+		{"* (va)", "va:*"}:             "not a normalized tag name",
+	} {
+		err := CheckTagRules(map[string]string{rule[0]: rule[1]})
+		switch {
+		case want == "" && err != nil:
+			t.Errorf("%q -> %q refused: %v", rule[0], rule[1], err)
+		case want != "" && (err == nil || !strings.Contains(err.Error(), want)):
+			t.Errorf("%q -> %q: err = %v, want %q", rule[0], rule[1], err, want)
 		}
-	}
-	if err := CheckTagRules(map[string]string{"soandso_(va)": "va:soandso"}); err != nil {
-		t.Errorf("an exact rule was refused: %v", err)
 	}
 }

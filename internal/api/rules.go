@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
-	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/queue"
 	"github.com/monbooru/monloader/internal/shared/contract"
 )
@@ -15,17 +14,6 @@ import (
 // maxRulesNames bounds one batched call: a tag page asks for its name and
 // its aliases.
 const maxRulesNames = 50
-
-type tagRuleRow struct {
-	mapping.TagRule
-	Kind    string `json:"kind"`
-	Builtin bool   `json:"builtin,omitempty"`
-}
-
-type tagRulesResponse struct {
-	mapping.TagRules
-	Sites []tagRuleRow `json:"sites"`
-}
 
 func (h *Handler) tagRules(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.URL.Query().Get("tag"))
@@ -38,12 +26,7 @@ func (h *Handler) tagRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) tagRulesBatch(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Names []struct {
-			Tag      string `json:"tag"`
-			Category string `json:"category"`
-		} `json:"names"`
-	}
+	var body contract.TagRulesRequest
 	if !contract.DecodeJSON(w, r, &body, maxRequestBody) {
 		return
 	}
@@ -52,7 +35,7 @@ func (h *Handler) tagRulesBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sites, builtin := h.rulesSites()
-	results := make([]tagRulesResponse, 0, len(body.Names))
+	results := make([]contract.TagRules, 0, len(body.Names))
 	for _, n := range body.Names {
 		name := strings.TrimSpace(n.Tag)
 		if name == "" {
@@ -61,7 +44,7 @@ func (h *Handler) tagRulesBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		results = append(results, h.rulesFor(sites, builtin, n.Category, name))
 	}
-	contract.WriteJSON(w, http.StatusOK, map[string]any{"results": results})
+	contract.WriteJSON(w, http.StatusOK, contract.TagRulesBatch{Results: results})
 }
 
 // The sites listed are the ones the settings tables show and the ones the
@@ -104,19 +87,18 @@ func (h *Handler) rulesSites() ([]string, map[string]bool) {
 	return append(sites, config.SitePTR), builtin
 }
 
-func (h *Handler) rulesFor(sites []string, builtin map[string]bool, category, name string) tagRulesResponse {
+func (h *Handler) rulesFor(sites []string, builtin map[string]bool, category, name string) contract.TagRules {
 	category = strings.TrimSpace(category)
 	if category == "" {
 		category = "general"
 	}
 	rules := h.mapper.TagRules(category, name, sites)
-	resp := tagRulesResponse{TagRules: rules, Sites: make([]tagRuleRow, 0, len(rules.Sites))}
-	for _, s := range rules.Sites {
-		kind := "lookup"
+	for i, s := range rules.Sites {
+		rules.Sites[i].Kind = contract.KindLookup
 		if s.Site != config.SitePTR {
-			kind = h.siteView(s.Site).Kind
+			rules.Sites[i].Kind = h.siteView(s.Site).Kind
 		}
-		resp.Sites = append(resp.Sites, tagRuleRow{TagRule: s, Kind: kind, Builtin: builtin[s.Site]})
+		rules.Sites[i].Builtin = builtin[s.Site]
 	}
-	return resp
+	return rules
 }

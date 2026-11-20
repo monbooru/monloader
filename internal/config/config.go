@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -101,6 +102,9 @@ type TagsConfig struct {
 	// someone says otherwise.
 	DropCategories []string `toml:"drop_categories,omitempty"`
 	Blacklist      []string `toml:"blacklist,omitempty"`
+	// Tag rules for every site and the PTR, read for a tag no rule of the
+	// site's own profile matches.
+	Rules map[string]string `toml:"rules,omitempty"`
 }
 
 func (d DownloaderConfig) HistoryRetention() time.Duration {
@@ -543,7 +547,7 @@ func Save(cfg *Config, path string) error {
 	})
 }
 
-// Every element type is a plain value except Token.Scopes, the Tags lists
+// Every element type is a plain value except Token.Scopes, the Tags lists and rules
 // and Site.Blacklist; a new slice or map inside one must be cloned here too.
 func (cfg *Config) Clone() *Config {
 	cp := *cfg
@@ -553,6 +557,7 @@ func (cfg *Config) Clone() *Config {
 	cp.HostLabels = append([]HostLabel(nil), cfg.HostLabels...)
 	cp.Tags.DropCategories = slices.Clone(cfg.Tags.DropCategories)
 	cp.Tags.Blacklist = slices.Clone(cfg.Tags.Blacklist)
+	cp.Tags.Rules = maps.Clone(cfg.Tags.Rules)
 	for i := range cp.Sites {
 		cp.Sites[i].Blacklist = slices.Clone(cp.Sites[i].Blacklist)
 	}

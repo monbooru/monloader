@@ -1,67 +1,57 @@
 package mapping
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 
 	"github.com/monbooru/monloader/internal/config"
+	"github.com/monbooru/monloader/internal/shared/contract"
 )
-
-// TagRule is what one site does with a tag of a monbooru name when it
-// arrives from there.
-type TagRule struct {
-	Site          string   `json:"site"`
-	Rule          string   `json:"rule"` // none, drop, rename, move
-	Target        string   `json:"target,omitempty"`
-	Blacklist     string   `json:"blacklist,omitempty"` // global, site
-	BlacklistLine string   `json:"blacklist_line,omitempty"`
-	MappedFrom    []string `json:"mapped_from,omitempty"`
-	RenamedFrom   []string `json:"renamed_from,omitempty"`
-	// Whether the tag, as this site sends it, survives the category drop.
-	Kept bool `json:"kept"`
-}
-
-type TagRules struct {
-	Tag          string    `json:"tag"`
-	Category     string    `json:"category"`
-	CategoryKept bool      `json:"category_kept"`
-	Sites        []TagRule `json:"sites"`
-}
 
 // TagRules answers for the sites named, in that order. The PTR's own
 // blacklist is the only one that reads its answers.
-func (m *Mapper) TagRules(category, name string, sites []string) TagRules {
+func (m *Mapper) TagRules(category, name string, sites []string) contract.TagRules {
 	tag := normalizeTag(formatTag(category, name))
 	drop := m.cfg.Current().Tags.DropCategories
-	out := TagRules{Tag: name, Category: category, CategoryKept: !categoryDropped(drop, tag), Sites: []TagRule{}}
+	out := contract.TagRules{Tag: name, Category: category, CategoryKept: !categoryDropped(drop, tag), Sites: []contract.TagRule{}}
 	if tag == "" {
 		return out
 	}
 	for _, site := range sites {
 		profile := m.profileFor(site)
-		r := TagRule{Site: site, Rule: "none"}
-		after := applyTagRule(profile.TagRules, tag)
+		r := contract.TagRule{Site: site, Rule: contract.RuleNone}
+		rules := m.rulesFor(profile)
+		after, key, list := rules.match(tag)
+		if after != tag {
+			r.RuleKey, r.RuleList = key, list
+		}
 		switch {
 		case after == "":
-			r.Rule = "drop"
+			r.Rule = contract.RuleDrop
 		case after != tag:
 			r.Target = after
-			r.Rule = "rename"
+			r.Rule = contract.RuleRename
 			if splitPostTag(after).category != splitPostTag(tag).category {
-				r.Rule = "move"
+				r.Rule = contract.RuleMove
 			}
 		}
 		r.Kept = after != "" && !categoryDropped(drop, after)
 		for _, rule := range m.blacklistRules(site) {
-			if site == config.SitePTR && rule.list == "global" {
+			if site == config.SitePTR && rule.list == contract.ListGlobal {
 				continue
 			}
-			if rule.names(splitPostTag(tag)) || (after != "" && rule.names(splitPostTag(after))) {
-				r.Blacklist = "site"
-				if rule.list == "global" {
-					r.Blacklist = "global"
+			cond, named := rule.condition(splitPostTag(tag))
+			if !named && after != "" {
+				cond, named = rule.condition(splitPostTag(after))
+			}
+			if named {
+				r.Blacklist = contract.ListSite
+				if rule.list == contract.ListGlobal {
+					r.Blacklist = contract.ListGlobal
 				}
 				r.BlacklistLine = rule.text
+				r.BlacklistCondition = &cond
 				break
 			}
 		}
@@ -71,7 +61,13 @@ func (m *Mapper) TagRules(category, name string, sites []string) TagRules {
 			}
 		}
 		slices.Sort(r.MappedFrom)
-		r.RenamedFrom = renamedInto(profile.TagRules, category, tag)
+		r.RenamedFrom = renamedInto(rules.site, func(c string) string { return applyTagRule(rules.site, c) }, category, tag)
+		r.RenamedFromGlobal = renamedInto(rules.global, func(c string) string {
+			if after, _, list := rules.match(c); list == contract.ListGlobal {
+				return after
+			}
+			return c
+		}, category, tag)
 		out.Sites = append(out.Sites, r)
 	}
 	return out
@@ -79,10 +75,16 @@ func (m *Mapper) TagRules(category, name string, sites []string) TagRules {
 
 // A bare rule key matches the name in any category, so it is tried as the
 // tag's category and as general, the two a site would file it under.
-func renamedInto(rules map[string]string, category, tag string) []string {
+func renamedInto(rules map[string]string, apply func(string) string, category, tag string) []string {
 	var from []string
 	for key, to := range rules {
 		if to == "" {
+			continue
+		}
+		if strings.Contains(key, "*") {
+			if src := patternSource(apply, key, to, category, tag); src != "" {
+				from = append(from, src)
+			}
 			continue
 		}
 		candidates := []string{key}
@@ -90,7 +92,7 @@ func renamedInto(rules map[string]string, category, tag string) []string {
 			candidates = []string{formatTag(category, key), key}
 		}
 		for _, c := range candidates {
-			if c = normalizeTag(c); c != tag && applyTagRule(rules, c) == tag {
+			if c = normalizeTag(c); c != tag && apply(c) == tag {
 				from = append(from, key)
 				break
 			}
@@ -98,4 +100,35 @@ func renamedInto(rules map[string]string, category, tag string) []string {
 	}
 	slices.Sort(from)
 	return from
+}
+
+// The spelling a key with a * turns into the tag, rebuilt from the text the
+// target's * holds; a target with no * leaves nothing to rebuild from, so the
+// key itself is named.
+func patternSource(apply func(string) string, key, to, category, tag string) string {
+	keyCategory, keyName := splitRuleKey(key)
+	made := to
+	if cat, rest, found := strings.Cut(to, ":"); !found || !isTagCategory(cat) || rest == "" {
+		made = formatTag(cmp.Or(keyCategory, category), to)
+	} else if cat == "general" {
+		made = rest
+	}
+	head, tail, found := strings.Cut(made, "*")
+	if !found {
+		if made == tag {
+			return key
+		}
+		return ""
+	}
+	text, hit := starText(tag, head, tail)
+	if !hit {
+		return ""
+	}
+	src := strings.ReplaceAll(keyName, "*", text)
+	for _, c := range []string{formatTag(cmp.Or(keyCategory, category), src), src} {
+		if c != tag && apply(c) == tag {
+			return formatTag(cmp.Or(keyCategory, "general"), src)
+		}
+	}
+	return ""
 }
