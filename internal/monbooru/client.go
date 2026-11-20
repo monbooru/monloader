@@ -650,7 +650,7 @@ func (c *Client) SearchFolders(ctx context.Context, gallery, q string, limit int
 }
 
 // A 404 is either a path monbooru does not hold or a monbooru without the
-// route; only the route's own message tells them apart.
+// route; the code tells them apart.
 func (c *Client) getFolders(ctx context.Context, route, gallery string, q url.Values, out any) error {
 	if gallery != "" {
 		q.Set("gallery", gallery)
@@ -659,9 +659,9 @@ func (c *Client) getFolders(ctx context.Context, route, gallery string, q url.Va
 	if err != nil {
 		return transportError(ctx, err)
 	}
-	switch msg := apiErrMessage(body, resp.Status); {
+	switch msg, code := apiErr(body, resp.Status); {
 	case resp.StatusCode == http.StatusOK:
-	case resp.StatusCode == http.StatusNotFound && strings.HasPrefix(msg, "folder not found"):
+	case resp.StatusCode == http.StatusNotFound && code == contract.CodeFolderNotFound:
 		return ErrFolderNotFound
 	case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed:
 		return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: "this monbooru does not list folders yet; update it"}

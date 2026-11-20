@@ -130,7 +130,7 @@ func stubFolderLevel(w http.ResponseWriter, r *http.Request) {
 	all, path := stubFolders(q.Get("gallery")), q.Get("path")
 	if path != "" && !slices.ContainsFunc(all, func(f monbooru.Folder) bool { return f.Path == path }) {
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = fmt.Fprintf(w, `{"error":"folder not found: %s","code":"not_found"}`, path)
+		_, _ = fmt.Fprintf(w, `{"error":"folder not found: %s","code":"folder_not_found"}`, path)
 		return
 	}
 	var kids []monbooru.Folder
@@ -684,7 +684,7 @@ func TestFolderPickerShowsFolderChangesAtOnce(t *testing.T) {
 		case "/api/v1/folders":
 			if p := r.URL.Query().Get("path"); p != "" && !slices.ContainsFunc(folders, func(f monbooru.Folder) bool { return f.Path == p }) {
 				w.WriteHeader(http.StatusNotFound)
-				_, _ = fmt.Fprintf(w, `{"error":"folder not found: %s","code":"not_found"}`, p)
+				_, _ = fmt.Fprintf(w, `{"error":"folder not found: %s","code":"folder_not_found"}`, p)
 				return
 			}
 			_ = json.NewEncoder(w).Encode(monbooru.FolderPage{Page: 1, Limit: 500, Total: len(folders), Results: slices.Clone(folders)})

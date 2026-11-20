@@ -831,7 +831,7 @@ func TestListFolders(t *testing.T) {
 		{"the active gallery's top level", "", "", "limit=1&page=2&path=", http.StatusOK, level, nil, ""},
 		{"a named gallery's folder", "my art", "art", "gallery=my+art&limit=1&page=2&path=art", http.StatusOK, level, nil, ""},
 		{"a folder monbooru does not hold", "", "gone", "limit=1&page=2&path=gone", http.StatusNotFound,
-			map[string]string{"error": "folder not found: gone", "code": "not_found"}, ErrFolderNotFound, ""},
+			map[string]string{"error": "folder not found: gone", "code": "folder_not_found"}, ErrFolderNotFound, ""},
 		{"an unknown gallery", "ghost", "", "gallery=ghost&limit=1&page=2&path=", http.StatusBadRequest,
 			map[string]string{"error": "unknown gallery: ghost", "code": "invalid_gallery"}, nil, "unknown gallery: ghost"},
 		{"a monbooru without the route", "", "", "limit=1&page=2&path=", http.StatusNotFound,

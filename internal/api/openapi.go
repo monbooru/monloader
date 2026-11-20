@@ -632,7 +632,7 @@ func (h *Handler) endpoints() []endpoint {
 					{Name: "total", Type: "integer", Description: "How many subfolders path has"},
 					{Name: "results", Type: "array", Items: &prop{Ref: "Folder"}},
 				}},
-				{Status: "404", Description: "monbooru holds no image at or under path (not_found)", Ref: "Error"},
+				{Status: "404", Description: "monbooru holds no image at or under path (folder_not_found)", Ref: "Error"},
 				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
 				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable), or refused (monbooru_rejected): an unknown gallery, or a monbooru too old to list folders", Ref: "Error"},
 			},
