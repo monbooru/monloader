@@ -618,3 +618,82 @@ document.addEventListener('keydown', function(e) {
   if (!reorderStep(row, e.key === 'ArrowUp')) return;
   row.parentNode.dispatchEvent(new CustomEvent('reorder', {bubbles: true, detail: {row: row, keyboard: true}}));
 });
+
+// The folder fields: a text box the panel's tree, the suggestions and
+// [+ new folder] all write into. The tree's levels load on first open.
+function folderPick(picker, path) {
+  picker.querySelector('.folder-picker-input input').value = path;
+  picker.querySelector('.suggest-dropdown').innerHTML = '';
+  picker.querySelectorAll('.folder-node-row.active').forEach(function(r) { r.classList.remove('active'); });
+  var row = picker.querySelector('.folder-node-row[data-folder-pick="' + CSS.escape(path) + '"]');
+  if (row) row.classList.add('active');
+}
+
+function folderNewDone(picker) {
+  var form = picker.querySelector('.folder-new-form');
+  var name = form.querySelector('.folder-new-name').value.trim().replace(/^\/+|\/+$/g, '');
+  if (name) folderPick(picker, form.dataset.under + name);
+  folderNewClose(picker);
+}
+
+// Back to its own row, also ahead of a reload: the tree's swap would take
+// a form sitting under one of its rows with it.
+function folderNewClose(picker) {
+  var form = picker.querySelector('.folder-new-form');
+  form.hidden = true;
+  picker.querySelector('.folder-new-row').appendChild(form);
+}
+
+document.addEventListener('click', function(e) {
+  var picker = e.target.closest('.folder-picker');
+  document.querySelectorAll('.folder-picker .suggest-dropdown').forEach(function(d) {
+    if (!picker || !picker.contains(d)) d.innerHTML = '';
+  });
+  if (!picker) return;
+  var t = e.target;
+  if (t.closest('[data-folder-browse]')) {
+    var panel = picker.querySelector('.folder-picker-panel');
+    panel.hidden = !panel.hidden;
+    t.closest('[data-folder-browse]').textContent = panel.hidden ? '[browse]' : '[close]';
+    // Every opening reloads, so a folder made or removed since shows.
+    if (!panel.hidden) {
+      folderNewClose(picker);
+      picker.querySelector('.folder-tree[id]').dispatchEvent(new CustomEvent('folder-open'));
+    }
+  } else if (t.closest('[data-folder-toggle]')) {
+    var btn = t.closest('[data-folder-toggle]');
+    // The branch's own list comes first, ahead of any deeper one.
+    var kids = btn.closest('li').querySelector('.folder-children');
+    kids.hidden = !kids.hidden;
+    btn.textContent = kids.hidden ? '▶' : '▼';
+    if (!kids.hidden) {
+      if (kids.contains(picker.querySelector('.folder-new-form'))) folderNewClose(picker);
+      kids.dispatchEvent(new CustomEvent('folder-open'));
+    }
+  } else if (t.closest('[data-folder-suggest]')) {
+    folderPick(picker, t.closest('[data-folder-suggest]').dataset.folderSuggest);
+  } else if (t.closest('[data-folder-new]')) {
+    // Under the folder the field holds, or at the top with none.
+    var form = picker.querySelector('.folder-new-form');
+    var under = picker.querySelector('.folder-picker-input input').value.trim().replace(/\/+$/, '');
+    var active = picker.querySelector('.folder-node-row.active:not([data-folder-pick=""])');
+    form.dataset.under = under ? under + '/' : '';
+    form.querySelector('.folder-new-under').textContent = form.dataset.under;
+    if (active) active.after(form);
+    form.hidden = false;
+    form.querySelector('.folder-new-name').value = '';
+    form.querySelector('.folder-new-name').focus();
+  } else if (t.closest('[data-folder-new-ok]')) {
+    folderNewDone(picker);
+  } else if (t.closest('[data-folder-pick]') && !t.closest('.folder-new-form')) {
+    folderPick(picker, t.closest('[data-folder-pick]').dataset.folderPick);
+  }
+});
+
+// Enter in the new folder's name takes it rather than submitting the form.
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && e.target.matches('.folder-new-name')) {
+    e.preventDefault();
+    folderNewDone(e.target.closest('.folder-picker'));
+  }
+});

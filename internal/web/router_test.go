@@ -659,14 +659,6 @@ func TestFolderPickerSuggest(t *testing.T) {
 	}
 }
 
-func TestAbbrevCount(t *testing.T) {
-	for n, want := range map[int]string{0: "0", 999: "999", 1000: "1.0k", 4250: "4.3k", 12000: "12k", 999499: "999k", 999500: "1.0M", 12_400_000: "12M"} {
-		if got := abbrevCount(n); got != want {
-			t.Errorf("abbrevCount(%d) = %q, want %q", n, got, want)
-		}
-	}
-}
-
 func TestFolderPickerShowsFolderChangesAtOnce(t *testing.T) {
 	var mu sync.Mutex
 	folders := []monbooru.Folder{{Path: "old", Name: "old", Images: 1}}

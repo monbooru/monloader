@@ -29,7 +29,7 @@
       <input type="text" id="sd-gallery" name="gallery" value="{{.Gallery}}">
       {{end}}
     </div>
-    {{template "folder_picker" (.FolderPicker.WithValue .Folder)}}
+    {{template "webui/folder_picker" (.FolderPicker.WithValue .Folder)}}
     <div class="field"><label>Source label</label>
       <input type="text" name="label" value="{{.Label}}" placeholder="(blank = the site name)">
       <span class="field-hint">The name monbooru shows as the source. Images already sent keep the old name, and sending one again adds the new name beside it.</span>
