@@ -53,9 +53,10 @@ func (h *Handler) listFolders(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	page, limit := contract.PageParams(q.Get("page"), cmp.Or(q.Get("limit"), q.Get("page_size")), folderPageSize, folderPageSize)
-	level, err := h.host.Monbooru.ListFolders(r.Context(), strings.TrimSpace(q.Get("gallery")), strings.TrimSpace(q.Get("path")), page, limit)
+	path := strings.TrimSpace(q.Get("path"))
+	level, err := h.host.Monbooru.ListFolders(r.Context(), strings.TrimSpace(q.Get("gallery")), path, page, limit)
 	if errors.Is(err, monbooru.ErrFolderNotFound) {
-		contract.WriteError(w, http.StatusNotFound, errNotFound, "folder not found: "+q.Get("path"))
+		contract.WriteError(w, http.StatusNotFound, errNotFound, "folder not found: "+path)
 		return
 	}
 	if err != nil {
