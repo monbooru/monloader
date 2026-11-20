@@ -25,7 +25,7 @@ jobs:
        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: read
+      pull-requests: write
       issues: write
       statuses: write
     outputs:
