@@ -13,12 +13,6 @@ import (
 	"github.com/monbooru/monloader/internal/outcome"
 )
 
-const (
-	// monbooru's own page: a level shows this many rows, then [more].
-	folderLevelRows   = 500
-	folderSuggestRows = 10
-)
-
 // A gallery's folders as one render reads them. Pages are asked of monbooru
 // fresh for every render, which reads its own cached tree, and kept only
 // while the render runs: locating the held branch asks some twice.
@@ -48,7 +42,7 @@ func (f *folderReader) page(path string, page int) (monbooru.FolderPage, error) 
 	}
 	ctx, cancel := context.WithTimeout(f.r.Context(), 4*time.Second)
 	defer cancel()
-	fp, err := f.s.client.ListFolders(ctx, f.gallery, path, page, folderLevelRows)
+	fp, err := f.s.client.ListFolders(ctx, f.gallery, path, page, monbooru.FolderPageSize)
 	f.pages[key] = folderAnswer{page: fp, err: err}
 	return fp, err
 }
@@ -152,7 +146,7 @@ func (f *folderReader) level(p folderPicker, path string, page int, value string
 		}
 		lv.Rows = append(lv.Rows, folderRowOf(row, value))
 	}
-	left := fp.Total - (page-1)*folderLevelRows - len(fp.Results)
+	left := fp.Total - (page-1)*monbooru.FolderPageSize - len(fp.Results)
 	if next != "" && !seen {
 		// Shown on the first page already, so not among those left when its
 		// own page is still ahead.
@@ -179,7 +173,7 @@ func (f *folderReader) level(p folderPicker, path string, page int, value string
 // lists a level in byte order of path, so halving the pages finds it in a
 // few requests however wide the level.
 func (f *folderReader) locate(parent, child string, total int) (monbooru.Folder, int, bool) {
-	lo, hi := 1, (total+folderLevelRows-1)/folderLevelRows
+	lo, hi := 1, (total+monbooru.FolderPageSize-1)/monbooru.FolderPageSize
 	for lo <= hi {
 		mid := (lo + hi) / 2
 		fp, err := f.page(parent, mid)
@@ -276,7 +270,7 @@ func (s *Server) folderPickerSuggest(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	found, err := s.client.SearchFolders(ctx, r.URL.Query().Get("gallery"), q, folderSuggestRows)
+	found, err := s.client.SearchFolders(ctx, r.URL.Query().Get("gallery"), q, monbooru.FolderSearchLimit)
 	if err != nil {
 		return
 	}

@@ -52,7 +52,7 @@ func (h *Handler) listFolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	page, limit := contract.PageParams(q.Get("page"), cmp.Or(q.Get("limit"), q.Get("page_size")), folderPageSize, folderPageSize)
+	page, limit := contract.PageParams(q.Get("page"), cmp.Or(q.Get("limit"), q.Get("page_size")), monbooru.FolderPageSize, monbooru.FolderPageSize)
 	path := strings.TrimSpace(q.Get("path"))
 	level, err := h.host.Monbooru.ListFolders(r.Context(), strings.TrimSpace(q.Get("gallery")), path, page, limit)
 	if errors.Is(err, monbooru.ErrFolderNotFound) {
@@ -71,7 +71,7 @@ func (h *Handler) searchFolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	_, limit := contract.PageParams("", q.Get("limit"), folderSearchLimit, folderSearchMax)
+	_, limit := contract.PageParams("", q.Get("limit"), monbooru.FolderSearchLimit, monbooru.FolderSearchMax)
 	found, err := h.host.Monbooru.SearchFolders(r.Context(), strings.TrimSpace(q.Get("gallery")), q.Get("q"), limit)
 	if err != nil {
 		writeMonbooruError(w, r, err)
@@ -79,13 +79,6 @@ func (h *Handler) searchFolders(w http.ResponseWriter, r *http.Request) {
 	}
 	contract.WriteJSON(w, http.StatusOK, map[string]any{"results": found})
 }
-
-// monbooru's own bounds, so a client sees the same pages either way.
-const (
-	folderPageSize    = 500
-	folderSearchLimit = 10
-	folderSearchMax   = 100
-)
 
 type siteDefault struct {
 	Name    string `json:"name"`
