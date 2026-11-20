@@ -261,16 +261,15 @@ func markMissingGallery(dialog map[string]any) {
 	dialog["GalleryMissing"] = galleries != nil && galleryMissing(name, galleries)
 }
 
-// Lists the folders of the gallery the dialog shows, or of the default
-// gallery for a site without its own. Skipped when the galleries could not
-// be listed: monbooru will not answer this either.
+// Lists the folders of the gallery the dialog shows. Skipped when the
+// galleries could not be listed: monbooru will not answer this either.
 func (s *Server) markFolderPicker(r *http.Request, dialog map[string]any) {
 	if dialog["Galleries"] == nil {
 		dialog["FolderPicker"] = folderPickerKinds["site"]
 		return
 	}
 	gallery, _ := dialog["Gallery"].(string)
-	dialog["FolderPicker"] = s.folderPicker(r, "site", cmp.Or(gallery, s.cfg.Current().Monbooru.DefaultGallery))
+	dialog["FolderPicker"] = s.folderPicker(r, "site", gallery)
 }
 
 func (s *Server) refuseSiteSave(w http.ResponseWriter, r *http.Request, name, tab, msg string) {

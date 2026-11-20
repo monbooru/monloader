@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -60,6 +61,8 @@ type folderPicker struct {
 	Value       string
 	Missing     bool
 	held        func(path string) bool
+	// The form field holding the gallery picked beside it.
+	galleryField string
 }
 
 // WithValue lets the templates set the value they already resolve, a draft
@@ -73,16 +76,23 @@ func (p folderPicker) WithValue(v string) folderPicker {
 var folderPickerKinds = map[string]folderPicker{
 	"site": {
 		Kind: "site", ID: "sd-folder", Name: "folder", Label: "Folder", Blank: "(default folder)", GalleryID: "sd-gallery",
-		Hint: "Subfolder in the gallery. A folder picked when sending wins over this one.",
+		Hint:         "Subfolder in the gallery. A folder picked when sending wins over this one.",
+		galleryField: "gallery",
 	},
 	"default": {
 		Kind: "default", ID: "dl-folder", Name: "default_folder", Label: "Default folder", Blank: "(monbooru's default)", GalleryID: "mb-default-gallery",
-		Hint: "Subfolder in monbooru. Blank = monbooru's \"Where received files go\"",
+		Hint:         "Subfolder in monbooru. Blank = monbooru's \"Where received files go\"",
+		galleryField: "default_gallery",
 	},
 }
 
+// A site with no gallery of its own sends to the default one, so its
+// folders are listed from there.
 func (s *Server) folderPicker(r *http.Request, kind, gallery string) folderPicker {
 	p := folderPickerKinds[kind]
+	if kind == "site" {
+		gallery = cmp.Or(gallery, s.cfg.Current().Monbooru.DefaultGallery)
+	}
 	p.Gallery = gallery
 	rd := s.folderReader(r, gallery)
 	_, err := rd.page("", 1)
@@ -230,17 +240,7 @@ func (s *Server) folderPickerFragment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var gallery string
-	switch p.Kind {
-	case "site":
-		// A site with no gallery of its own sends to the default one.
-		gallery = strings.TrimSpace(r.FormValue("gallery"))
-		if gallery == "" {
-			gallery = s.cfg.Current().Monbooru.DefaultGallery
-		}
-	case "default":
-		gallery = strings.TrimSpace(r.FormValue("default_gallery"))
-	}
+	gallery := strings.TrimSpace(r.FormValue(p.galleryField))
 	s.render(w, "folder_picker", s.folderPicker(r, p.Kind, gallery).WithValue(strings.TrimSpace(r.FormValue(p.Name))))
 }
 
