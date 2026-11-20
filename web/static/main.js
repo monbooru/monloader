@@ -61,6 +61,12 @@ function folderNewDone(picker) {
   if (name) {
     folderPick(picker, form.dataset.under + name);
   }
+  folderNewClose(picker);
+}
+// Back to its own row, also ahead of a reload: the tree's swap would take
+// a form sitting under one of its rows with it.
+function folderNewClose(picker) {
+  var form = picker.querySelector(".folder-new-form");
   form.hidden = true;
   picker.querySelector(".folder-new-row").appendChild(form);
 }
@@ -81,6 +87,7 @@ document.addEventListener("click", function (e) {
     t.closest("[data-folder-browse]").textContent = panel.hidden ? "[browse]" : "[close]";
     // Every opening reloads, so a folder made or removed since shows.
     if (!panel.hidden) {
+      folderNewClose(picker);
       picker.querySelector(".folder-tree[id]").dispatchEvent(new CustomEvent("folder-open"));
     }
   } else if (t.closest("[data-folder-toggle]")) {
@@ -90,6 +97,9 @@ document.addEventListener("click", function (e) {
     kids.hidden = !kids.hidden;
     btn.textContent = kids.hidden ? "▶" : "▼";
     if (!kids.hidden) {
+      if (kids.contains(picker.querySelector(".folder-new-form"))) {
+        folderNewClose(picker);
+      }
       kids.dispatchEvent(new CustomEvent("folder-open"));
     }
   } else if (t.closest("[data-folder-suggest]")) {
