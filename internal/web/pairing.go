@@ -117,19 +117,33 @@ func (s *Server) monbooruPairPoll(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type pairOutcome int
+
+const (
+	pairWaiting pairOutcome = iota
+	pairCommitted
+	pairDenied
+	pairGone
+)
+
 func (s *Server) claimMonbooruPair(ctx context.Context, att *outboundPair) (msg string, committed bool) {
+	msg, out := s.claimMonbooruOutcome(ctx, att)
+	return msg, out == pairCommitted
+}
+
+func (s *Server) claimMonbooruOutcome(ctx context.Context, att *outboundPair) (string, pairOutcome) {
 	status, token, err := s.client.PairStatus(ctx, att.requestID)
 	if err != nil {
 		// Transient (monbooru briefly unreachable); keep waiting.
-		return "", false
+		return "", pairWaiting
 	}
 	switch status {
 	case string(pairing.Approved):
 		if token == "" {
-			return "", false
+			return "", pairWaiting
 		}
 		if !s.takePairAttempt(att) {
-			return "", false
+			return "", pairWaiting
 		}
 		tok := att.token
 		if err := s.cfg.Update(func(c *config.Config) error {
@@ -144,20 +158,20 @@ func (s *Server) claimMonbooruPair(ctx context.Context, att *outboundPair) (msg 
 			return nil
 		}); err != nil {
 			s.setPairAttempt(att) // restore so a later poll retries
-			return "Could not save: " + err.Error(), false
+			return "Could not save: " + err.Error(), pairWaiting
 		}
 		logx.Infof("pairing: connected to monbooru")
-		return "", true
+		return "", pairCommitted
 	case string(pairing.Denied):
 		s.takePairAttempt(att)
 		logx.Infof("pairing: monbooru denied the request")
-		return "Request denied in monbooru.", false
+		return "Request denied in monbooru.", pairDenied
 	case "not_found":
 		s.takePairAttempt(att)
 		logx.Infof("pairing: monbooru no longer has the request")
-		return "monbooru no longer has this request - connect again.", false
+		return "monbooru no longer has this request - connect again.", pairGone
 	}
-	return "", false
+	return "", pairWaiting
 }
 
 // Nothing is committed on either side yet; monbooru's pending request
