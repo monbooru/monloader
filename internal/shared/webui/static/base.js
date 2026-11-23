@@ -657,7 +657,7 @@ function folderNewClose(picker) {
 document.addEventListener('click', function(e) {
   var picker = e.target.closest('.folder-picker');
   document.querySelectorAll('.folder-picker .suggest-dropdown').forEach(function(d) {
-    if (!picker || !picker.contains(d)) d.innerHTML = '';
+    if (!picker || !picker.contains(d) || !e.target.closest('.folder-picker-input')) d.innerHTML = '';
   });
   if (!picker) return;
   var t = e.target;
@@ -698,6 +698,12 @@ document.addEventListener('click', function(e) {
   } else if (t.closest('[data-folder-pick]') && !t.closest('.folder-new-form')) {
     folderPick(picker, t.closest('[data-folder-pick]').dataset.folderPick);
   }
+});
+
+document.body.addEventListener('htmx:beforeSwap', function(e) {
+  var slot = e.detail.target;
+  if (!slot || !slot.matches || !slot.matches('.folder-picker .suggest-dropdown')) return;
+  if (document.activeElement !== slot.parentNode.querySelector('input')) e.detail.shouldSwap = false;
 });
 
 // Enter in the new folder's name takes it rather than submitting the form.

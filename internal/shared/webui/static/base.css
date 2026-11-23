@@ -676,8 +676,9 @@ dialog .folder-picker-input, dialog .folder-picker-panel { max-width: none; }
 .folder-new-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; font-size: 12px; }
 .folder-new-form:not([hidden]) { display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px 26px; font-size: 12px; }
 .folder-new-row .folder-new-form:not([hidden]) { padding: 0; }
-.folder-new-under { color: var(--fg-dim); }
-.field .folder-new-form input[type="text"] { width: 140px; padding: 1px 4px; font-size: 12px; }
+.folder-new-under { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-dim); }
+.field .folder-new-form input[type="text"] { width: 140px; min-width: 60px; padding: 1px 4px; font-size: 12px; }
+.folder-new-form [data-folder-new-ok] { flex-shrink: 0; }
 .folder-picker .suggest-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 200; }
 .folder-picker .suggest-list { position: static; min-width: 0; max-height: 200px; overflow-y: auto; background: var(--bg-surface); border: 1px solid var(--border); }
 .folder-picker .suggest-item { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 3px 8px; border: none; border-bottom: 1px solid var(--border); background: none; color: var(--fg); font-size: 12px; text-align: left; cursor: pointer; }

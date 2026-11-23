@@ -29,7 +29,7 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.Mu.Lock()
 	token := f.Token
 	f.Mu.Unlock()
-	got, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	got := BearerToken(r)
 	if token != "" && subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "bad token")
 		return

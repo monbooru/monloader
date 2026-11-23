@@ -3,11 +3,17 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"slices"
 	"testing"
 )
@@ -45,7 +51,7 @@ func TestReadTagRefusesFramesThatDoNotMatchTheSpec(t *testing.T) {
 	}{
 		{"short", TagRequest{Models: []string{"a"}, Frames: spec}, [][]byte{make([]byte, 12)}},
 		{"long", TagRequest{Models: []string{"a"}, Frames: spec}, [][]byte{make([]byte, 12), make([]byte, 13)}},
-		{"png", TagRequest{Models: []string{"a"}, Frames: FrameSpec{Format: "png", Size: 2, Count: 1}}, [][]byte{make([]byte, 12)}},
+		{"unknown format", TagRequest{Models: []string{"a"}, Frames: FrameSpec{Format: "jpeg", Size: 2, Count: 1}}, [][]byte{make([]byte, 12)}},
 		{"too many", TagRequest{Models: []string{"a"}, Frames: FrameSpec{Format: FormatRGB8, Size: 1, Count: MaxFrames + 1}}, [][]byte{make([]byte, 3*(MaxFrames+1))}},
 		{"too large", TagRequest{Models: []string{"a"}, Frames: FrameSpec{Format: FormatRGB8, Size: MaxSize + 1, Count: 1}}, nil},
 		{"no model", TagRequest{Frames: spec}, [][]byte{make([]byte, 24)}},
@@ -126,5 +132,112 @@ func TestClientTellsARefusalFromATransportFailure(t *testing.T) {
 	cancel()
 	if _, err := c.Info(cancelled); IsTransport(err) {
 		t.Errorf("cancelled call counted as a transport failure: %v", err)
+	}
+}
+
+func TestTagBodyRoundTripsAsPNG(t *testing.T) {
+	const size = 16
+	frames := make([][]byte, 3)
+	for k := range frames {
+		frames[k] = make([]byte, size*size*3)
+		for i := range frames[k] {
+			frames[k][i] = byte(i*7 + k*31)
+		}
+	}
+	req := TagRequest{Models: []string{"a"}, Priority: PriorityBatch, Frames: FrameSpec{Format: FormatPNG, Size: size, Count: len(frames)}}
+	got, gotFrames, err := ReadTag(tagBody(t, req, frames))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got) != fmt.Sprint(req) || !slices.EqualFunc(gotFrames, frames, bytes.Equal) {
+		t.Errorf("the frames did not come back as the pixels sent")
+	}
+	flat := [][]byte{bytes.Repeat([]byte{255}, size*size*3)}
+	var raw, packed bytes.Buffer
+	if _, err := WriteTag(&raw, TagRequest{Models: []string{"a"}, Frames: FrameSpec{Format: FormatRGB8, Size: size, Count: 1}}, flat); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteTag(&packed, TagRequest{Models: []string{"a"}, Frames: FrameSpec{Format: FormatPNG, Size: size, Count: 1}}, flat); err != nil {
+		t.Fatal(err)
+	}
+	if packed.Len() >= raw.Len() {
+		t.Errorf("a flat frame took %d bytes as PNG, %d raw", packed.Len(), raw.Len())
+	}
+}
+
+func rawTagBody(t *testing.T, req TagRequest, payload []byte) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	head := textproto.MIMEHeader{}
+	head.Set("Content-Disposition", `form-data; name="`+PartRequest+`"`)
+	pw, _ := mw.CreatePart(head)
+	if err := json.NewEncoder(pw).Encode(req); err != nil {
+		t.Fatal(err)
+	}
+	head = textproto.MIMEHeader{}
+	head.Set("Content-Disposition", `form-data; name="`+PartFrames+`"`)
+	pw, _ = mw.CreatePart(head)
+	_, _ = pw.Write(payload)
+	_ = mw.Close()
+	r := httptest.NewRequest(http.MethodPost, PathTag, &body)
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	return r
+}
+
+func TestReadTagRefusesAPNGThatIsNotTheFrameNamed(t *testing.T) {
+	encode := func(img image.Image) []byte {
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	framed := func(b []byte) []byte {
+		return append(binary.BigEndian.AppendUint32(nil, uint32(len(b))), b...)
+	}
+	good := encode(image.NewNRGBA(image.Rect(0, 0, 4, 4)))
+	req := TagRequest{Models: []string{"a"}, Frames: FrameSpec{Format: FormatPNG, Size: 4, Count: 1}}
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+	}{
+		{"no length", nil},
+		{"cut short", framed(good)[:len(good)]},
+		{"not a png", framed(bytes.Repeat([]byte{9}, 40))},
+		{"another size", framed(encode(image.NewNRGBA(image.Rect(0, 0, 8, 8))))},
+		{"sixteen bits", framed(encode(image.NewNRGBA64(image.Rect(0, 0, 4, 4))))},
+		{"a length over the bound", append(binary.BigEndian.AppendUint32(nil, uint32(pngBound(4)+1)), good...)},
+		{"a second frame", append(framed(good), framed(good)...)},
+	} {
+		if _, _, err := ReadTag(rawTagBody(t, req, tc.payload)); err == nil {
+			t.Errorf("%s: read without an error", tc.name)
+		}
+	}
+	if _, _, err := ReadTag(rawTagBody(t, req, framed(good))); err != nil {
+		t.Errorf("a well-formed frame was refused: %v", err)
+	}
+}
+
+func TestClientSendsTheWorkersTokenBesideAGatewaysKey(t *testing.T) {
+	var auth, own string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth, own = r.Header.Get("Authorization"), BearerToken(r)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Token: "worker-token"}
+	if _, err := c.Info(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "Bearer worker-token" || own != "worker-token" {
+		t.Errorf("without a gateway: Authorization %q, token read %q", auth, own)
+	}
+	c.Gateway = "gateway-key"
+	if _, err := c.Info(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "Bearer gateway-key" || own != "worker-token" {
+		t.Errorf("behind a gateway: Authorization %q, token read %q", auth, own)
 	}
 }

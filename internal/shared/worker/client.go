@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,12 @@ import (
 type Client struct {
 	BaseURL string
 	Token   string
-	HTTP    *http.Client
+	// Gateway, when set, is the key of a gateway in front of the worker:
+	// it goes as the bearer and Token moves to HeaderToken.
+	Gateway string
+	// Format is the frame format of a tag call; empty is FormatRGB8.
+	Format string
+	HTTP   *http.Client
 }
 
 // StatusError is a worker's answer other than 2xx: it was reached, so a
@@ -69,7 +75,7 @@ func (c *Client) Labels(ctx context.Context, model, etag string) (out Labels, ch
 // input.
 func (c *Client) Tag(ctx context.Context, req TagRequest, frames [][]byte) (TagResponse, error) {
 	var out TagResponse
-	req.Frames = FrameSpec{Format: FormatRGB8, Size: req.Frames.Size, Count: len(frames)}
+	req.Frames = FrameSpec{Format: cmp.Or(c.Format, FormatRGB8), Size: req.Frames.Size, Count: len(frames)}
 	var body bytes.Buffer
 	ctype, err := WriteTag(&body, req, frames)
 	if err != nil {
@@ -108,7 +114,11 @@ func (c *Client) getJSON(ctx context.Context, path, etag string, out any) (int, 
 }
 
 func (c *Client) do(req *http.Request, out any) (int, error) {
-	if c.Token != "" {
+	switch {
+	case c.Gateway != "":
+		req.Header.Set("Authorization", "Bearer "+c.Gateway)
+		req.Header.Set(HeaderToken, c.Token)
+	case c.Token != "":
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 	req.Header.Set("Accept", "application/json")

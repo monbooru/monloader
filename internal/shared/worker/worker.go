@@ -1,18 +1,24 @@
 // Package worker spells what monbooru and monworker exchange over
 // monworker's /v1: the descriptions, the tag call, a client and a fake
-// worker for tests. A model's frames travel as raw RGB8 and its scores
-// come back sparse, so the wire carries no tag and no file name.
+// worker for tests. A model's frames travel as RGB8 pixels, raw or as
+// PNG, and its scores come back sparse, so the wire carries no tag and no
+// file name.
 package worker
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"strings"
 )
 
 const (
@@ -32,7 +38,16 @@ const (
 	PriorityBatch       = "batch"
 	PriorityInteractive = "interactive"
 
+	// FormatRGB8 is Size x Size x 3 bytes a frame, one after the other.
+	// FormatPNG is the same pixels as an 8-bit PNG, each frame after its
+	// length in four bytes, big-endian: smaller on a slow link, the same
+	// on arrival.
 	FormatRGB8 = "rgb8"
+	FormatPNG  = "png"
+
+	// HeaderToken carries the worker's token when a gateway in front of
+	// it keeps Authorization for its own key.
+	HeaderToken = "X-Monworker-Token"
 )
 
 // ScoreFloor is the lowest score a worker sends: aggregation counts
@@ -63,6 +78,9 @@ type Info struct {
 	// ModelsDir is the folder the worker reads, where a model is installed.
 	ModelsDir string   `json:"models_dir,omitempty"`
 	Tasks     []string `json:"tasks"`
+	// Formats are the frame formats a call may use; none listed is
+	// FormatRGB8 alone.
+	Formats []string `json:"formats,omitempty"`
 	// Loaded names the models with a live session.
 	Loaded []string `json:"loaded"`
 	Busy   bool     `json:"busy"`
@@ -203,13 +221,83 @@ const (
 	CodeOverloaded   = "overloaded"
 )
 
-// frameBytes is the size of count frames of the spec; 0 when the spec is
-// not one a call may carry.
+// frameBytes is the size of count frames of the spec once they are RGB8;
+// 0 when the spec is not one a call may carry.
 func (f FrameSpec) frameBytes() int {
-	if f.Format != FormatRGB8 || f.Size < 1 || f.Size > MaxSize || f.Count < 1 || f.Count > MaxFrames {
+	if f.Format != FormatRGB8 && f.Format != FormatPNG || f.Size < 1 || f.Size > MaxSize || f.Count < 1 || f.Count > MaxFrames {
 		return 0
 	}
 	return f.Count * f.Size * f.Size * 3
+}
+
+// pngBound is the most bytes a PNG of size x size RGB8 pixels may take: a
+// picture deflate cannot shrink grows by a filter byte a row and its
+// block headers.
+func pngBound(size int) int { return size*size*3 + size*size/8 + 4096 }
+
+func encodePNG(w io.Writer, frame []byte, size int) error {
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	for i, j := 0, 0; i < len(frame); i, j = i+3, j+4 {
+		img.Pix[j], img.Pix[j+1], img.Pix[j+2], img.Pix[j+3] = frame[i], frame[i+1], frame[i+2], 0xFF
+	}
+	var buf bytes.Buffer
+	if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&buf, img); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, uint32(buf.Len())); err != nil {
+		return err
+	}
+	_, err := w.Write(buf.Bytes())
+	return err
+}
+
+// decodePNG reads one length-prefixed PNG into dst, size x size RGB8.
+func decodePNG(r io.Reader, dst []byte, size int) error {
+	var n uint32
+	if err := binary.Read(r, binary.BigEndian, &n); err != nil {
+		return errors.New("a frame's length is missing")
+	}
+	if n == 0 || int(n) > pngBound(size) {
+		return fmt.Errorf("a frame of %d bytes, over what %d px may take", n, size)
+	}
+	raw := make([]byte, n)
+	if _, err := io.ReadFull(r, raw); err != nil {
+		return fmt.Errorf("a frame cut short of its %d bytes", n)
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return fmt.Errorf("a frame that is no PNG: %w", err)
+	}
+	if cfg.Width != size || cfg.Height != size {
+		return fmt.Errorf("a frame of %dx%d, not %d px", cfg.Width, cfg.Height, size)
+	}
+	img, err := png.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return fmt.Errorf("a frame that is no PNG: %w", err)
+	}
+	switch m := img.(type) {
+	case *image.RGBA:
+		for i, j := 0, 0; i < len(dst); i, j = i+3, j+4 {
+			dst[i], dst[i+1], dst[i+2] = m.Pix[j], m.Pix[j+1], m.Pix[j+2]
+		}
+	case *image.NRGBA:
+		for i, j := 0, 0; i < len(dst); i, j = i+3, j+4 {
+			dst[i], dst[i+1], dst[i+2] = m.Pix[j], m.Pix[j+1], m.Pix[j+2]
+		}
+	default:
+		return errors.New("a frame that is not 8-bit RGB")
+	}
+	return nil
+}
+
+// BearerToken is the worker's token a call carries: HeaderToken when a
+// gateway took Authorization, else the bearer.
+func BearerToken(r *http.Request) string {
+	if tok := strings.TrimSpace(r.Header.Get(HeaderToken)); tok != "" {
+		return tok
+	}
+	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return strings.TrimSpace(tok)
 }
 
 // WriteTag writes a tag call's body; it returns the content type.
@@ -232,7 +320,12 @@ func WriteTag(w io.Writer, req TagRequest, frames [][]byte) (string, error) {
 		return "", err
 	}
 	for _, f := range frames {
-		if _, err := pw.Write(f); err != nil {
+		if req.Frames.Format == FormatPNG {
+			err = encodePNG(pw, f, req.Frames.Size)
+		} else {
+			_, err = pw.Write(f)
+		}
+		if err != nil {
 			return "", err
 		}
 	}
@@ -240,7 +333,7 @@ func WriteTag(w io.Writer, req TagRequest, frames [][]byte) (string, error) {
 }
 
 // ReadTag reads a tag call's body, refusing frames that do not match the
-// request's spec.
+// request's spec; the frames it returns are RGB8 whatever they came as.
 func ReadTag(r *http.Request) (TagRequest, [][]byte, error) {
 	var req TagRequest
 	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -260,22 +353,28 @@ func ReadTag(r *http.Request) (TagRequest, [][]byte, error) {
 	}
 	n := req.Frames.frameBytes()
 	if n == 0 {
-		return req, nil, fmt.Errorf("frames: want %s, 1 to %d frames of 1 to %d px", FormatRGB8, MaxFrames, MaxSize)
+		return req, nil, fmt.Errorf("frames: want %s or %s, 1 to %d frames of 1 to %d px", FormatRGB8, FormatPNG, MaxFrames, MaxSize)
 	}
 	if part, err = mr.NextPart(); err != nil || part.FormName() != PartFrames {
 		return req, nil, fmt.Errorf("want the %q part second", PartFrames)
 	}
 	buf := make([]byte, n)
-	if got, err := io.ReadFull(part, buf); err != nil {
-		return req, nil, fmt.Errorf("frames part: %d bytes of %d", got, n)
-	}
-	if extra, _ := part.Read(make([]byte, 1)); extra > 0 {
-		return req, nil, fmt.Errorf("frames part: more than %d bytes", n)
-	}
 	frames := make([][]byte, req.Frames.Count)
 	size := n / req.Frames.Count
 	for i := range frames {
 		frames[i] = buf[i*size : (i+1)*size : (i+1)*size]
+	}
+	if req.Frames.Format == FormatPNG {
+		for i := range frames {
+			if err := decodePNG(part, frames[i], req.Frames.Size); err != nil {
+				return req, nil, fmt.Errorf("frames part: %w", err)
+			}
+		}
+	} else if got, err := io.ReadFull(part, buf); err != nil {
+		return req, nil, fmt.Errorf("frames part: %d bytes of %d", got, n)
+	}
+	if extra, _ := part.Read(make([]byte, 1)); extra > 0 {
+		return req, nil, errors.New("frames part: more than the frames named")
 	}
 	return req, frames, nil
 }
