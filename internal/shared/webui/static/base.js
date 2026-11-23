@@ -478,6 +478,16 @@ function fitPairNotice() {
 }
 fitPairNotice();
 document.fonts.ready.then(fitPairNotice);
+
+function showActiveNav() {
+  const nav = document.getElementById('nav');
+  const active = nav && nav.querySelector('a.active');
+  if (!active) return;
+  const over = active.getBoundingClientRect().right - nav.getBoundingClientRect().right;
+  if (over > 0) nav.scrollLeft += over + 24;
+}
+showActiveNav();
+document.fonts.ready.then(showActiveNav);
 let fitFrame = 0;
 window.addEventListener('resize', function() {
   cancelAnimationFrame(fitFrame);
