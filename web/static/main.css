@@ -328,7 +328,6 @@ dialog textarea { resize: vertical; max-height: 60vh; }
 .htmx-request.htmx-indicator,
 .htmx-request .htmx-indicator { display: inline; }
 
-.dialog-tabs { flex-wrap: wrap; }
 .dialog-panel .field > input[type=text], .dialog-panel .field > input[type=password],
 .dialog-panel .field > select, .dialog-panel .field > textarea { max-width: none; }
 .export-block {
