@@ -1050,7 +1050,7 @@ func TestConnLight(t *testing.T) {
 	up := newTestServer(t, pairMB(t, stubbedServer(t, "")))
 	if _, body := get(t, up, "/internal/monbooru-status"); !strings.Contains(body, "dot-ok") {
 		t.Errorf("reachable monbooru should render a green dot, got %q", body)
-	} else if !strings.Contains(body, "connected to monbooru v9.9.9") {
+	} else if !strings.Contains(body, `<span class="peer-light-long">connected to </span>monbooru v9.9.9`) {
 		t.Errorf("reachable monbooru should show the reported version, got %q", body)
 	}
 
@@ -1134,7 +1134,7 @@ func TestConnLightSeedsCachedStatus(t *testing.T) {
 	}
 
 	get(t, ts, "/internal/monbooru-status")
-	if _, body := get(t, ts, "/queue"); !strings.Contains(body, "connected to monbooru") {
+	if _, body := get(t, ts, "/queue"); !strings.Contains(body, `<span class="peer-light-long">connected to </span>monbooru`) {
 		t.Errorf("warm cache should seed the connected light, got %q", body)
 	}
 }

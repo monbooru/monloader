@@ -244,7 +244,7 @@ func TestMonbooruLink(t *testing.T) {
 	ts := newTestServer(t, srv)
 
 	_, light := get(t, ts, "/internal/monbooru-status")
-	if !strings.Contains(light, `connected to <a href="http://booru.example.com" target="_blank" rel="noopener">monbooru</a>`) {
+	if !strings.Contains(light, `<span class="peer-light-long">connected to </span><a href="http://booru.example.com" target="_blank" rel="noopener">monbooru</a>`) {
 		t.Errorf("connection light should read 'connected to' and link only the word monbooru, got %q", light)
 	}
 
@@ -253,7 +253,7 @@ func TestMonbooruLink(t *testing.T) {
 	if strings.Contains(plainLight, "<a href=") {
 		t.Error("connection light should not be linked without web_url")
 	}
-	if !strings.Contains(plainLight, "connected to monbooru") {
+	if !strings.Contains(plainLight, `<span class="peer-light-long">connected to </span>monbooru`) {
 		t.Errorf("unlinked light should still read 'connected to monbooru', got %q", plainLight)
 	}
 }
