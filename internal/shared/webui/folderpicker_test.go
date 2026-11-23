@@ -9,8 +9,6 @@ import (
 	"testing"
 )
 
-// A reader over a flat folder list, in path order, pageSize rows a page.
-// A path the list does not hold, other than the top, is an error.
 func folderReaderOf(all []FolderEntry, pageSize int) func(string, int) (FolderPage, error) {
 	return func(path string, page int) (FolderPage, error) {
 		if path != "" && !slices.ContainsFunc(all, func(f FolderEntry) bool { return f.Path == path }) {
@@ -32,7 +30,6 @@ func folderEntry(path string, folders int) FolderEntry {
 	return FolderEntry{Path: path, Name: name, Images: 1, Folders: folders}
 }
 
-// n top-level folders f0000..., the last with a subfolder "sub".
 func longFolders(n int) []FolderEntry {
 	var out []FolderEntry
 	for i := range n {
@@ -44,15 +41,14 @@ func longFolders(n int) []FolderEntry {
 
 func TestFolderLevelOf(t *testing.T) {
 	second := []FolderEntry{folderEntry("second", 1), folderEntry("second/sub", 0)}
-	// f000 to f501 run past a 500 row page; f501 has a subfolder.
+
 	var wide []FolderEntry
 	for i := range 502 {
 		wide = append(wide, folderEntry(fmt.Sprintf("f%03d", i), 0))
 	}
 	wide[501].Folders = 1
 	wide = append(wide, folderEntry("f501/deep", 0))
-	// "art" sits on the top level's second page, behind "ART", its twelve
-	// subfolders and 500 more, which a search for "art" would list first.
+
 	crowd := []FolderEntry{folderEntry("ART", 12)}
 	for i := range 12 {
 		crowd = append(crowd, folderEntry(fmt.Sprintf("ART/x%02d", i), 0))
@@ -69,8 +65,8 @@ func TestFolderLevelOf(t *testing.T) {
 		page        int
 		value       string
 		has, hasNot []string
-		open        string // the row rendered with its branch open
-		active      string // the row marked as the field's folder
+		open        string
+		active      string
 		more, left  int
 	}{
 		{"one level, closed", second, "", 1, "", []string{"second"}, []string{"second/sub"}, "", "", 0, 0},
@@ -191,7 +187,7 @@ func TestFolderPickerTemplate(t *testing.T) {
 		{"the app's routes", "webui/folder_picker", base,
 			[]string{`hx-get="/r/suggest?kind=k&amp;gallery=my&#43;art"`, `hx-get="/r/level?kind=k&amp;gallery=my&#43;art&amp;path="`, `[browse]`},
 			[]string{`hx-trigger="change`}},
-		// A form around the field may set a target its requests would inherit.
+
 		{"the tree swaps into itself", "webui/folder_picker", base,
 			[]string{`id="f-tree" hx-trigger="folder-open" hx-target="this"`}, nil},
 		{"redrawn when its gallery changes", "webui/folder_picker", withGallery,
