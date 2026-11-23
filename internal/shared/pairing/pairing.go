@@ -3,9 +3,11 @@
 package pairing
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -112,31 +114,34 @@ func (s *Store[T, P]) DropPending(app string) {
 	s.dropPendingLocked(app, "", true)
 }
 
+// In the order they arrived, so a card stays where it was between polls.
 func (s *Store[T, P]) ListPending() []T {
+	return s.list(func(r *Request) bool { return r.State == Pending })
+}
+
+func (s *Store[T, P]) list(keep func(*Request) bool) []T {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked()
-	var out []T
+	var ps []P
 	for _, p := range s.m {
-		if p.request().State == Pending {
-			out = append(out, *p)
+		if keep(p.request()) {
+			ps = append(ps, p)
 		}
+	}
+	slices.SortFunc(ps, func(a, b P) int {
+		return cmp.Or(a.request().CreatedAt.Compare(b.request().CreatedAt), cmp.Compare(a.request().ID, b.request().ID))
+	})
+	out := make([]T, len(ps))
+	for i, p := range ps {
+		out[i] = *p
 	}
 	return out
 }
 
 // ListApproved returns the approvals whose token the peer has not collected yet.
 func (s *Store[T, P]) ListApproved() []T {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sweepLocked()
-	var out []T
-	for _, p := range s.m {
-		if r := p.request(); r.State == Approved && !r.Claimed {
-			out = append(out, *p)
-		}
-	}
-	return out
+	return s.list(func(r *Request) bool { return r.State == Approved && !r.Claimed })
 }
 
 func (s *Store[T, P]) Get(id string) (T, bool) {

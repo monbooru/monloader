@@ -23,6 +23,30 @@ function setFlashText(slot, kind, text) {
   slot.appendChild(d);
 }
 
+function handleSuggestKey(e, dropdownId, inputId) {
+  var dd = document.getElementById(dropdownId);
+  if (!dd) return;
+  var items = Array.from(dd.querySelectorAll('.suggest-item'));
+  var focused = dd.querySelector('.suggest-item.kbd-focused');
+  var idx = focused ? items.indexOf(focused) : -1;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    items.forEach(function(i){ i.classList.remove('kbd-focused'); });
+    idx = e.key === 'ArrowDown' ? Math.min(idx + 1, items.length - 1) : Math.max(idx - 1, 0);
+    if (idx >= 0) {
+      items[idx].classList.add('kbd-focused');
+      items[idx].scrollIntoView({ block: 'nearest' });
+    }
+  } else if (e.key === 'Enter' && focused) {
+    e.preventDefault();
+    focused.click();
+  } else if (e.key === 'Escape') {
+    // An open list takes this Escape, so a dialog around the input stays open.
+    if (dd.childElementCount > 0) e.preventDefault();
+    dd.innerHTML = '';
+  }
+}
+
 function writeStash(key, obj) {
   obj.t = Date.now();
   try { sessionStorage.setItem(key, JSON.stringify(obj)); } catch (e) {}
@@ -483,7 +507,9 @@ function showActiveNav() {
   const nav = document.getElementById('nav');
   const active = nav && nav.querySelector('a.active');
   if (!active) return;
-  const over = active.getBoundingClientRect().right - nav.getBoundingClientRect().right;
+  const notice = nav.querySelector('.pair-notice:not([hidden])');
+  const edge = notice && getComputedStyle(notice).position === 'sticky' ? notice.getBoundingClientRect().left : nav.getBoundingClientRect().right;
+  const over = active.getBoundingClientRect().right - edge;
   if (over > 0) nav.scrollLeft += over + 24;
 }
 showActiveNav();
@@ -498,6 +524,7 @@ document.body.addEventListener('htmx:oobAfterSwap', function(e) {
     syncPairTitle();
     fitPairNotice();
   }
+  if (e.detail && e.detail.target && e.detail.target.classList.contains('pair-notice')) showActiveNav();
 });
 
 // History restore swaps with neither target nor xhr.

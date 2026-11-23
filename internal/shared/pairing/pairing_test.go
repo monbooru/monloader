@@ -2,6 +2,7 @@ package pairing
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 )
@@ -159,5 +160,26 @@ func TestDropPendingAndRemove(t *testing.T) {
 	s.Remove(b)
 	if _, ok := s.Get(b); ok {
 		t.Error("Remove kept the request")
+	}
+}
+
+func TestPendingKeepsTheOrderTheyArrived(t *testing.T) {
+	s := NewStore[Request]()
+	var want []string
+	for i := range 8 {
+		label := fmt.Sprintf("u%d", i)
+		if _, ok := s.Create(Request{App: "monworker", Label: label}); !ok {
+			t.Fatal("create")
+		}
+		want = append(want, label)
+	}
+	for range 20 {
+		var got []string
+		for _, r := range s.ListPending() {
+			got = append(got, r.Label)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
 	}
 }

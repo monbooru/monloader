@@ -193,6 +193,7 @@ button {
   white-space: nowrap;
 }
 .topbar-action:hover { color: var(--fg); }
+@media (pointer: coarse) { .topbar-action { padding-top: 2px; padding-bottom: 3px; } }
 .search-input-wrap {
   position: relative;
   flex: 1;
@@ -366,6 +367,7 @@ dialog .dlg-title {
 }
 .dlg-x::before { content: "[x]"; }
 .dlg-x:hover { color: var(--fg); }
+@media (pointer: coarse) { .dlg-x { top: 5px; padding: 2px 0; } }
 dialog:has(.dialog-actions .btn-danger:not([hidden])) { border: 1px solid var(--danger); }
 dialog:has(.dialog-actions .btn-danger:not([hidden])) .dlg-title { background: var(--danger); border-top-color: var(--danger); color: var(--on-danger); }
 dialog:has(.dialog-actions .btn-danger:not([hidden])) .dlg-title .dlg-x,
@@ -390,6 +392,7 @@ dialog:has(.dialog-actions .btn-danger:not([hidden])) .dlg-title-sub { color: in
   cursor: pointer;
 }
 .btn-sm:hover { background: color-mix(in srgb, var(--fg) 19%, transparent); }
+@media (pointer: coarse) { .btn-sm { padding-top: 3px; padding-bottom: 3px; } }
 a.btn-sm { display: inline-block; text-decoration: none; line-height: normal; }
 a.btn-sm:hover { text-decoration: none; }
 .btn-link-accent {
@@ -480,7 +483,7 @@ a.btn-sm:hover { text-decoration: none; }
 #confirm-dialog-msg { white-space: pre-wrap; }
 .confirm-dialog-danger { color: var(--error); font-size: 12px; margin-top: 4px; }
 .confirm-dialog-danger:empty { display: none; }
-.dialog-tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+.dialog-tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
 .dialog-tab {
   background: none;
   border: none;
@@ -527,10 +530,13 @@ a.btn-sm:hover { text-decoration: none; }
 @media (max-width: 600px) {
   #nav { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   #nav::-webkit-scrollbar { display: none; }
+  #nav .pair-notice { position: sticky; right: 0; background: var(--bg-surface); }
+  #nav .pair-notice:has(~ .pair-notice:not([hidden])) { right: calc(3ch + 16px); }
 }
 @media (max-width: 480px) {
   #topbar { padding: 4px 8px 0; }
   #nav .pair-notice { padding-right: 0; }
+  #nav .pair-notice:has(~ .pair-notice:not([hidden])) { right: calc(3ch + 8px); }
 }
 .dialog-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .dialog-actions > button { flex: 0 0 auto; }
@@ -682,4 +688,5 @@ dialog .folder-picker-input, dialog .folder-picker-panel { max-width: none; }
 .folder-picker .suggest-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 200; }
 .folder-picker .suggest-list { position: static; min-width: 0; max-height: 200px; overflow-y: auto; background: var(--bg-surface); border: 1px solid var(--border); }
 .folder-picker .suggest-item { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 3px 8px; border: none; border-bottom: 1px solid var(--border); background: none; color: var(--fg); font-size: 12px; text-align: left; cursor: pointer; }
+.suggest-item.kbd-focused { background: var(--bg-input); outline: 1px solid var(--link); }
 .folder-picker .suggest-item:hover { background: var(--bg-input); }
