@@ -128,6 +128,19 @@
   .watch-table th:nth-child(7) { width: 112px; }
   .watch-table .actions button { white-space: normal; }
 }
+@media (max-width: 600px) {
+  .table-scroll:has(> .watch-table) { overflow-x: visible; }
+  .watch-table { min-width: 0; }
+  .watch-table, .watch-table tbody, .watch-table tr { display: block; }
+  .watch-table thead { display: none; }
+  .watch-table tr:has(> td + td) { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+  .watch-table tr > td:nth-child(n) { display: block; width: auto; padding: 0; border: 0; min-width: 0; grid-column: 1; }
+  .watch-table tr > td:nth-child(3):not(:only-child), .watch-table tr > td:nth-child(6) { display: none; }
+  .watch-table .queue-url { overflow-wrap: anywhere; }
+  .watch-table tr > td:nth-child(7) { grid-column: 2; grid-row: 1 / span 4; }
+  .watch-table tr > td.no-results { padding: 8px; }
+  .watch-table select { width: auto; }
+}
 @media (max-width: 1000px) {
   .watch-table th:nth-child(3), .watch-table td:nth-child(3),
   .watch-table th:nth-child(6), .watch-table td:nth-child(6) { width: 0; padding: 0; overflow: hidden; }
