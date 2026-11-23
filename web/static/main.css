@@ -205,6 +205,11 @@
   #sidebar { width: auto; border-right: none; border-bottom: 1px solid var(--border); padding: 0; overflow-y: visible; }
   #sidebar .settings-nav { flex-direction: row; flex-wrap: wrap; padding: 8px; }
 }
+@media (max-width: 600px) {
+  #sidebar .settings-nav { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  #sidebar .settings-nav::-webkit-scrollbar { display: none; }
+  #sidebar .settings-nav a { white-space: nowrap; }
+}
 
 .sites-title-link { margin-left: auto; font-size: 12px; font-weight: normal; white-space: nowrap; }
 
