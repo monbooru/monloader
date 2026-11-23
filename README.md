@@ -107,7 +107,8 @@ Then paste a URL into the add bar on the home page.
 
 ## Warning
 
-> **Intended for local network use.** monloader's UI is not designed to be exposed to the public internet.
+> **Intended for trusted local network use.** Monloader is not designed to be exposed directly to the public internet. If you need remote access, use an appropriately secured private network.
+
 
 ## License
 
