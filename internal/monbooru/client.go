@@ -641,6 +641,18 @@ func (c *Client) SearchFolders(ctx context.Context, gallery, q string, limit int
 	return out.Results, nil
 }
 
+// The gallery's tags matching a word as typed, as monbooru's own tag fields
+// suggest them.
+func (c *Client) SuggestTags(ctx context.Context, gallery, q string, limit int) ([]contract.TagSuggestion, error) {
+	var out struct {
+		Results []contract.TagSuggestion `json:"results"`
+	}
+	if err := c.getGalleryJSON(ctx, "/api/v1/tags/suggest", "suggest tags", gallery, url.Values{"q": {q}, "limit": {strconv.Itoa(limit)}}, &out); err != nil {
+		return nil, err
+	}
+	return out.Results, nil
+}
+
 // A 404 is either a path monbooru does not hold or a monbooru without the
 // route; the code tells them apart. does names what the route does, for the
 // error an older monbooru gets.
