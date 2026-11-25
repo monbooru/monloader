@@ -179,12 +179,29 @@ func (s *Server) watchJob(w http.ResponseWriter, r *http.Request) {
 		addBarFlash(w, "Only a finished search can be watched.")
 		return
 	}
-	// The tags a client sent with the search belong to it, as its count does.
-	if _, err := s.queue.AddWatch(job.URL, defaultWatchHours, s.rowItems(job), job.Tags, job); err != nil {
+	// The tags a client sent with the search belong to it, as its count does;
+	// the queue capped them already.
+	tags, _ := watchTags(job.Tags)
+	if _, err := s.queue.AddWatch(job.URL, defaultWatchHours, s.rowItems(job), tags, job); err != nil {
 		addBarFlash(w, watchErrMsg(err))
 		return
 	}
 	s.queueRows(w, r)
+}
+
+// A watch keeps its tags as monbooru will get them, so what it shows is what
+// lands: folded, the first of a repeat kept, at most the cap.
+func watchTags(given []string) ([]string, string) {
+	var out []string
+	for _, g := range given {
+		if t := mapping.NormalizeTag(g); t != "" && !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	if len(out) > queue.MaxOptionTags {
+		return nil, "At most " + strconv.Itoa(queue.MaxOptionTags) + " tags."
+	}
+	return out, ""
 }
 
 func (s *Server) setWatchInterval(w http.ResponseWriter, r *http.Request) {
