@@ -371,8 +371,8 @@ func TestWatchTableWithoutItemsMigrates(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	ws, err := st.LoadWatches()
-	if err != nil || len(ws) != 1 || ws[0].MaxItems != 0 {
-		t.Errorf("migrated watches = %+v (%v), want one taking the cap", ws, err)
+	if err != nil || len(ws) != 1 || ws[0].MaxItems != 0 || ws[0].Tags != nil {
+		t.Errorf("migrated watches = %+v (%v), want one taking the cap and no tags", ws, err)
 	}
 }
 
@@ -480,6 +480,48 @@ func TestCheckWatchPassesItsItems(t *testing.T) {
 	}
 	if j, _ := q.Get(allJob); j.MaxItems != 0 || !j.Auto {
 		t.Errorf("check of an all watch = max %d auto %v, want the cap and the chain", j.MaxItems, j.Auto)
+	}
+}
+
+func TestWatchTagsSurviveRestart(t *testing.T) {
+	dir := t.TempDir()
+	st := openQueueStoreAt(t, dir)
+	q := storedQueue(st)
+	given := []string{"artist:user_a", "blue sky"}
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, given, nil)
+	given[0] = "changed"
+	untagged, _ := q.AddWatch("https://x/posts?tags=b", 24, 0, nil, nil)
+	if got := q.Watches()[0].Tags; !slices.Equal(got, []string{"artist:user_a", "blue sky"}) {
+		t.Errorf("tags after add = %q, want the ones given, unchanged by the caller", got)
+	}
+	if err := q.SetWatchTags(untagged, []string{"wip"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetWatchTags(id, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetWatchTags(999, []string{"wip"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("tags on a missing watch: err = %v, want ErrNotFound", err)
+	}
+	_ = st.Close()
+
+	q2 := storedQueue(openQueueStoreAt(t, dir))
+	ws := q2.Watches()
+	if len(ws) != 2 || ws[0].Tags != nil || !slices.Equal(ws[1].Tags, []string{"wip"}) {
+		t.Errorf("reloaded tags = %q and %q, want none and wip", ws[0].Tags, ws[1].Tags)
+	}
+}
+
+func TestCheckWatchPassesItsTags(t *testing.T) {
+	q := storedQueue(openTestQueueStore(t))
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, []string{"user_a", "wip"}, nil)
+	first, _ := q.CheckWatch(id, true)
+	if j, _ := q.Get(first); !slices.Equal(j.Tags, []string{"user_a", "wip"}) {
+		t.Errorf("check tags = %q, want the watch's", j.Tags)
+	}
+	_ = q.SetWatchTags(id, []string{"done"})
+	if j, _ := q.Get(first); !slices.Equal(j.Tags, []string{"user_a", "wip"}) {
+		t.Errorf("queued check tags = %q, want the ones it was queued with", j.Tags)
 	}
 }
 
