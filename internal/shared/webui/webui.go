@@ -96,6 +96,7 @@ func Funcs(assetVersion string) template.FuncMap {
 		"dateOnly":    func(stamp string) string { date, _, _ := strings.Cut(stamp, "T"); return date },
 		"humanBytes":  HumanBytes,
 		"abbrevCount": AbbrevCount,
+		"catColor":    CategoryColor,
 		"minutesLeft": MinutesLeft,
 		"add":         func(a, b int) int { return a + b },
 		"sub":         func(a, b int) int { return a - b },

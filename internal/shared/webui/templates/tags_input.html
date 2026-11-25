@@ -1,0 +1,11 @@
+{{define "webui/tags_input"}}
+      <input type="text" name="{{.Name}}" id="{{.InputID}}"{{with .Class}} class="{{.}}"{{end}} data-multi-tags="1"
+             {{with .Value}}value="{{.}}" {{end}}placeholder="{{.Placeholder}}" {{if .Required}}required {{end}}autocomplete="off"
+             hx-get="{{.Route}}"
+             hx-trigger="input changed delay:200ms"
+             hx-target="#{{.SuggestID}}"
+             hx-swap="innerHTML"
+             hx-vals='js:{ {{.ValsKey}}: wordAtCaret(document.getElementById("{{.InputID}}")).word}'
+             onkeydown="handleSuggestKey(event, '{{.SuggestID}}', '{{.InputID}}')">
+      <div id="{{.SuggestID}}" class="suggest-dropdown tag-suggest-dropdown"></div>
+{{end}}
