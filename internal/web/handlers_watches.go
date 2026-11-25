@@ -179,7 +179,8 @@ func (s *Server) watchJob(w http.ResponseWriter, r *http.Request) {
 		addBarFlash(w, "Only a finished search can be watched.")
 		return
 	}
-	if _, err := s.queue.AddWatch(job.URL, defaultWatchHours, s.rowItems(job), nil, job); err != nil {
+	// The tags a client sent with the search belong to it, as its count does.
+	if _, err := s.queue.AddWatch(job.URL, defaultWatchHours, s.rowItems(job), job.Tags, job); err != nil {
 		addBarFlash(w, watchErrMsg(err))
 		return
 	}
