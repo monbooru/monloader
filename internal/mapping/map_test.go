@@ -1328,13 +1328,13 @@ func TestSuspectFlattenedTags(t *testing.T) {
 }
 
 func TestFormatTag(t *testing.T) {
-	if formatTag("general", "x") != "x" {
+	if contract.TagForm("general", "x") != "x" {
 		t.Error("general tags should be bare")
 	}
-	if formatTag("artist", "y") != "artist:y" {
+	if contract.TagForm("artist", "y") != "artist:y" {
 		t.Error("non-general tags should be prefixed")
 	}
-	if formatTag("", "z") != "" || formatTag("artist", "") != "" {
+	if contract.TagForm("", "z") != "" || contract.TagForm("artist", "") != "" {
 		t.Error("empty category or name should produce no tag")
 	}
 }

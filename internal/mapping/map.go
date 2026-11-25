@@ -449,13 +449,13 @@ func (m *Mapper) eachTag(category string, profile Profile, meta map[string]any, 
 		if !keep {
 			if base, ok := baseCategory(suffix); ok {
 				for _, name := range parseTagField(meta["tags_"+suffix]) {
-					dropped("tags_"+suffix, formatTag(base, name))
+					dropped("tags_"+suffix, contract.TagForm(base, name))
 				}
 			}
 			continue
 		}
 		for _, name := range parseTagField(meta["tags_"+suffix]) {
-			visit("tags_"+suffix, formatTag(cat, name))
+			visit("tags_"+suffix, contract.TagForm(cat, name))
 		}
 	}
 	if flat {
@@ -490,11 +490,11 @@ func (m *Mapper) fileTag(site string, profile Profile, field, key, base, name st
 	to, ok := m.categoryOverride(site, profile, key)
 	switch {
 	case !ok:
-		visit(field, formatTag(base, name))
+		visit(field, contract.TagForm(base, name))
 	case to == "":
-		dropped(field, formatTag(base, name))
+		dropped(field, contract.TagForm(base, name))
 	default:
-		visit(field, formatTag(to, name))
+		visit(field, contract.TagForm(to, name))
 	}
 }
 

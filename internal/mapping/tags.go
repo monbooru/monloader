@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"unicode"
 
 	"github.com/monbooru/monloader/internal/shared/contract"
 )
@@ -171,48 +170,19 @@ func isTagCategory(name string) bool {
 	return name != "" && (validTagCategories[name] || customCategory(name))
 }
 
-// Must match monbooru's tags.SplitForm and tags.NormalizeName byte for byte,
-// so a PTR spelling round-trips instead of minting a duplicate.
-func normalizeTag(tag string) string { return foldTag(tag, false) }
-
-func normalizeName(name string) string { return foldName(name, false) }
-
-// keepStar is for a tag rule's key and target, where a * stands for any text.
-func foldTag(tag string, keepStar bool) string {
-	tag = strings.TrimSpace(tag)
-	if prefix, rest, ok := strings.Cut(tag, ":"); ok {
-		category := strings.ToLower(prefix)
-		if slices.Contains(contract.BuiltinCategories, category) || customCategory(category) {
-			name := foldName(rest, keepStar)
-			if name == "" || category == "general" {
-				return name
-			}
-			return category + ":" + name
-		}
-	}
-	return foldName(tag, keepStar)
+// A fold splits off a built-in category or one monbooru has.
+func foldCategory(name string) bool {
+	return slices.Contains(contract.BuiltinCategories, name) || customCategory(name)
 }
 
-func foldName(name string, keepStar bool) string {
-	name = strings.ToLower(name)
-	var b strings.Builder
-	b.Grow(len(name))
-	pendingFold := false
-	for _, r := range name {
-		switch {
-		case unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Co):
-		case unicode.IsSpace(r) || r == '"' || (r == '*' && !keepStar):
-			pendingFold = true
-		default:
-			if pendingFold && b.Len() > 0 {
-				b.WriteByte('_')
-			}
-			pendingFold = false
-			b.WriteRune(r)
-		}
-	}
-	return strings.Trim(b.String(), "_")
-}
+// monbooru's own spelling, so a PTR spelling round-trips instead of minting
+// a duplicate.
+func normalizeTag(tag string) string { return contract.NormalizeTagForm(tag, foldCategory) }
+
+func normalizeName(name string) string { return contract.NormalizeTagName(name) }
+
+// A tag rule's key and target keep the *, which stands for any text.
+const ruleKeeps = "*"
 
 // The pre-widening charset: tags monbooru stored before the punctuation
 // widening were never rewritten and must still match their raw PTR spelling.
@@ -230,19 +200,9 @@ func LegacyFoldTag(tag string) string {
 	return strings.Trim(tag, "_")
 }
 
-func formatTag(category, name string) string {
-	if category == "" || name == "" {
-		return ""
-	}
-	if category == "general" {
-		return name
-	}
-	return category + ":" + name
-}
-
 func NormalizeTag(tag string) string { return normalizeTag(tag) }
 
-func NormalizeRuleKey(from string) string { return foldTag(from, true) }
+func NormalizeRuleKey(from string) string { return contract.FoldTagForm(from, ruleKeeps, foldCategory) }
 
 // NormalizeRuleTarget keeps a general: prefix, which normalizeTag folds away:
 // as a rule's target it moves a tag out of its category, where a bare name
@@ -250,12 +210,12 @@ func NormalizeRuleKey(from string) string { return foldTag(from, true) }
 func NormalizeRuleTarget(to string) string {
 	to = strings.TrimSpace(to)
 	if prefix, rest, ok := strings.Cut(to, ":"); ok && strings.EqualFold(prefix, "general") {
-		if name := foldName(rest, true); name != "" {
+		if name := contract.FoldTagForm(rest, ruleKeeps, nil); name != "" {
 			return "general:" + name
 		}
 		return ""
 	}
-	return foldTag(to, true)
+	return contract.FoldTagForm(to, ruleKeeps, foldCategory)
 }
 
 // CheckTagRules refuses what the mapper could not apply as written.

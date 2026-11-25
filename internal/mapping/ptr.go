@@ -7,6 +7,7 @@ import (
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/ptr"
+	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
 // MapPTR takes a hash's raw tags through the PTR's own mappings, then the
@@ -83,7 +84,7 @@ func (m *Mapper) ptrMapped(profile Profile, tag string) string {
 	}
 	ns = strings.ToLower(ns)
 	if to, ok := m.categoryOverride(config.SitePTR, profile, ns); ok {
-		return normalizeTag(formatTag(to, sub))
+		return normalizeTag(contract.TagForm(to, sub))
 	}
 	if ns == "rating" {
 		if level := m.ratingFor(config.SitePTR, profile, sub); level != "" {
@@ -125,7 +126,7 @@ func MapPTRTag(tag string) string {
 	case !keep:
 		return ""
 	default:
-		return normalizeTag(formatTag(cat, sub))
+		return normalizeTag(contract.TagForm(cat, sub))
 	}
 }
 
