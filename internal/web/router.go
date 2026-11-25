@@ -200,6 +200,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /watches", s.addWatch)
 	mux.HandleFunc("POST /watches/{id}/interval", s.setWatchInterval)
 	mux.HandleFunc("POST /watches/{id}/items", s.setWatchItems)
+	mux.HandleFunc("GET /internal/watch-tags", s.watchTagsDialog)
+	mux.HandleFunc("POST /watches/{id}/tags", s.setWatchTags)
 	mux.HandleFunc("POST /watches/{id}/check", s.checkWatch)
 	mux.HandleFunc("DELETE /watches/{id}", s.removeWatch)
 	mux.HandleFunc("GET /internal/monbooru-status", s.monbooruStatus)

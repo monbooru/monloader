@@ -1,0 +1,18 @@
+{{define "watch_tags_dialog"}}
+<form class="watch-tags-form" hx-post="/watches/{{.ID}}/tags" hx-target="#watch-rows" hx-swap="innerHTML">
+  <p class="dlg-title">Tags for every download{{template "webui/dialog_x"}}</p>
+  <p class="field-hint watch-tags-url">{{.URL}}</p>
+  <div class="field">
+    <label for="watch-tags-input">Tags</label>
+    <div class="watch-tags-field">
+      {{template "webui/tags_input" dict "Route" .Route "Name" "tags" "InputID" "watch-tags-input" "SuggestID" "watch-tags-suggest" "ValsKey" "tag" "Value" .Tags "Placeholder" "artist:name wip ..."}}
+    </div>
+    <span class="field-hint">Space-separated; category:name files a tag under that category. Every post a check pushes gets them beside its own. A change applies from the next check.</span>
+  </div>
+  <div id="watch-tags-flash"></div>
+  <div class="dialog-actions">
+    <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+    <button type="submit">Save tags</button>
+  </div>
+</form>
+{{end}}

@@ -12,6 +12,8 @@
   <td>
     <span class="actions">
       {{if .Live}}<button disabled>Check now</button>{{else}}<button data-peer-title="" hx-post="/watches/{{.ID}}/check">Check now</button>{{end}}
+      <button class="watch-tags-btn" hx-get="/internal/watch-tags?id={{.ID}}" hx-target="#watch-tags-body" hx-swap="innerHTML"
+              title="{{if .Tags}}Adds {{join .Tags " "}}{{else}}Tags this watch adds to every post{{end}}">Tags{{with .Tags}} <span class="watch-tags-count">{{len .}}</span>{{end}}</button>
       <button hx-delete="/watches/{{.ID}}" hx-confirm="Stop watching this search?"
               data-confirm-ok="Remove" data-confirm-danger="Its downloads stay.">Remove</button>
     </span>

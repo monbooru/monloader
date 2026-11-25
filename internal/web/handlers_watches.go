@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -202,6 +203,41 @@ func watchTags(given []string) ([]string, string) {
 		return nil, "At most " + strconv.Itoa(queue.MaxOptionTags) + " tags."
 	}
 	return out, ""
+}
+
+type watchTagsDialog struct {
+	ID    int64
+	URL   string
+	Tags  string
+	Route string
+}
+
+// The suggestions come from the gallery the checks push to: the site's,
+// else the default one.
+func (s *Server) watchTagsDialog(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	watches := s.queue.Watches()
+	i := slices.IndexFunc(watches, func(wt queue.Watch) bool { return wt.ID == id })
+	if i < 0 {
+		watchFlash(w, watchErrMsg(queue.ErrNotFound))
+		return
+	}
+	wt := watches[i]
+	s.render(w, "watch_tags_dialog", watchTagsDialog{
+		ID:    wt.ID,
+		URL:   wt.URL,
+		Tags:  strings.Join(wt.Tags, " "),
+		Route: tagSuggestRoute + "?gallery=" + url.QueryEscape(s.mapper.Gallery(wt.Last.Site)),
+	})
+}
+
+func (s *Server) setWatchTags(w http.ResponseWriter, r *http.Request) {
+	tags, msg := watchTags(strings.Fields(r.FormValue("tags")))
+	if msg != "" {
+		retargetFlash(w, "#watch-tags-flash", msg)
+		return
+	}
+	s.watchAction(w, r, func(id int64) error { return s.queue.SetWatchTags(id, tags) })
 }
 
 func (s *Server) setWatchInterval(w http.ResponseWriter, r *http.Request) {
