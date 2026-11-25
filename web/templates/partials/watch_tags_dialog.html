@@ -1,7 +1,7 @@
 {{define "watch_tags_dialog"}}
-<form class="watch-tags-form" hx-post="/watches/{{.ID}}/tags" hx-target="#watch-rows" hx-swap="innerHTML">
+<form class="watch-tags-form"{{if .ID}} hx-post="/watches/{{.ID}}/tags" hx-target="#watch-rows" hx-swap="innerHTML"{{else}} data-watch-tags-draft=""{{end}}>
   <p class="dlg-title">Tags for every download{{template "webui/dialog_x"}}</p>
-  <p class="field-hint watch-tags-url">{{.URL}}</p>
+  <p class="field-hint watch-tags-url">{{or .URL "The watch you are adding"}}</p>
   <div class="field">
     <label for="watch-tags-input">Tags</label>
     <div class="watch-tags-field">

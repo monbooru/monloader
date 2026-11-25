@@ -158,7 +158,12 @@ func (s *Server) addWatch(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", "Pick how many posts to fetch.")
 		return
 	}
-	id, err := s.queue.AddWatch(target, hours, items, nil, nil)
+	tags, msg := watchTags(strings.Fields(r.FormValue("tags")))
+	if msg != "" {
+		flashFragment(w, "err", msg)
+		return
+	}
+	id, err := s.queue.AddWatch(target, hours, items, tags, nil)
 	if err != nil {
 		flashFragment(w, "err", watchErrMsg(err))
 		return
@@ -213,8 +218,16 @@ type watchTagsDialog struct {
 }
 
 // The suggestions come from the gallery the checks push to: the site's,
-// else the default one.
+// else the default one. With no id it is the add bar's watch, which has no
+// site yet; its tags come from the bar and go back to it.
 func (s *Server) watchTagsDialog(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("id") == "" {
+		s.render(w, "watch_tags_dialog", watchTagsDialog{
+			Tags:  strings.Join(strings.Fields(r.FormValue("tags")), " "),
+			Route: tagSuggestRoute + "?gallery=" + url.QueryEscape(s.mapper.Gallery("")),
+		})
+		return
+	}
 	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
 	watches := s.queue.Watches()
 	i := slices.IndexFunc(watches, func(wt queue.Watch) bool { return wt.ID == id })
