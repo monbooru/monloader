@@ -624,7 +624,7 @@ var ErrFolderNotFound = errors.New("folder not found")
 func (c *Client) ListFolders(ctx context.Context, gallery, path string, page, limit int) (FolderPage, error) {
 	q := url.Values{"path": {path}, "page": {strconv.Itoa(page)}, "limit": {strconv.Itoa(limit)}}
 	var out FolderPage
-	if err := c.getFolders(ctx, "/api/v1/folders", gallery, q, &out); err != nil {
+	if err := c.getGalleryJSON(ctx, "/api/v1/folders", "list folders", gallery, q, &out); err != nil {
 		return FolderPage{}, err
 	}
 	return out, nil
@@ -635,15 +635,16 @@ func (c *Client) SearchFolders(ctx context.Context, gallery, q string, limit int
 	var out struct {
 		Results []Folder `json:"results"`
 	}
-	if err := c.getFolders(ctx, "/api/v1/folders/search", gallery, url.Values{"q": {q}, "limit": {strconv.Itoa(limit)}}, &out); err != nil {
+	if err := c.getGalleryJSON(ctx, "/api/v1/folders/search", "list folders", gallery, url.Values{"q": {q}, "limit": {strconv.Itoa(limit)}}, &out); err != nil {
 		return nil, err
 	}
 	return out.Results, nil
 }
 
 // A 404 is either a path monbooru does not hold or a monbooru without the
-// route; the code tells them apart.
-func (c *Client) getFolders(ctx context.Context, route, gallery string, q url.Values, out any) error {
+// route; the code tells them apart. does names what the route does, for the
+// error an older monbooru gets.
+func (c *Client) getGalleryJSON(ctx context.Context, route, does, gallery string, q url.Values, out any) error {
 	if gallery != "" {
 		q.Set("gallery", gallery)
 	}
@@ -656,7 +657,7 @@ func (c *Client) getFolders(ctx context.Context, route, gallery string, q url.Va
 	case resp.StatusCode == http.StatusNotFound && code == contract.CodeFolderNotFound:
 		return ErrFolderNotFound
 	case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed:
-		return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: "this monbooru does not list folders yet; update it"}
+		return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: "this monbooru does not " + does + " yet; update it"}
 	default:
 		return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: msg}
 	}
