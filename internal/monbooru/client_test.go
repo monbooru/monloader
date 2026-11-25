@@ -887,6 +887,27 @@ func TestSearchFolders(t *testing.T) {
 	}
 }
 
+func TestSuggestTags(t *testing.T) {
+	found := []contract.TagSuggestion{{Name: "artist:user_a", Category: "artist", Color: "#aa0000", UsageCount: 3}, {Name: "wip", Category: "general", Color: "#888888", UsageCount: 1, Alias: "work_in_progress"}}
+	srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/tags/suggest" || r.URL.RawQuery != "gallery=my+art&limit=10&q=us" {
+			t.Errorf("asked %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": found})
+	}))
+	got, err := testClient(srv.URL, "tok").SuggestTags(context.Background(), "my art", "us", 10)
+	if err != nil || !reflect.DeepEqual(got, found) {
+		t.Errorf("SuggestTags = %+v, %v; want %+v", got, err, found)
+	}
+
+	old := stubJSON(t, http.StatusNotFound, map[string]string{"error": "endpoint not found: GET /api/v1/tags/suggest", "code": "not_found"})
+	_, err = testClient(old.URL, "tok").SuggestTags(context.Background(), "", "a", 10)
+	wantCode(t, err, outcome.ErrCodeMonbooruRejected)
+	if err == nil || !strings.Contains(err.Error(), "does not suggest tags yet") {
+		t.Errorf("err = %v, want it to name the monbooru the route needs", err)
+	}
+}
+
 func TestCustomCategories(t *testing.T) {
 	srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
