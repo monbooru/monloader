@@ -27,6 +27,7 @@ import (
 	"github.com/monbooru/monloader/internal/ptr"
 	"github.com/monbooru/monloader/internal/queue"
 	"github.com/monbooru/monloader/internal/shared/apitoken"
+	"github.com/monbooru/monloader/internal/shared/contract"
 	"github.com/monbooru/monloader/internal/similarity"
 	"github.com/monbooru/monloader/internal/sitestate"
 	webFS "github.com/monbooru/monloader/web"
@@ -74,10 +75,29 @@ func monbooruStub() *httptest.Server {
 			stubFolderLevel(w, r)
 		case "/api/v1/folders/search":
 			stubFolderSearch(w, r)
+		case "/api/v1/tags/suggest":
+			stubTagSuggest(w, r)
 		default:
 			_, _ = w.Write([]byte(`{"api":"monbooru","version":"v9.9.9"}`))
 		}
 	}))
+}
+
+// The last row names the gallery asked, so a test sees which one was.
+func stubTagSuggest(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	all := []contract.TagSuggestion{
+		{Name: "artist:user_a", Category: "artist", Color: "#aa0000", UsageCount: 3},
+		{Name: "wip", Category: "general", Color: "#888888", UsageCount: 1, Alias: "work_in_progress"},
+		{Name: "in_" + cmp.Or(q.Get("gallery"), "active"), Category: "general", Color: "#888888", UsageCount: 1},
+	}
+	out := []contract.TagSuggestion{}
+	for _, t := range all {
+		if strings.Contains(t.Name, q.Get("q")) || strings.Contains(t.Alias, q.Get("q")) {
+			out = append(out, t)
+		}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"results": out})
 }
 
 func stubFolders(gallery string) []monbooru.Folder {
