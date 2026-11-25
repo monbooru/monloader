@@ -237,6 +237,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+folderPickerRoute, s.folderPickerFragment)
 	mux.HandleFunc("GET "+folderPickerRoute+"/level", s.folderPickerLevel)
 	mux.HandleFunc("GET "+folderPickerRoute+"/suggest", s.folderPickerSuggest)
+	mux.HandleFunc("GET "+tagSuggestRoute, s.tagSuggest)
 	mux.HandleFunc("GET /settings/sites/search", s.searchSites)
 	mux.HandleFunc("GET /settings/sites/{name}/dialog", s.siteDialog)
 	mux.HandleFunc("GET /settings/sites/{name}/options", s.siteOptions)
