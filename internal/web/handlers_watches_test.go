@@ -192,7 +192,7 @@ func TestQueueRowWatchButtonSkipsWhatCannotBeWatched(t *testing.T) {
 
 func TestWatchRowActions(t *testing.T) {
 	srv, ts := serveWatches(t, noopProc{})
-	id, err := srv.queue.AddWatch("https://danbooru.donmai.us/posts?tags=a", 24, 0, nil)
+	id, err := srv.queue.AddWatch("https://danbooru.donmai.us/posts?tags=a", 24, 0, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +408,7 @@ func TestWatchableJobJudgesSinglePosts(t *testing.T) {
 
 func TestUnpairedRefusesEverythingThatFetches(t *testing.T) {
 	srv, ts := serveWatches(t, createdProc{})
-	wid, err := srv.queue.AddWatch("https://danbooru.donmai.us/posts?tags=a", 24, 0, nil)
+	wid, err := srv.queue.AddWatch("https://danbooru.donmai.us/posts?tags=a", 24, 0, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -157,7 +157,7 @@ func (s *Server) addWatch(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", "Pick how many posts to fetch.")
 		return
 	}
-	id, err := s.queue.AddWatch(target, hours, items, nil)
+	id, err := s.queue.AddWatch(target, hours, items, nil, nil)
 	if err != nil {
 		flashFragment(w, "err", watchErrMsg(err))
 		return
@@ -179,7 +179,7 @@ func (s *Server) watchJob(w http.ResponseWriter, r *http.Request) {
 		addBarFlash(w, "Only a finished search can be watched.")
 		return
 	}
-	if _, err := s.queue.AddWatch(job.URL, defaultWatchHours, s.rowItems(job), job); err != nil {
+	if _, err := s.queue.AddWatch(job.URL, defaultWatchHours, s.rowItems(job), nil, job); err != nil {
 		addBarFlash(w, watchErrMsg(err))
 		return
 	}
