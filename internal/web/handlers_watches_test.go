@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -153,6 +154,16 @@ func TestQueueRowWatchButton(t *testing.T) {
 	}
 	if body := readBody(t, postForm(t, ts, srv, "/queue/99999/watch", url.Values{})); !strings.Contains(body, "no longer in the queue") {
 		t.Errorf("watching a gone job = %q, want the gone notice", truncate(body))
+	}
+}
+
+func TestAWatchFromAQueueRowKeepsItsJobsTags(t *testing.T) {
+	srv, ts := serveWatches(t, createdProc{site: "danbooru", items: 2})
+	id := srv.queue.Enqueue("https://danbooru.donmai.us/posts?tags=a", queue.Options{Tags: []string{"user_a", "wip"}})
+	waitJob(t, srv, id)
+	readBody(t, postForm(t, ts, srv, "/queue/"+itoa(id)+"/watch", url.Values{}))
+	if ws := srv.queue.Watches(); len(ws) != 1 || !slices.Equal(ws[0].Tags, []string{"user_a", "wip"}) {
+		t.Errorf("watches = %+v, want one keeping the job's tags", ws)
 	}
 }
 
