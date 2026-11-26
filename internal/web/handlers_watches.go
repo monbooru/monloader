@@ -236,11 +236,13 @@ func (s *Server) watchTagsDialog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wt := watches[i]
+	// A watch never checked yet has only its URL to say its site.
+	site := cmp.Or(wt.Last.Site, s.mapper.SiteOfURL(wt.URL))
 	s.render(w, "watch_tags_dialog", watchTagsDialog{
 		ID:    wt.ID,
 		URL:   wt.URL,
 		Tags:  strings.Join(wt.Tags, " "),
-		Route: tagSuggestURL(s.mapper.Gallery(wt.Last.Site)),
+		Route: tagSuggestURL(s.mapper.Gallery(site)),
 	})
 }
 
