@@ -121,6 +121,44 @@ func TestSetWatchTags(t *testing.T) {
 	}
 }
 
+func TestTheAddBarHoldsItsTagsAsTheWatchWill(t *testing.T) {
+	cases := []struct {
+		name, tags    string
+		retarget      string
+		want, wantNot []string
+	}{
+		{"folded, repeats dropped, counted as saved", "WIP wip Artist:user_a", "",
+			[]string{`id="watch-add-tags-box"`, `value="wip artist:user_a"`, `title="Adds wip artist:user_a"`, `Tags <span class="watch-tags-count">2</span>`},
+			[]string{`WIP`}},
+		{"emptied", "  ", "", []string{`value=""`, `title="Tags this watch adds to every post"`, `>Tags</button>`}, []string{`watch-tags-count`}},
+		{"past the cap refused in the dialog", manyTags(queue.MaxOptionTags + 1), "#watch-tags-flash", []string{"At most 64 tags."}, []string{`watch-add-tags-box`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, ts := serveWatches(t, noopProc{})
+			resp := postForm(t, ts, srv, "/internal/watch-tags", url.Values{"tags": {tc.tags}})
+			if got := resp.Header.Get("HX-Retarget"); got != tc.retarget {
+				t.Errorf("HX-Retarget = %q, want %q", got, tc.retarget)
+			}
+			wantInBody(t, readBody(t, resp), tc.want, tc.wantNot)
+		})
+	}
+}
+
+func TestAnAddedWatchEmptiesTheBarsTags(t *testing.T) {
+	srv, ts := serveWatches(t, noopProc{})
+	_, page := get(t, ts, "/watches")
+	wantInBody(t, page, []string{`id="watch-add-tags-box" hx-get="/internal/watch-add-tags" hx-trigger="watch-added from:body"`}, nil)
+	resp := postForm(t, ts, srv, "/watches", url.Values{"url": {"https://danbooru.donmai.us/posts?tags=a"}, "interval_hours": {"24"}, "tags": {"wip"}})
+	readBody(t, resp)
+	if got := resp.Header.Get("HX-Trigger"); got != "watch-added" {
+		t.Errorf("HX-Trigger = %q, want watch-added", got)
+	}
+	_, box := get(t, ts, "/internal/watch-add-tags")
+	wantInBody(t, box, []string{`value=""`, `>Tags</button>`}, []string{`watch-tags-count`})
+	waitWatchChecked(t, srv)
+}
+
 func TestWatchRowsCountTheirTags(t *testing.T) {
 	srv, ts := serveWatches(t, noopProc{})
 	_, _ = srv.queue.AddWatch("https://danbooru.donmai.us/posts?tags=a", 24, 0, []string{"artist:user_a", "wip"}, nil)
