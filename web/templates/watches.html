@@ -13,7 +13,7 @@
       <select name="interval_hours" aria-label="Check every">{{range .Intervals}}<option value="{{.Hours}}"{{if eq .Hours $.DefaultWatchHours}} selected{{end}}>{{.Label}}</option>{{end}}</select>
       <input type="hidden" name="tags" id="watch-add-tags">
       <button type="button" class="watch-tags-btn" id="watch-add-tags-btn" title="Tags this watch adds to every post"
-              hx-get="/internal/watch-tags" hx-include="#watch-add-tags" hx-target="#watch-tags-body" hx-swap="innerHTML"{{if not (and .WatchStore .MonbooruConfigured)}} disabled{{end}}>Tags</button>
+              hx-get="/internal/watch-tags" hx-include="#watch-add-tags, .add-bar input[name=url]" hx-target="#watch-tags-body" hx-swap="innerHTML"{{if not (and .WatchStore .MonbooruConfigured)}} disabled{{end}}>Tags</button>
       <button type="submit"{{if .WatchStore}} data-peer-title=""{{end}}{{if not (and .WatchStore .MonbooruConfigured)}} disabled{{end}}>Watch</button>
     </div>
   </form>

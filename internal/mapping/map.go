@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"maps"
+	"net/url"
 	"reflect"
 	"regexp"
 	"slices"
@@ -298,6 +299,17 @@ func (m *Mapper) Gallery(category string) string {
 		return site.Gallery
 	}
 	return m.cfg.Current().Monbooru.DefaultGallery
+}
+
+// SiteOfURL is the site whose profile claims the URL's host, "" when none
+// does: what a job learns on resolving, known before it runs.
+func (m *Mapper) SiteOfURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	site, _ := m.view().siteOfHost(normalizeHost(u.Host))
+	return site
 }
 
 // Empty leaves the folder to monbooru's own default.

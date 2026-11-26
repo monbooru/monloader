@@ -217,13 +217,14 @@ type watchTagsDialog struct {
 }
 
 // The suggestions come from the gallery the checks push to: the site's,
-// else the default one. With no id it is the add bar's watch, which has no
-// site yet; its tags come from the bar and go back to it.
+// else the default one. With no id it is the add bar's watch: its site is
+// read off the URL typed so far, and its tags go back to the bar.
 func (s *Server) watchTagsDialog(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("id") == "" {
 		s.render(w, "watch_tags_dialog", watchTagsDialog{
+			URL:   strings.TrimSpace(r.FormValue("url")),
 			Tags:  strings.Join(strings.Fields(r.FormValue("tags")), " "),
-			Route: tagSuggestURL(s.mapper.Gallery("")),
+			Route: tagSuggestURL(s.mapper.Gallery(s.mapper.SiteOfURL(r.FormValue("url")))),
 		})
 		return
 	}
