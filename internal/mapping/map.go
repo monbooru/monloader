@@ -308,8 +308,15 @@ func (m *Mapper) SiteOfURL(raw string) string {
 	if err != nil || u.Host == "" {
 		return ""
 	}
-	site, _ := m.view().siteOfHost(normalizeHost(u.Host))
-	return site
+	// A self-hosted site usually carries a port: a host:port a profile
+	// names wins, then the bare host.
+	host := normalizeHost(u.Host)
+	for _, h := range []string{host, hostWithoutPort(host)} {
+		if site, ok := m.view().siteOfHost(h); ok {
+			return site
+		}
+	}
+	return ""
 }
 
 // Empty leaves the folder to monbooru's own default.
