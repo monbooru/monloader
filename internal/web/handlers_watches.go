@@ -280,7 +280,13 @@ func (s *Server) setWatchTags(w http.ResponseWriter, r *http.Request) {
 		retargetFlash(w, "#watch-tags-flash", msg)
 		return
 	}
-	s.watchAction(w, r, func(id int64) error { return s.queue.SetWatchTags(id, tags) })
+	// The dialog sits over the page's flash, so a failed save says so in it.
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err := s.queue.SetWatchTags(id, tags); err != nil {
+		retargetFlash(w, "#watch-tags-flash", watchErrMsg(err))
+		return
+	}
+	s.watchRows(w, r)
 }
 
 func (s *Server) setWatchInterval(w http.ResponseWriter, r *http.Request) {
