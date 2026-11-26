@@ -1471,6 +1471,26 @@ func TestSourceLabelSitesAndHosts(t *testing.T) {
 	}
 }
 
+func TestSiteOfURL(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "webexample.json",
+		`{"family":"generic","auth":"none","post_url_template":"https://website.example/posts/{id}","hosts":["img.website.example","mirror.example"]}`)
+	m := newMapperDir(t, config.Default(), dir)
+	for raw, want := range map[string]string{
+		"https://danbooru.donmai.us/posts?tags=a": "danbooru",
+		"https://www.danbooru.donmai.us/posts":    "danbooru",
+		" https://website.example/posts/1 ":       "webexample",
+		"https://x.mirror.example/a":              "webexample",
+		"https://unknown.example/posts":           "",
+		"not a url":                               "",
+		"":                                        "",
+	} {
+		if got := m.SiteOfURL(raw); got != want {
+			t.Errorf("SiteOfURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 func TestSourceLabelConfigWinsOverProfileHosts(t *testing.T) {
 	cfg := config.Default()
 	cfg.HostLabels = []config.HostLabel{{Host: "mirror.example", Label: "the mirror"}}

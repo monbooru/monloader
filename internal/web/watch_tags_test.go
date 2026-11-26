@@ -43,8 +43,15 @@ func TestTagSuggestAsksTheGalleryForTheWordAtTheCaret(t *testing.T) {
 
 func TestWatchTagsDialog(t *testing.T) {
 	srv, ts := serveWatches(t, noopProc{})
-	mustUpdate(t, srv, func(c *config.Config) { c.Monbooru.DefaultGallery = "main" })
+	mustUpdate(t, srv, func(c *config.Config) {
+		c.Monbooru.DefaultGallery = "main"
+		c.FindSite("danbooru").Gallery = "art"
+	})
 	id, err := srv.queue.AddWatch("https://danbooru.donmai.us/posts?tags=a", 24, 0, []string{"artist:user_a", "wip"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := srv.queue.AddWatch("https://unknown.example/posts?tags=a", 24, 0, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,13 +59,16 @@ func TestWatchTagsDialog(t *testing.T) {
 		name, query   string
 		want, wantNot []string
 	}{
-		{"a row's opens on its tags and saves to it", "id=" + strconv.FormatInt(id, 10),
+		{"a row's opens on its tags and saves to it, suggesting from its site's gallery before its first check", "id=" + strconv.FormatInt(id, 10),
 			[]string{`hx-post="/watches/` + strconv.FormatInt(id, 10) + `/tags"`, `value="artist:user_a wip"`, `https://danbooru.donmai.us/posts?tags=a`,
-				`hx-get="/internal/tags/suggest?gallery=main"`, `id="watch-tags-suggest"`},
+				`hx-get="/internal/tags/suggest?gallery=art"`, `id="watch-tags-suggest"`},
 			[]string{`data-watch-tags-draft`}},
-		{"the add bar's holds what the bar does and saves nowhere", "tags=" + url.QueryEscape("user_a  wip"),
-			[]string{`data-watch-tags-draft=""`, `value="user_a wip"`, `The watch you are adding`, `hx-get="/internal/tags/suggest?gallery=main"`},
-			[]string{`hx-post=`}},
+		{"a row for a site with no gallery of its own asks the default one", "id=" + strconv.FormatInt(other, 10),
+			[]string{`hx-get="/internal/tags/suggest?gallery=main"`}, nil},
+		{"the add bar's holds what the bar does", "tags=" + url.QueryEscape("user_a  wip"),
+			[]string{`data-watch-tags-draft=""`, `value="user_a wip"`, `The watch you are adding`, `hx-get="/internal/tags/suggest?gallery=main"`}, nil},
+		{"the add bar's asks the gallery of the site typed", "url=" + url.QueryEscape("https://danbooru.donmai.us/posts?tags=b"),
+			[]string{`https://danbooru.donmai.us/posts?tags=b`, `hx-get="/internal/tags/suggest?gallery=art"`}, []string{`The watch you are adding`}},
 		{"a gone watch says so", "id=999", []string{"That watch is gone"}, []string{`watch-tags-form`}},
 	}
 	for _, tc := range cases {
