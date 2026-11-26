@@ -341,17 +341,23 @@ func (m *Mapper) sourceLabel(name string) (label string, claimed bool) {
 			}
 		}
 	}
-	category, ok := v.hostSite[host]
-	for cand := host; !ok && cand != ""; cand = parentDomain(cand) {
-		category, ok = v.aliasSite[cand]
-	}
-	if ok {
+	if category, ok := v.siteOfHost(host); ok {
 		if site := cfg.FindSite(category); site != nil && site.Label != "" {
 			return site.Label, true
 		}
 		return category, true
 	}
 	return name, false
+}
+
+// The site whose profile claims a normalized host: its own hosts exactly,
+// then its extra hosts, a subdomain matching its parent.
+func (v *profileSet) siteOfHost(host string) (string, bool) {
+	category, ok := v.hostSite[host]
+	for cand := host; !ok && cand != ""; cand = parentDomain(cand) {
+		category, ok = v.aliasSite[cand]
+	}
+	return category, ok
 }
 
 func hostWithoutPort(host string) string {
