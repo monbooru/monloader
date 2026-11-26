@@ -321,32 +321,6 @@ document.body.addEventListener("htmx:afterSwap", function (e) {
 
 suggestPairs["watch-tags-suggest"] = {input: "watch-tags-input", clearOnEmpty: true};
 
-// The add bar holds a new watch's tags until Watch sends them; its button
-// counts them the way the rows do.
-function setWatchAddTags(value) {
-  var tags = value.split(/\s+/).filter(Boolean);
-  tags = tags.filter(function (t, i) { return tags.indexOf(t) === i; });
-  document.getElementById("watch-add-tags").value = tags.join(" ");
-  var btn = document.getElementById("watch-add-tags-btn");
-  btn.textContent = "Tags";
-  btn.title = tags.length ? "Adds " + tags.join(" ") : "Tags this watch adds to every post";
-  if (tags.length) {
-    var count = document.createElement("span");
-    count.className = "watch-tags-count";
-    count.textContent = tags.length;
-    btn.append(" ", count);
-  }
-}
-
-document.body.addEventListener("submit", function (e) {
-  if (!e.target.matches("[data-watch-tags-draft]")) {
-    return;
-  }
-  e.preventDefault();
-  setWatchAddTags(document.getElementById("watch-tags-input").value);
-  e.target.closest("dialog").close();
-});
-
 // A refusal lands in the dialog's own flash and keeps it open on what was typed.
 document.body.addEventListener("htmx:afterRequest", function (e) {
   var form = e.detail.elt;

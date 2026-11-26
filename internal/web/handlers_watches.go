@@ -38,6 +38,7 @@ func (s *Server) watchesScreen(w http.ResponseWriter, r *http.Request) {
 	data := s.base(r, "watches", "Watched - "+s.titleName())
 	s.fillWatches(data)
 	data["DefaultWatchHours"] = defaultWatchHours
+	data["WatchAddTags"] = s.watchAddTagsBox(nil)
 	s.render(w, "watches", data)
 }
 
@@ -168,6 +169,7 @@ func (s *Server) addWatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = s.queue.CheckWatch(id, false)
+	w.Header().Set("HX-Trigger", "watch-added")
 	w.Header().Set("HX-Retarget", "#watch-rows")
 	w.Header().Set("HX-Reswap", "innerHTML")
 	s.watchRows(w, r)
@@ -244,6 +246,32 @@ func (s *Server) watchTagsDialog(w http.ResponseWriter, r *http.Request) {
 		Tags:  strings.Join(wt.Tags, " "),
 		Route: tagSuggestURL(s.mapper.Gallery(site)),
 	})
+}
+
+type watchAddTags struct {
+	Tags     []string
+	Disabled bool
+}
+
+// The tags the add bar holds for its watch until Watch sends them.
+func (s *Server) watchAddTagsBox(tags []string) watchAddTags {
+	return watchAddTags{Tags: tags, Disabled: !s.queue.WatchesAvailable() || !s.monbooruConfigured()}
+}
+
+// A watch added: the bar starts empty again.
+func (s *Server) watchAddTagsReset(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "watch_add_tags", s.watchAddTagsBox(nil))
+}
+
+// The add bar's dialog saves here, so the bar holds its tags as the watch
+// will: the same fold and cap a row's save takes.
+func (s *Server) setWatchAddTags(w http.ResponseWriter, r *http.Request) {
+	tags, msg := watchTags(strings.Fields(r.FormValue("tags")))
+	if msg != "" {
+		retargetFlash(w, "#watch-tags-flash", msg)
+		return
+	}
+	s.render(w, "watch_add_tags", s.watchAddTagsBox(tags))
 }
 
 func (s *Server) setWatchTags(w http.ResponseWriter, r *http.Request) {
