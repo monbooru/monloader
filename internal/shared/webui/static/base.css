@@ -697,9 +697,9 @@ dialog:has(.suggest-dropdown) { overflow: visible; }
 .suggest-description { flex: 1; color: var(--fg-dim); font-size: 11px; font-style: italic; overflow: hidden; text-overflow: ellipsis; }
 .suggest-count { color: var(--fg-dim); font-size: 11px; }
 .suggest-alias { color: var(--fg-dim); }
-/* A tags field's list spans the field's parent, under it. */
-.suggest-dropdown.tag-suggest-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 200; }
-.tag-suggest-dropdown .suggest-list { position: static; width: 100%; min-width: unset; }
+/* A tags or folder field's list spans the field's parent, under it. */
+.suggest-dropdown.tag-suggest-dropdown, .folder-picker .suggest-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 200; }
+.tag-suggest-dropdown .suggest-list, .folder-picker .suggest-list { position: static; width: 100%; min-width: 0; }
 
 /* Folder fields: a gallery's folders as a tree in a panel under the text
    box. Scoped to the field, as an app's sidebar tree may use the same names. */
@@ -727,9 +727,7 @@ dialog .folder-picker-input, dialog .folder-picker-panel { max-width: none; }
 .folder-new-under { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-dim); }
 .field .folder-new-form input[type="text"] { width: 140px; min-width: 60px; padding: 1px 4px; font-size: 12px; }
 .folder-new-form [data-folder-new-ok] { flex-shrink: 0; }
-.folder-picker .suggest-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 200; }
-.folder-picker .suggest-list { position: static; min-width: 0; max-height: 200px; overflow-y: auto; background: var(--bg-surface); border: 1px solid var(--border); }
-.folder-picker .suggest-item { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 3px 8px; border: none; border-bottom: 1px solid var(--border); background: none; color: var(--fg); font-size: 12px; text-align: left; cursor: pointer; }
-/* After the field's own rows, which clear the background. */
-.suggest-item.kbd-focused { background: var(--bg-input); outline: 1px solid var(--link); }
+.folder-picker .suggest-item { background: none; color: var(--fg); }
 .folder-picker .suggest-item:hover { background: var(--bg-input); }
+/* After the folder rows, which clear the background. */
+.suggest-item.kbd-focused { background: var(--bg-input); outline: 1px solid var(--link); }
