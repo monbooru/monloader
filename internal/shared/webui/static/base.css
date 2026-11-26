@@ -700,6 +700,8 @@ dialog:has(.suggest-dropdown) { overflow: visible; }
 /* A tags or folder field's list spans the field's parent, under it. */
 .suggest-dropdown.tag-suggest-dropdown, .folder-picker .suggest-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 200; }
 .tag-suggest-dropdown .suggest-list, .folder-picker .suggest-list { position: static; width: 100%; min-width: 0; }
+/* Folder counts stay at the right edge, as before the lists were shared. */
+.folder-picker .suggest-list { scrollbar-gutter: auto; }
 
 /* Folder fields: a gallery's folders as a tree in a panel under the text
    box. Scoped to the field, as an app's sidebar tree may use the same names. */
