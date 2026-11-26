@@ -5,13 +5,38 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/monbooru/monloader/internal/shared/contract"
+	"github.com/monbooru/monloader/internal/shared/logx"
 	"github.com/monbooru/monloader/internal/shared/webui"
 )
 
 const tagSuggestRoute = "/internal/tags/suggest"
+
+// Every keystroke asks, so a refusal is logged when it changes, not each
+// time: an old monbooru says once that it has no suggestions to give.
+type suggestWarning struct {
+	mu   sync.Mutex
+	last string
+}
+
+func (s *suggestWarning) warn(msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == msg {
+		return
+	}
+	s.last = msg
+	logx.Warnf("tag suggestions: %s", msg)
+}
+
+func (s *suggestWarning) clear() {
+	s.mu.Lock()
+	s.last = ""
+	s.mu.Unlock()
+}
 
 // A tags field's route, suggesting from the gallery its tags land in.
 func tagSuggestURL(gallery string) string {
@@ -30,10 +55,20 @@ func (s *Server) tagSuggest(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
 	found, err := s.client.SuggestTags(ctx, q.Get("gallery"), word, contract.TagSuggestLimit)
-	if err != nil || len(found) == 0 {
+	switch {
+	case err != nil:
+		// A request dropped by the next keystroke says nothing of monbooru.
+		if r.Context().Err() == nil {
+			s.tagSuggestWarn.warn(err.Error())
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case len(found) == 0:
+		s.tagSuggestWarn.clear()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	s.tagSuggestWarn.clear()
 	items := make([]webui.SuggestItem, len(found))
 	for i, t := range found {
 		items[i] = webui.SuggestItem{Name: t.Name, Alias: t.Alias, Color: t.Color, UsageCount: t.UsageCount, ShowCount: true}
