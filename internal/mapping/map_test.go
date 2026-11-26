@@ -1481,6 +1481,8 @@ func TestSiteOfURL(t *testing.T) {
 		"https://www.danbooru.donmai.us/posts":    "danbooru",
 		" https://website.example/posts/1 ":       "webexample",
 		"https://x.mirror.example/a":              "webexample",
+		"http://website.example:8080/posts":       "webexample",
+		"http://x.mirror.example:8080/a":          "webexample",
 		"https://unknown.example/posts":           "",
 		"not a url":                               "",
 		"":                                        "",
