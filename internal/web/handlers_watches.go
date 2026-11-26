@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"errors"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -224,7 +223,7 @@ func (s *Server) watchTagsDialog(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("id") == "" {
 		s.render(w, "watch_tags_dialog", watchTagsDialog{
 			Tags:  strings.Join(strings.Fields(r.FormValue("tags")), " "),
-			Route: tagSuggestRoute + "?gallery=" + url.QueryEscape(s.mapper.Gallery("")),
+			Route: tagSuggestURL(s.mapper.Gallery("")),
 		})
 		return
 	}
@@ -240,7 +239,7 @@ func (s *Server) watchTagsDialog(w http.ResponseWriter, r *http.Request) {
 		ID:    wt.ID,
 		URL:   wt.URL,
 		Tags:  strings.Join(wt.Tags, " "),
-		Route: tagSuggestRoute + "?gallery=" + url.QueryEscape(s.mapper.Gallery(wt.Last.Site)),
+		Route: tagSuggestURL(s.mapper.Gallery(wt.Last.Site)),
 	})
 }
 

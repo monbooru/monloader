@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -11,6 +12,11 @@ import (
 )
 
 const tagSuggestRoute = "/internal/tags/suggest"
+
+// A tags field's route, suggesting from the gallery its tags land in.
+func tagSuggestURL(gallery string) string {
+	return tagSuggestRoute + "?gallery=" + url.QueryEscape(gallery)
+}
 
 // The tags field's word at the caret, answered from the gallery the tags
 // land in. A 204 clears the list: no word, no match, or no monbooru.
