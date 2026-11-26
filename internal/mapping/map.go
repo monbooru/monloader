@@ -315,7 +315,7 @@ func (m *Mapper) SiteOfURL(raw string) string {
 	// names wins, then the bare host.
 	host := normalizeHost(u.Host)
 	for _, h := range []string{host, hostWithoutPort(host)} {
-		if site, ok := m.view().siteOfHost(h); ok {
+		if site := m.HostSite(h); site != "" {
 			return site
 		}
 	}
@@ -387,16 +387,6 @@ func (m *Mapper) sourceLabel(name string) (label string, claimed bool) {
 		return category, true
 	}
 	return name, false
-}
-
-// The site whose profile claims a normalized host: its own hosts exactly,
-// then its extra hosts, a subdomain matching its parent.
-func (v *profileSet) siteOfHost(host string) (string, bool) {
-	category, ok := v.hostSite[host]
-	for cand := host; !ok && cand != ""; cand = parentDomain(cand) {
-		category, ok = v.aliasSite[cand]
-	}
-	return category, ok
 }
 
 func hostWithoutPort(host string) string {
