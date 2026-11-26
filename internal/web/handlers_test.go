@@ -82,7 +82,7 @@ func TestEnqueueRejectsInvalidURL(t *testing.T) {
 	srv, ts := serveWeb(t, "")
 	for _, bad := range []string{"not a url", "gelbooru.com/post/1", "ftp://x/y", "https://"} {
 		body := readBody(t, postForm(t, ts, srv, "/", url.Values{"url": {bad}}))
-		if !strings.Contains(body, "valid") {
+		if !strings.Contains(body, "http(s) URL or an MD5 hash") {
 			t.Errorf("%q should flash an invalid-url error, got %q", bad, body)
 		}
 	}
@@ -1868,6 +1868,133 @@ func TestAddBarHashImport(t *testing.T) {
 		if j.Kind != queue.KindHashImport || j.MD5 != "0123456789abcdef0123456789abcdef" {
 			t.Errorf("job kind=%s md5=%q, want a hash import on the lower-cased md5", j.Kind, j.MD5)
 		}
+	}
+}
+
+func TestAddBarQueuesAPastedList(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+	md5 := "0123456789abcdef0123456789abcdef"
+	paste := "https://a.example/1\nhttps://a.example/1  HTTPS://B.example/2\tMD5:" + strings.ToUpper(md5) +
+		"\r\nchrome://extensions/ about:blank\n" + strings.Repeat("a", 64) + "\n"
+	resp := postForm(t, ts, srv, "/", url.Values{"url": {paste}, "items": {"10"}})
+	body := readBody(t, resp)
+	if loc := resp.Header.Get("HX-Redirect"); loc != "" {
+		t.Errorf("a list with refusals should stay on the launcher, got HX-Redirect %q", loc)
+	}
+	if tgt := resp.Header.Get("HX-Retarget"); tgt != "#add-flash" {
+		t.Errorf("HX-Retarget = %q, want #add-flash so the field resets", tgt)
+	}
+	for _, want := range []string{
+		`<span class="flash-ok">Queued 3, repeats left out: 1.</span><br>`,
+		`<span class="flash-warn">Not queued, not an http(s) URL or an MD5 hash: chrome://extensions/, about:blank.</span>`,
+		`<span class="flash-warn">Not queued, a SHA-256 looks tags up from the PTR and is not imported here: ` + strings.Repeat("a", 60) + `...</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("flash = %q, want %q", body, want)
+		}
+	}
+	jobs, total := srv.queue.List(queue.ListOptions{})
+	if total != 3 {
+		t.Fatalf("want 3 jobs, got %d", total)
+	}
+	got := map[string]*queue.Job{}
+	for _, j := range jobs {
+		got[j.URL+j.MD5] = j
+	}
+	for _, u := range []string{"https://a.example/1", "https://b.example/2"} {
+		if j := got[u]; j == nil || j.MaxItems != 10 {
+			t.Errorf("%s queued %+v, want a download with the picked count", u, j)
+		}
+	}
+	if j := got[md5]; j == nil || j.Kind != queue.KindHashImport {
+		t.Errorf("the md5 queued %+v, want a hash import", j)
+	}
+}
+
+func TestAddBarListWithNothingRefusedGoesToTheQueue(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+	resp := postForm(t, ts, srv, "/", url.Values{"url": {"https://a.example/1 https://a.example/2"}})
+	resp.Body.Close()
+	if loc := resp.Header.Get("HX-Redirect"); loc != "/queue" {
+		t.Errorf("HX-Redirect = %q, want /queue", loc)
+	}
+	if _, total := srv.queue.List(queue.ListOptions{}); total != 2 {
+		t.Errorf("want 2 jobs, got %d", total)
+	}
+	resp = postForm(t, ts, srv, "/", url.Values{"url": {"\n  https://a.example/3 \n"}})
+	resp.Body.Close()
+	if loc := resp.Header.Get("HX-Redirect"); loc != "/queue" {
+		t.Errorf("a lone url between new lines: HX-Redirect = %q, want /queue", loc)
+	}
+	if _, err := srv.queue.Get(3); err != nil {
+		t.Errorf("a lone url between new lines should queue as one: %v", err)
+	}
+}
+
+func TestAddBarListOnTheQueueScreen(t *testing.T) {
+	_, ts := serveWeb(t, "")
+	_, page := get(t, ts, "/queue")
+	m := csrfRe.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatal("no CSRF token in the add form")
+	}
+	form := url.Values{"_csrf": {m[1]}, "url": {"https://a.example/1 about:blank"}}
+	req, _ := http.NewRequest("POST", ts.URL+"/", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Current-URL", ts.URL+"/queue")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if tgt := resp.Header.Get("HX-Retarget"); tgt != "#queue-rows" {
+		t.Errorf("HX-Retarget = %q, want #queue-rows", tgt)
+	}
+	if !strings.Contains(body, "a.example/1") {
+		t.Errorf("the rows should carry the new job, got %q", truncate(body))
+	}
+	want := `<div id="add-flash" class="field-hint" hx-swap-oob="true"><span class="flash-ok">Queued 1.</span><br><span class="flash-warn">Not queued, not an http(s) URL or an MD5 hash: about:blank.</span></div>`
+	if !strings.Contains(body, want) {
+		t.Errorf("body = %q, want the note out of band", truncate(body))
+	}
+}
+
+func TestAddBarListWithNothingQueued(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+	resp := postForm(t, ts, srv, "/", url.Values{"url": {"about:blank one two three four"}})
+	body := readBody(t, resp)
+	if resp.Header.Get("HX-Redirect") != "" || resp.Header.Get("HX-Retarget") != "" {
+		t.Error("a list with nothing queued should answer in the flash slot")
+	}
+	if want := `<span class="flash-err">Not queued, not an http(s) URL or an MD5 hash: about:blank, one, two and 2 more.</span>`; body != want {
+		t.Errorf("body = %q, want %q", body, want)
+	}
+	if strings.Contains(body, "flash-ok") {
+		t.Error("nothing queued, so no ok line")
+	}
+	if _, total := srv.queue.List(queue.ListOptions{}); total != 0 {
+		t.Errorf("want no job, got %d", total)
+	}
+	body = readBody(t, postForm(t, ts, srv, "/", url.Values{"url": {"https://a.example/1 https://a.example/2"}, "items": {"-1"}}))
+	if !strings.Contains(body, "Pick how many posts") {
+		t.Errorf("a bad item count = %q, want the refusal", body)
+	}
+	if _, total := srv.queue.List(queue.ListOptions{}); total != 0 {
+		t.Errorf("a refused item count queued %d jobs", total)
+	}
+}
+
+func TestAddBarListWithMD5LookupOff(t *testing.T) {
+	srv, ts := serveWeb(t, "")
+	mustUpdate(t, srv, func(c *config.Config) {
+		c.Sites = []config.Site{{Name: "danbooru", LookupOrder: 0}}
+	})
+	body := readBody(t, postForm(t, ts, srv, "/", url.Values{"url": {"https://a.example/1 0123456789abcdef0123456789abcdef"}}))
+	if !strings.Contains(body, `<span class="flash-warn">Not queued, MD5 lookup is off, no site is in the lookup chain: 0123456789abcdef0123456789abcdef.</span>`) {
+		t.Errorf("body = %q, want the md5 named as not queued", body)
+	}
+	if _, total := srv.queue.List(queue.ListOptions{}); total != 1 {
+		t.Errorf("want only the url queued, got %d", total)
 	}
 }
 

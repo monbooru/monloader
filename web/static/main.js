@@ -33,6 +33,14 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 });
+document.addEventListener("paste", function (e) {
+  var input = e.target;
+  if (!(input instanceof HTMLInputElement) || !input.matches('form[hx-post="/"] input[name=url]')) return;
+  var text = e.clipboardData ? e.clipboardData.getData("text") : "";
+  if (!/[\r\n]/.test(text)) return;
+  e.preventDefault();
+  input.setRangeText(text.trim().split(/\s+/).join(" "), input.selectionStart, input.selectionEnd, "end");
+});
 document.addEventListener("reset", function () { setTimeout(restoreItemsPick, 0); }, true);
 document.addEventListener("change", function (e) {
   if (e.target.matches(".add-row select[name=items]")) {

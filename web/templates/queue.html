@@ -5,10 +5,10 @@
 <div class="content-scroll">
 <main id="content" class="content-wide">
   <form class="add-bar" hx-post="/" hx-target="#add-flash" hx-swap="innerHTML" hx-vals='js:{page: queuePageNum()}'
-        hx-on::after-request="if (event.detail.xhr.getResponseHeader('HX-Retarget')) { this.reset(); document.getElementById('add-flash').textContent = ''; }">
+        hx-on::after-request="if (event.detail.xhr.getResponseHeader('HX-Retarget')) this.reset();">
     <div class="add-row">
       <div class="search-input-wrap">
-        <input type="text" name="url" autocomplete="off" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}} placeholder="Paste a post, pool, search or artist URL, or an MD5 hash" data-short-placeholder="Paste a URL or an MD5 hash">
+        <input type="text" name="url" autocomplete="off" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}} placeholder="Paste post, pool, search or artist URLs, or MD5 hashes" data-short-placeholder="Paste URLs or MD5 hashes">
       </div>
       <select name="items" aria-label="Posts to fetch" title="How many posts to fetch from a search. A pool or a manga gallery always comes whole.">{{template "items_options" .ItemChoices}}</select>
       <button type="submit" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}}>Download</button>
