@@ -6,6 +6,6 @@
              hx-target="#{{.SuggestID}}"
              hx-swap="innerHTML"
              hx-vals='js:{ {{.ValsKey}}: wordAtCaret(document.getElementById("{{.InputID}}")).word}'
-             onkeydown="handleSuggestKey(event, '{{.SuggestID}}', '{{.InputID}}')">
+             onkeydown="handleSuggestKey(event, '{{.SuggestID}}')">
       <div id="{{.SuggestID}}" class="suggest-dropdown tag-suggest-dropdown"></div>
 {{end}}
