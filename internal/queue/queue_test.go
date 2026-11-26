@@ -377,6 +377,63 @@ func parkFinished(q *Queue, id int64, at time.Time, shape func(*Job)) *Job {
 	return j
 }
 
+func TestFullHistoryDropsRowsWithNothingToActOnFirst(t *testing.T) {
+	q := New(noopProcessor{}, 1, 3)
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	q.now = func() time.Time { return now }
+	succeed := func(j *Job) { j.Finalize(now) }
+	fail := func(j *Job) { j.Fail(outcome.ErrCodeUnsupportedURL, "no extractor", now) }
+	push := func(id int64, shape func(*Job)) []int64 {
+		j := newJob(id, "u", Options{}, now)
+		shape(j)
+		q.indexLocked(j)
+		return q.pushFinishedLocked(j)
+	}
+	push(1, fail)
+	push(2, succeed)
+	push(3, func(j *Job) { j.SetCapped(50); j.Finalize(now) })
+	steps := []struct {
+		id      int64
+		shape   func(*Job)
+		evicted int64
+		ring    []int64
+	}{
+		{4, succeed, 2, []int64{1, 3, 4}},
+		{5, succeed, 4, []int64{1, 3, 5}},
+		{6, fail, 5, []int64{1, 3, 6}},
+		{7, fail, 1, []int64{3, 6, 7}},
+		{8, succeed, 3, []int64{6, 7, 8}},
+	}
+	for _, st := range steps {
+		if got := push(st.id, st.shape); !slices.Equal(got, []int64{st.evicted}) {
+			t.Errorf("push %d evicted %v, want [%d]", st.id, got, st.evicted)
+		}
+		if got := idsOf(q.finished); !slices.Equal(got, st.ring) {
+			t.Errorf("after %d the ring is %v, want %v", st.id, got, st.ring)
+		}
+		if _, ok := q.index[st.evicted]; ok {
+			t.Errorf("job %d was evicted and should be de-indexed", st.evicted)
+		}
+	}
+}
+
+func TestFullHistoryJudgesASeriesWhole(t *testing.T) {
+	q := New(noopProcessor{}, 1, 3)
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	window := func(id, root int64, shape func(*Job)) []int64 {
+		j := newJob(id, "u", Options{Root: root}, now)
+		shape(j)
+		q.indexLocked(j)
+		return q.pushFinishedLocked(j)
+	}
+	window(1, 1, func(j *Job) { j.Finalize(now) })
+	window(2, 1, func(j *Job) { j.Fail(outcome.ErrCodeDownloadFailed, "boom", now) })
+	window(3, 3, func(j *Job) { j.Finalize(now) })
+	if got := window(4, 4, func(j *Job) { j.Finalize(now) }); !slices.Equal(got, []int64{3}) {
+		t.Errorf("evicted %v, want [3]: job 1 is clean but its series failed a window", got)
+	}
+}
+
 func TestListSweepsSucceededPastSuccessRetention(t *testing.T) {
 	q := New(noopProcessor{}, 1, 100)
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)

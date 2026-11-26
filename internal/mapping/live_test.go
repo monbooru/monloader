@@ -217,8 +217,8 @@ func TestLiveMappingDirectlink(t *testing.T) {
 	if pf.Source != "en.wikipedia.org" {
 		t.Errorf("source = %q, want the file host", pf.Source)
 	}
-	if u := mapper.PostURL(meta); u != fileURL {
-		t.Errorf("url = %q, want the file URL %q", u, fileURL)
+	if c := meta["category"]; c != CategoryDirectlink {
+		t.Errorf("category = %v, want %q, which the pipeline links to the submitted URL", c, CategoryDirectlink)
 	}
 }
 

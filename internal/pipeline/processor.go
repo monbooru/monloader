@@ -632,9 +632,20 @@ func pairDownloads(resolved []gdl.Item, downloaded []gdl.Downloaded, blacklisted
 func (p *Processor) beginJob(job, snap *queue.Job, site string) string {
 	job.SetSite(site)
 	p.siteState.Reached(site, time.Now())
-	gallery := cmp.Or(snap.Gallery, p.mapper.Gallery(site))
+	gallery := cmp.Or(snap.Gallery, p.mapper.Gallery(p.settingsSites(snap, site)...))
 	job.SetGallery(gallery)
 	return gallery
+}
+
+func (p *Processor) settingsSites(snap *queue.Job, site string) []string {
+	if site != mapping.CategoryDirectlink {
+		return []string{site}
+	}
+	host := cmp.Or(pageHost(snap.PageURL), pageHost(snap.URL))
+	if named := p.mapper.HostSite(host); named != "" {
+		return []string{named, site}
+	}
+	return []string{site}
 }
 
 func written(d gdl.Downloaded) bool { return !d.Skipped && d.Err == "" }
@@ -1069,7 +1080,7 @@ func skipItem(job *queue.Job, i int, oc outcome.Outcome, note string) {
 
 func (p *Processor) folder(job *queue.Job) string {
 	snap := job.Snapshot()
-	return cmp.Or(snap.Folder, p.mapper.Folder(snap.Site))
+	return cmp.Or(snap.Folder, p.mapper.Folder(p.settingsSites(snap, snap.Site)...))
 }
 
 func (p *Processor) extras(job *queue.Job) mapping.Extras {

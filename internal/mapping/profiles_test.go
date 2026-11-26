@@ -10,8 +10,8 @@ func TestLoadProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadProfiles: %v", err)
 	}
-	if len(profiles) != 61 {
-		t.Errorf("loaded %d profiles, want 61", len(profiles))
+	if len(profiles) != 60 {
+		t.Errorf("loaded %d profiles, want 60", len(profiles))
 	}
 	for category, p := range profiles {
 		if err := ValidateProfile(p); err != nil {

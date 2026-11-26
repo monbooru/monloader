@@ -52,7 +52,7 @@ button, input, select, textarea {
   padding: 4px 8px;
 }
 @media (pointer: coarse) {
-  input, select, textarea { font-size: 16px; }
+  input, select, textarea { font-size: 16px !important; }
   input::placeholder, textarea::placeholder { font-size: 13px; }
 }
 input[type="text"], input[type="search"] { text-overflow: ellipsis; }
@@ -703,8 +703,7 @@ dialog:has(.suggest-dropdown) { overflow: visible; }
 /* Folder counts stay at the right edge, as before the lists were shared. */
 .folder-picker .suggest-list { scrollbar-gutter: auto; }
 
-/* Folder fields: a gallery's folders as a tree in a panel under the text
-   box. Scoped to the field, as an app's sidebar tree may use the same names. */
+/* Scoped to the folder field: an app's sidebar tree may use the same class names. */
 .folder-picker > label { display: inline-block; }
 .folder-picker > [data-folder-browse] { margin-left: 8px; font-size: 12px; }
 .folder-picker-input { position: relative; max-width: 300px; }
@@ -729,6 +728,11 @@ dialog .folder-picker-input, dialog .folder-picker-panel { max-width: none; }
 .folder-new-under { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-dim); }
 .field .folder-new-form input[type="text"] { width: 140px; min-width: 60px; padding: 1px 4px; font-size: 12px; }
 .folder-new-form [data-folder-new-ok] { flex-shrink: 0; }
+@media (pointer: coarse) {
+  .folder-new-row { flex-wrap: wrap; }
+  .folder-new-row .folder-new-form:not([hidden]) { flex: 1 0 100%; min-width: 0; }
+  .field .folder-new-form input[type="text"] { flex: 1; width: auto; min-width: 0; }
+}
 .folder-picker .suggest-item { background: none; color: var(--fg); }
 .folder-picker .suggest-item:hover { background: var(--bg-input); }
 /* After the folder rows, which clear the background. */

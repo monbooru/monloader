@@ -974,6 +974,14 @@ Consider all listed sites to potentially be NSFW.
         <span title="https://www.iwara.tv/video/ID">Videos</span></td>
     <td>Supported</td>
 </tr>
+<tr id="tw6" title="tw6">
+    <td>JAEGER SIXTH</td>
+    <td>https://tw6.jp/</td>
+    <td><span title="https://tw6.jp/gallery/?id=12345">Posts</span> |
+        <span title="https://tw6.jp/gallery/search?word=QUERY">Search Results</span> |
+        <span title="https://tw6.jp/gallery/master/?master_id=12345">User Profiles</span></td>
+    <td></td>
+</tr>
 <tr id="joyreactor" title="joyreactor">
     <td>JoyReactor</td>
     <td>https://joyreactor.com/<br>https://joyreactor.cc/</td>
@@ -1314,9 +1322,12 @@ Consider all listed sites to potentially be NSFW.
 <tr id="onlyhaven" title="onlyhaven">
     <td>OnlyHaven</td>
     <td>https://cum.st/</td>
-    <td><span title="https://cum.st/creators/SERVICE/12345/post/12345">Posts</span> |
+    <td><span title="https://cum.st/creators/SERVICE/12345/dm/12345">DMs</span> |
+        <span title="https://cum.st/creators/SERVICE/12345/post/12345">Posts</span> |
         <span title="https://cum.st/posts">Post Listings</span> |
-        <span title="https://cum.st/creators/SERVICE/12345">User Profiles</span></td>
+        <span title="https://cum.st/creators/SERVICE/12345">User Profiles</span> |
+        <span title="https://cum.st/creators/SERVICE/12345?tab=dms">User DMs</span> |
+        <span title="https://cum.st/creators/SERVICE/12345?tab=posts">User Posts</span></td>
     <td></td>
 </tr>
 <tr id="patreon" title="patreon">
@@ -1369,7 +1380,7 @@ Consider all listed sites to potentially be NSFW.
 </tr>
 <tr id="picazor" title="picazor">
     <td>Picazor</td>
-    <td>https://picazor.com/</td>
+    <td>https://picazor.com/<br>https://picazor.one/</td>
     <td><span title="https://picazor.com/en/USERNAME">User Profiles</span></td>
     <td></td>
 </tr>
@@ -1848,10 +1859,25 @@ Consider all listed sites to potentially be NSFW.
         <span title="https://vm.tiktok.com/1a2B3c4E5">VM Posts</span></td>
     <td><a href="https://codeberg.org/mikf/gallery-dl#cookies">Cookies</a></td>
 </tr>
+<tr id="tistory" title="tistory">
+    <td>Tistory</td>
+    <td>https://www.tistory.com/</td>
+    <td><span title="https://USER.tistory.com/12345">Articles</span> |
+        <span title="https://USER.tistory.com/">Blogs</span> |
+        <span title="http://cfile1.uf.tistory.com/original/0246813579ACEBDF">Direct Links</span></td>
+    <td></td>
+</tr>
 <tr id="tmohentai" title="tmohentai">
     <td>TMOHentai</td>
     <td>https://tmohentai.com/</td>
     <td><span title="https://tmohentai.com/contents/12345a67b89c0">Galleries</span></td>
+    <td></td>
+</tr>
+<tr id="topfaps" title="topfaps">
+    <td>Topfaps</td>
+    <td>https://topfaps.com</td>
+    <td><span title="https://topfaps.com/model/CREATOR">Models</span> |
+        <span title="https://topfaps.com/photo/12345">Posts</span></td>
     <td></td>
 </tr>
 <tr id="toyhouse" title="toyhouse">
@@ -1909,7 +1935,8 @@ Consider all listed sites to potentially be NSFW.
 <tr id="twitter" title="twitter">
     <td>Twitter</td>
     <td>https://x.com/<br>https://twitter.com/</td>
-    <td><span title="https://x.com/USER/photo">Avatars</span> |
+    <td><span title="https://x.com/USER/articles">Articles</span> |
+        <span title="https://x.com/USER/photo">Avatars</span> |
         <span title="https://x.com/USER/header_photo">Backgrounds</span> |
         <span title="https://x.com/i/history">Bookmarks</span> |
         <span title="https://x.com/i/communities">Communities</span> |
@@ -1925,10 +1952,10 @@ Consider all listed sites to potentially be NSFW.
         <span title="https://x.com/i/lists/12345">Lists</span> |
         <span title="https://x.com/i/lists/12345/members">List Members</span> |
         <span title="https://x.com/USER/media">Media Timelines</span> |
-        <span title="https://x.com/notifications">Notifications</span> |
+        <span title="https://x.com/i/timeline">Notifications</span> |
         <span title="https://x.com/USER/status/12345/quotes">Quotes</span> |
+        <span title="https://x.com/USER/reposts">Reposts</span> |
         <span title="https://x.com/search?q=QUERY">Search Results</span> |
-        <span title="https://x.com/USER/timeline">Timelines</span> |
         <span title="https://x.com/USER/status/12345">Tweets</span> |
         <span title="https://x.com/USER">User Profiles</span></td>
     <td><a href="https://codeberg.org/mikf/gallery-dl#cookies">Cookies</a></td>
@@ -2300,17 +2327,41 @@ Consider all listed sites to potentially be NSFW.
         <span title="https://e926.net/posts?tags=TAG">Tag Searches</span></td>
     <td>Supported</td>
 </tr>
-<tr id="e6ai" title="e6ai">
-    <td>e6AI</td>
-    <td>https://e6ai.net/</td>
-    <td><span title="https://e6ai.net/artists/12345">Artists</span> |
-        <span title="https://e6ai.net/artists?QUERY">Artist Searches</span> |
-        <span title="https://e6ai.net/favorites">Favorites</span> |
-        <span title="https://e6ai.net/pools/12345">Pools</span> |
-        <span title="https://e6ai.net/explore/posts/popular">Popular Images</span> |
-        <span title="https://e6ai.net/posts/12345">Posts</span> |
-        <span title="https://e6ai.net/posts?tags=TAG">Tag Searches</span></td>
-    <td>Supported</td>
+<tr id="blep" title="blep">
+    <td>Blep</td>
+    <td>https://blep.art/</td>
+    <td><span title="https://blep.art/artists/12345">Artists</span> |
+        <span title="https://blep.art/artists?QUERY">Artist Searches</span> |
+        <span title="https://blep.art/favorites">Favorites</span> |
+        <span title="https://blep.art/pools/12345">Pools</span> |
+        <span title="https://blep.art/explore/posts/popular">Popular Images</span> |
+        <span title="https://blep.art/posts/12345">Posts</span> |
+        <span title="https://blep.art/posts?tags=TAG">Tag Searches</span></td>
+    <td></td>
+</tr>
+<tr id="hmofa" title="hmofa">
+    <td>hmofa gallery</td>
+    <td>https://hmofa.gallery/</td>
+    <td><span title="https://hmofa.gallery/artists/12345">Artists</span> |
+        <span title="https://hmofa.gallery/artists?QUERY">Artist Searches</span> |
+        <span title="https://hmofa.gallery/favorites">Favorites</span> |
+        <span title="https://hmofa.gallery/pools/12345">Pools</span> |
+        <span title="https://hmofa.gallery/explore/posts/popular">Popular Images</span> |
+        <span title="https://hmofa.gallery/posts/12345">Posts</span> |
+        <span title="https://hmofa.gallery/posts?tags=TAG">Tag Searches</span></td>
+    <td></td>
+</tr>
+<tr id="floofgens" title="floofgens">
+    <td>Floofgens</td>
+    <td>https://floofgens.net/</td>
+    <td><span title="https://floofgens.net/artists/12345">Artists</span> |
+        <span title="https://floofgens.net/artists?QUERY">Artist Searches</span> |
+        <span title="https://floofgens.net/favorites">Favorites</span> |
+        <span title="https://floofgens.net/pools/12345">Pools</span> |
+        <span title="https://floofgens.net/explore/posts/popular">Popular Images</span> |
+        <span title="https://floofgens.net/posts/12345">Posts</span> |
+        <span title="https://floofgens.net/posts?tags=TAG">Tag Searches</span></td>
+    <td></td>
 </tr>
 
 <tr id="gelbooru_v01" title="gelbooru_v01">
@@ -2783,13 +2834,6 @@ Consider all listed sites to potentially be NSFW.
 <tr id="shimmie2" title="shimmie2">
     <td colspan="4"><strong>Shimmie2 Instances</strong></td>
 </tr>
-<tr id="cavemanon" title="cavemanon">
-    <td>Cavemanon</td>
-    <td>https://booru.cavemanon.xyz/</td>
-    <td><span title="https://booru.cavemanon.xyz/post/view/12345">Posts</span> |
-        <span title="https://booru.cavemanon.xyz/post/list/TAG/1">Tag Searches</span></td>
-    <td></td>
-</tr>
 <tr id="rule34hentai" title="rule34hentai">
     <td>Rule34Hentai</td>
     <td>https://rule34hentai.net/</td>
@@ -2823,6 +2867,13 @@ Consider all listed sites to potentially be NSFW.
     <td>https://www.prequeladventure.com/fanartbooru/</td>
     <td><span title="https://www.prequeladventure.com/fanartbooru/post/view/12345">Posts</span> |
         <span title="https://www.prequeladventure.com/fanartbooru/post/list/TAG/1">Tag Searches</span></td>
+    <td></td>
+</tr>
+<tr id="candybooru" title="candybooru">
+    <td>Candybooru</td>
+    <td>https://www.bittersweetcandybowl.com/candybooru/</td>
+    <td><span title="https://www.bittersweetcandybowl.com/candybooru/post/view/12345">Posts</span> |
+        <span title="https://www.bittersweetcandybowl.com/candybooru/post/list/TAG/1">Tag Searches</span></td>
     <td></td>
 </tr>
 
@@ -3411,6 +3462,12 @@ Consider all listed sites to potentially be NSFW.
     <td>Fappic.com</td>
     <td>https://fappic.com/</td>
     <td><span title="https://fappic.com/abcde12345/NAME.EXT">individual Images</span></td>
+    <td></td>
+</tr>
+<tr id="fastpic" title="fastpic">
+    <td>FastPic</td>
+    <td>https://fastpic.org/</td>
+    <td><span title="https://fastpic.org/view/1/2000/1000/abcde12345.EXT.html">individual Images</span></td>
     <td></td>
 </tr>
 <tr id="imagetwist" title="imagetwist">

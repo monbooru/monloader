@@ -1021,13 +1021,20 @@ func (q *Queue) pushFinishedLocked(j *Job) []int64 {
 	var evictedIDs []int64
 	q.finished = append(q.finished, j)
 	for len(q.finished) > q.maxFinished {
-		evicted := q.finished[0]
-		// Nil the slot before reslicing, or the evicted job stays
-		// reachable from the backing array.
-		q.finished[0] = nil
-		q.finished = q.finished[1:]
+		i := q.evictableLocked()
+		evicted := q.finished[i]
+		q.finished = slices.Delete(q.finished, i, i+1)
 		q.unindexLocked(evicted.ID)
 		evictedIDs = append(evictedIDs, evicted.ID)
 	}
 	return evictedIDs
+}
+
+func (q *Queue) evictableLocked() int {
+	for i, j := range q.finished[:len(q.finished)-1] {
+		if q.series[j.seriesKey()].settled() {
+			return i
+		}
+	}
+	return 0
 }

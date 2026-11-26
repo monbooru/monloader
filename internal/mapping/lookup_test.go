@@ -26,8 +26,8 @@ func TestLookupTemplatesWellFormed(t *testing.T) {
 			t.Errorf("%s: substituted lookup URL from %q is not an absolute http(s) URL", cat, p.MD5Search)
 		}
 	}
-	if count != 20 {
-		t.Errorf("lookupable profiles = %d, want 20", count)
+	if count != 19 {
+		t.Errorf("lookupable profiles = %d, want 19", count)
 	}
 }
 

@@ -165,7 +165,8 @@ func WriteManagedConfig(cfg *config.Config, lists SiteLists) error {
 		"cache": map[string]any{"file": filepath.Join(filepath.Dir(cfg.GalleryDL.ConfigPath), "gallery-dl-cache.sqlite3")},
 		// reportDownloads reads file paths from stdout, and a Windows pipe
 		// otherwise carries the ANSI code page.
-		"output": map[string]any{"stdout": "utf-8", "stderr": "utf-8"},
+		"output":     map[string]any{"stdout": "utf-8", "stderr": "utf-8"},
+		"downloader": map[string]any{"http": map[string]any{"retry-codes": []any{}}},
 	}
 
 	if raw := cfg.GalleryDL.RawConfig; raw != "" {

@@ -854,9 +854,8 @@ func TestEnqueueFromQueueRefreshesInPlace(t *testing.T) {
 	if m == nil {
 		t.Fatal("no CSRF token in the add form")
 	}
-
-	if !strings.Contains(body, "getResponseHeader('HX-Retarget')) { this.reset(); document.getElementById('add-flash').textContent = ''; }") {
-		t.Error("the queue add form should reset and clear its flash after an in-place add")
+	if !strings.Contains(body, "getResponseHeader('HX-Retarget')) this.reset();") {
+		t.Error("the queue add form should reset after an in-place add")
 	}
 
 	form := url.Values{"_csrf": {m[1]}, "url": {"https://example.com/posts/1"}}
@@ -875,8 +874,12 @@ func TestEnqueueFromQueueRefreshesInPlace(t *testing.T) {
 	if tgt := resp.Header.Get("HX-Retarget"); tgt != "#queue-rows" {
 		t.Errorf("queue-screen add should retarget #queue-rows, got %q", tgt)
 	}
-	if b := readBody(t, resp); !strings.Contains(b, "example.com/posts/1") {
+	b := readBody(t, resp)
+	if !strings.Contains(b, "example.com/posts/1") {
 		t.Errorf("in-place refresh should render the new job row, got %q", b)
+	}
+	if !strings.Contains(b, `<div id="add-flash" class="field-hint" hx-swap-oob="true"></div>`) {
+		t.Errorf("in-place add should clear the flash out of band, got %q", truncate(b))
 	}
 }
 

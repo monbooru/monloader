@@ -23,7 +23,7 @@ function setFlashText(slot, kind, text) {
   slot.appendChild(d);
 }
 
-function handleSuggestKey(e, dropdownId, inputId) {
+function handleSuggestKey(e, dropdownId) {
   var dd = document.getElementById(dropdownId);
   if (!dd) return;
   var items = Array.from(dd.querySelectorAll('.suggest-item'));
@@ -761,8 +761,6 @@ document.addEventListener('keydown', function(e) {
   row.parentNode.dispatchEvent(new CustomEvent('reorder', {bubbles: true, detail: {row: row, keyboard: true}}));
 });
 
-// The folder fields: a text box the panel's tree, the suggestions and
-// [+ new folder] all write into. The tree's levels load on first open.
 // A change, not an input: what reads the field hears the pick, and the
 // field's own suggestions, which listen for input, stay shut.
 function folderPick(picker, path) {
@@ -819,7 +817,6 @@ document.addEventListener('click', function(e) {
   } else if (t.closest('[data-folder-suggest]')) {
     folderPick(picker, t.closest('[data-folder-suggest]').dataset.folderSuggest);
   } else if (t.closest('[data-folder-new]')) {
-    // Under the folder the field holds, or at the top with none.
     var form = picker.querySelector('.folder-new-form');
     var under = picker.querySelector('.folder-picker-input input').value.trim().replace(/\/+$/, '');
     var active = picker.querySelector('.folder-node-row.active:not([data-folder-pick=""])');
