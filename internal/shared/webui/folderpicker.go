@@ -2,11 +2,9 @@ package webui
 
 import "strings"
 
-// FolderPicker is a folder field: a text box that a tree of a gallery's
-// folders, the suggestions and [+ new folder] all write into. Each app
-// mounts its own routes under Route: Route redraws the field,
-// Route+"/level" answers a page of a level and Route+"/suggest" the
-// suggestions, each with ?kind=Kind.
+// FolderPicker is a folder field. Each app serves Route (the field),
+// Route+"/level" (a page of a level) and Route+"/suggest", each with
+// ?kind=Kind.
 type FolderPicker struct {
 	Route, Kind, ID, Name, Label, Blank, Hint string
 	// The select picking the gallery beside the field, whose change redraws
@@ -26,8 +24,8 @@ type FolderPicker struct {
 	Held func(path string) bool
 }
 
-// WithValue lets the templates set the value they already resolve, a draft
-// or the stored setting.
+// WithValue returns the field holding v, Missing when the gallery is known
+// not to hold it.
 func (p FolderPicker) WithValue(v string) FolderPicker {
 	p.Value = v
 	p.Missing = p.Listed && v != "" && p.Held != nil && !p.Held(v)
@@ -67,10 +65,9 @@ func FolderRowOf(f FolderEntry, value string) FolderRow {
 	return FolderRow{Path: f.Path, Name: f.Name, Images: f.Images, HasSub: f.Folders > 0, Active: f.Path == value}
 }
 
-// FolderLevelOf builds one page of the level under path, reading pages
-// through read. The branch leading to value opens with it, and its row
-// joins the first page when it sits on a later one, so later pages leave
-// it out.
+// FolderLevelOf builds a page of the level under path. The branch leading
+// to value opens, and its row always joins the first page, so later pages
+// leave it out.
 func (p FolderPicker) FolderLevelOf(read func(path string, page int) (FolderPage, error), path string, page int, value string) (*FolderLevel, error) {
 	fp, err := read(path, page)
 	if err != nil {
@@ -128,9 +125,8 @@ func nextFolder(path, value string) string {
 	return strings.TrimPrefix(path+"/"+seg, "/")
 }
 
-// The page of parent's level holding child, and child's row. A level is
-// listed in byte order of path, so halving the pages finds it in a few
-// reads however wide the level.
+// A level is listed in byte order of path, so halving the pages finds
+// child's page and row in a few reads however wide the level.
 func locateFolder(read func(path string, page int) (FolderPage, error), parent, child string, at FolderPage) (FolderEntry, int, bool) {
 	lo, hi := 1, (at.Total+at.Limit-1)/max(at.Limit, 1)
 	for lo <= hi {

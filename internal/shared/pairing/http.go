@@ -35,7 +35,7 @@ type offerBody interface{ body() *RequestBody }
 func (b *RequestBody) body() *RequestBody { return b }
 
 // DecodeOffer reads a pairing request into dst, a *RequestBody or a pointer
-// to a struct embedding one. A label, when given, meets the app name rule.
+// to a struct embedding one.
 func DecodeOffer(w http.ResponseWriter, r *http.Request, dst offerBody) *Refusal {
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxOfferBody)).Decode(dst); err != nil || dst.body().App == "" {
 		return &Refusal{http.StatusBadRequest, CodeInvalidRequest, "app and a JSON body are required"}

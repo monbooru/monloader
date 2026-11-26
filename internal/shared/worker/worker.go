@@ -1,8 +1,6 @@
-// Package worker spells what monbooru and monworker exchange over
-// monworker's /v1: the descriptions, the tag call, a client and a fake
-// worker for tests. A model's frames travel as RGB8 pixels, raw or as
-// PNG, and its scores come back sparse, so the wire carries no tag and no
-// file name.
+// Package worker is the wire of monworker's /v1, with a client and a fake
+// worker for tests. Frames travel as RGB8 pixels, raw or as PNG, and scores
+// come back sparse, so the wire carries no tag and no file name.
 package worker
 
 import (
@@ -38,10 +36,9 @@ const (
 	PriorityBatch       = "batch"
 	PriorityInteractive = "interactive"
 
-	// FormatRGB8 is Size x Size x 3 bytes a frame, one after the other.
-	// FormatPNG is the same pixels as an 8-bit PNG, each frame after its
-	// length in four bytes, big-endian: smaller on a slow link, the same
-	// on arrival.
+	// FormatRGB8 is Size x Size x 3 bytes a frame, back to back. FormatPNG is
+	// the same pixels as 8-bit PNGs, each after its length in four bytes
+	// big-endian: lossless, and smaller on a slow link.
 	FormatRGB8 = "rgb8"
 	FormatPNG  = "png"
 
@@ -74,7 +71,6 @@ type Info struct {
 	Providers []string `json:"providers"`
 	Threads   int      `json:"threads"`
 	Slots     int      `json:"slots"`
-	Device    string   `json:"device,omitempty"`
 	// ModelsDir is the folder the worker reads, where a model is installed.
 	ModelsDir string   `json:"models_dir,omitempty"`
 	Tasks     []string `json:"tasks"`
@@ -218,7 +214,6 @@ const (
 	CodeBadRequest   = "bad_request"
 	CodeUnknownModel = "unknown_model"
 	CodeNotReady     = "not_ready"
-	CodeOverloaded   = "overloaded"
 )
 
 // frameBytes is the size of count frames of the spec once they are RGB8;
@@ -251,7 +246,6 @@ func encodePNG(w io.Writer, frame []byte, size int) error {
 	return err
 }
 
-// decodePNG reads one length-prefixed PNG into dst, size x size RGB8.
 func decodePNG(r io.Reader, dst []byte, size int) error {
 	var n uint32
 	if err := binary.Read(r, binary.BigEndian, &n); err != nil {

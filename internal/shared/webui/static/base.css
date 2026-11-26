@@ -659,8 +659,7 @@ a.btn-sm:hover { text-decoration: none; }
 .reorder-dragging { outline: 1px dashed var(--fg); outline-offset: -1px; }
 .reorder-dragging .reorder-grip { color: var(--accent); cursor: grabbing; }
 
-/* Folder fields: a gallery's folders as a tree in a panel under the text
-   box. Scoped to the field, as an app's sidebar tree may use the same names. */
+/* Scoped to the folder field: an app's sidebar tree may use the same class names. */
 .folder-picker > label { display: inline-block; }
 .folder-picker > [data-folder-browse] { margin-left: 8px; font-size: 12px; }
 .folder-picker-input { position: relative; max-width: 300px; }

@@ -6,7 +6,7 @@
   {{- if .Listed}}<button type="button" class="btn-link-accent" data-folder-browse="{{.ID}}">[browse]</button>{{end}}
   <div class="folder-picker-input">
     <input type="text" id="{{.ID}}-input" name="{{.Name}}" value="{{.Value}}" placeholder="{{.Blank}}" autocomplete="off"
-      onkeydown="handleSuggestKey(event, '{{.ID}}-suggest', '{{.ID}}-input')"
+      onkeydown="handleSuggestKey(event, '{{.ID}}-suggest')"
       {{- if .Listed}} hx-get="{{.Route}}/suggest?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}" hx-trigger="input changed delay:200ms"
       hx-target="#{{.ID}}-suggest" hx-swap="innerHTML"{{end}}>
     <div class="suggest-dropdown" id="{{.ID}}-suggest"></div>
