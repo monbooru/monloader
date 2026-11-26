@@ -1,8 +1,12 @@
 package web
 
 import (
+	"bytes"
+	"log"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,6 +42,27 @@ func TestTagSuggestAsksTheGalleryForTheWordAtTheCaret(t *testing.T) {
 			}
 			wantInBody(t, body, tc.want, tc.wantNot)
 		})
+	}
+}
+
+func TestTagSuggestLogsAnOldMonbooruOnce(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"not_found","error":"endpoint not found"}`))
+	}))
+	t.Cleanup(old.Close)
+	srv := pairMB(t, newWebServer(t, old.URL, ""))
+	ts := newTestServer(t, srv)
+	for range 3 {
+		if code, _ := get(t, ts, tagSuggestRoute+"?tag=us"); code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", code)
+		}
+	}
+	if n := strings.Count(buf.String(), "tag suggestions: monbooru_rejected: this monbooru does not suggest tags yet; update it"); n != 1 {
+		t.Errorf("logged the refusal %d times, want once:\n%s", n, buf.String())
 	}
 }
 
