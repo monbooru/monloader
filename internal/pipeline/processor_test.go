@@ -1797,6 +1797,44 @@ func TestPipelinePushFolderPrecedence(t *testing.T) {
 	}
 }
 
+func TestPipelineBareFileTakesItsLabelledSiteSettings(t *testing.T) {
+	cases := []struct {
+		name, url, page, picked, wantGallery, wantFolder string
+		directlinkFolder                                 string
+	}{
+		{"the page's site", "https://cdn.example/file.png", "https://danbooru.donmai.us/posts/1", "", "wallpapers", "inbox/danbooru", ""},
+		{"the file host's site without a page", "https://cdn.donmai.us/original/ab/cd/file.png", "", "", "wallpapers", "inbox/danbooru", ""},
+		{"a page no site claims wins over the file host", "https://cdn.donmai.us/original/ab/cd/file.png", "https://example.org/thread", "", "", "dflt", ""},
+		{"the picked folder still wins", "https://cdn.example/file.png", "https://danbooru.donmai.us/posts/1", "picked", "wallpapers", "picked", ""},
+		{"an unclaimed host keeps the directlink site", "https://cdn.example/file.png", "", "", "", "direct", "direct"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Downloader.DefaultFolder = "dflt"
+			danbooru := cfg.FindSite("danbooru")
+			danbooru.Gallery, danbooru.Folder = "wallpapers", "inbox/danbooru"
+			if tc.directlinkFolder != "" {
+				cfg.Sites = append(cfg.Sites, config.Site{Name: "directlink", Folder: tc.directlinkFolder})
+			}
+			fake := &fakeRunner{resolved: []gdl.Item{directlinkItem()}, writeIdx: []int{0}}
+			var gotFolder string
+			q := lookupEnvCfg(t, fake, capturePush(1, map[string]*string{"folder": &gotFolder}), cfg, nil, nil)
+
+			job := waitJob(t, q, q.Enqueue(tc.url, queue.Options{Folder: tc.picked, PageURL: tc.page}))
+			if job.Status != queue.JobSucceeded {
+				t.Fatalf("status = %s, want succeeded", job.Status)
+			}
+			if job.Site != "directlink" {
+				t.Errorf("job site = %q, want the factual directlink", job.Site)
+			}
+			if job.Gallery != tc.wantGallery || gotFolder != tc.wantFolder {
+				t.Errorf("gallery, folder = %q, %q, want %q, %q", job.Gallery, gotFolder, tc.wantGallery, tc.wantFolder)
+			}
+		})
+	}
+}
+
 func TestPipelineMangaExemptFromCap(t *testing.T) {
 	fake := &fakeRunner{
 		resolved: []gdl.Item{mangaPage("654738", 1), mangaPage("654738", 2), mangaPage("654738", 3)},

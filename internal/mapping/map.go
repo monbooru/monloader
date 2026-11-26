@@ -293,19 +293,39 @@ func (m *Mapper) LookupSites() []string {
 	return out
 }
 
-func (m *Mapper) Gallery(category string) string {
-	if site := m.cfg.Current().FindSite(category); site != nil && site.Gallery != "" {
-		return site.Gallery
+func (m *Mapper) Gallery(categories ...string) string {
+	cfg := m.cfg.Current()
+	for _, category := range categories {
+		if site := cfg.FindSite(category); site != nil && site.Gallery != "" {
+			return site.Gallery
+		}
 	}
-	return m.cfg.Current().Monbooru.DefaultGallery
+	return cfg.Monbooru.DefaultGallery
 }
 
 // Empty leaves the folder to monbooru's own default.
-func (m *Mapper) Folder(category string) string {
-	if site := m.cfg.Current().FindSite(category); site != nil && site.Folder != "" {
-		return site.Folder
+func (m *Mapper) Folder(categories ...string) string {
+	cfg := m.cfg.Current()
+	for _, category := range categories {
+		if site := cfg.FindSite(category); site != nil && site.Folder != "" {
+			return site.Folder
+		}
 	}
-	return m.cfg.Current().Downloader.DefaultFolder
+	return cfg.Downloader.DefaultFolder
+}
+
+func (m *Mapper) HostSite(host string) string {
+	v := m.view()
+	host = normalizeHost(host)
+	if category, ok := v.hostSite[host]; ok {
+		return category
+	}
+	for cand := host; cand != ""; cand = parentDomain(cand) {
+		if category, ok := v.aliasSite[cand]; ok {
+			return category
+		}
+	}
+	return ""
 }
 
 // SourceLabel keeps an unmatched name as-is, so no label lands that the
@@ -341,11 +361,7 @@ func (m *Mapper) sourceLabel(name string) (label string, claimed bool) {
 			}
 		}
 	}
-	category, ok := v.hostSite[host]
-	for cand := host; !ok && cand != ""; cand = parentDomain(cand) {
-		category, ok = v.aliasSite[cand]
-	}
-	if ok {
+	if category := m.HostSite(host); category != "" {
 		if site := cfg.FindSite(category); site != nil && site.Label != "" {
 			return site.Label, true
 		}
