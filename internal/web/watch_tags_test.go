@@ -116,8 +116,9 @@ func TestSetWatchTags(t *testing.T) {
 		})
 	}
 	srv, ts := serveWatches(t, noopProc{})
-	if body := readBody(t, postForm(t, ts, srv, "/watches/999/tags", url.Values{"tags": {"a"}})); !strings.Contains(body, "That watch is gone") {
-		t.Errorf("tags on a gone watch = %q, want the gone notice", truncate(body))
+	resp := postForm(t, ts, srv, "/watches/999/tags", url.Values{"tags": {"a"}})
+	if retarget, body := resp.Header.Get("HX-Retarget"), readBody(t, resp); retarget != "#watch-tags-flash" || !strings.Contains(body, "That watch is gone") {
+		t.Errorf("tags on a gone watch = %s %q, want the gone notice in the dialog", retarget, truncate(body))
 	}
 }
 
