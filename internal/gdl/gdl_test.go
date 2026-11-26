@@ -1131,6 +1131,10 @@ func TestWriteManagedConfigCapsDeadHost(t *testing.T) {
 	if ext["retries"] != float64(2) {
 		t.Errorf("retries = %v, want 2", ext["retries"])
 	}
+	http, _ := full["downloader"].(map[string]any)["http"].(map[string]any)
+	if codes, ok := http["retry-codes"].([]any); !ok || len(codes) != 0 {
+		t.Errorf("downloader.http.retry-codes = %v, want [] so a 429 fails at once", http["retry-codes"])
+	}
 }
 
 func TestWriteManagedConfigRejectsBadRaw(t *testing.T) {
