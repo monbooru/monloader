@@ -311,6 +311,12 @@ dialog textarea { resize: vertical; max-height: 60vh; }
 #site-edit-dialog { width: 720px; max-width: 94vw; max-height: 88vh; overflow-y: auto; }
 #chain-dialog { width: 520px; max-width: 94vw; }
 #item-debug-dialog { width: 820px; max-width: 94vw; max-height: 88vh; overflow-y: auto; }
+/* The list hangs over the hint and the buttons, so the dialog keeps its size. */
+#watch-tags-dialog { width: 520px; max-width: 94vw; }
+.watch-tags-url { overflow-wrap: anywhere; margin-top: -8px; }
+.watch-tags-field { position: relative; }
+#watch-tags-dialog .watch-tags-field input[type="text"] { width: 100%; max-width: none; }
+.watch-tags-count { display: inline-block; min-width: 1.6em; margin-left: 2px; padding: 0 4px; border: 1px solid var(--accent); font-size: 11px; line-height: 1.4; }
 .debug-log-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
 .debug-log, .export-block {
   background: var(--bg-input);

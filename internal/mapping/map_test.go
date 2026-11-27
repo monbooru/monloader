@@ -1328,13 +1328,13 @@ func TestSuspectFlattenedTags(t *testing.T) {
 }
 
 func TestFormatTag(t *testing.T) {
-	if formatTag("general", "x") != "x" {
+	if contract.TagForm("general", "x") != "x" {
 		t.Error("general tags should be bare")
 	}
-	if formatTag("artist", "y") != "artist:y" {
+	if contract.TagForm("artist", "y") != "artist:y" {
 		t.Error("non-general tags should be prefixed")
 	}
-	if formatTag("", "z") != "" || formatTag("artist", "") != "" {
+	if contract.TagForm("", "z") != "" || contract.TagForm("artist", "") != "" {
 		t.Error("empty category or name should produce no tag")
 	}
 }
@@ -1467,6 +1467,28 @@ func TestSourceLabelSitesAndHosts(t *testing.T) {
 	} {
 		if got := m.SourceLabel(name); got != want {
 			t.Errorf("SourceLabel(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestSiteOfURL(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "webexample.json",
+		`{"family":"generic","auth":"none","post_url_template":"https://website.example/posts/{id}","hosts":["img.website.example","mirror.example"]}`)
+	m := newMapperDir(t, config.Default(), dir)
+	for raw, want := range map[string]string{
+		"https://danbooru.donmai.us/posts?tags=a": "danbooru",
+		"https://www.danbooru.donmai.us/posts":    "danbooru",
+		" https://website.example/posts/1 ":       "webexample",
+		"https://x.mirror.example/a":              "webexample",
+		"http://website.example:8080/posts":       "webexample",
+		"http://x.mirror.example:8080/a":          "webexample",
+		"https://unknown.example/posts":           "",
+		"not a url":                               "",
+		"":                                        "",
+	} {
+		if got := m.SiteOfURL(raw); got != want {
+			t.Errorf("SiteOfURL(%q) = %q, want %q", raw, got, want)
 		}
 	}
 }

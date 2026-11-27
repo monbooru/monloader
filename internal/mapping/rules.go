@@ -12,7 +12,7 @@ import (
 // TagRules answers for the sites named, in that order. The PTR's own
 // blacklist is the only one that reads its answers.
 func (m *Mapper) TagRules(category, name string, sites []string) contract.TagRules {
-	tag := normalizeTag(formatTag(category, name))
+	tag := normalizeTag(contract.TagForm(category, name))
 	drop := m.cfg.Current().Tags.DropCategories
 	out := contract.TagRules{Tag: name, Category: category, CategoryKept: !categoryDropped(drop, tag), Sites: []contract.TagRule{}}
 	if tag == "" {
@@ -89,7 +89,7 @@ func renamedInto(rules map[string]string, apply func(string) string, category, t
 		}
 		candidates := []string{key}
 		if prefix, _, found := strings.Cut(key, ":"); !found || !isTagCategory(prefix) {
-			candidates = []string{formatTag(category, key), key}
+			candidates = []string{contract.TagForm(category, key), key}
 		}
 		for _, c := range candidates {
 			if c = normalizeTag(c); c != tag && apply(c) == tag {
@@ -109,7 +109,7 @@ func patternSource(apply func(string) string, key, to, category, tag string) str
 	keyCategory, keyName := splitRuleKey(key)
 	made := to
 	if cat, rest, found := strings.Cut(to, ":"); !found || !isTagCategory(cat) || rest == "" {
-		made = formatTag(cmp.Or(keyCategory, category), to)
+		made = contract.TagForm(cmp.Or(keyCategory, category), to)
 	} else if cat == "general" {
 		made = rest
 	}
@@ -125,9 +125,9 @@ func patternSource(apply func(string) string, key, to, category, tag string) str
 		return ""
 	}
 	src := strings.ReplaceAll(keyName, "*", text)
-	for _, c := range []string{formatTag(cmp.Or(keyCategory, category), src), src} {
+	for _, c := range []string{contract.TagForm(cmp.Or(keyCategory, category), src), src} {
 		if c != tag && apply(c) == tag {
-			return formatTag(cmp.Or(keyCategory, "general"), src)
+			return contract.TagForm(cmp.Or(keyCategory, "general"), src)
 		}
 	}
 	return ""

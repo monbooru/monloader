@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS watches (
     interval_hours INTEGER NOT NULL,
     max_items      INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL,
-    last           TEXT NOT NULL DEFAULT ''
+    last           TEXT NOT NULL DEFAULT '',
+    tags           TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS landed_books (
     url TEXT PRIMARY KEY
@@ -72,9 +73,14 @@ func OpenStore(dir string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("creating queue store schema: %w", err)
 	}
-	// A database created before the write-order guard or the watch cap lacks the column.
-	for _, c := range []struct{ table, column string }{{"jobs", "seq"}, {"watches", "max_items"}} {
-		if err := addColumn(db, c.table, c.column, "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	// A database created before the write-order guard, the watch cap or the
+	// watch tags lacks the column.
+	for _, c := range []struct{ table, column, def string }{
+		{"jobs", "seq", "INTEGER NOT NULL DEFAULT 0"},
+		{"watches", "max_items", "INTEGER NOT NULL DEFAULT 0"},
+		{"watches", "tags", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := addColumn(db, c.table, c.column, c.def); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrating queue store schema: %w", err)
 		}
@@ -271,7 +277,7 @@ func (s *Store) MarkBookBlacklisted(url string, meta map[string]any) error {
 	return err
 }
 
-func (s *Store) InsertWatch(url string, intervalHours, maxItems int, createdAt time.Time, last WatchCheck) (int64, error) {
+func (s *Store) InsertWatch(url string, intervalHours, maxItems int, tags []string, createdAt time.Time, last WatchCheck) (int64, error) {
 	data, err := json.Marshal(last)
 	if err != nil {
 		return 0, err
@@ -279,10 +285,10 @@ func (s *Store) InsertWatch(url string, intervalHours, maxItems int, createdAt t
 	// Past every id ever issued, not only the live ones: a removed watch's
 	// check may still be queued under its id.
 	res, err := s.db.Exec(
-		`INSERT INTO watches (id, url, interval_hours, max_items, created_at, last)
+		`INSERT INTO watches (id, url, interval_hours, max_items, created_at, last, tags)
 		 VALUES (max(coalesce((SELECT max(id) FROM watches), 0),
-		             coalesce((SELECT n FROM counters WHERE name = ?), 0)) + 1, ?, ?, ?, ?, ?)`,
-		watchIDHighWater, url, intervalHours, maxItems, createdAt.UTC().Format(time.RFC3339Nano), string(data))
+		             coalesce((SELECT n FROM counters WHERE name = ?), 0)) + 1, ?, ?, ?, ?, ?, ?)`,
+		watchIDHighWater, url, intervalHours, maxItems, createdAt.UTC().Format(time.RFC3339Nano), string(data), watchTagsColumn(tags))
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return 0, ErrWatchExists
@@ -300,6 +306,20 @@ func (s *Store) SetWatchInterval(id int64, intervalHours int) error {
 func (s *Store) SetWatchItems(id int64, maxItems int) error {
 	_, err := s.db.Exec(`UPDATE watches SET max_items = ? WHERE id = ?`, maxItems, id)
 	return err
+}
+
+func (s *Store) SetWatchTags(id int64, tags []string) error {
+	_, err := s.db.Exec(`UPDATE watches SET tags = ? WHERE id = ?`, watchTagsColumn(tags), id)
+	return err
+}
+
+// JSON, not joined: a tag a client sent can hold a space until it is normalized.
+func watchTagsColumn(tags []string) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	data, _ := json.Marshal(tags)
+	return string(data)
 }
 
 func (s *Store) SaveWatchCheck(id int64, last WatchCheck) error {
@@ -329,7 +349,7 @@ func (s *Store) DeleteWatch(id int64) error {
 }
 
 func (s *Store) LoadWatches() ([]Watch, error) {
-	rows, err := s.db.Query(`SELECT id, url, interval_hours, max_items, created_at, last FROM watches ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, url, interval_hours, max_items, created_at, last, tags FROM watches ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -337,14 +357,19 @@ func (s *Store) LoadWatches() ([]Watch, error) {
 	var out []Watch
 	for rows.Next() {
 		var w Watch
-		var created, last string
-		if err := rows.Scan(&w.ID, &w.URL, &w.IntervalHours, &w.MaxItems, &created, &last); err != nil {
+		var created, last, tags string
+		if err := rows.Scan(&w.ID, &w.URL, &w.IntervalHours, &w.MaxItems, &created, &last, &tags); err != nil {
 			// The table is a watch's only copy: one bad row must not cost
 			// the others.
 			logx.Warnf("queue: skipping an unreadable watch: %v", err)
 			continue
 		}
 		w.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		if tags != "" {
+			if err := json.Unmarshal([]byte(tags), &w.Tags); err != nil {
+				logx.Warnf("queue: watch %d keeps no tags, its record is undecodable: %v", w.ID, err)
+			}
+		}
 		if last != "" {
 			if err := json.Unmarshal([]byte(last), &w.Last); err != nil {
 				logx.Warnf("queue: watch %d keeps no last check, its record is undecodable: %v", w.ID, err)

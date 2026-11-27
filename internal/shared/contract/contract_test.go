@@ -2,8 +2,6 @@ package contract
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,16 +47,5 @@ func TestHealthLeavesOutWhatASideDoesNotHave(t *testing.T) {
 	}
 	if got := string(b); strings.Contains(got, "gallerydl_version") || !strings.Contains(got, `"api":2`) {
 		t.Errorf("health = %s", got)
-	}
-}
-
-func TestTheTagNameVectorsLoad(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join("testdata", "tagnames.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var v struct{ Names, Forms []struct{ In, Out string } }
-	if err := json.Unmarshal(b, &v); err != nil || len(v.Names) == 0 || len(v.Forms) == 0 {
-		t.Fatalf("vectors = %+v, %v", v, err)
 	}
 }

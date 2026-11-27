@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"maps"
+	"net/url"
 	"reflect"
 	"regexp"
 	"slices"
@@ -303,6 +304,24 @@ func (m *Mapper) Gallery(categories ...string) string {
 	return cfg.Monbooru.DefaultGallery
 }
 
+// SiteOfURL is the site whose profile claims the URL's host, "" when none
+// does: what a job learns on resolving, known before it runs.
+func (m *Mapper) SiteOfURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	// A self-hosted site usually carries a port: a host:port a profile
+	// names wins, then the bare host.
+	host := normalizeHost(u.Host)
+	for _, h := range []string{host, hostWithoutPort(host)} {
+		if site := m.HostSite(h); site != "" {
+			return site
+		}
+	}
+	return ""
+}
+
 // Empty leaves the folder to monbooru's own default.
 func (m *Mapper) Folder(categories ...string) string {
 	cfg := m.cfg.Current()
@@ -465,13 +484,13 @@ func (m *Mapper) eachTag(category string, profile Profile, meta map[string]any, 
 		if !keep {
 			if base, ok := baseCategory(suffix); ok {
 				for _, name := range parseTagField(meta["tags_"+suffix]) {
-					dropped("tags_"+suffix, formatTag(base, name))
+					dropped("tags_"+suffix, contract.TagForm(base, name))
 				}
 			}
 			continue
 		}
 		for _, name := range parseTagField(meta["tags_"+suffix]) {
-			visit("tags_"+suffix, formatTag(cat, name))
+			visit("tags_"+suffix, contract.TagForm(cat, name))
 		}
 	}
 	if flat {
@@ -506,11 +525,11 @@ func (m *Mapper) fileTag(site string, profile Profile, field, key, base, name st
 	to, ok := m.categoryOverride(site, profile, key)
 	switch {
 	case !ok:
-		visit(field, formatTag(base, name))
+		visit(field, contract.TagForm(base, name))
 	case to == "":
-		dropped(field, formatTag(base, name))
+		dropped(field, contract.TagForm(base, name))
 	default:
-		visit(field, formatTag(to, name))
+		visit(field, contract.TagForm(to, name))
 	}
 }
 

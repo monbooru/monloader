@@ -101,6 +101,8 @@ type Server struct {
 	desktopApp string
 	themeWarn  themeWarnings
 	logDir     string
+	// The last refusal the tag suggestions logged.
+	tagSuggestWarn suggestWarning
 	// Closed so a UI stop takes the same shutdown path as SIGTERM.
 	quit     chan struct{}
 	quitOnce sync.Once
@@ -200,6 +202,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /watches", s.addWatch)
 	mux.HandleFunc("POST /watches/{id}/interval", s.setWatchInterval)
 	mux.HandleFunc("POST /watches/{id}/items", s.setWatchItems)
+	mux.HandleFunc("GET /internal/watch-tags", s.watchTagsDialog)
+	mux.HandleFunc("POST /internal/watch-tags", s.setWatchAddTags)
+	mux.HandleFunc("GET /internal/watch-add-tags", s.watchAddTagsReset)
+	mux.HandleFunc("POST /watches/{id}/tags", s.setWatchTags)
 	mux.HandleFunc("POST /watches/{id}/check", s.checkWatch)
 	mux.HandleFunc("DELETE /watches/{id}", s.removeWatch)
 	mux.HandleFunc("GET /internal/monbooru-status", s.monbooruStatus)
@@ -237,6 +243,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+folderPickerRoute, s.folderPickerFragment)
 	mux.HandleFunc("GET "+folderPickerRoute+"/level", s.folderPickerLevel)
 	mux.HandleFunc("GET "+folderPickerRoute+"/suggest", s.folderPickerSuggest)
+	mux.HandleFunc("GET "+tagSuggestRoute, s.tagSuggest)
 	mux.HandleFunc("GET /settings/sites/search", s.searchSites)
 	mux.HandleFunc("GET /settings/sites/{name}/dialog", s.siteDialog)
 	mux.HandleFunc("GET /settings/sites/{name}/options", s.siteOptions)

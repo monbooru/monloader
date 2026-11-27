@@ -96,7 +96,7 @@ func TestTheSharedTemplatesParseWithTheirFuncs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"webui/head", "webui/login_page", "webui/peer_light", "webui/message_page", "webui/dir_picker", "webui/confirm_dialog", "webui/auth_tokens", "webui/token_privileges_dialog", "webui/auth_password_section", "webui/theme_cluster", "webui/token_created", "webui/settings_section_header", "webui/dir_picker_dialog", "webui/token_scopes_saved", "webui/pair_notice", "webui/dialog_x", "webui/desktop_section", "webui/desktop_power", "webui/memory_table"} {
+	for _, name := range []string{"webui/head", "webui/login_page", "webui/peer_light", "webui/message_page", "webui/dir_picker", "webui/confirm_dialog", "webui/auth_tokens", "webui/token_privileges_dialog", "webui/auth_password_section", "webui/theme_cluster", "webui/token_created", "webui/settings_section_header", "webui/dir_picker_dialog", "webui/token_scopes_saved", "webui/pair_notice", "webui/dialog_x", "webui/desktop_section", "webui/desktop_power", "webui/memory_table", "webui/suggest_list", "webui/tags_input"} {
 		if tmpl.Lookup(name) == nil {
 			t.Errorf("%s is not defined", name)
 		}

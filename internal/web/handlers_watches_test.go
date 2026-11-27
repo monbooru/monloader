@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -156,6 +157,16 @@ func TestQueueRowWatchButton(t *testing.T) {
 	}
 }
 
+func TestAWatchFromAQueueRowKeepsItsJobsTags(t *testing.T) {
+	srv, ts := serveWatches(t, createdProc{site: "danbooru", items: 2})
+	id := srv.queue.Enqueue("https://danbooru.donmai.us/posts?tags=a", queue.Options{Tags: []string{"user_a", "wip"}})
+	waitJob(t, srv, id)
+	readBody(t, postForm(t, ts, srv, "/queue/"+itoa(id)+"/watch", url.Values{}))
+	if ws := srv.queue.Watches(); len(ws) != 1 || !slices.Equal(ws[0].Tags, []string{"user_a", "wip"}) {
+		t.Errorf("watches = %+v, want one keeping the job's tags", ws)
+	}
+}
+
 func TestQueueRowWatchButtonOnAMangaSitesListing(t *testing.T) {
 	srv, ts := serveWatches(t, createdProc{site: "exhentai", sub: "search", items: 1})
 	id := finishJob(t, srv, "https://e-hentai.org/?f_search=a")
@@ -192,7 +203,7 @@ func TestQueueRowWatchButtonSkipsWhatCannotBeWatched(t *testing.T) {
 
 func TestWatchRowActions(t *testing.T) {
 	srv, ts := serveWatches(t, noopProc{})
-	id, err := srv.queue.AddWatch("https://danbooru.donmai.us/posts?tags=a", 24, 0, nil)
+	id, err := srv.queue.AddWatch("https://danbooru.donmai.us/posts?tags=a", 24, 0, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +419,7 @@ func TestWatchableJobJudgesSinglePosts(t *testing.T) {
 
 func TestUnpairedRefusesEverythingThatFetches(t *testing.T) {
 	srv, ts := serveWatches(t, createdProc{})
-	wid, err := srv.queue.AddWatch("https://danbooru.donmai.us/posts?tags=a", 24, 0, nil)
+	wid, err := srv.queue.AddWatch("https://danbooru.donmai.us/posts?tags=a", 24, 0, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

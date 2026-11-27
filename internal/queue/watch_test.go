@@ -72,7 +72,7 @@ func TestWatchNeedsTheStore(t *testing.T) {
 	if q.WatchesAvailable() {
 		t.Error("a queue without a store reports watches available")
 	}
-	if _, err := q.AddWatch("https://x/posts?tags=a", 24, 0, nil); !errors.Is(err, ErrNoWatchStore) {
+	if _, err := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil); !errors.Is(err, ErrNoWatchStore) {
 		t.Errorf("AddWatch without a store = %v, want ErrNoWatchStore", err)
 	}
 }
@@ -81,14 +81,14 @@ func TestWatchSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	st := openQueueStoreAt(t, dir)
 	q := storedQueue(st)
-	id, err := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, err := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	if err != nil {
 		t.Fatalf("AddWatch: %v", err)
 	}
-	if _, err := q.AddWatch("https://x/posts?tags=a", 6, 0, nil); !errors.Is(err, ErrWatchExists) {
+	if _, err := q.AddWatch("https://x/posts?tags=a", 6, 0, nil, nil); !errors.Is(err, ErrWatchExists) {
 		t.Errorf("a second watch of the same URL = %v, want ErrWatchExists", err)
 	}
-	gone, _ := q.AddWatch("https://x/posts?tags=b", 24, 0, nil)
+	gone, _ := q.AddWatch("https://x/posts?tags=b", 24, 0, nil, nil)
 	if err := q.SetWatchInterval(id, 168); err != nil {
 		t.Fatalf("SetWatchInterval: %v", err)
 	}
@@ -113,11 +113,11 @@ func TestDueWatchesQueueOneCheckEach(t *testing.T) {
 	q := New(noopProcessor{}, 1, 100)
 	q.now = func() time.Time { return now }
 	q.UseStore(openTestQueueStore(t))
-	due, _ := q.AddWatch("https://x/posts?tags=due", 24, 0, nil)
-	manual, _ := q.AddWatch("https://x/posts?tags=manual", 0, 0, nil)
+	due, _ := q.AddWatch("https://x/posts?tags=due", 24, 0, nil, nil)
+	manual, _ := q.AddWatch("https://x/posts?tags=manual", 0, 0, nil, nil)
 	from := newJob(99, "https://x/posts?tags=fresh", Options{}, now)
 	from.StartedAt = now.Add(-time.Hour)
-	fresh, _ := q.AddWatch(from.URL, 24, 0, from)
+	fresh, _ := q.AddWatch(from.URL, 24, 0, nil, from)
 
 	q.queueDueWatches()
 	q.queueDueWatches()
@@ -149,7 +149,7 @@ func TestWatchCheckRecordsItsResult(t *testing.T) {
 		return nil
 	})
 	q, _ := watchQueue(t, proc)
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	jobID, err := q.CheckWatch(id, false)
 	if err != nil {
 		t.Fatalf("CheckWatch: %v", err)
@@ -172,7 +172,7 @@ func TestQuietWatchCheckLeavesNoRow(t *testing.T) {
 		archivedItems(j, 0, 4)
 		return nil
 	}))
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	jobID, _ := q.CheckWatch(id, true)
 	w := waitWatchSettled(t, q, id)
 	if w.Last.Total != 4 || w.Last.Created != 0 {
@@ -200,7 +200,7 @@ func TestCappedAllBlacklistedWatchCheckLeavesNoRow(t *testing.T) {
 				j.SetCapped(2)
 				return nil
 			}))
-			id, _ := q.AddWatch("https://x/posts?tags=a", 24, tc.maxItems, nil)
+			id, _ := q.AddWatch("https://x/posts?tags=a", 24, tc.maxItems, nil, nil)
 			jobID, _ := q.CheckWatch(id, true)
 			if w := waitWatchSettled(t, q, id); w.Last.Total != 2 || w.Last.Created != 0 {
 				t.Errorf("last check = %+v, want 2 seen and none created", w.Last)
@@ -217,7 +217,7 @@ func TestAWatchCheckCountsItsBlacklistedPosts(t *testing.T) {
 		blacklistedItems(j, 3)
 		return nil
 	}))
-	id, err := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, err := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestWatchChainWalksPastAnAllBlacklistedWindow(t *testing.T) {
 				j.SetCapped(2)
 				return nil
 			}))
-			id, _ := q.AddWatch("https://x/posts?tags=a", 24, tc.maxItems, nil)
+			id, _ := q.AddWatch("https://x/posts?tags=a", 24, tc.maxItems, nil, nil)
 			jobID, _ := q.CheckWatch(id, true)
 			waitWatchTotal(t, q, id, 3)
 			if _, err := q.Get(jobID); err != nil {
@@ -272,7 +272,7 @@ func TestWatchCheckCappedOnlyWhenTheWholeWindowIsNew(t *testing.T) {
 				j.SetCapped(2)
 				return nil
 			}))
-			id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+			id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 			jobID, _ := q.CheckWatch(id, true)
 			if j := waitFor(t, q, jobID); j.Capped != tc.wantCapped {
 				t.Errorf("capped = %v, want %v", j.Capped, tc.wantCapped)
@@ -284,7 +284,7 @@ func TestWatchCheckCappedOnlyWhenTheWholeWindowIsNew(t *testing.T) {
 func TestCloseDropsQueuedWatchChecks(t *testing.T) {
 	st := openTestQueueStore(t)
 	q := storedQueue(st)
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	jobID, _ := q.CheckWatch(id, true)
 	other := q.Enqueue("https://x/posts/1", Options{})
 	q.Close()
@@ -309,7 +309,7 @@ func TestWatchCheckStaysOnTheArchive(t *testing.T) {
 		j.URL = url
 		j.Status = JobFailed
 	})
-	id, _ := q.AddWatch(url, 24, 0, nil)
+	id, _ := q.AddWatch(url, 24, 0, nil, nil)
 	jobID, _ := q.CheckWatch(id, true)
 	j, _ := q.Get(jobID)
 	if j.Force {
@@ -336,7 +336,7 @@ func TestWatchItemsSurviveRestart(t *testing.T) {
 	dir := t.TempDir()
 	st := openQueueStoreAt(t, dir)
 	q := storedQueue(st)
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 10, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 10, nil, nil)
 	if got := q.Watches()[0].MaxItems; got != 10 {
 		t.Errorf("items after add = %d, want 10", got)
 	}
@@ -371,8 +371,8 @@ func TestWatchTableWithoutItemsMigrates(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	ws, err := st.LoadWatches()
-	if err != nil || len(ws) != 1 || ws[0].MaxItems != 0 {
-		t.Errorf("migrated watches = %+v (%v), want one taking the cap", ws, err)
+	if err != nil || len(ws) != 1 || ws[0].MaxItems != 0 || ws[0].Tags != nil {
+		t.Errorf("migrated watches = %+v (%v), want one taking the cap and no tags", ws, err)
 	}
 }
 
@@ -416,7 +416,7 @@ func TestACheckAfterAFailedPushBypassesTheArchiveOnce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			proc := &failingChecks{codes: tc.codes}
 			q, _ := watchQueue(t, proc)
-			id, err := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+			id, err := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -450,7 +450,7 @@ func TestAnOwedCheckSurvivesARestart(t *testing.T) {
 	q := New(&failingChecks{codes: []string{outcome.ErrCodeMonbooruUnreachable}}, 1, 100)
 	q.UseStore(st)
 	q.Start()
-	id, err := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, err := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,8 +471,8 @@ func TestAnOwedCheckSurvivesARestart(t *testing.T) {
 
 func TestCheckWatchPassesItsItems(t *testing.T) {
 	q := storedQueue(openTestQueueStore(t))
-	ten, _ := q.AddWatch("https://x/posts?tags=ten", 24, 10, nil)
-	all, _ := q.AddWatch("https://x/posts?tags=all", 24, ItemsAll, nil)
+	ten, _ := q.AddWatch("https://x/posts?tags=ten", 24, 10, nil, nil)
+	all, _ := q.AddWatch("https://x/posts?tags=all", 24, ItemsAll, nil, nil)
 	tenJob, _ := q.CheckWatch(ten, true)
 	allJob, _ := q.CheckWatch(all, true)
 	if j, _ := q.Get(tenJob); j.MaxItems != 10 || j.Auto {
@@ -480,6 +480,48 @@ func TestCheckWatchPassesItsItems(t *testing.T) {
 	}
 	if j, _ := q.Get(allJob); j.MaxItems != 0 || !j.Auto {
 		t.Errorf("check of an all watch = max %d auto %v, want the cap and the chain", j.MaxItems, j.Auto)
+	}
+}
+
+func TestWatchTagsSurviveRestart(t *testing.T) {
+	dir := t.TempDir()
+	st := openQueueStoreAt(t, dir)
+	q := storedQueue(st)
+	given := []string{"artist:user_a", "blue sky"}
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, given, nil)
+	given[0] = "changed"
+	untagged, _ := q.AddWatch("https://x/posts?tags=b", 24, 0, nil, nil)
+	if got := q.Watches()[0].Tags; !slices.Equal(got, []string{"artist:user_a", "blue sky"}) {
+		t.Errorf("tags after add = %q, want the ones given, unchanged by the caller", got)
+	}
+	if err := q.SetWatchTags(untagged, []string{"wip"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetWatchTags(id, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetWatchTags(999, []string{"wip"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("tags on a missing watch: err = %v, want ErrNotFound", err)
+	}
+	_ = st.Close()
+
+	q2 := storedQueue(openQueueStoreAt(t, dir))
+	ws := q2.Watches()
+	if len(ws) != 2 || ws[0].Tags != nil || !slices.Equal(ws[1].Tags, []string{"wip"}) {
+		t.Errorf("reloaded tags = %q and %q, want none and wip", ws[0].Tags, ws[1].Tags)
+	}
+}
+
+func TestCheckWatchPassesItsTags(t *testing.T) {
+	q := storedQueue(openTestQueueStore(t))
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, []string{"user_a", "wip"}, nil)
+	first, _ := q.CheckWatch(id, true)
+	if j, _ := q.Get(first); !slices.Equal(j.Tags, []string{"user_a", "wip"}) {
+		t.Errorf("check tags = %q, want the watch's", j.Tags)
+	}
+	_ = q.SetWatchTags(id, []string{"done"})
+	if j, _ := q.Get(first); !slices.Equal(j.Tags, []string{"user_a", "wip"}) {
+		t.Errorf("queued check tags = %q, want the ones it was queued with", j.Tags)
 	}
 }
 
@@ -493,7 +535,7 @@ func TestWatchCheckChainsUntilItCatchesUp(t *testing.T) {
 		j.SetCapped(2)
 		return nil
 	}))
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, ItemsAll, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, ItemsAll, nil, nil)
 	first, _ := q.CheckWatch(id, true)
 
 	var w Watch
@@ -526,7 +568,7 @@ func TestRemovedWatchIDIsNeverReissued(t *testing.T) {
 	dir := t.TempDir()
 	st := openQueueStoreAt(t, dir)
 	q := storedQueue(st)
-	old, _ := q.AddWatch("https://x/posts?tags=typo", 24, 0, nil)
+	old, _ := q.AddWatch("https://x/posts?tags=typo", 24, 0, nil, nil)
 	if err := q.RemoveWatch(old); err != nil {
 		t.Fatalf("RemoveWatch: %v", err)
 	}
@@ -534,14 +576,14 @@ func TestRemovedWatchIDIsNeverReissued(t *testing.T) {
 
 	st2 := openQueueStoreAt(t, dir)
 	q2 := storedQueue(st2)
-	if id, _ := q2.AddWatch("https://x/posts?tags=fixed", 24, 0, nil); id == old {
+	if id, _ := q2.AddWatch("https://x/posts?tags=fixed", 24, 0, nil, nil); id == old {
 		t.Errorf("the corrected watch took the removed watch's id %d", old)
 	}
 }
 
 func TestRemovingAWatchCancelsItsQueuedCheck(t *testing.T) {
 	q := storedQueue(openTestQueueStore(t))
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	jobID, _ := q.CheckWatch(id, false)
 	if err := q.RemoveWatch(id); err != nil {
 		t.Fatalf("RemoveWatch: %v", err)
@@ -549,7 +591,7 @@ func TestRemovingAWatchCancelsItsQueuedCheck(t *testing.T) {
 	if j, _ := q.Get(jobID); j == nil || j.Status != JobCanceled {
 		t.Errorf("the removed watch's queued check = %+v, want it canceled", j)
 	}
-	next, _ := q.AddWatch("https://x/posts?tags=b", 24, 0, nil)
+	next, _ := q.AddWatch("https://x/posts?tags=b", 24, 0, nil, nil)
 	if _, err := q.CheckWatch(next, false); err != nil {
 		t.Errorf("the next watch's first check was refused: %v", err)
 	}
@@ -566,7 +608,7 @@ func TestCanceledQueuedCheckIsNotQueuedAgain(t *testing.T) {
 			q := New(noopProcessor{}, 1, 100)
 			q.now = func() time.Time { return now }
 			q.UseStore(openTestQueueStore(t))
-			id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+			id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 			q.queueDueWatches()
 			if len(q.pending) != 1 {
 				t.Fatalf("pending = %d, want the due check", len(q.pending))
@@ -598,7 +640,7 @@ func finishedWindow(q *Queue, id, root int64, watch int64, created int, status J
 
 func TestARetriedLaterWindowReplacesWhatItReported(t *testing.T) {
 	q := storedQueue(openTestQueueStore(t))
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	first := finishedWindow(q, 10, 10, id, 2, JobSucceeded)
 	q.stampWatch(first)
 	q.recordWatch(first)
@@ -619,7 +661,7 @@ func TestARetriedLaterWindowReplacesWhatItReported(t *testing.T) {
 
 func TestAnOldWindowRetriedAfterANewerCheckLeavesItAlone(t *testing.T) {
 	q := storedQueue(openTestQueueStore(t))
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	old := finishedWindow(q, 10, 10, id, 1, JobSucceeded)
 	q.stampWatch(old)
 	oldLater := finishedWindow(q, 11, 10, id, 1, JobSucceeded)
@@ -635,7 +677,7 @@ func TestAnOldWindowRetriedAfterANewerCheckLeavesItAlone(t *testing.T) {
 
 func TestAnOldCheckRetriedAfterANewerOneLeavesItsRecordAlone(t *testing.T) {
 	q := storedQueue(openTestQueueStore(t))
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	old := finishedWindow(q, 10, 10, id, 1, JobPartial)
 	newer := finishedWindow(q, 20, 20, id, 4, JobSucceeded)
 	q.stampWatch(newer)
@@ -658,7 +700,7 @@ func TestAnOldCheckRetriedAfterANewerOneLeavesItsRecordAlone(t *testing.T) {
 
 func TestStopSettlesARetriedCheckOlderThanTheWatchsLast(t *testing.T) {
 	q := storedQueue(openTestQueueStore(t))
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	q.mu.Lock()
 	retried := q.enqueueLocked("https://x/posts?tags=a", Options{Watch: id})
 	q.mu.Unlock()
@@ -673,7 +715,7 @@ func TestStopSettlesARetriedCheckOlderThanTheWatchsLast(t *testing.T) {
 
 func TestAClearedRootKeepsLaterWindowsRecording(t *testing.T) {
 	q := storedQueue(openTestQueueStore(t))
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	root := finishedWindow(q, 10, 10, id, 2, JobSucceeded)
 	q.stampWatch(root)
 	q.recordWatch(root)
@@ -694,7 +736,7 @@ func TestAClearedRootKeepsLaterWindowsRecording(t *testing.T) {
 
 func TestAClearedWindowsDebtSurvivesTheNextRecord(t *testing.T) {
 	q := storedQueue(openTestQueueStore(t))
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	root := finishedWindow(q, 10, 10, id, 0, JobPartial)
 	root.Items = []Item{{Status: ItemFailed, ErrorCode: outcome.ErrCodeMonbooruUnreachable}}
 	q.stampWatch(root)
@@ -716,7 +758,7 @@ func TestAClearedWindowsDebtSurvivesTheNextRecord(t *testing.T) {
 func TestWatchCheckWritesLandInOrder(t *testing.T) {
 	st := openTestQueueStore(t)
 	q := storedQueue(st)
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	for range 100 {
 		var wg sync.WaitGroup
 		for range 8 {
@@ -738,7 +780,7 @@ func TestWatchCheckWritesLandInOrder(t *testing.T) {
 func TestAWatchRemembersTheListingRunsPastItsPick(t *testing.T) {
 	proc := &outageWindows{total: 12}
 	q, _ := watchQueue(t, proc)
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 2, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 2, nil, nil)
 	check := func(want bool) {
 		t.Helper()
 		before := len(proc.seen())
@@ -776,7 +818,7 @@ func TestAWatchAddedOverAFailedRunOwesItsPosts(t *testing.T) {
 				j.URL, j.Root, j.Status = url, 10, JobFailed
 				j.Items = []Item{{ErrorCode: tc.code}, {ErrorCode: tc.code}}
 			})
-			id, err := q.AddWatch(url, 24, 0, nil)
+			id, err := q.AddWatch(url, 24, 0, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -812,7 +854,7 @@ func TestAWatchFromASeriesRowTakesTheWholeSeries(t *testing.T) {
 	finishedWindow(q, 10, 10, 0, 50, JobSucceeded).URL = url
 	lead := finishedWindow(q, 11, 10, 0, 50, JobSucceeded)
 	lead.URL = url
-	id, err := q.AddWatch(url, 24, 0, lead.Snapshot())
+	id, err := q.AddWatch(url, 24, 0, nil, lead.Snapshot())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -824,7 +866,7 @@ func TestAWatchFromASeriesRowTakesTheWholeSeries(t *testing.T) {
 func TestCloseSettlesAQueuedLaterWindow(t *testing.T) {
 	st := openTestQueueStore(t)
 	q := storedQueue(st)
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	first := finishedWindow(q, 10, 10, id, 2, JobSucceeded)
 	q.stampWatch(first)
 	q.mu.Lock()
@@ -839,7 +881,7 @@ func TestCloseSettlesAQueuedLaterWindow(t *testing.T) {
 
 func TestOneUnreadableWatchDoesNotCostTheOthers(t *testing.T) {
 	st := openTestQueueStore(t)
-	if _, err := st.InsertWatch("https://x/posts?tags=a", 24, 0, time.Now(), WatchCheck{}); err != nil {
+	if _, err := st.InsertWatch("https://x/posts?tags=a", 24, 0, nil, time.Now(), WatchCheck{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.db.Exec(`INSERT INTO watches (id, url, interval_hours, created_at) VALUES (50, 'https://x/posts?tags=b', 'daily', '')`); err != nil {
@@ -930,7 +972,7 @@ func waitWatchOwed(t *testing.T, q *Queue, id int64, to int) {
 func TestAForcedCheckReachesAsFarAsTheOutage(t *testing.T) {
 	proc := &outageWindows{total: 6, codes: []string{"", outcome.ErrCodeMonbooruUnreachable}}
 	q, _ := watchQueue(t, proc)
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, ItemsAll, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, ItemsAll, nil, nil)
 	if _, err := q.CheckWatch(id, false); err != nil {
 		t.Fatal(err)
 	}
@@ -955,7 +997,7 @@ func TestAForcedCheckChainsWhateverItsItemsPick(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			proc := &outageWindows{total: 100}
 			q, st := watchQueue(t, proc)
-			id, _ := q.AddWatch("https://x/posts?tags=a", 24, tc.items, nil)
+			id, _ := q.AddWatch("https://x/posts?tags=a", 24, tc.items, nil, nil)
 			last := WatchCheck{JobID: 1, Status: JobPartial, Owed: true, OwedTo: 4}
 			if err := st.SaveWatchCheck(id, last); err != nil {
 				t.Fatal(err)
@@ -975,7 +1017,7 @@ func TestAForcedCheckChainsWhateverItsItemsPick(t *testing.T) {
 func TestAForcedCheckChainsPastKnownPosts(t *testing.T) {
 	proc := &outageWindows{total: 100, known: true}
 	q, st := watchQueue(t, proc)
-	id, _ := q.AddWatch("https://x/?f_search=a", 24, 2, nil)
+	id, _ := q.AddWatch("https://x/?f_search=a", 24, 2, nil, nil)
 	last := WatchCheck{JobID: 1, Status: JobPartial, Owed: true, OwedTo: 4}
 	if err := st.SaveWatchCheck(id, last); err != nil {
 		t.Fatal(err)
@@ -1004,7 +1046,7 @@ func TestAForcedCheckCutShortStillOwesTheRest(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			proc := &outageWindows{total: 100, codes: []string{tc.code}}
 			q, st := watchQueue(t, proc)
-			id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+			id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 			last := WatchCheck{JobID: 1, Status: JobPartial, Owed: true, OwedTo: 4}
 			if err := st.SaveWatchCheck(id, last); err != nil {
 				t.Fatal(err)
@@ -1027,7 +1069,7 @@ func TestAForcedCheckCutShortStillOwesTheRest(t *testing.T) {
 func TestACrashInALaterWindowForcesTheNextCheck(t *testing.T) {
 	dir := t.TempDir()
 	st := openQueueStoreAt(t, dir)
-	id, err := st.InsertWatch("https://x/posts?tags=a", 24, 0, time.Now(), WatchCheck{JobID: 1, Status: JobSucceeded, Created: 2})
+	id, err := st.InsertWatch("https://x/posts?tags=a", 24, 0, nil, time.Now(), WatchCheck{JobID: 1, Status: JobSucceeded, Created: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1052,7 +1094,7 @@ func TestACrashInALaterWindowForcesTheNextCheck(t *testing.T) {
 
 func TestCancelingAForcedCheckKeepsTheDebt(t *testing.T) {
 	q := storedQueue(openTestQueueStore(t))
-	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil)
+	id, _ := q.AddWatch("https://x/posts?tags=a", 24, 0, nil, nil)
 	q.findWatch(id).Last = WatchCheck{JobID: 1, Status: JobPartial, Owed: true, OwedTo: 4}
 	jobID, err := q.CheckWatch(id, false)
 	if err != nil {
@@ -1080,7 +1122,7 @@ func TestAForcedWindowSurvivesARestartWithItsReach(t *testing.T) {
 
 func TestRunWatchesSkipsAHeldTickAndStopsWithItsContext(t *testing.T) {
 	q := storedQueue(openTestQueueStore(t))
-	if _, err := q.AddWatch("https://x/posts?tags=due", 24, 0, nil); err != nil {
+	if _, err := q.AddWatch("https://x/posts?tags=due", 24, 0, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	run := func(held bool) {

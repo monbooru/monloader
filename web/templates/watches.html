@@ -11,6 +11,7 @@
       </div>
       <select name="items" aria-label="Posts to fetch" title="How many posts each check fetches">{{template "items_options" .ItemChoices}}</select>
       <select name="interval_hours" aria-label="Check every">{{range .Intervals}}<option value="{{.Hours}}"{{if eq .Hours $.DefaultWatchHours}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+      {{template "watch_add_tags" .WatchAddTags}}
       <button type="submit"{{if .WatchStore}} data-peer-title=""{{end}}{{if not (and .WatchStore .MonbooruConfigured)}} disabled{{end}}>Watch</button>
     </div>
   </form>
@@ -29,5 +30,8 @@
   </div>
 </main>
 </div>
+<dialog id="watch-tags-dialog">
+  <div id="watch-tags-body"></div>
+</dialog>
 {{template "footer" .}}
 {{template "doc_foot" .}}{{end}}

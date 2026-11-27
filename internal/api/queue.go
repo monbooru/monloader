@@ -16,8 +16,6 @@ import (
 
 const maxWaitSeconds = 60
 
-const maxOptionTags = 64
-
 type enqueueRequest struct {
 	URL     string `json:"url"`
 	Options *struct {
@@ -94,9 +92,9 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		opts.PageURL = body.Options.PageURL
-		if len(body.Options.Tags) > maxOptionTags {
+		if len(body.Options.Tags) > queue.MaxOptionTags {
 			contract.WriteError(w, http.StatusBadRequest, errInvalidRequest,
-				"at most "+strconv.Itoa(maxOptionTags)+" tags")
+				"at most "+strconv.Itoa(queue.MaxOptionTags)+" tags")
 			return
 		}
 		opts.Tags = body.Options.Tags
