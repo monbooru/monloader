@@ -900,11 +900,22 @@ func TestSuggestTags(t *testing.T) {
 		t.Errorf("SuggestTags = %+v, %v; want %+v", got, err, found)
 	}
 
-	old := stubJSON(t, http.StatusNotFound, map[string]string{"error": "endpoint not found: GET /api/v1/tags/suggest", "code": "not_found"})
-	_, err = testClient(old.URL, "tok").SuggestTags(context.Background(), "", "a", 10)
-	wantCode(t, err, outcome.ErrCodeMonbooruRejected)
-	if err == nil || !strings.Contains(err.Error(), "does not suggest tags yet") {
-		t.Errorf("err = %v, want it to name the monbooru the route needs", err)
+	for status, answer := range map[int]map[string]string{
+		http.StatusNotFound:   {"error": "endpoint not found: GET /api/v1/tags/suggest", "code": "not_found"},
+		http.StatusBadRequest: {"error": "invalid id", "code": "invalid_request"},
+	} {
+		old := stubJSON(t, status, answer)
+		_, err = testClient(old.URL, "tok").SuggestTags(context.Background(), "", "a", 10)
+		wantCode(t, err, outcome.ErrCodeMonbooruRejected)
+		if err == nil || !strings.Contains(err.Error(), "does not suggest tags yet") {
+			t.Errorf("%d: err = %v, want it to name the monbooru the route needs", status, err)
+		}
+	}
+
+	unknown := stubJSON(t, http.StatusBadRequest, map[string]string{"error": "unknown gallery: nope", "code": "invalid_gallery"})
+	_, err = testClient(unknown.URL, "tok").SuggestTags(context.Background(), "nope", "a", 10)
+	if err == nil || !strings.Contains(err.Error(), "unknown gallery: nope") {
+		t.Errorf("err = %v, want monbooru's own refusal", err)
 	}
 }
 
