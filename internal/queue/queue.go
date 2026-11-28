@@ -28,7 +28,6 @@ var errStopping = errors.New("the queue is stopping")
 // ItemsAll fetches every window, each queued when the last comes back capped.
 const ItemsAll = -1
 
-// MaxOptionTags caps the tags a job or a watch adds to every post.
 const MaxOptionTags = 64
 
 type Options struct {

@@ -170,7 +170,6 @@ func isTagCategory(name string) bool {
 	return name != "" && (validTagCategories[name] || customCategory(name))
 }
 
-// A fold splits off a built-in category or one monbooru has.
 func foldCategory(name string) bool {
 	return slices.Contains(contract.BuiltinCategories, name) || customCategory(name)
 }

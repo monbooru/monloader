@@ -97,11 +97,10 @@ type Server struct {
 	tmpl     *template.Template
 	staticFS fs.FS
 
-	desktop    bool
-	desktopApp string
-	themeWarn  themeWarnings
-	logDir     string
-	// The last refusal the tag suggestions logged.
+	desktop        bool
+	desktopApp     string
+	themeWarn      themeWarnings
+	logDir         string
 	tagSuggestWarn suggestWarning
 	// Closed so a UI stop takes the same shutdown path as SIGTERM.
 	quit     chan struct{}

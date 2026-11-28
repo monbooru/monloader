@@ -304,8 +304,6 @@ func (m *Mapper) Gallery(categories ...string) string {
 	return cfg.Monbooru.DefaultGallery
 }
 
-// SiteOfURL is the site whose profile claims the URL's host, "" when none
-// does: what a job learns on resolving, known before it runs.
 func (m *Mapper) SiteOfURL(raw string) string {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {

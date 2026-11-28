@@ -56,8 +56,7 @@ type Watch struct {
 	IntervalHours int
 	// 0 takes the configured cap; ItemsAll chains windows until the check
 	// reaches posts it already has.
-	MaxItems int
-	// Tags go on every post a check pushes, as a job's own tags do.
+	MaxItems  int
 	Tags      []string
 	CreatedAt time.Time
 	Last      WatchCheck

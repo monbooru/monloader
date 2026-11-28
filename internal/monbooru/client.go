@@ -641,8 +641,6 @@ func (c *Client) SearchFolders(ctx context.Context, gallery, q string, limit int
 	return out.Results, nil
 }
 
-// The gallery's tags matching a word as typed, as monbooru's own tag fields
-// suggest them.
 func (c *Client) SuggestTags(ctx context.Context, gallery, q string, limit int) ([]contract.TagSuggestion, error) {
 	var out struct {
 		Results []contract.TagSuggestion `json:"results"`

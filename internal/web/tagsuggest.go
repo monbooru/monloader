@@ -38,13 +38,11 @@ func (s *suggestWarning) clear() {
 	s.mu.Unlock()
 }
 
-// A tags field's route, suggesting from the gallery its tags land in.
 func tagSuggestURL(gallery string) string {
 	return tagSuggestRoute + "?gallery=" + url.QueryEscape(gallery)
 }
 
-// The tags field's word at the caret, answered from the gallery the tags
-// land in. A 204 clears the list: no word, no match, or no monbooru.
+// A 204 clears the list: no word, no match, or no monbooru.
 func (s *Server) tagSuggest(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	word := strings.TrimSpace(q.Get("tag"))

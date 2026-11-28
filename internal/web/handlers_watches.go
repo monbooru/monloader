@@ -253,12 +253,10 @@ type watchAddTags struct {
 	Disabled bool
 }
 
-// The tags the add bar holds for its watch until Watch sends them.
 func (s *Server) watchAddTagsBox(tags []string) watchAddTags {
 	return watchAddTags{Tags: tags, Disabled: !s.queue.WatchesAvailable() || !s.monbooruConfigured()}
 }
 
-// A watch added: the bar starts empty again.
 func (s *Server) watchAddTagsReset(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "watch_add_tags", s.watchAddTagsBox(nil))
 }
