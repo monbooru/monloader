@@ -188,6 +188,7 @@
 .more-items > .job-items { padding: 4px 0 0; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .add-bar { margin-bottom: 14px; }
+#add-flash { overflow-wrap: anywhere; }
 
 .st-queued, .st-running { color: var(--link); }
 .st-succeeded, .o-created, .o-enriched, .o-matched, .o-replaced { color: var(--success); }
