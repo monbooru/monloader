@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// SuggestItem is one row of a "webui/suggest_list"; Color is a category's
-// hex colour, Alias the alias the row was found through.
 type SuggestItem struct {
 	Name        string
 	Alias       string
@@ -17,9 +15,7 @@ type SuggestItem struct {
 	ShowCount   bool
 }
 
-// SuggestList is what "webui/suggest_list" renders. Attr names the data
-// attribute that carries each row's name and OnClick what a click runs;
-// both go out unescaped, so only ever set them from constants.
+// Attr and OnClick go out unescaped, so only ever set them from constants.
 type SuggestList struct {
 	Attr    template.HTMLAttr
 	OnClick template.HTMLAttr
