@@ -83,7 +83,6 @@ func monbooruStub() *httptest.Server {
 	}))
 }
 
-// The last row names the gallery asked, so a test sees which one was.
 func stubTagSuggest(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	all := []contract.TagSuggestion{
