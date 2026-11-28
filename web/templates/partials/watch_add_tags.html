@@ -1,5 +1,5 @@
 {{define "watch_add_tags"}}
-<span class="watch-add-tags" id="watch-add-tags-box" hx-get="/internal/watch-add-tags" hx-trigger="watch-added from:body" hx-swap="outerHTML">
+<span class="watch-add-tags" id="watch-add-tags-box" hx-get="/internal/watch-add-tags" hx-trigger="watch-added from:body" hx-target="this" hx-swap="outerHTML">
   <input type="hidden" name="tags" id="watch-add-tags" value="{{join .Tags " "}}">
   <button type="button" class="watch-tags-btn" title="{{template "watch_tags_title" .Tags}}"
           hx-get="/internal/watch-tags" hx-include="#watch-add-tags, .add-bar input[name=url]" hx-target="#watch-tags-body" hx-swap="innerHTML"{{if .Disabled}} disabled{{end}}>{{template "watch_tags_label" .Tags}}</button>
