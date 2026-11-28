@@ -64,6 +64,7 @@
 .add-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
 .add-row .search-input-wrap { flex: 1 1 220px; }
 .add-row button { padding-left: 16px; padding-right: 16px; }
+.watch-add-tags { display: flex; }
 @media (max-width: 600px) {
   .add-row { justify-content: center; }
   .add-row .search-input-wrap { flex-basis: 100%; }
@@ -322,7 +323,7 @@ dialog textarea { resize: vertical; max-height: 60vh; }
 .watch-tags-url { overflow-wrap: anywhere; margin-top: -8px; }
 .watch-tags-field { position: relative; }
 #watch-tags-dialog .watch-tags-field input[type="text"] { width: 100%; max-width: none; }
-.watch-tags-count { display: inline-block; min-width: 1.6em; margin-left: 2px; padding: 0 4px; border: 1px solid var(--accent); font-size: 11px; line-height: 1.4; }
+.watch-tags-count { display: inline-block; min-width: 1.6em; margin-left: 2px; padding: 0 4px; border: 1px solid var(--accent); font-size: 11px; line-height: 1; vertical-align: 1px; }
 .debug-log-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
 .debug-log, .export-block {
   background: var(--bg-input);
