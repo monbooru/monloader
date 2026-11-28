@@ -647,11 +647,13 @@ func (c *Client) SuggestTags(ctx context.Context, gallery, q string, limit int) 
 	var out struct {
 		Results []contract.TagSuggestion `json:"results"`
 	}
-	if err := c.getGalleryJSON(ctx, "/api/v1/tags/suggest", "suggest tags", gallery, url.Values{"q": {q}, "limit": {strconv.Itoa(limit)}}, &out); err != nil {
+	if err := c.getGalleryJSON(ctx, tagSuggestPath, "suggest tags", gallery, url.Values{"q": {q}, "limit": {strconv.Itoa(limit)}}, &out); err != nil {
 		return nil, err
 	}
 	return out.Results, nil
 }
+
+const tagSuggestPath = "/api/v1/tags/suggest"
 
 // A 404 is either a path monbooru does not hold or a monbooru without the
 // route; the code tells them apart. does names what the route does, for the
@@ -668,7 +670,8 @@ func (c *Client) getGalleryJSON(ctx context.Context, route, does, gallery string
 	case resp.StatusCode == http.StatusOK:
 	case resp.StatusCode == http.StatusNotFound && code == contract.CodeFolderNotFound:
 		return ErrFolderNotFound
-	case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed:
+	case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed,
+		route == tagSuggestPath && resp.StatusCode == http.StatusBadRequest && code == contract.CodeInvalidRequest:
 		return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: "this monbooru does not " + does + " yet; update it"}
 	default:
 		return &outcome.CodedError{Code: outcome.ErrCodeMonbooruRejected, Msg: msg}
