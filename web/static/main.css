@@ -118,6 +118,11 @@
 .watch-table th:nth-child(6) { width: 96px; }
 .watch-table th:nth-child(7) { width: 168px; }
 .watch-table select { width: 100%; }
+@media (min-width: 781px) {
+  .watch-table .actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .watch-table .actions > :first-child { grid-column: 1 / -1; }
+  .watch-table .actions button { padding-left: 6px; padding-right: 6px; }
+}
 @media (max-width: 1000px) {
   .watch-table th:nth-child(3), .watch-table td:nth-child(3) { width: 0; padding: 0; overflow: hidden; }
 }
