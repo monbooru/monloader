@@ -732,6 +732,8 @@ dialog .folder-picker-input, dialog .folder-picker-panel { max-width: none; }
   .folder-new-row { flex-wrap: wrap; }
   .folder-new-row .folder-new-form:not([hidden]) { flex: 1 0 100%; min-width: 0; }
   .field .folder-new-form input[type="text"] { flex: 1; width: auto; min-width: 0; }
+  .folder-new-form:not([hidden]) { flex-wrap: wrap; }
+  .folder-new-under:not(:empty) { flex: 1 0 100%; }
 }
 .folder-picker .suggest-item { background: none; color: var(--fg); }
 .folder-picker .suggest-item:hover { background: var(--bg-input); }
