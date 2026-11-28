@@ -704,12 +704,13 @@ dialog:has(.suggest-dropdown) { overflow: visible; }
 .folder-picker .suggest-list { scrollbar-gutter: auto; }
 
 /* Scoped to the folder field: an app's sidebar tree may use the same class names. */
+.folder-picker { position: relative; }
 .folder-picker > label { display: inline-block; }
 .folder-picker > [data-folder-browse] { margin-left: 8px; font-size: 12px; }
 .folder-picker-input { position: relative; max-width: 300px; }
 .field .folder-picker-input input[type="text"] { max-width: none; }
 dialog .folder-picker-input, dialog .folder-picker-panel { max-width: none; }
-.folder-picker-panel { max-width: 300px; max-height: 260px; overflow-y: auto; margin-top: 4px; padding: 2px 0; border: 1px solid var(--border); }
+.folder-picker-panel { position: absolute; left: 0; z-index: 150; width: 100%; max-width: 300px; max-height: 260px; overflow-y: auto; margin-top: 4px; padding: 2px 0; border: 1px solid var(--border); background: var(--bg-surface); }
 .folder-picker .folder-tree, .folder-picker .folder-children { list-style: none; margin: 0; padding: 0; }
 .folder-picker .folder-children { padding-left: 12px; }
 .folder-picker .folder-node-row { display: flex; align-items: baseline; gap: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
