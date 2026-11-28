@@ -793,6 +793,12 @@ document.addEventListener('click', function(e) {
   document.querySelectorAll('.folder-picker .suggest-dropdown').forEach(function(d) {
     if (!picker || !picker.contains(d) || !e.target.closest('.folder-picker-input')) d.innerHTML = '';
   });
+  document.querySelectorAll('.folder-picker-panel:not([hidden])').forEach(function(p) {
+    var own = p.closest('.folder-picker');
+    if (own === picker) return;
+    p.hidden = true;
+    own.querySelector('[data-folder-browse]').textContent = '[browse]';
+  });
   if (!picker) return;
   var t = e.target;
   if (t.closest('[data-folder-browse]')) {
