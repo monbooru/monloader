@@ -161,6 +161,55 @@ type testIntegration struct{ MenuSupported, MenuEnabled, AutostartSupported, Aut
 
 func (d testIntegration) Supported() bool { return d.MenuSupported || d.AutostartSupported }
 
+func TestTheTokenTableShowsAClassAndItsRevokeNote(t *testing.T) {
+	tmpl := template.Must(template.New("").Funcs(Funcs("")).ParseFS(Templates, "*.html"))
+
+	type token struct {
+		ID, Name, CreatedAt, Paired, Class string
+		Scopes                             []string
+	}
+	tokens := []token{
+		{ID: "plain", Name: "plain"},
+		{ID: "paired", Name: "app (paired)", Paired: "app"},
+		{ID: "classed", Name: "feature", Class: "feature"},
+	}
+	cases := []struct {
+		name  string
+		notes map[string]string
+		want  []string
+	}{
+		{"with a note", map[string]string{"feature": "Its addresses go off."},
+			[]string{`status-badge status-ok">feature</span>`, `data-confirm-danger="Its addresses go off."`, "removes the pairing with app"}},
+		{"without notes", nil,
+			[]string{`status-badge status-ok">feature</span>`, "stops working immediately"}},
+	}
+	for _, tc := range cases {
+		var buf strings.Builder
+		data := map[string]any{"Tokens": tokens}
+		if tc.notes != nil {
+			data["RevokeNotes"] = tc.notes
+		}
+		if err := tmpl.ExecuteTemplate(&buf, "webui/auth_tokens", data); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(buf.String(), want) {
+				t.Errorf("%s: the table lacks %s", tc.name, want)
+			}
+		}
+	}
+
+	var buf strings.Builder
+	if err := tmpl.ExecuteTemplate(&buf, "webui/token_privileges_dialog", map[string]any{
+		"ID": "classed", "Scopes": []ScopeRow{{Name: "read", Checked: true}}, "ManagedBy": "the feature",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); !strings.Contains(out, "checked disabled") || !strings.Contains(out, "Managed by the feature.") || strings.Contains(out, `type="submit"`) {
+		t.Errorf("a managed token's privileges can be edited:\n%s", out)
+	}
+}
+
 func TestTheDesktopSectionTakesTheAppAsData(t *testing.T) {
 	tmpl := template.Must(template.New("").Funcs(Funcs("")).ParseFS(Templates, "*.html"))
 	var buf strings.Builder

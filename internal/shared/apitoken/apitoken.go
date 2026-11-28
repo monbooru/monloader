@@ -21,6 +21,9 @@ type Token struct {
 	CreatedAt string   `toml:"created_at"`
 	Paired    string   `toml:"paired,omitempty"`
 	PeerURL   string   `toml:"peer_url,omitempty"`
+	// Class names the feature an app minted the token for; its scopes are
+	// the feature's, not the operator's.
+	Class string `toml:"class,omitempty"`
 }
 
 func (t Token) HasScope(scope string) bool { return slices.Contains(t.Scopes, scope) }
@@ -116,6 +119,10 @@ func (l List) ByID(id string) *Token {
 
 func (l List) Paired(app string) *Token {
 	return l.find(func(t Token) bool { return t.Paired == app })
+}
+
+func (l List) ByClass(class string) *Token {
+	return l.find(func(t Token) bool { return t.Class == class })
 }
 
 func (l List) find(match func(Token) bool) *Token {

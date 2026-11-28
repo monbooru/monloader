@@ -19,26 +19,31 @@ func TestListLookups(t *testing.T) {
 	tok, secret := New("ci", []string{"read"})
 	paired, _ := New("app (paired)", []string{"read", "write"})
 	paired.Paired = "app"
-	l := List{tok, paired}
+	classed, _ := New("feature", []string{"read"})
+	classed.Class = "feature"
+	l := List{tok, paired, classed}
 	if !l.NameExists("CI") || l.NameExists("other") {
 		t.Error("NameExists must match names case-insensitively")
 	}
 	if got := l.ByHash(Hash(secret)); got == nil || got.ID != tok.ID || !got.HasScope("read") || got.HasScope("write") {
 		t.Errorf("ByHash = %+v", got)
 	}
-	if l.ByHash(Hash("wrong")) != nil || l.ByID("nope") != nil || l.Paired("nope") != nil {
+	if l.ByHash(Hash("wrong")) != nil || l.ByID("nope") != nil || l.Paired("nope") != nil || l.ByClass("nope") != nil {
 		t.Error("a lookup that matches nothing returned a token")
 	}
 	if got := l.Paired("app"); got == nil || got.ID != paired.ID {
 		t.Errorf("Paired = %+v", got)
 	}
+	if got := l.ByClass("feature"); got == nil || got.ID != classed.ID {
+		t.Errorf("ByClass = %+v", got)
+	}
 	if !l.SetScopes(tok.ID, []string{"read", "write"}) || !l.ByID(tok.ID).HasScope("write") {
 		t.Error("SetScopes did not apply")
 	}
-	if err := l.Add(Token{ID: "x", Name: "Ci"}); err == nil || len(l) != 2 {
+	if err := l.Add(Token{ID: "x", Name: "Ci"}); err == nil || len(l) != 3 {
 		t.Errorf("Add took a second token named ci: %v", err)
 	}
-	if !l.Remove(tok.ID) || len(l) != 1 || l.Remove(tok.ID) {
+	if !l.Remove(tok.ID) || len(l) != 2 || l.Remove(tok.ID) {
 		t.Errorf("Remove left %d tokens", len(l))
 	}
 	if err := l.Add(tok); err != nil || l.ByID(tok.ID) == nil {
