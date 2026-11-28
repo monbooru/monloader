@@ -1,5 +1,34 @@
 # Changelog
 
+## [v1.15.0] - 2026-11-28
+### Added
+- The add bar takes a pasted list of URLs or MD5s and queues one job each. ([#39](https://github.com/monbooru/monloader/issues/39), thanks @spry-key for the suggestion)
+- The gallery-dl install field takes `nightly`, or a nightly's date, to install a nightly build. ([#42](https://github.com/monbooru/monloader/issues/42), thanks @IkariDevGIT for the code)
+- A tag rule can match by pattern: its key takes one `*`, which the target can reuse, as in `*_(va)` to `va:*`. ([#46](https://github.com/monbooru/monloader/issues/46), thanks @CeareDelafont for the suggestion)
+  - Settings -> Rules has a list of tag rules for all sites; a site's own rule for the same tag wins.
+  - API: a site of `GET /api/v1/rules` carries `rule_key`, `rule_list`, `renamed_from_global` and `blacklist_condition`.
+- A watch can carry tags that every post it downloads gets; the tag suggestions need monbooru v1.25.0. ([#48](https://github.com/monbooru/monloader/issues/48), thanks @IkariDevGIT for the code)
+- A site can have its own folder, and the folder fields open a folder tree with suggestions; the tree needs monbooru v1.25.0. ([#50](https://github.com/monbooru/monloader/issues/50), thanks @IkariDevGIT for the code)
+  - API: `GET /api/v1/galleries`, `GET /api/v1/folders` and `GET /api/v1/folders/search` list monbooru's galleries and folders, and `GET /api/v1/defaults` says where a send lands.
+- With no monbooru paired, monloader asks monbooru to pair by itself when it starts.
+
+### Changed
+- A bare file link takes the gallery and folder of the site its page is on.
+- A full history drops the rows with nothing to act on first, so failed jobs stay.
+- Links to monbooru work with no web URL set when both apps run on the same machine.
+- On a phone, queue jobs and watches stack into blocks and Settings fits the screen better.
+- Bundled gallery-dl updated to 1.32.21.
+
+### Fixed
+- Settings -> Stats updates when a gallery-dl install finishes.
+
+### Removed
+- The e6ai site profile, which gallery-dl no longer supports.
+
+Thanks to @IkariDevGIT for the folder picker moved into the shared webui (https://github.com/monbooru/monloader/pull/54).
+
+Co-authored-by: IkariDevGIT <90197782+IkariDevGIT@users.noreply.github.com>
+
 ## [v1.14.1] - 2026-11-15
 ### Added
 - Every token under API Tokens now has a Revoke button; revoking a paired one removes its pairing. ([#45](https://github.com/monbooru/monloader/issues/45))

@@ -36,7 +36,7 @@ func ProbeCatalog(ctx context.Context, runner Runner, cfg *config.Config, root s
 
 // A failed probe keeps the previous listing: an empty one reads as "no
 // sites supported". A context that ran out says nothing about the binary, so
-// its version stays too.
+// its version stays too. A binary that is gone takes its listing with it.
 func (c *Catalog) Refresh(ctx context.Context, runner Runner, cfg *config.Config, root string) {
 	version := runner.Version(ctx)
 	if version == "" && ctx.Err() != nil {
@@ -45,7 +45,9 @@ func (c *Catalog) Refresh(ctx context.Context, runner Runner, cfg *config.Config
 	extractors, err := runner.ListExtractors(ctx)
 	if err != nil {
 		logx.Warnf("listing gallery-dl extractors: %v", err)
-		extractors = c.Extractors()
+		if version != "" {
+			extractors = c.Extractors()
+		}
 	}
 	path := EffectiveSupportedSitesPath(cfg, root)
 	supported, err := ParseSupportedSites(path)

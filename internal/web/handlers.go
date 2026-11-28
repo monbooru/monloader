@@ -41,6 +41,10 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", msg)
 		return
 	}
+	if fields := strings.Fields(r.FormValue("url")); len(fields) > 1 {
+		s.enqueueList(w, r, fields)
+		return
+	}
 	target := config.NormalizeURL(strings.TrimSpace(r.FormValue("url")))
 	if target == "" {
 		flashFragment(w, "err", "Enter a URL or an MD5 hash.")
@@ -66,12 +70,111 @@ func (s *Server) enqueueForm(w http.ResponseWriter, r *http.Request) {
 		}
 		s.queue.Enqueue(target, queue.Options{}.WithItems(items))
 	}
-	// A redirect would reload the queue screen and drop its
-	// expand/collapse state.
+	s.afterAdd(w, r, nil)
+}
+
+func (s *Server) enqueueList(w http.ResponseWriter, r *http.Request, fields []string) {
+	items, ok := parseItems(r.FormValue("items"))
+	if !ok {
+		flashFragment(w, "err", "Pick how many posts to fetch.")
+		return
+	}
+	lookupOff := len(s.mapper.LookupSites()) == 0
+	seen := map[string]bool{}
+	var queued, repeats int
+	var notURL, sha256s, md5Off []string
+	for _, f := range fields {
+		target := config.NormalizeURL(f)
+		md5, isHash := hashImportTarget(target)
+		key := target
+		if isHash {
+			key = "md5:" + md5
+		}
+		if seen[key] {
+			repeats++
+			continue
+		}
+		seen[key] = true
+		switch {
+		case isHash && lookupOff:
+			md5Off = append(md5Off, f)
+		case isHash:
+			s.queue.EnqueueHashImport(md5, queue.Options{})
+			queued++
+		case looksLikeSHA256(target):
+			sha256s = append(sha256s, f)
+		case !config.IsHTTPURL(target):
+			notURL = append(notURL, f)
+		default:
+			s.queue.Enqueue(target, queue.Options{}.WithItems(items))
+			queued++
+		}
+	}
+	var lines []flashLine
+	if queued > 0 {
+		msg := fmt.Sprintf("Queued %d.", queued)
+		if repeats > 0 {
+			msg = fmt.Sprintf("Queued %d, repeats left out: %d.", queued, repeats)
+		}
+		lines = append(lines, flashLine{"ok", msg})
+	}
+	kind := "warn"
+	if queued == 0 {
+		kind = "err"
+	}
+	for _, refused := range []struct {
+		why     string
+		entries []string
+	}{
+		{"not an http(s) URL or an MD5 hash", notURL},
+		{"a SHA-256 looks tags up from the PTR and is not imported here", sha256s},
+		{"MD5 lookup is off, no site is in the lookup chain", md5Off},
+	} {
+		if len(refused.entries) > 0 {
+			lines = append(lines, flashLine{kind, "Not queued, " + refused.why + ": " + listShort(refused.entries)})
+		}
+	}
+	if queued == 0 {
+		flashLines(w, lines)
+		return
+	}
+	if len(lines) > 1 && !onQueueScreen(r) {
+		w.Header().Set("HX-Retarget", "#add-flash")
+		flashLines(w, lines)
+		return
+	}
+	s.afterAdd(w, r, lines)
+}
+
+func listShort(entries []string) string {
+	const shown, width = 3, 60
+	var out []string
+	for _, e := range entries[:min(len(entries), shown)] {
+		if r := []rune(e); len(r) > width {
+			e = string(r[:width]) + "..."
+		}
+		out = append(out, e)
+	}
+	list := strings.Join(out, ", ")
+	if len(entries) > shown {
+		list += fmt.Sprintf(" and %d more", len(entries)-shown)
+	}
+	if strings.HasSuffix(list, "...") {
+		return list
+	}
+	return list + "."
+}
+
+// A redirect would reload the queue screen and drop its
+// expand/collapse state.
+func (s *Server) afterAdd(w http.ResponseWriter, r *http.Request, note []flashLine) {
 	if onQueueScreen(r) {
 		w.Header().Set("HX-Retarget", "#queue-rows")
 		w.Header().Set("HX-Reswap", "innerHTML")
 		s.queueRows(w, r)
+		fmt.Fprint(w, `<div id="add-flash" class="field-hint" hx-swap-oob="true">`)
+		flashLines(w, note)
+		fmt.Fprint(w, `</div>`)
 		return
 	}
 	w.Header().Set("HX-Redirect", "/queue")
@@ -181,13 +284,24 @@ func writeInlineFlash(w http.ResponseWriter, kind, msg string) {
 	fmt.Fprintf(w, `<div class="flash flash-%s">%s</div>`, kind, html.EscapeString(msg))
 }
 
+type flashLine struct{ kind, msg string }
+
+func flashLines(w http.ResponseWriter, lines []flashLine) {
+	for i, l := range lines {
+		if i > 0 {
+			fmt.Fprint(w, "<br>")
+		}
+		flashFragment(w, l.kind, l.msg)
+	}
+}
+
 func flashFragment(w http.ResponseWriter, kind, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<span class="flash-%s">%s</span>`, kind, html.EscapeString(msg))
 }
 
 func (s *Server) monbooruWebBase() string {
-	return s.cfg.Current().Monbooru.WebBase()
+	return s.cfg.Current().MonbooruWebBase()
 }
 
 func (s *Server) monbooruStatus(w http.ResponseWriter, r *http.Request) {

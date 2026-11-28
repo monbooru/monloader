@@ -33,6 +33,14 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 });
+document.addEventListener("paste", function (e) {
+  var input = e.target;
+  if (!(input instanceof HTMLInputElement) || !input.matches('form[hx-post="/"] input[name=url]')) return;
+  var text = e.clipboardData ? e.clipboardData.getData("text") : "";
+  if (!/[\r\n]/.test(text)) return;
+  e.preventDefault();
+  input.setRangeText(text.trim().split(/\s+/).join(" "), input.selectionStart, input.selectionEnd, "end");
+});
 document.addEventListener("reset", function () { setTimeout(restoreItemsPick, 0); }, true);
 document.addEventListener("change", function (e) {
   if (e.target.matches(".add-row select[name=items]")) {
@@ -311,7 +319,24 @@ document.body.addEventListener("htmx:afterSwap", function (e) {
     }
   } else if (e.target.id === "debug-log-body") {
     openOnSwap(e.target);
+  } else if (e.target.id === "watch-tags-body") {
+    openOnSwap(e.target);
+    var input = document.getElementById("watch-tags-input");
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
   }
+});
+
+suggestPairs["watch-tags-suggest"] = {input: "watch-tags-input", clearOnEmpty: true};
+
+// A refusal lands in the dialog's own flash and keeps it open on what was typed.
+document.body.addEventListener("htmx:afterRequest", function (e) {
+  var form = e.detail.elt;
+  if (!form.matches || !form.matches(".watch-tags-form") || !e.detail.successful ||
+      e.detail.xhr.getResponseHeader("HX-Retarget")) {
+    return;
+  }
+  form.closest("dialog").close();
 });
 
 onClick(".add-maprow", function (add) {

@@ -601,6 +601,76 @@ func (h *Handler) endpoints() []endpoint {
 			Handler: h.galleryRename,
 		},
 		{
+			Method: "GET", Path: "/api/v1/galleries",
+			Summary: "List monbooru's galleries", OperationID: "listGalleries",
+			Description: "monbooru's own list, passed on, so a client can offer the galleries a send can target.",
+			Responses: []response{
+				{Status: "200", Description: "The galleries, as monbooru lists them", Props: []prop{
+					{Name: "galleries", Type: "array", Items: &prop{Ref: "Gallery"}},
+				}},
+				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
+				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable) or refused (monbooru_rejected)", Ref: "Error"},
+			},
+			Handler: h.listGalleries,
+		},
+		{
+			Method: "GET", Path: "/api/v1/folders",
+			Summary: "List a monbooru folder's subfolders", OperationID: "listFolders",
+			Description: "One level of monbooru's folders, passed on, a page at a time. Only folders holding an image, or a " +
+				"folder under them, are listed; a send to a folder that does not exist yet still creates it.",
+			Params: []param{
+				{Name: "gallery", In: "query", Description: "The gallery; empty for monbooru's active gallery"},
+				{Name: "path", In: "query", Description: "The folder to list; empty for the top level"},
+				{Name: "page", In: "query", Type: "integer", Description: "Page number"},
+				{Name: "limit", In: "query", Type: "integer", Description: "Results per page (default and max 500)"},
+				{Name: "page_size", In: "query", Type: "integer", Description: "Synonym for limit"},
+			},
+			Responses: []response{
+				{Status: "200", Description: "One level, in path order", Props: []prop{
+					{Name: "page", Type: "integer"},
+					{Name: "limit", Type: "integer"},
+					{Name: "total", Type: "integer", Description: "How many subfolders path has"},
+					{Name: "results", Type: "array", Items: &prop{Ref: "Folder"}},
+				}},
+				{Status: "404", Description: "monbooru holds no image at or under path (folder_not_found)", Ref: "Error"},
+				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
+				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable), or refused (monbooru_rejected): an unknown gallery, or a monbooru too old to list folders", Ref: "Error"},
+			},
+			Handler: h.listFolders,
+		},
+		{
+			Method: "GET", Path: "/api/v1/folders/search",
+			Summary: "Search a monbooru gallery's folders", OperationID: "searchFolders",
+			Description: "Folders whose path starts with q, then those holding it elsewhere, any case, as monbooru finds them.",
+			Params: []param{
+				{Name: "gallery", In: "query", Description: "The gallery; empty for monbooru's active gallery"},
+				{Name: "q", In: "query", Description: "Part of the path; empty finds nothing"},
+				{Name: "limit", In: "query", Type: "integer", Description: "Results (default 10, max 100)"},
+			},
+			Responses: []response{
+				{Status: "200", Description: "The folders found", Props: []prop{
+					{Name: "results", Type: "array", Items: &prop{Ref: "Folder"}},
+				}},
+				{Status: "409", Description: "No monbooru is configured (monbooru_unconfigured), or its link is paused from the footer light (monbooru_paused)", Ref: "Error"},
+				{Status: "502", Description: "monbooru could not be reached (monbooru_unreachable), or refused (monbooru_rejected): an unknown gallery, or a monbooru too old to search folders", Ref: "Error"},
+			},
+			Handler: h.searchFolders,
+		},
+		{
+			Method: "GET", Path: "/api/v1/defaults",
+			Summary: "Where a send lands by default", OperationID: "defaults",
+			Description: "The default gallery and folder, and each site's own. A send's gallery and folder options win, " +
+				"then the site's, then these defaults; an empty one leaves the choice to monbooru.",
+			Responses: []response{
+				{Status: "200", Description: "The settings as saved", Props: []prop{
+					{Name: "gallery", Type: "string", Description: "The default gallery; empty for monbooru's active gallery"},
+					{Name: "folder", Type: "string", Description: "The default folder; empty for monbooru's folder for received files"},
+					{Name: "sites", Type: "array", Items: &prop{Ref: "SiteDefault"}, Description: "Sites setting a gallery or folder of their own, by name; the others take the defaults"},
+				}},
+			},
+			Handler: h.defaults,
+		},
+		{
 			Method: "GET", Path: "/api/v1/sites",
 			Summary: "List supported sites", OperationID: "listSites",
 			Params: []param{{Name: "q", In: "query", Description: "Substring filter on category/subcategory"}},
@@ -827,6 +897,23 @@ var apiSchemas = []apiSchema{
 	{Name: "PauseState", Props: []prop{
 		{Name: "paused", Type: "boolean"},
 	}},
+	{Name: "Gallery", Props: []prop{
+		{Name: "name", Type: "string"},
+		{Name: "images", Type: "integer", Description: "Visible (non-missing) image count"},
+		{Name: "tags", Type: "integer", Description: "Non-alias tag count"},
+		{Name: "active", Type: "boolean", Description: "monbooru's active gallery, the one an empty gallery targets"},
+	}},
+	{Name: "Folder", Props: []prop{
+		{Name: "path", Type: "string", Description: "Relative to the gallery, /-separated; what a send's folder and a listing's path take"},
+		{Name: "name", Type: "string", Description: "The last path segment"},
+		{Name: "images", Type: "integer", Description: "Visible (non-missing) images in this folder and every folder under it"},
+		{Name: "folders", Type: "integer", Description: "How many subfolders it has; 0 for a leaf"},
+	}},
+	{Name: "SiteDefault", Props: []prop{
+		{Name: "name", Type: "string", Description: "The gallery-dl category"},
+		{Name: "gallery", Type: "string", Description: "The site's gallery; empty takes the default gallery"},
+		{Name: "folder", Type: "string", Description: "The site's folder; empty takes the default folder"},
+	}},
 	{Name: "Site", Props: []prop{
 		{Name: "category", Type: "string"},
 		{Name: "subcategory", Type: "string"},
@@ -851,10 +938,14 @@ var apiSchemas = []apiSchema{
 		{Name: "builtin", Type: "boolean", Description: "True for a site the history or a watch reached but the settings never set up: its rules are the built-in profile's"},
 		{Name: "rule", Type: "string", Description: "none, drop, rename, move: the site's tag rule on the name"},
 		{Name: "target", Type: "string", Description: "What a rename or move sends instead"},
+		{Name: "rule_key", Type: "string", Description: "The tag rule that does it, as written: the name, or a key with a *"},
+		{Name: "rule_list", Type: "string", Description: "site for the site's own tag rules, global for the rules for all sites, read when none of the site's matches"},
 		{Name: "blacklist", Type: "string", Description: "global or site when a blacklist rule names the tag, before or after its rule; absent otherwise"},
 		{Name: "blacklist_line", Type: "string", Description: "The blacklist line that names the tag, as written; a line with other tags skips only the posts that also match them"},
+		{Name: "blacklist_condition", Type: "string", Description: "The rest of that line, as written, once the token naming the tag is left out: what a post must also match to be skipped; empty when the line names the tag alone, absent when no line does"},
 		{Name: "mapped_from", Type: "array", Items: &prop{Type: "string"}, Description: "The site's own categories a category map sends into this category"},
-		{Name: "renamed_from", Type: "array", Items: &prop{Type: "string"}, Description: "The names the site's tag rules turn into this tag"},
+		{Name: "renamed_from", Type: "array", Items: &prop{Type: "string"}, Description: "The names the site's tag rules turn into this tag; a rule with a * gives the name it rebuilds, or its key when the target holds no *"},
+		{Name: "renamed_from_global", Type: "array", Items: &prop{Type: "string"}, Description: "The same for the rules for all sites, without the names a rule of the site's own takes first"},
 		{Name: "kept", Type: "boolean", Description: "Whether the tag, as this site sends it after its rule, survives the global category drop"},
 	}},
 	{Name: "ProbeResult", Props: []prop{

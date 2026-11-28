@@ -85,15 +85,19 @@ const (
 
 const CodeSetupRequired = "setup_required"
 
+const CodeFolderNotFound = "folder_not_found"
+
 const (
 	AppMonbooru  = "monbooru"
 	AppMonloader = "monloader"
+	AppMonworker = "monworker"
 )
 
 // Each app's default address for its peer assumes the other's default port.
 const (
 	PortMonbooru  = "8455"
 	PortMonloader = "8456"
+	PortMonworker = "8457"
 )
 
 const (

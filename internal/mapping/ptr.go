@@ -7,6 +7,7 @@ import (
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/ptr"
+	"github.com/monbooru/monloader/internal/shared/contract"
 )
 
 // MapPTR takes a hash's raw tags through the PTR's own mappings, then the
@@ -22,9 +23,10 @@ func (m *Mapper) MapPTR(raw []string) []string {
 func (m *Mapper) MapPTRWithheld(raw []string) (tags, withheld []string) {
 	profile := m.profileFor(config.SitePTR)
 	drop := m.cfg.Current().Tags.DropCategories
+	rules := m.rulesFor(profile)
 	for _, tag := range raw {
 		mapped := m.ptrMapped(profile, tag)
-		s := applyTagRule(profile.TagRules, mapped)
+		s := rules.apply(mapped)
 		switch {
 		case s != "":
 			if !categoryDropped(drop, s) {
@@ -51,6 +53,7 @@ func (m *Mapper) PTRBlacklisted(raw []string) (note string, blacklisted bool) {
 		return "", false
 	}
 	profile := m.profileFor(config.SitePTR)
+	tagRules := m.rulesFor(profile)
 	var tags []postTag
 	var rating string
 	for _, tag := range raw {
@@ -60,7 +63,7 @@ func (m *Mapper) PTRBlacklisted(raw []string) (note string, blacklisted bool) {
 			rating = Stricter(rating, level)
 			continue
 		}
-		for _, read := range append(blacklistReads(profile, mapped), MapPTRTag(tag)) {
+		for _, read := range append(blacklistReads(tagRules, mapped), MapPTRTag(tag)) {
 			if read != "" {
 				tags = append(tags, splitPostTag(read))
 			}
@@ -81,7 +84,7 @@ func (m *Mapper) ptrMapped(profile Profile, tag string) string {
 	}
 	ns = strings.ToLower(ns)
 	if to, ok := m.categoryOverride(config.SitePTR, profile, ns); ok {
-		return normalizeTag(formatTag(to, sub))
+		return normalizeTag(contract.TagForm(to, sub))
 	}
 	if ns == "rating" {
 		if level := m.ratingFor(config.SitePTR, profile, sub); level != "" {
@@ -123,7 +126,7 @@ func MapPTRTag(tag string) string {
 	case !keep:
 		return ""
 	default:
-		return normalizeTag(formatTag(cat, sub))
+		return normalizeTag(contract.TagForm(cat, sub))
 	}
 }
 

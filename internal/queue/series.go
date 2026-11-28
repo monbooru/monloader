@@ -85,16 +85,20 @@ func (s series) unimported(live func(int64) bool) (reach int, unimported bool) {
 
 // A series goes whole or not at all: the queue view sums it into one row.
 func (s series) settledBefore(cutoff time.Time) bool {
+	if !s.settled() {
+		return false
+	}
 	var newest time.Time
 	for _, j := range s {
-		if !j.noFollowUp() {
-			return false
-		}
 		if t := j.finishedAt(); t.After(newest) {
 			newest = t
 		}
 	}
 	return !newest.After(cutoff)
+}
+
+func (s series) settled() bool {
+	return !slices.ContainsFunc(s, func(j *Job) bool { return !j.noFollowUp() })
 }
 
 // self stands in for its own entry: a quiet check has already left the

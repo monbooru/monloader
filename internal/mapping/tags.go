@@ -1,11 +1,11 @@
 package mapping
 
 import (
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
-	"unicode"
 
 	"github.com/monbooru/monloader/internal/shared/contract"
 )
@@ -170,43 +170,18 @@ func isTagCategory(name string) bool {
 	return name != "" && (validTagCategories[name] || customCategory(name))
 }
 
-// Must match monbooru's tags.SplitForm and tags.NormalizeName byte for byte,
-// so a PTR spelling round-trips instead of minting a duplicate.
-func normalizeTag(tag string) string {
-	tag = strings.TrimSpace(tag)
-	if prefix, rest, ok := strings.Cut(tag, ":"); ok {
-		category := strings.ToLower(prefix)
-		if slices.Contains(contract.BuiltinCategories, category) || customCategory(category) {
-			name := normalizeName(rest)
-			if name == "" || category == "general" {
-				return name
-			}
-			return category + ":" + name
-		}
-	}
-	return normalizeName(tag)
+func foldCategory(name string) bool {
+	return slices.Contains(contract.BuiltinCategories, name) || customCategory(name)
 }
 
-func normalizeName(name string) string {
-	name = strings.ToLower(name)
-	var b strings.Builder
-	b.Grow(len(name))
-	pendingFold := false
-	for _, r := range name {
-		switch {
-		case unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Co):
-		case unicode.IsSpace(r) || r == '"' || r == '*':
-			pendingFold = true
-		default:
-			if pendingFold && b.Len() > 0 {
-				b.WriteByte('_')
-			}
-			pendingFold = false
-			b.WriteRune(r)
-		}
-	}
-	return strings.Trim(b.String(), "_")
-}
+// monbooru's own spelling, so a PTR spelling round-trips instead of minting
+// a duplicate.
+func normalizeTag(tag string) string { return contract.NormalizeTagForm(tag, foldCategory) }
+
+func normalizeName(name string) string { return contract.NormalizeTagName(name) }
+
+// A tag rule's key and target keep the *, which stands for any text.
+const ruleKeeps = "*"
 
 // The pre-widening charset: tags monbooru stored before the punctuation
 // widening were never rewritten and must still match their raw PTR spelling.
@@ -224,17 +199,9 @@ func LegacyFoldTag(tag string) string {
 	return strings.Trim(tag, "_")
 }
 
-func formatTag(category, name string) string {
-	if category == "" || name == "" {
-		return ""
-	}
-	if category == "general" {
-		return name
-	}
-	return category + ":" + name
-}
-
 func NormalizeTag(tag string) string { return normalizeTag(tag) }
+
+func NormalizeRuleKey(from string) string { return contract.FoldTagForm(from, ruleKeeps, foldCategory) }
 
 // NormalizeRuleTarget keeps a general: prefix, which normalizeTag folds away:
 // as a rule's target it moves a tag out of its category, where a bare name
@@ -242,12 +209,45 @@ func NormalizeTag(tag string) string { return normalizeTag(tag) }
 func NormalizeRuleTarget(to string) string {
 	to = strings.TrimSpace(to)
 	if prefix, rest, ok := strings.Cut(to, ":"); ok && strings.EqualFold(prefix, "general") {
-		if name := normalizeName(rest); name != "" {
+		if name := contract.FoldTagForm(rest, ruleKeeps, nil); name != "" {
 			return "general:" + name
 		}
 		return ""
 	}
-	return normalizeTag(to)
+	return contract.FoldTagForm(to, ruleKeeps, foldCategory)
+}
+
+// CheckTagRules refuses what the mapper could not apply as written.
+func CheckTagRules(rules map[string]string) error {
+	for from, to := range rules {
+		if from == "" || NormalizeRuleKey(from) != from {
+			return fmt.Errorf("tag rule %q is not a normalized tag name", from)
+		}
+		stars := strings.Count(from, "*")
+		_, name := splitRuleKey(from)
+		switch {
+		case stars > 1:
+			return fmt.Errorf("tag rule %q has more than one *", from)
+		case name == "*":
+			return fmt.Errorf("tag rule %q matches every tag: a * needs some text beside it", from)
+		case strings.Count(to, "*") > stars:
+			if stars == 0 {
+				return fmt.Errorf("tag rule %q has a * in its replacement and none in the tag", from)
+			}
+			return fmt.Errorf("tag rule %q has a replacement with more than one *", from)
+		}
+		if to != "" && NormalizeRuleTarget(to) != to {
+			return fmt.Errorf("tag rule %q has a replacement that is not a normalized tag name", from)
+		}
+	}
+	return nil
+}
+
+func splitRuleKey(key string) (category, name string) {
+	if cat, rest, found := strings.Cut(key, ":"); found && isTagCategory(cat) {
+		return cat, rest
+	}
+	return "", key
 }
 
 // DroppedRuleTarget names the dropped category a tag rule moves its tag into.
@@ -256,7 +256,7 @@ func DroppedRuleTarget(drop []string, from, to string) string {
 	if strings.HasPrefix(to, "general:") && slices.Contains(drop, "general") {
 		return "general"
 	}
-	prefix, _, found := strings.Cut(applyTagRule(map[string]string{from: to}, from), ":")
+	prefix, _, found := strings.Cut(applyTagRule(map[string]string{from: to}, strings.ReplaceAll(from, "*", "x")), ":")
 	if !found || !slices.Contains(drop, prefix) {
 		return ""
 	}
@@ -264,30 +264,103 @@ func DroppedRuleTarget(drop []string, from, to string) string {
 }
 
 // The full form is tried before the bare name, and a general tag
-// containing a colon matches by its full form.
+// containing a colon matches by its full form. A key holding a * is only
+// read when no exact key names the tag.
 func applyTagRule(rules map[string]string, tag string) string {
+	after, _ := matchTagRule(rules, tag)
+	return after
+}
+
+// key is the rule that matched, empty when none did.
+func matchTagRule(rules map[string]string, tag string) (after, key string) {
 	if len(rules) == 0 {
-		return tag
+		return tag, ""
 	}
 	prefix, name := "", tag
 	if cat, rest, found := strings.Cut(tag, ":"); found && isTagCategory(cat) {
 		prefix, name = cat, rest
 	}
 	repl, ok := rules[tag]
+	key = tag
 	if !ok && prefix != "" {
 		repl, ok = rules[name]
+		key = name
 	}
 	if !ok {
-		return tag
+		repl, key = patternRule(rules, tag, name)
+		ok = key != ""
 	}
-	if repl == "" {
-		return ""
+	switch {
+	case !ok:
+		return tag, ""
+	case repl == "":
+		return "", key
 	}
 	if cat, rest, found := strings.Cut(repl, ":"); found && isTagCategory(cat) && rest != "" {
-		return normalizeTag(repl)
+		return normalizeTag(repl), key
 	}
 	if prefix != "" {
-		return prefix + ":" + repl
+		return prefix + ":" + repl, key
 	}
-	return repl
+	return repl, key
+}
+
+// A site's rules with the list for all sites behind them: a tag a site rule
+// matches never reaches that list.
+type tagRules struct{ site, global map[string]string }
+
+func (m *Mapper) rulesFor(profile Profile) tagRules {
+	return tagRules{site: profile.TagRules, global: m.globalTagRules()}
+}
+
+// A rule typed into monloader.toml that a save would refuse is left out.
+func (m *Mapper) globalTagRules() map[string]string {
+	valid := map[string]string{}
+	for from, to := range m.cfg.Current().Tags.Rules {
+		if CheckTagRules(map[string]string{from: to}) == nil {
+			valid[from] = to
+		}
+	}
+	return valid
+}
+
+func (r tagRules) apply(tag string) string {
+	after, _, _ := r.match(tag)
+	return after
+}
+
+func (r tagRules) match(tag string) (after, key, list string) {
+	if after, key = matchTagRule(r.site, tag); key != "" {
+		return after, key, contract.ListSite
+	}
+	if after, key = matchTagRule(r.global, tag); key != "" {
+		return after, key, contract.ListGlobal
+	}
+	return tag, "", ""
+}
+
+// The longest key wins, then the first in key order, so the answer never
+// depends on the map's order.
+func patternRule(rules map[string]string, tag, name string) (repl, best string) {
+	for key, to := range rules {
+		head, tail, found := strings.Cut(key, "*")
+		if !found || (best != "" && (len(key) < len(best) || (len(key) == len(best) && key > best))) {
+			continue
+		}
+		subject := name
+		if category, _ := splitRuleKey(key); category != "" {
+			subject = tag
+		}
+		if text, hit := starText(subject, head, tail); hit {
+			best, repl = key, strings.ReplaceAll(to, "*", text)
+		}
+	}
+	return repl, best
+}
+
+func starText(s, head, tail string) (string, bool) {
+	if len(s) <= len(head)+len(tail) || !strings.HasPrefix(s, head) || !strings.HasSuffix(s, tail) {
+		return "", false
+	}
+	return s[len(head) : len(s)-len(tail)], true
 }

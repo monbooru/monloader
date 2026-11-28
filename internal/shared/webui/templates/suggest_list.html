@@ -1,0 +1,16 @@
+{{define "webui/suggest_list"}}
+{{if .Items}}
+<div class="suggest-list">
+  {{range .Items}}
+  <button type="button" class="suggest-item"
+          {{if .Color}}style="color:{{catColor .Color}}"{{end}}
+          {{$.Attr}}="{{.Name}}"
+          {{$.OnClick}}>
+    <span class="suggest-name">{{if .Alias}}<span class="suggest-alias">{{.Alias}} →</span> {{end}}{{.Name}}</span>
+    {{if .Description}}<span class="suggest-description">{{.Description}}</span>{{end}}
+    {{if .ShowCount}}<span class="suggest-count">{{.UsageCount}}</span>{{end}}
+  </button>
+  {{end}}
+</div>
+{{end}}
+{{end}}

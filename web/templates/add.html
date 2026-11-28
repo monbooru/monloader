@@ -5,11 +5,12 @@
 <main id="landing">
   {{with index .Mascot .LandingFace}}<img src="{{.}}" alt="" class="mascot">{{else}}<img src="{{.BooruLogo}}" alt="" class="landing-logo">{{end}}
   <h1>{{wordmark .BooruName}}</h1>
-  <form id="add-form" class="add-form" hx-post="/" hx-target="#add-flash" hx-swap="innerHTML">
+  <form id="add-form" class="add-form" hx-post="/" hx-target="#add-flash" hx-swap="innerHTML"
+        hx-on::after-request="if (event.detail.xhr.getResponseHeader('HX-Retarget')) this.reset();">
     <div class="add-row">
       <div class="search-input-wrap">
         <input id="add-input" type="text" name="url" autocomplete="off" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}}
-               placeholder="Paste a post, pool, search or artist URL, or an MD5 hash" data-short-placeholder="Paste a URL or an MD5 hash">
+               placeholder="Paste post, pool, search or artist URLs, or MD5 hashes" data-short-placeholder="Paste URLs or MD5 hashes">
       </div>
       <select name="items" aria-label="Posts to fetch" title="How many posts to fetch from a search. A pool or a manga gallery always comes whole.">{{template "items_options" .ItemChoices}}</select>
       <button type="submit" data-peer-title=""{{if not .MonbooruConfigured}} disabled{{end}}>Download</button>

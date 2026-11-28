@@ -38,6 +38,7 @@ func (s *Server) watchesScreen(w http.ResponseWriter, r *http.Request) {
 	data := s.base(r, "watches", "Watched - "+s.titleName())
 	s.fillWatches(data)
 	data["DefaultWatchHours"] = defaultWatchHours
+	data["WatchAddTags"] = s.watchAddTagsBox(nil)
 	s.render(w, "watches", data)
 }
 
@@ -157,12 +158,18 @@ func (s *Server) addWatch(w http.ResponseWriter, r *http.Request) {
 		flashFragment(w, "err", "Pick how many posts to fetch.")
 		return
 	}
-	id, err := s.queue.AddWatch(target, hours, items, nil)
+	tags, msg := watchTags(strings.Fields(r.FormValue("tags")))
+	if msg != "" {
+		flashFragment(w, "err", msg)
+		return
+	}
+	id, err := s.queue.AddWatch(target, hours, items, tags, nil)
 	if err != nil {
 		flashFragment(w, "err", watchErrMsg(err))
 		return
 	}
 	_, _ = s.queue.CheckWatch(id, false)
+	w.Header().Set("HX-Trigger", "watch-added")
 	w.Header().Set("HX-Retarget", "#watch-rows")
 	w.Header().Set("HX-Reswap", "innerHTML")
 	s.watchRows(w, r)
@@ -179,11 +186,105 @@ func (s *Server) watchJob(w http.ResponseWriter, r *http.Request) {
 		addBarFlash(w, "Only a finished search can be watched.")
 		return
 	}
-	if _, err := s.queue.AddWatch(job.URL, defaultWatchHours, s.rowItems(job), job); err != nil {
+	// The tags a client sent with the search belong to it, as its count does;
+	// the queue capped them already.
+	tags, _ := watchTags(job.Tags)
+	if _, err := s.queue.AddWatch(job.URL, defaultWatchHours, s.rowItems(job), tags, job); err != nil {
 		addBarFlash(w, watchErrMsg(err))
 		return
 	}
 	s.queueRows(w, r)
+}
+
+// A watch keeps its tags as monbooru will get them, so what it shows is what
+// lands: folded, the first of a repeat kept, at most the cap.
+func watchTags(given []string) ([]string, string) {
+	var out []string
+	for _, g := range given {
+		if t := mapping.NormalizeTag(g); t != "" && !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	if len(out) > queue.MaxOptionTags {
+		return nil, "At most " + strconv.Itoa(queue.MaxOptionTags) + " tags."
+	}
+	return out, ""
+}
+
+type watchTagsDialog struct {
+	ID    int64
+	URL   string
+	Tags  string
+	Route string
+}
+
+// The suggestions come from the gallery the checks push to: the site's,
+// else the default one. With no id it is the add bar's watch: its site is
+// read off the URL typed so far, and its tags go back to the bar.
+func (s *Server) watchTagsDialog(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("id") == "" {
+		s.render(w, "watch_tags_dialog", watchTagsDialog{
+			URL:   strings.TrimSpace(r.FormValue("url")),
+			Tags:  strings.Join(strings.Fields(r.FormValue("tags")), " "),
+			Route: tagSuggestURL(s.mapper.Gallery(s.mapper.SiteOfURL(r.FormValue("url")))),
+		})
+		return
+	}
+	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	watches := s.queue.Watches()
+	i := slices.IndexFunc(watches, func(wt queue.Watch) bool { return wt.ID == id })
+	if i < 0 {
+		watchFlash(w, watchErrMsg(queue.ErrNotFound))
+		return
+	}
+	wt := watches[i]
+	// A watch never checked yet has only its URL to say its site.
+	site := cmp.Or(wt.Last.Site, s.mapper.SiteOfURL(wt.URL))
+	s.render(w, "watch_tags_dialog", watchTagsDialog{
+		ID:    wt.ID,
+		URL:   wt.URL,
+		Tags:  strings.Join(wt.Tags, " "),
+		Route: tagSuggestURL(s.mapper.Gallery(site)),
+	})
+}
+
+type watchAddTags struct {
+	Tags     []string
+	Disabled bool
+}
+
+func (s *Server) watchAddTagsBox(tags []string) watchAddTags {
+	return watchAddTags{Tags: tags, Disabled: !s.queue.WatchesAvailable() || !s.monbooruConfigured()}
+}
+
+func (s *Server) watchAddTagsReset(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "watch_add_tags", s.watchAddTagsBox(nil))
+}
+
+// The add bar's dialog saves here, so the bar holds its tags as the watch
+// will: the same fold and cap a row's save takes.
+func (s *Server) setWatchAddTags(w http.ResponseWriter, r *http.Request) {
+	tags, msg := watchTags(strings.Fields(r.FormValue("tags")))
+	if msg != "" {
+		retargetFlash(w, "#watch-tags-flash", msg)
+		return
+	}
+	s.render(w, "watch_add_tags", s.watchAddTagsBox(tags))
+}
+
+func (s *Server) setWatchTags(w http.ResponseWriter, r *http.Request) {
+	tags, msg := watchTags(strings.Fields(r.FormValue("tags")))
+	if msg != "" {
+		retargetFlash(w, "#watch-tags-flash", msg)
+		return
+	}
+	// The dialog sits over the page's flash, so a failed save says so in it.
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err := s.queue.SetWatchTags(id, tags); err != nil {
+		retargetFlash(w, "#watch-tags-flash", watchErrMsg(err))
+		return
+	}
+	s.watchRows(w, r)
 }
 
 func (s *Server) setWatchInterval(w http.ResponseWriter, r *http.Request) {

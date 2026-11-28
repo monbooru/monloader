@@ -27,6 +27,40 @@ type Gallery struct {
 	Active bool   `json:"active"`
 }
 
+// One folder of a listing. Images counts every subfolder's too, and a
+// folder holding only subfolders is still listed; Folders is how many
+// subfolders it has, so 0 is a leaf.
+type Folder struct {
+	Path    string `json:"path"`
+	Name    string `json:"name"`
+	Images  int    `json:"images"`
+	Folders int    `json:"folders"`
+}
+
+// A folder listing is one level a page at a time: a {hash:4} layout holds
+// tens of thousands of folders.
+const (
+	FolderPageSize    = 500
+	FolderSearchLimit = 10
+	FolderSearchMax   = 100
+)
+
+// A tag matching a word as typed, named as it would be typed back: under
+// the category typed, else with its category unless general. Alias is the
+// alias it was found through, when the word matched that and not the tag.
+type TagSuggestion struct {
+	Name       string `json:"name"`
+	Category   string `json:"category"`
+	Color      string `json:"color"`
+	UsageCount int    `json:"usage_count"`
+	Alias      string `json:"alias,omitempty"`
+}
+
+const (
+	TagSuggestLimit = 10
+	TagSuggestMax   = 50
+)
+
 type GalleryRename struct {
 	From string `json:"from"`
 	To   string `json:"to"`

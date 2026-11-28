@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -94,6 +95,8 @@ func Funcs(assetVersion string) template.FuncMap {
 		"browseURL":   BrowseURL,
 		"dateOnly":    func(stamp string) string { date, _, _ := strings.Cut(stamp, "T"); return date },
 		"humanBytes":  HumanBytes,
+		"abbrevCount": AbbrevCount,
+		"catColor":    CategoryColor,
 		"minutesLeft": MinutesLeft,
 		"add":         func(a, b int) int { return a + b },
 		"sub":         func(a, b int) int { return a - b },
@@ -134,6 +137,26 @@ func HumanBytes(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// AbbrevCount fits a count in at most four glyphs; the unit promotes at
+// 999500 because anything higher rounds to "1000k".
+func AbbrevCount(n int) string {
+	switch {
+	case n < 1000:
+		return strconv.Itoa(n)
+	case n < 999500:
+		return abbrevUnit(n, 1000, "k")
+	default:
+		return abbrevUnit(n, 1000000, "M")
+	}
+}
+
+func abbrevUnit(n, div int, suffix string) string {
+	if tenths := (n*10 + div/2) / div; tenths < 100 {
+		return fmt.Sprintf("%d.%d%s", tenths/10, tenths%10, suffix)
+	}
+	return fmt.Sprintf("%d%s", (n+div/2)/div, suffix)
 }
 
 func Wordmark(name string) template.HTML {

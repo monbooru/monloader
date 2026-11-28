@@ -236,6 +236,11 @@ func main() {
 		}
 	}()
 
+	// After Serve: monbooru checks /health here before it approves.
+	offerCtx, stopOffer := context.WithCancel(context.Background())
+	defer stopOffer()
+	go srv.OfferAtStart(offerCtx)
+
 	if *desktopMode {
 		if !*noBrowser {
 			go func() {

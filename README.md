@@ -48,6 +48,8 @@ browser extension`"]
 downloader`"])
     booru["`**monbooru**
 Your self-hosted booru`"]
+    worker["`**monworker**
+Machine Learning worker`"]
 
     web -->|browse| sender
     sender -->|send URL| loader
@@ -58,19 +60,21 @@ Your self-hosted booru`"]
     loader -.->|reverse lookup: md5 + similarity| web
     ptr <-.->|"`sync: sha256 tags + aliases + implications
 contribute back`"| loader
+    worker <-.->|handle auto-tagging| booru
 
     classDef hub  fill:#5c6bc0,stroke:#9fa8da,stroke-width:3px,color:#ffffff;
     classDef tool fill:#16161c,stroke:#5c6bc0,stroke-width:1.5px,color:#e2e2e8;
     classDef src  fill:#16161c,stroke:#8888a0,stroke-width:1px,color:#8888a0;
 
     class loader hub;
-    class sender,booru tool;
+    class sender,booru,worker tool;
     class web,ptr src;
 ```
 
 - **[monbooru](https://github.com/monbooru/monbooru)**: self-hosted booru; organizes, tags, and serves your collection.
 - **monloader**: this application; fetches files and per-post metadata (via gallery-dl) and pushes them into a monbooru gallery over the REST API; also answers monbooru's reverse lookups (boorus, IQDB/SauceNAO, Hydrus PTR) and source refetches.
 - **[monsender](https://github.com/monbooru/monsender)**: browser extension; sends the URL of the page you're browsing to monloader.
+- **[monworker](https://github.com/monbooru/monworker)**: Machine Learning worker; runs the auto-tagging models for monbooru, on the same machine or on another one.
 
 ## Install
 
@@ -103,7 +107,8 @@ Then paste a URL into the add bar on the home page.
 
 ## Warning
 
-> **Intended for local network use.** monloader's UI is not designed to be exposed to the public internet.
+> **Intended for trusted local network use.** Monloader is not designed to be exposed directly to the public internet. If you need remote access, use an appropriately secured private network.
+
 
 ## License
 

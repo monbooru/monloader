@@ -40,7 +40,7 @@
         <div class="field">
           <label for="mb-web-url">Web URL</label>
           <input id="mb-web-url" type="text" name="web_url" value="{{draft .Draft "web_url" .Cfg.Monbooru.WebURL}}" placeholder="http://localhost:8455">
-          <p class="field-hint">The address your browser uses to open monbooru. Blank = no links to it.</p>
+          <p class="field-hint">The address your browser uses to open monbooru. Blank = the API URL when both run on this machine.</p>
         </div>
       </div>
       {{template "monbooru_gallery" (dict "Paired" .MonbooruPaired "Galleries" .Galleries "DefaultGallery" (draft .Draft "default_gallery" .Cfg.Monbooru.DefaultGallery) "GalleryWarn" .GalleryWarn "GalleryMissing" .GalleryMissing)}}
@@ -102,10 +102,7 @@
         {{template "field" (dict "ID" "dl-max-items" "Label" "Max posts per search" "Name" "max_items_per_job"
           "Value" (draft .Draft "max_items_per_job" .Cfg.Downloader.MaxItemsPerJob)
           "Hint" (printf "A pool or a manga gallery always comes whole (default %v)" .Defaults.Downloader.MaxItemsPerJob))}}
-        {{template "field" (dict "ID" "dl-folder" "Label" "Default folder" "Name" "default_folder"
-          "Value" (draft .Draft "default_folder" .Cfg.Downloader.DefaultFolder)
-          "Placeholder" "(monbooru's default)"
-          "Hint" "Subfolder in monbooru. Blank = monbooru's \"Where received files go\"")}}
+        {{template "webui/folder_picker" (.DefaultFolderPicker.WithValue (draft .Draft "default_folder" .Cfg.Downloader.DefaultFolder))}}
         {{template "field" (dict "ID" "dl-success-retention" "Label" "Clear succeeded jobs after (days)" "Name" "success_retention_days"
           "Value" (draft .Draft "success_retention_days" .Cfg.Downloader.SuccessRetentionDays)
           "Hint" (printf "Searches with more to fetch stay. 0 = never (default %v)" .Defaults.Downloader.SuccessRetentionDays))}}
@@ -138,6 +135,25 @@
     <p class="field-hint">Refresh, lookup, upgrade and contribution jobs skip step 2.</p>
     <form method="POST" action="/settings/rules">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div class="field field-separated flow-part-1">
+        <label>1 Tag rules: rename, move or drop a tag <span class="status-badge status-ok">all sites</span><span class="status-badge status-off">after a site's own rules</span></label>
+        <input type="hidden" name="rules_shown" value="1">
+        <div class="maprows" id="rules-tagrules">
+          <template>
+            <div class="maprow"><input type="text" name="rule_from" placeholder="tag"><span class="field-hint">-&gt;</span>
+              <input type="text" name="rule_to" placeholder="(blank = drop)">
+              <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button></div>
+          </template>
+          {{range .TagRules}}
+          <div class="maprow"><input type="text" name="rule_from" value="{{.From}}"><span class="field-hint">-&gt;</span>
+            <input type="text" name="rule_to" value="{{.To}}" placeholder="(blank = drop)">
+            <button type="button" class="btn-link-accent maprow-del" title="Remove this row">[x]</button>
+            {{with .Dropped}}<span class="hint-warn">{{.}} is unchecked below, so this tag never reaches monbooru</span>{{end}}</div>
+          {{end}}
+        </div>
+        <button type="button" class="btn-link-accent add-maprow" data-rows="rules-tagrules">[+ add rule]</button>
+        <span class="field-hint">One * matches any text, blank drops the tag. A site's own rule for the same tag wins.</span>
+      </div>
       <div class="field field-separated flow-part-2">
         <label for="rules-blacklist">2 Blacklist: skip posts with these tags <span class="status-badge status-ok">all sites</span><span class="status-badge status-off">before download</span></label>
         <textarea id="rules-blacklist" name="blacklist">{{draft .Draft "blacklist" (join .Cfg.Tags.Blacklist "\n")}}</textarea>
@@ -414,15 +430,7 @@
           </tbody>
         </table>
       </div>
-      <div class="settings-sub">
-        <h4>gallery-dl</h4>
-        <table class="stats-table">
-          <tbody>
-            <tr><th>Version</th><td>{{if .Stats.GDLVersion}}{{.Stats.GDLVersion}}{{else}}not available{{end}}</td></tr>
-            <tr><th>Extractors</th><td>{{.Stats.Extractors}}</td></tr>
-          </tbody>
-        </table>
-      </div>
+      {{template "gallerydl_stats" dict "Version" .Stats.GDLVersion "Extractors" .Stats.Extractors}}
       <div class="settings-sub">
         <h4>Queue</h4>
         <table class="stats-table">

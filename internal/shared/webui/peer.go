@@ -53,9 +53,15 @@ type PairItem struct {
 // were sized for.
 const maxNoticeName = 16
 
-// The pending store is a map, so the items come in no fixed order.
+func NoticeName(name string) string {
+	if r := []rune(name); len(r) > maxNoticeName {
+		return string(r[:maxNoticeName-3]) + "..."
+	}
+	return name
+}
+
 func (n PairNotice) sorted() []PairItem {
-	return slices.SortedFunc(slices.Values(n.Items), func(a, b PairItem) int { return strings.Compare(a.App, b.App) })
+	return slices.SortedStableFunc(slices.Values(n.Items), func(a, b PairItem) int { return strings.Compare(a.App, b.App) })
 }
 
 // Key changes whenever the requests do: a new offer always carries a new
@@ -73,10 +79,7 @@ func (n PairNotice) Text() string {
 	case 0:
 		return ""
 	case 1:
-		name := n.Items[0].App
-		if r := []rune(name); len(r) > maxNoticeName {
-			name = string(r[:maxNoticeName-3]) + "..."
-		}
+		name := NoticeName(n.Items[0].App)
 		if n.Items[0].Repair {
 			return name + " wants to re-pair"
 		}

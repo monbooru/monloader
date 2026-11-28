@@ -14,7 +14,7 @@
   <tr>
     <td><span class="status-dim">{{.Field}}:</span> {{.Listed}}</td>
     <td>{{if .MapDropped}}<span class="o-failed">dropped</span>{{else}}{{.Category}}{{end}}</td>
-    <td>{{if .MapDropped}}<span class="status-dim">-</span>{{else if .RuleDropped}}<span class="o-failed">dropped</span>{{else if ne .Ruled .Mapped}}-&gt; {{.Ruled}}{{else}}<span class="status-dim">=</span>{{end}}</td>
+    <td>{{if .MapDropped}}<span class="status-dim">-</span>{{else if .RuleDropped}}<span class="o-failed">dropped</span>{{else if ne .Ruled .Mapped}}-&gt; {{.Ruled}}{{else}}<span class="status-dim">=</span>{{end}}{{if .RuleGlobal}} <span class="status-dim">(all sites)</span>{{end}}</td>
     <td>{{if gt (len .Reads) 1}}{{range $i, $read := .Reads}}{{if $i}}, {{end}}{{if .Hit}}<span class="trace-hit">{{.Tag}}</span>{{else}}{{.Tag}}{{end}}{{end}}{{else}}{{range .Reads}}{{if .Hit}}<span class="trace-hit">{{.Tag}}</span>{{else}}<span class="status-dim">ok</span>{{end}}{{end}}{{end}}</td>
     <td>{{if $skipped}}<span class="status-dim">skipped</span>{{else if $refused}}<span class="status-dim">not sent</span>{{else if .Sent}}<span class="o-created">{{.Sent}}</span>{{else if .Unchecked}}<span class="o-failed">dropped ({{.Unchecked}})</span>{{else}}<span class="status-dim">not sent</span>{{end}}</td>
     {{if not $unpaired}}<td>{{template "trace_gallery_cell" (index $resolved .Sent)}}</td>{{end}}

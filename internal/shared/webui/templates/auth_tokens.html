@@ -7,7 +7,7 @@
     <tbody>
       {{range .Tokens}}
       <tr>
-        <td class="stack-head"><strong>{{.Name}}</strong>{{if .Paired}} <span class="status-badge status-ok">paired</span>{{end}}</td>
+        <td class="stack-head"><strong>{{.Name}}</strong>{{if .Paired}} <span class="status-badge status-ok">paired</span>{{else if .Class}} <span class="status-badge status-ok">{{.Class}}</span>{{end}}</td>
         <td data-label="Created">{{dateOnly .CreatedAt}}</td>
         <td data-label="Scopes"><span id="token-scopes-{{.ID}}">{{range $i, $s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</span></td>
         <td>
@@ -23,7 +23,7 @@
                   hx-target="#flash-auth" hx-swap="innerHTML"
                   hx-confirm="Revoke token {{.Name}}?"
                   data-confirm-ok="Revoke"
-                  data-confirm-danger="{{if .Paired}}This also removes the pairing with {{.Paired}}, which must pair again to connect.{{else}}Any integration using this token stops working immediately.{{end}}">Revoke</button>
+                  data-confirm-danger="{{if .Paired}}This also removes the pairing with {{.Paired}}, which must pair again to connect.{{else if and .Class $.RevokeNotes (index $.RevokeNotes .Class)}}{{index $.RevokeNotes .Class}}{{else}}Any integration using this token stops working immediately.{{end}}">Revoke</button>
         </td>
       </tr>
       {{end}}

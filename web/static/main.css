@@ -64,6 +64,7 @@
 .add-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
 .add-row .search-input-wrap { flex: 1 1 220px; }
 .add-row button { padding-left: 16px; padding-right: 16px; }
+.watch-add-tags { display: flex; }
 @media (max-width: 600px) {
   .add-row { justify-content: center; }
   .add-row .search-input-wrap { flex-basis: 100%; }
@@ -92,6 +93,22 @@
 }
 
 .queue-table .job-row td { overflow: hidden; }
+@media (max-width: 600px) {
+  .table-scroll:has(> .queue-table) { overflow-x: visible; }
+  .queue-table { min-width: 0; }
+  .queue-table, .queue-table tbody, .queue-table tr { display: block; }
+  .queue-table thead { display: none; }
+  .queue-table tr.job-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+  .queue-table tr.job-row > td:nth-child(n) { display: block; width: auto; padding: 0; border: 0; min-width: 0; grid-column: 1; }
+  .queue-table tr.job-row > td:nth-child(3), .queue-table tr.job-row > td:nth-child(4), .queue-table tr.job-row > td:nth-child(5) { display: none; }
+  .queue-table .queue-url { overflow-wrap: anywhere; }
+  .queue-table tr.job-row > td:nth-child(7) { grid-column: 2; grid-row: 1 / span 4; }
+  .queue-table tr:not(.job-row) > td { display: block; padding: 0 0 8px; }
+  .job-items { display: block; }
+  .item-row { display: flex; flex-wrap: wrap; gap: 0 10px; padding: 3px 0; }
+  .item-row > * { min-width: 0; }
+  .item-subj { overflow: visible; }
+}
 
 .watch-table { table-layout: fixed; min-width: 576px; }
 .watch-table td { overflow: hidden; }
@@ -102,6 +119,11 @@
 .watch-table th:nth-child(6) { width: 96px; }
 .watch-table th:nth-child(7) { width: 168px; }
 .watch-table select { width: 100%; }
+@media (min-width: 781px) {
+  .watch-table .actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .watch-table .actions > :first-child { grid-column: 1 / -1; }
+  .watch-table .actions button { padding-left: 6px; padding-right: 6px; }
+}
 @media (max-width: 1000px) {
   .watch-table th:nth-child(3), .watch-table td:nth-child(3) { width: 0; padding: 0; overflow: hidden; }
 }
@@ -111,6 +133,19 @@
   .watch-table th:nth-child(4) { width: 120px; }
   .watch-table th:nth-child(7) { width: 112px; }
   .watch-table .actions button { white-space: normal; }
+}
+@media (max-width: 600px) {
+  .table-scroll:has(> .watch-table) { overflow-x: visible; }
+  .watch-table { min-width: 0; }
+  .watch-table, .watch-table tbody, .watch-table tr { display: block; }
+  .watch-table thead { display: none; }
+  .watch-table tr:has(> td + td) { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+  .watch-table tr > td:nth-child(n) { display: block; width: auto; padding: 0; border: 0; min-width: 0; grid-column: 1; }
+  .watch-table tr > td:nth-child(3):not(:only-child), .watch-table tr > td:nth-child(6) { display: none; }
+  .watch-table .queue-url { overflow-wrap: anywhere; }
+  .watch-table tr > td:nth-child(7) { grid-column: 2; grid-row: 1 / span 4; }
+  .watch-table tr > td.no-results { padding: 8px; }
+  .watch-table select { width: auto; }
 }
 @media (max-width: 1000px) {
   .watch-table th:nth-child(3), .watch-table td:nth-child(3),
@@ -154,6 +189,7 @@
 .more-items > .job-items { padding: 4px 0 0; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .add-bar { margin-bottom: 14px; }
+#add-flash { overflow-wrap: anywhere; }
 
 .st-queued, .st-running { color: var(--link); }
 .st-succeeded, .o-created, .o-enriched, .o-matched, .o-replaced { color: var(--success); }
@@ -176,6 +212,11 @@
   #sidebar { width: auto; border-right: none; border-bottom: 1px solid var(--border); padding: 0; overflow-y: visible; }
   #sidebar .settings-nav { flex-direction: row; flex-wrap: wrap; padding: 8px; }
 }
+@media (max-width: 600px) {
+  #sidebar .settings-nav { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  #sidebar .settings-nav::-webkit-scrollbar { display: none; }
+  #sidebar .settings-nav a { white-space: nowrap; }
+}
 
 .sites-title-link { margin-left: auto; font-size: 12px; font-weight: normal; white-space: nowrap; }
 
@@ -186,6 +227,7 @@
 .field label.checkbox-inline { display: flex; align-items: center; gap: 6px; }
 .downloads-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 28px; margin-bottom: 4px; }
 .downloads-grid .field { margin-bottom: 0; }
+@media (max-width: 600px) { .downloads-grid { grid-template-columns: 1fr; } }
 .downloads-grid .path-row { max-width: 300px; }
 .category-boxes { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 4px; }
 .field-separated { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 10px; }
@@ -276,6 +318,12 @@ dialog textarea { resize: vertical; max-height: 60vh; }
 #site-edit-dialog { width: 720px; max-width: 94vw; max-height: 88vh; overflow-y: auto; }
 #chain-dialog { width: 520px; max-width: 94vw; }
 #item-debug-dialog { width: 820px; max-width: 94vw; max-height: 88vh; overflow-y: auto; }
+/* The list hangs over the hint and the buttons, so the dialog keeps its size. */
+#watch-tags-dialog { width: 520px; max-width: 94vw; }
+.watch-tags-url { overflow-wrap: anywhere; margin-top: -8px; }
+.watch-tags-field { position: relative; }
+#watch-tags-dialog .watch-tags-field input[type="text"] { width: 100%; max-width: none; }
+.watch-tags-count { display: inline-block; min-width: 1.6em; margin-left: 2px; padding: 0 4px; border: 1px solid var(--accent); font-size: 11px; line-height: 1; vertical-align: 1px; }
 .debug-log-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
 .debug-log, .export-block {
   background: var(--bg-input);
@@ -293,7 +341,6 @@ dialog textarea { resize: vertical; max-height: 60vh; }
 .htmx-request.htmx-indicator,
 .htmx-request .htmx-indicator { display: inline; }
 
-.dialog-tabs { flex-wrap: wrap; }
 .dialog-panel .field > input[type=text], .dialog-panel .field > input[type=password],
 .dialog-panel .field > select, .dialog-panel .field > textarea { max-width: none; }
 .export-block {

@@ -57,6 +57,7 @@ type Watch struct {
 	// 0 takes the configured cap; ItemsAll chains windows until the check
 	// reaches posts it already has.
 	MaxItems  int
+	Tags      []string
 	CreatedAt time.Time
 	Last      WatchCheck
 	// Set only on the copies Watches returns.
@@ -86,7 +87,7 @@ func (q *Queue) Watches() []Watch {
 // from is the finished job the watch was started from, which counts as its
 // first check; nil leaves the watch due at once, owing what the url's last run
 // never pushed.
-func (q *Queue) AddWatch(url string, intervalHours, maxItems int, from *Job) (int64, error) {
+func (q *Queue) AddWatch(url string, intervalHours, maxItems int, tags []string, from *Job) (int64, error) {
 	if q.store == nil {
 		return 0, ErrNoWatchStore
 	}
@@ -109,12 +110,13 @@ func (q *Queue) AddWatch(url string, intervalHours, maxItems int, from *Job) (in
 		q.mu.Unlock()
 	}
 	now := q.now()
-	id, err := q.store.InsertWatch(url, intervalHours, maxItems, now, last)
+	tags = slices.Clone(tags)
+	id, err := q.store.InsertWatch(url, intervalHours, maxItems, tags, now, last)
 	if err != nil {
 		return 0, err
 	}
 	q.mu.Lock()
-	q.watches = append(q.watches, &Watch{ID: id, URL: url, IntervalHours: intervalHours, MaxItems: maxItems, CreatedAt: now, Last: last})
+	q.watches = append(q.watches, &Watch{ID: id, URL: url, IntervalHours: intervalHours, MaxItems: maxItems, Tags: tags, CreatedAt: now, Last: last})
 	q.mu.Unlock()
 	return id, nil
 }
@@ -127,6 +129,13 @@ func (q *Queue) SetWatchInterval(id int64, intervalHours int) error {
 func (q *Queue) SetWatchItems(id int64, maxItems int) error {
 	return q.setWatch(id, func() error { return q.store.SetWatchItems(id, maxItems) },
 		func(w *Watch) { w.MaxItems = maxItems })
+}
+
+// A check already queued keeps the tags it was queued with.
+func (q *Queue) SetWatchTags(id int64, tags []string) error {
+	tags = slices.Clone(tags)
+	return q.setWatch(id, func() error { return q.store.SetWatchTags(id, tags) },
+		func(w *Watch) { w.Tags = tags })
 }
 
 // The store is written first: it holds the only copy of a watch.
@@ -182,7 +191,7 @@ func (q *Queue) CheckWatch(id int64, background bool) (int64, error) {
 		q.mu.Unlock()
 		return 0, ErrWatchLive
 	}
-	opts := Options{Watch: id, Background: background}
+	opts := Options{Watch: id, Background: background, Tags: w.Tags}
 	if w.Last.needsBypass() {
 		opts.Force, opts.ForceTo = true, max(w.Last.OwedTo, 1)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/monbooru/monloader/internal/shared/apitoken"
 	"github.com/monbooru/monloader/internal/shared/contract"
+	"github.com/monbooru/monloader/internal/shared/desktop"
 	"github.com/monbooru/monloader/internal/shared/fsx"
 	"github.com/monbooru/monloader/internal/shared/logx"
 )
@@ -51,8 +53,9 @@ type ServerConfig struct {
 type MonbooruConfig struct {
 	APIURL   string `toml:"api_url"`
 	APIToken string `toml:"api_token"`
-	// Browser-facing, for links; empty leaves them plain text, since
-	// APIURL may name a host only monloader resolves.
+	// Browser-facing, for links. Empty falls back to APIURL only when both
+	// apps and the browser are on loopback: APIURL may name a host only
+	// monloader resolves.
 	WebURL         string `toml:"web_url"`
 	DefaultGallery string `toml:"default_gallery"`
 	// Pausing keeps the pairing on disk, so resuming needs no re-pair.
@@ -65,8 +68,22 @@ func (m MonbooruConfig) Unconfigured() bool { return m.APIURL == "" || m.APIToke
 
 func (m MonbooruConfig) Held() bool { return m.Unconfigured() || m.Paused }
 
-func (m MonbooruConfig) WebBase() string {
-	return strings.TrimRight(m.WebURL, "/")
+func (cfg *Config) MonbooruWebBase() string {
+	if cfg.Monbooru.WebURL != "" {
+		return strings.TrimRight(cfg.Monbooru.WebURL, "/")
+	}
+	if !loopbackURL(cfg.Monbooru.APIURL) || !desktop.IsLoopbackAddr(cfg.Server.BindAddress) {
+		return ""
+	}
+	if cfg.Server.BaseURL != "" && !loopbackURL(cfg.Server.BaseURL) {
+		return ""
+	}
+	return strings.TrimRight(cfg.Monbooru.APIURL, "/")
+}
+
+func loopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Host != "" && desktop.IsLoopbackAddr(u.Host)
 }
 
 type DownloaderConfig struct {
@@ -85,6 +102,9 @@ type TagsConfig struct {
 	// someone says otherwise.
 	DropCategories []string `toml:"drop_categories,omitempty"`
 	Blacklist      []string `toml:"blacklist,omitempty"`
+	// Tag rules for every site and the PTR, read for a tag no rule of the
+	// site's own profile matches.
+	Rules map[string]string `toml:"rules,omitempty"`
 }
 
 func (d DownloaderConfig) HistoryRetention() time.Duration {
@@ -226,6 +246,8 @@ type Site struct {
 	APIKey   string `toml:"api_key"`
 	UserID   string `toml:"user_id"`
 	Gallery  string `toml:"gallery"`
+	// Under the gallery; empty falls back to [downloader].default_folder.
+	Folder string `toml:"folder,omitempty"`
 	// Stamped as the source on this site's pushes; empty keeps the category.
 	Label   string `toml:"label,omitempty"`
 	Cookies string `toml:"cookies"`
@@ -266,7 +288,7 @@ func (s *Site) accountAgent() string {
 // HasUserData ignores LookupOrder: the seeded chain gives untouched blocks one.
 func (s *Site) HasUserData() bool {
 	return s.Username != "" || s.Password != "" || s.APIKey != "" || s.UserID != "" ||
-		s.Gallery != "" || s.Label != "" || s.Cookies != "" || s.Agent != "" || s.Options != "" || len(s.Blacklist) > 0
+		s.Gallery != "" || s.Folder != "" || s.Label != "" || s.Cookies != "" || s.Agent != "" || s.Options != "" || len(s.Blacklist) > 0
 }
 
 // SitePTR is the reserved [[sites]] and profile name holding the PTR's mappings
@@ -525,7 +547,7 @@ func Save(cfg *Config, path string) error {
 	})
 }
 
-// Every element type is a plain value except Token.Scopes, the Tags lists
+// Every element type is a plain value except Token.Scopes, the Tags lists and rules
 // and Site.Blacklist; a new slice or map inside one must be cloned here too.
 func (cfg *Config) Clone() *Config {
 	cp := *cfg
@@ -535,6 +557,7 @@ func (cfg *Config) Clone() *Config {
 	cp.HostLabels = append([]HostLabel(nil), cfg.HostLabels...)
 	cp.Tags.DropCategories = slices.Clone(cfg.Tags.DropCategories)
 	cp.Tags.Blacklist = slices.Clone(cfg.Tags.Blacklist)
+	cp.Tags.Rules = maps.Clone(cfg.Tags.Rules)
 	for i := range cp.Sites {
 		cp.Sites[i].Blacklist = slices.Clone(cp.Sites[i].Blacklist)
 	}

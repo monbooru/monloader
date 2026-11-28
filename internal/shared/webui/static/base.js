@@ -23,6 +23,135 @@ function setFlashText(slot, kind, text) {
   slot.appendChild(d);
 }
 
+function handleSuggestKey(e, dropdownId) {
+  var dd = document.getElementById(dropdownId);
+  if (!dd) return;
+  var items = Array.from(dd.querySelectorAll('.suggest-item'));
+  var focused = dd.querySelector('.suggest-item.kbd-focused');
+  var idx = focused ? items.indexOf(focused) : -1;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    items.forEach(function(i){ i.classList.remove('kbd-focused'); });
+    idx = e.key === 'ArrowDown' ? Math.min(idx + 1, items.length - 1) : Math.max(idx - 1, 0);
+    if (idx >= 0) {
+      items[idx].classList.add('kbd-focused');
+      items[idx].scrollIntoView({ block: 'nearest' });
+    }
+  } else if (e.key === 'Enter' && focused) {
+    e.preventDefault();
+    focused.click();
+  } else if (e.key === 'Escape') {
+    // An open list takes this Escape, so a dialog around the input stays open.
+    if (dd.childElementCount > 0) e.preventDefault();
+    dd.innerHTML = '';
+  }
+}
+
+function clearSlots() {
+  for (var i = 0; i < arguments.length; i++) {
+    var el = document.getElementById(arguments[i]);
+    if (el) el.innerHTML = '';
+  }
+}
+
+// The suggestion lists, by dropdown id; each app adds its own. input is the
+// field the list answers. blurOnSubmit: after Enter the arrow keys drive the
+// page, not the input. clearOnEmpty: drop a swap landing on an input emptied
+// by an add, which keeps focus.
+var suggestPairs = {};
+
+function suggestDropdownOf(inputId) {
+  for (var ddId in suggestPairs) {
+    if (suggestPairs[ddId].input === inputId) return ddId;
+  }
+  return '';
+}
+
+function clearSuggestFresh(e) {
+  e.currentTarget.classList.remove('suggest-fresh');
+}
+
+// Resolved per event and delegated to document: some inputs live in
+// re-rendered fragments, where listeners on the first nodes would be
+// orphaned.
+document.addEventListener('click', function(e) {
+  for (var ddId in suggestPairs) {
+    var dd = document.getElementById(ddId);
+    if (dd && !dd.contains(e.target) && e.target.id !== suggestPairs[ddId].input) {
+      dd.innerHTML = '';
+    }
+  }
+});
+
+document.addEventListener('submit', function(e) {
+  for (var ddId in suggestPairs) {
+    var input = document.getElementById(suggestPairs[ddId].input);
+    if (!input || e.target !== input.form) continue;
+    clearSlots(ddId);
+    if (suggestPairs[ddId].blurOnSubmit) input.blur();
+  }
+});
+
+// A late response can land after a submit or a focus move, so it is dropped
+// unless the input still has focus. suggest-fresh holds off :hover until the
+// mouse moves, or the item under a still cursor looks picked.
+document.addEventListener('htmx:afterSwap', function(e) {
+  var pair = suggestPairs[e.target.id];
+  if (!pair) return;
+  var input = document.getElementById(pair.input);
+  if (document.activeElement !== input || (pair.clearOnEmpty && input.value === '')) { e.target.innerHTML = ''; return; }
+  e.target.classList.add('suggest-fresh');
+  e.target.addEventListener('mousemove', clearSuggestFresh, {once: true});
+});
+
+// Suggest endpoints answer 204 on no match, and htmx swaps nothing on a
+// 204, which would leave stale matches showing.
+document.addEventListener('htmx:afterRequest', function(e) {
+  if (!e.detail || !e.detail.elt) return;
+  var ddId = suggestDropdownOf(e.detail.elt.id);
+  if (!ddId) return;
+  if (e.detail.xhr && e.detail.xhr.status === 204) clearSlots(ddId);
+});
+
+function suggestInputOf(btn) {
+  var dd = btn.closest('.suggest-dropdown');
+  var input = dd && dd.parentElement && dd.parentElement.querySelector('input[type="text"]');
+  if (!input) return null;
+  dd.innerHTML = '';
+  return input;
+}
+
+// The word the caret sits in or at the end of; an input keeps its caret
+// while a click on a suggestion has the focus.
+function wordAtCaret(input) {
+  var v = input.value;
+  var at = input.selectionStart == null ? v.length : input.selectionStart;
+  var start = at, end = at;
+  while (start > 0 && !/\s/.test(v[start - 1])) start--;
+  while (end < v.length && !/\s/.test(v[end])) end++;
+  return {start: start, end: end, word: v.slice(start, end)};
+}
+
+// A field of several tags takes the pick in place of the word at the caret.
+function applyTagSuggest(btn) {
+  var tagName = btn.dataset.tagName;
+  if (!tagName) return;
+  var input = suggestInputOf(btn);
+  if (!input) return;
+  if (input.dataset.multiTags) {
+    var w = wordAtCaret(input);
+    var after = input.value.slice(w.end);
+    if (!/^\s/.test(after)) after = ' ' + after;
+    input.value = input.value.slice(0, w.start) + tagName + after;
+    input.focus();
+    var caret = w.start + tagName.length + 1;
+    input.setSelectionRange(caret, caret);
+    return;
+  }
+  input.value = tagName;
+  input.focus();
+}
+
 function writeStash(key, obj) {
   obj.t = Date.now();
   try { sessionStorage.setItem(key, JSON.stringify(obj)); } catch (e) {}
@@ -478,6 +607,18 @@ function fitPairNotice() {
 }
 fitPairNotice();
 document.fonts.ready.then(fitPairNotice);
+
+function showActiveNav() {
+  const nav = document.getElementById('nav');
+  const active = nav && nav.querySelector('a.active');
+  if (!active) return;
+  const notice = nav.querySelector('.pair-notice:not([hidden])');
+  const edge = notice && getComputedStyle(notice).position === 'sticky' ? notice.getBoundingClientRect().left : nav.getBoundingClientRect().right;
+  const over = active.getBoundingClientRect().right - edge;
+  if (over > 0) nav.scrollLeft += over + 24;
+}
+showActiveNav();
+document.fonts.ready.then(showActiveNav);
 let fitFrame = 0;
 window.addEventListener('resize', function() {
   cancelAnimationFrame(fitFrame);
@@ -488,6 +629,7 @@ document.body.addEventListener('htmx:oobAfterSwap', function(e) {
     syncPairTitle();
     fitPairNotice();
   }
+  if (e.detail && e.detail.target && e.detail.target.classList.contains('pair-notice')) showActiveNav();
 });
 
 // History restore swaps with neither target nor xhr.
@@ -617,4 +759,96 @@ document.addEventListener('keydown', function(e) {
   var row = reorderRow(grip);
   if (!reorderStep(row, e.key === 'ArrowUp')) return;
   row.parentNode.dispatchEvent(new CustomEvent('reorder', {bubbles: true, detail: {row: row, keyboard: true}}));
+});
+
+// A change, not an input: what reads the field hears the pick, and the
+// field's own suggestions, which listen for input, stay shut.
+function folderPick(picker, path) {
+  var input = picker.querySelector('.folder-picker-input input');
+  input.value = path;
+  input.dispatchEvent(new Event('change', {bubbles: true}));
+  picker.querySelector('.suggest-dropdown').innerHTML = '';
+  picker.querySelectorAll('.folder-node-row.active').forEach(function(r) { r.classList.remove('active'); });
+  var row = picker.querySelector('.folder-node-row[data-folder-pick="' + CSS.escape(path) + '"]');
+  if (row) row.classList.add('active');
+}
+
+function folderNewDone(picker) {
+  var form = picker.querySelector('.folder-new-form');
+  var name = form.querySelector('.folder-new-name').value.trim().replace(/^\/+|\/+$/g, '');
+  if (name) folderPick(picker, form.dataset.under + name);
+  folderNewClose(picker);
+}
+
+// Back to its own row, also ahead of a reload: the tree's swap would take
+// a form sitting under one of its rows with it.
+function folderNewClose(picker) {
+  var form = picker.querySelector('.folder-new-form');
+  form.hidden = true;
+  picker.querySelector('.folder-new-row').appendChild(form);
+}
+
+document.addEventListener('click', function(e) {
+  var picker = e.target.closest('.folder-picker');
+  document.querySelectorAll('.folder-picker .suggest-dropdown').forEach(function(d) {
+    if (!picker || !picker.contains(d) || !e.target.closest('.folder-picker-input')) d.innerHTML = '';
+  });
+  document.querySelectorAll('.folder-picker-panel:not([hidden])').forEach(function(p) {
+    var own = p.closest('.folder-picker');
+    if (own === picker) return;
+    p.hidden = true;
+    own.querySelector('[data-folder-browse]').textContent = '[browse]';
+  });
+  if (!picker) return;
+  var t = e.target;
+  if (t.closest('[data-folder-browse]')) {
+    var panel = picker.querySelector('.folder-picker-panel');
+    panel.hidden = !panel.hidden;
+    t.closest('[data-folder-browse]').textContent = panel.hidden ? '[browse]' : '[close]';
+    // Every opening reloads, so a folder made or removed since shows.
+    if (!panel.hidden) {
+      folderNewClose(picker);
+      picker.querySelector('.folder-tree[id]').dispatchEvent(new CustomEvent('folder-open'));
+    }
+  } else if (t.closest('[data-folder-toggle]')) {
+    var btn = t.closest('[data-folder-toggle]');
+    // The branch's own list comes first, ahead of any deeper one.
+    var kids = btn.closest('li').querySelector('.folder-children');
+    kids.hidden = !kids.hidden;
+    btn.textContent = kids.hidden ? '▶' : '▼';
+    if (!kids.hidden) {
+      if (kids.contains(picker.querySelector('.folder-new-form'))) folderNewClose(picker);
+      kids.dispatchEvent(new CustomEvent('folder-open'));
+    }
+  } else if (t.closest('[data-folder-suggest]')) {
+    folderPick(picker, t.closest('[data-folder-suggest]').dataset.folderSuggest);
+  } else if (t.closest('[data-folder-new]')) {
+    var form = picker.querySelector('.folder-new-form');
+    var under = picker.querySelector('.folder-picker-input input').value.trim().replace(/\/+$/, '');
+    var active = picker.querySelector('.folder-node-row.active:not([data-folder-pick=""])');
+    form.dataset.under = under ? under + '/' : '';
+    form.querySelector('.folder-new-under').textContent = form.dataset.under;
+    if (active) active.after(form);
+    form.hidden = false;
+    form.querySelector('.folder-new-name').value = '';
+    form.querySelector('.folder-new-name').focus();
+  } else if (t.closest('[data-folder-new-ok]')) {
+    folderNewDone(picker);
+  } else if (t.closest('[data-folder-pick]') && !t.closest('.folder-new-form')) {
+    folderPick(picker, t.closest('[data-folder-pick]').dataset.folderPick);
+  }
+});
+
+document.body.addEventListener('htmx:beforeSwap', function(e) {
+  var slot = e.detail.target;
+  if (!slot || !slot.matches || !slot.matches('.folder-picker .suggest-dropdown')) return;
+  if (document.activeElement !== slot.parentNode.querySelector('input')) e.detail.shouldSwap = false;
+});
+
+// Enter in the new folder's name takes it rather than submitting the form.
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && e.target.matches('.folder-new-name')) {
+    e.preventDefault();
+    folderNewDone(e.target.closest('.folder-picker'));
+  }
 });

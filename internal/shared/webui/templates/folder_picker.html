@@ -1,0 +1,73 @@
+{{define "webui/folder_picker"}}
+<div class="field folder-picker" id="{{.ID}}"
+  {{- if .GalleryID}} hx-get="{{.Route}}?kind={{.Kind}}" hx-trigger="change[target.id=='{{.GalleryID}}'] from:body"
+     hx-include="#{{.GalleryID}}, #{{.ID}}-input" hx-swap="outerHTML"{{end}}>
+  <label for="{{.ID}}-input">{{.Label}}</label>
+  {{- if .Listed}}<button type="button" class="btn-link-accent" data-folder-browse="{{.ID}}">[browse]</button>{{end}}
+  <div class="folder-picker-input">
+    <input type="text" id="{{.ID}}-input" name="{{.Name}}" value="{{.Value}}" placeholder="{{.Blank}}" autocomplete="off"
+      onkeydown="handleSuggestKey(event, '{{.ID}}-suggest')"
+      {{- if .Listed}} hx-get="{{.Route}}/suggest?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}" hx-trigger="input changed delay:200ms"
+      hx-target="#{{.ID}}-suggest" hx-swap="innerHTML"{{end}}>
+    <div class="suggest-dropdown" id="{{.ID}}-suggest"></div>
+  </div>
+  {{if .Listed}}
+  <div class="folder-picker-panel" id="{{.ID}}-panel" hidden>
+    <ul class="folder-tree">
+      <li class="folder-node-wrap">
+        <div class="folder-node-row{{if not .Value}} active{{end}}" data-folder-pick="">
+          <span class="folder-spacer"></span><span class="folder-link">{{.Blank}}</span>
+        </div>
+      </li>
+    </ul>
+    <ul class="folder-tree" id="{{.ID}}-tree" hx-trigger="folder-open" hx-target="this" hx-swap="innerHTML" hx-include="#{{.ID}}-input"
+        hx-get="{{.Route}}/level?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}&amp;path="></ul>
+    <div class="folder-new-row">
+      <span class="folder-spacer"></span>
+      <button type="button" class="btn-link-accent" data-folder-new>[+ new folder]</button>
+      <span class="folder-new-form" hidden>
+        <span class="folder-new-under"></span><input type="text" class="folder-new-name" placeholder="name">
+        <button type="button" class="btn-link-accent" data-folder-new-ok>[ok]</button>
+      </span>
+    </div>
+  </div>
+  {{if and .Missing .NewHint}}<span class="field-hint">{{.NewHint}}</span>{{end}}
+  {{else}}
+  <span class="field-hint">(folders unavailable{{with .Unavailable}}; {{.}}{{end}})</span>
+  {{end}}
+  {{with .Hint}}<span class="field-hint">{{.}}</span>{{end}}
+</div>
+{{end}}
+
+{{define "webui/folder_picker_rows"}}
+{{$lv := .}}
+{{range .Rows}}
+<li class="folder-node-wrap">
+  <div class="folder-node-row{{if .Active}} active{{end}}" data-folder-pick="{{.Path}}">
+    {{if .HasSub}}
+    <button type="button" class="folder-toggle-btn" data-folder-toggle>{{if .Sub}}▼{{else}}▶{{end}}</button>
+    {{else}}<span class="folder-spacer"></span>{{end}}
+    <span class="folder-link" title="{{.Path}}/">{{.Name}}/</span>
+    <span class="folder-count" title="{{.Images}} images">{{abbrevCount .Images}}</span>
+  </div>
+  {{if .HasSub}}<ul class="folder-children"{{if not .Sub}} hidden{{end}} hx-trigger="folder-open" hx-target="this" hx-swap="innerHTML" hx-include="#{{$lv.ID}}-input"
+      hx-get="{{$lv.Route}}/level?kind={{$lv.Kind}}&amp;gallery={{urlquery $lv.Gallery}}&amp;path={{urlquery .Path}}">{{with .Sub}}{{template "webui/folder_picker_rows" .}}{{end}}</ul>{{end}}
+</li>
+{{end}}
+{{if .More}}
+<li class="folder-node-wrap">
+  <div class="folder-node-row">
+    <span class="folder-spacer"></span>
+    <button type="button" class="folder-more-btn" title="{{.Left}} more {{if eq .Left 1}}folder{{else}}folders{{end}}"
+            hx-get="{{.Route}}/level?kind={{.Kind}}&amp;gallery={{urlquery .Gallery}}&amp;path={{urlquery .Path}}&amp;page={{.More}}"
+            hx-include="#{{.ID}}-input" hx-target="closest li" hx-swap="outerHTML">[more]</button>
+  </div>
+</li>
+{{end}}
+{{end}}
+
+{{define "webui/folder_picker_suggest"}}
+{{if .}}<div class="suggest-list">
+  {{range .}}<button type="button" class="suggest-item" data-folder-suggest="{{.Path}}"><span>{{.Path}}/</span><span class="folder-count">{{abbrevCount .Images}}</span></button>{{end}}
+</div>{{end}}
+{{end}}

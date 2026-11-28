@@ -153,16 +153,18 @@ func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 		"Auths":              mapping.ProfileAuths,
 		"Ratings":            mapping.RatingLevels,
 		"Categories":         mapping.TagCategories,
-		"Username":           "", "UserID": "", "Gallery": "", "Label": "", "Cookies": "", "UserAgent": "",
+		"Username":           "", "UserID": "", "Gallery": "", "Folder": "", "Label": "", "Cookies": "", "UserAgent": "",
 		"OptionsPrivate": "", "HasOptions": false, "HasPassword": false, "HasAPIKey": false, "CookieCount": 0,
 		"CookiesPaste": "", "Blacklist": "",
-		"GlobalRules": mapping.BlacklistRuleLines(s.cfg.Current().Tags.Blacklist),
-		"MonbooruURL": s.monbooruWebBase(),
+		"GlobalRules":    mapping.BlacklistRuleLines(s.cfg.Current().Tags.Blacklist),
+		"GlobalTagRules": tagRuleRows(r, config.TagsConfig{Rules: s.cfg.Current().Tags.Rules}),
+		"MonbooruURL":    s.monbooruWebBase(),
 	}
 	if site := s.cfg.Current().FindSite(name); site != nil {
 		data["Username"] = site.Username
 		data["UserID"] = site.UserID
 		data["Gallery"] = site.Gallery
+		data["Folder"] = site.Folder
 		data["Label"] = site.Label
 		data["Cookies"] = site.Cookies
 		data["UserAgent"] = site.Agent
@@ -182,6 +184,7 @@ func (s *Server) siteDialogData(r *http.Request, name string) map[string]any {
 	}
 	data["TagOverrides"], data["RatingTomlOverrides"] = s.mapper.ActiveOverrides(name)
 	markMissingGallery(data)
+	s.markFolderPicker(r, data)
 	markCategoryOptions(data)
 	markDroppedTargets(data, s.cfg.Current().Tags.DropCategories)
 	s.markDefaultAgent(data)
@@ -259,6 +262,17 @@ func markMissingGallery(dialog map[string]any) {
 	dialog["GalleryMissing"] = galleries != nil && galleryMissing(name, galleries)
 }
 
+// Lists the folders of the gallery the dialog shows. Skipped when the
+// galleries could not be listed: monbooru will not answer this either.
+func (s *Server) markFolderPicker(r *http.Request, dialog map[string]any) {
+	if dialog["Galleries"] == nil {
+		dialog["FolderPicker"] = folderPickerKinds["site"]
+		return
+	}
+	gallery, _ := dialog["Gallery"].(string)
+	dialog["FolderPicker"] = s.folderPicker(r, "site", gallery)
+}
+
 func (s *Server) refuseSiteSave(w http.ResponseWriter, r *http.Request, name, tab, msg string) {
 	dialog := s.siteDialogData(r, name)
 	dialog["Refusal"], dialog["RefusedTab"] = msg, tab
@@ -267,7 +281,7 @@ func (s *Server) refuseSiteSave(w http.ResponseWriter, r *http.Request, name, ta
 		dialog["Profile"], _ = profileFromForm(r)
 	}
 	for field, key := range map[string]string{
-		"gallery": "Gallery", "label": "Label", "username": "Username",
+		"gallery": "Gallery", "folder": "Folder", "label": "Label", "username": "Username",
 		"user_id": "UserID", "cookies": "Cookies", "options": "OptionsPrivate",
 		"cookies_paste": "CookiesPaste", "blacklist": "Blacklist", "profile_options": "OptionsPublic",
 		"user_agent": "UserAgent",
@@ -280,6 +294,10 @@ func (s *Server) refuseSiteSave(w http.ResponseWriter, r *http.Request, name, ta
 		dialog["HasOptions"] = false
 	}
 	markMissingGallery(dialog)
+	// The folders of the gallery it was sent, not the stored one.
+	if r.Form.Has("gallery") {
+		s.markFolderPicker(r, dialog)
+	}
 	markCategoryOptions(dialog)
 	markDroppedTargets(dialog, s.cfg.Current().Tags.DropCategories)
 	s.markDefaultAgent(dialog)
@@ -376,20 +394,8 @@ func profileFromForm(r *http.Request) (mapping.Profile, error) {
 	foldKey := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 	p.RatingOverrides = formPairs(r, "rating_from", "rating_to", foldKey, nil)
 	p.CategoryOverrides = formPairs(r, "cat_from", "cat_to", foldKey, nil)
-	// A key holding a * stays as typed, target included: folded, the check
-	// that refuses it would never see the *.
-	foldTag := func(s string) string {
-		if s = strings.TrimSpace(s); strings.Contains(s, "*") {
-			return s
-		}
-		return mapping.NormalizeTag(s)
-	}
+	foldTag := func(s string) string { return mapping.NormalizeRuleKey(strings.TrimSpace(s)) }
 	p.TagRules = formPairs(r, "rule_from", "rule_to", foldTag, mapping.NormalizeRuleTarget)
-	for i, from := range r.Form["rule_from"] {
-		if tos := r.Form["rule_to"]; strings.Contains(from, "*") && i < len(tos) {
-			p.TagRules[foldTag(from)] = strings.TrimSpace(tos[i])
-		}
-	}
 	if raw := strings.TrimSpace(r.FormValue("profile_options")); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &p.Options); err != nil {
 			return p, fmt.Errorf("public gallery-dl options must be a JSON object: %w", err)
@@ -468,6 +474,13 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		s.refuseSiteSave(w, r, name, "sd-auth-panel", "pasted cookies are not a Netscape cookies.txt export")
 		return
 	}
+	// monbooru refuses an absolute folder or a .. segment, which would
+	// fail every push.
+	folder := strings.TrimSpace(r.FormValue("folder"))
+	if !config.IsRelativeFolder(folder) {
+		s.refuseSiteSave(w, r, name, "sd-monbooru", "folder must be a relative path with no .. segment")
+		return
+	}
 	options := strings.TrimSpace(r.FormValue("options"))
 	if err := config.ValidateSiteOptions(options); err != nil {
 		s.refuseSiteSave(w, r, name, "sd-advanced", err.Error())
@@ -517,6 +530,9 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Form.Has("gallery") {
 			site.Gallery = strings.TrimSpace(r.FormValue("gallery"))
+		}
+		if r.Form.Has("folder") {
+			site.Folder = folder
 		}
 		if r.Form.Has("label") {
 			site.Label = strings.TrimSpace(r.FormValue("label"))

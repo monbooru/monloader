@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"maps"
+	"net/url"
 	"reflect"
 	"regexp"
 	"slices"
@@ -79,6 +80,11 @@ func New(cfg *config.Provider, profilesDir string) (*Mapper, error) {
 			logx.Warnf("tags.drop_categories names %q, no tag category (%s); it is skipped", name, strings.Join(TagCategories, ", "))
 		}
 	}
+	for from, to := range cfg.Current().Tags.Rules {
+		if err := CheckTagRules(map[string]string{from: to}); err != nil {
+			logx.Warnf("tags.rules: %v; it is skipped", err)
+		}
+	}
 	for _, o := range cfg.Current().TagOverrides {
 		if !validCategoryTarget(o.To) {
 			logx.Warnf("tag override %s %q -> %q names no tag category (%s); it is skipped", o.Site, o.From, o.To, strings.Join(TagCategories, ", "))
@@ -95,7 +101,7 @@ func New(cfg *config.Provider, profilesDir string) (*Mapper, error) {
 func (m *Mapper) view() *profileSet { return m.ps.Load() }
 
 // Only once a list has been read: before that nothing is known about a name.
-func unknownTargets(profile Profile, tags []string) []string {
+func unknownTargets(profile Profile, global map[string]string, tags []string) []string {
 	customCategoriesMu.RLock()
 	learned := customCategoriesLearned
 	customCategoriesMu.RUnlock()
@@ -118,9 +124,11 @@ func unknownTargets(profile Profile, tags []string) []string {
 	for _, to := range profile.CategoryOverrides {
 		note(to)
 	}
-	for _, to := range profile.TagRules {
-		if prefix, _, found := strings.Cut(to, ":"); found {
-			note(prefix)
+	for _, rules := range []map[string]string{profile.TagRules, global} {
+		for _, to := range rules {
+			if prefix, _, found := strings.Cut(to, ":"); found {
+				note(prefix)
+			}
 		}
 	}
 	slices.Sort(out)
@@ -164,6 +172,11 @@ func (m *Mapper) CategoryListMissing() bool {
 			if prefix, _, found := strings.Cut(to, ":"); found && unknown(prefix) {
 				return true
 			}
+		}
+	}
+	for _, to := range m.globalTagRules() {
+		if prefix, _, found := strings.Cut(to, ":"); found && unknown(prefix) {
+			return true
 		}
 	}
 	return false
@@ -281,11 +294,55 @@ func (m *Mapper) LookupSites() []string {
 	return out
 }
 
-func (m *Mapper) Gallery(category string) string {
-	if site := m.cfg.Current().FindSite(category); site != nil && site.Gallery != "" {
-		return site.Gallery
+func (m *Mapper) Gallery(categories ...string) string {
+	cfg := m.cfg.Current()
+	for _, category := range categories {
+		if site := cfg.FindSite(category); site != nil && site.Gallery != "" {
+			return site.Gallery
+		}
 	}
-	return m.cfg.Current().Monbooru.DefaultGallery
+	return cfg.Monbooru.DefaultGallery
+}
+
+func (m *Mapper) SiteOfURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	// A self-hosted site usually carries a port: a host:port a profile
+	// names wins, then the bare host.
+	host := normalizeHost(u.Host)
+	for _, h := range []string{host, hostWithoutPort(host)} {
+		if site := m.HostSite(h); site != "" {
+			return site
+		}
+	}
+	return ""
+}
+
+// Empty leaves the folder to monbooru's own default.
+func (m *Mapper) Folder(categories ...string) string {
+	cfg := m.cfg.Current()
+	for _, category := range categories {
+		if site := cfg.FindSite(category); site != nil && site.Folder != "" {
+			return site.Folder
+		}
+	}
+	return cfg.Downloader.DefaultFolder
+}
+
+func (m *Mapper) HostSite(host string) string {
+	v := m.view()
+	host = normalizeHost(host)
+	if category, ok := v.hostSite[host]; ok {
+		return category
+	}
+	for cand := host; cand != ""; cand = parentDomain(cand) {
+		if category, ok := v.aliasSite[cand]; ok {
+			return category
+		}
+	}
+	return ""
 }
 
 // SourceLabel keeps an unmatched name as-is, so no label lands that the
@@ -321,11 +378,7 @@ func (m *Mapper) sourceLabel(name string) (label string, claimed bool) {
 			}
 		}
 	}
-	category, ok := v.hostSite[host]
-	for cand := host; !ok && cand != ""; cand = parentDomain(cand) {
-		category, ok = v.aliasSite[cand]
-	}
-	if ok {
+	if category := m.HostSite(host); category != "" {
 		if site := cfg.FindSite(category); site != nil && site.Label != "" {
 			return site.Label, true
 		}
@@ -361,9 +414,10 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	var tags []string
 	drop := m.cfg.Current().Tags.DropCategories
 	var withheld []string
+	rules := m.rulesFor(profile)
 	add := func(_, s string) {
 		listed := normalizeTag(s)
-		s = applyTagRule(profile.TagRules, listed)
+		s = rules.apply(listed)
 		if s == "" && listed != "" {
 			withheld = append(withheld, listed)
 		}
@@ -384,7 +438,7 @@ func (m *Mapper) Map(meta map[string]any) PushFields {
 	pf.Tags = slices.Compact(tags)
 	slices.Sort(withheld)
 	pf.WithheldTags = slices.Compact(withheld)
-	pf.UnknownTargets = unknownTargets(profile, pf.Tags)
+	pf.UnknownTargets = unknownTargets(profile, rules.global, pf.Tags)
 
 	if kwdict.String(meta, "subcategory") == "pool" {
 		pf.Collection = PoolName(meta)
@@ -428,13 +482,13 @@ func (m *Mapper) eachTag(category string, profile Profile, meta map[string]any, 
 		if !keep {
 			if base, ok := baseCategory(suffix); ok {
 				for _, name := range parseTagField(meta["tags_"+suffix]) {
-					dropped("tags_"+suffix, formatTag(base, name))
+					dropped("tags_"+suffix, contract.TagForm(base, name))
 				}
 			}
 			continue
 		}
 		for _, name := range parseTagField(meta["tags_"+suffix]) {
-			visit("tags_"+suffix, formatTag(cat, name))
+			visit("tags_"+suffix, contract.TagForm(cat, name))
 		}
 	}
 	if flat {
@@ -469,11 +523,11 @@ func (m *Mapper) fileTag(site string, profile Profile, field, key, base, name st
 	to, ok := m.categoryOverride(site, profile, key)
 	switch {
 	case !ok:
-		visit(field, formatTag(base, name))
+		visit(field, contract.TagForm(base, name))
 	case to == "":
-		dropped(field, formatTag(base, name))
+		dropped(field, contract.TagForm(base, name))
 	default:
-		visit(field, formatTag(to, name))
+		visit(field, contract.TagForm(to, name))
 	}
 }
 

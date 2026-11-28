@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -17,7 +18,6 @@ import (
 
 	"github.com/monbooru/monloader/internal/config"
 	"github.com/monbooru/monloader/internal/gdl"
-	"github.com/monbooru/monloader/internal/kwdict"
 	"github.com/monbooru/monloader/internal/mapping"
 	"github.com/monbooru/monloader/internal/monbooru"
 	"github.com/monbooru/monloader/internal/outcome"
@@ -58,8 +58,17 @@ func (s *Server) settingsData(r *http.Request) map[string]any {
 	data["MonbooruAPIHint"] = s.monbooruAPIHint()
 
 	s.fillGalleryFields(r, data)
+	data["DefaultFolderPicker"] = folderPickerKinds["default"]
+	if data["Galleries"] != nil {
+		gallery := s.cfg.Current().Monbooru.DefaultGallery
+		if r.Form.Has("default_gallery") {
+			gallery = strings.TrimSpace(r.FormValue("default_gallery"))
+		}
+		data["DefaultFolderPicker"] = s.folderPicker(r, "default", gallery)
+	}
 	data["TagCategories"] = s.tagCategoryRows(r, data["Galleries"] != nil)
 	data["SiteBlacklists"] = siteBlacklists(s.cfg.Current().Sites)
+	data["TagRules"] = tagRuleRows(r, s.cfg.Current().Tags)
 	data["MonbooruURL"] = s.monbooruWebBase()
 
 	csrf := s.csrf(r)
@@ -442,6 +451,30 @@ func (s *Server) cleanBlacklist(r *http.Request) ([]string, error) {
 	return mapping.CleanBlacklist(text)
 }
 
+type tagRuleRow struct {
+	From, To string
+	Dropped  string
+}
+
+// A refused save hands the rows back as typed, a blank one included.
+func tagRuleRows(r *http.Request, tags config.TagsConfig) []tagRuleRow {
+	var rows []tagRuleRow
+	if r.Method == http.MethodPost && r.Form.Has("rules_shown") {
+		tos := r.Form["rule_to"]
+		for i, from := range r.Form["rule_from"] {
+			if i < len(tos) {
+				rows = append(rows, tagRuleRow{From: from, To: tos[i]})
+			}
+		}
+		return rows
+	}
+	for _, from := range slices.Sorted(maps.Keys(tags.Rules)) {
+		to := tags.Rules[from]
+		rows = append(rows, tagRuleRow{From: from, To: to, Dropped: mapping.DroppedRuleTarget(tags.DropCategories, from, to)})
+	}
+	return rows
+}
+
 func (s *Server) saveTags(w http.ResponseWriter, r *http.Request) {
 	var blacklist []string
 	if r.Form.Has("blacklist") {
@@ -451,10 +484,23 @@ func (s *Server) saveTags(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var rules map[string]string
+	if r.Form.Has("rules_shown") {
+		s.customCategories(r)
+		foldKey := func(s string) string { return mapping.NormalizeRuleKey(strings.TrimSpace(s)) }
+		rules = formPairs(r, "rule_from", "rule_to", foldKey, mapping.NormalizeRuleTarget)
+		if err := mapping.CheckTagRules(rules); err != nil {
+			s.refuseSave(w, r, err.Error()+" - nothing was saved.")
+			return
+		}
+	}
 	err := s.cfg.Update(func(c *config.Config) error {
 		c.Tags.DropCategories = postedDropCategories(r, c.Tags.DropCategories)
 		if r.Form.Has("blacklist") {
 			c.Tags.Blacklist = blacklist
+		}
+		if r.Form.Has("rules_shown") {
+			c.Tags.Rules = rules
 		}
 		return nil
 	})
@@ -494,9 +540,6 @@ func (s *Server) tracePost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.customCategories(r)
 	trace := s.mapper.Trace(meta)
-	if kwdict.String(meta, "category") == mapping.CategoryDirectlink || kwdict.String(meta, "subcategory") == "post" {
-		trace.PostURL = ""
-	}
 	data := map[string]any{"Trace": trace}
 	s.traceGallery(ctx, trace, data)
 	s.render(w, "tag_trace", data)

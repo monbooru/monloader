@@ -3,9 +3,11 @@
 package pairing
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -28,8 +30,10 @@ const (
 // Nothing is issued until the claim, so an approval the peer never
 // collects mints no token.
 type Request struct {
-	ID        string
-	App       string
+	ID  string
+	App string
+	// Label tells apart two peers of one app, such as two workers.
+	Label     string
 	Source    string
 	Scopes    []string
 	State     State
@@ -70,23 +74,25 @@ func (s *Store[T, P]) sweepLocked() {
 	})
 }
 
-func (s *Store[T, P]) dropPendingLocked(app string) {
+// dropPendingLocked drops app's pending requests; with all false, only
+// the ones under label.
+func (s *Store[T, P]) dropPendingLocked(app, label string, all bool) {
 	maps.DeleteFunc(s.m, func(_ string, p P) bool {
 		r := p.request()
-		return r.State == Pending && r.App == app
+		return r.State == Pending && r.App == app && (all || r.Label == label)
 	})
 }
 
-// A second request from the same app replaces its pending one, under a new
-// id: one noisy peer would otherwise fill the cap for the TTL, and two rows
-// would approve into two tokens under one name.
+// A second request from the same app and label replaces its pending one,
+// under a new id: one noisy peer would otherwise fill the cap for the TTL,
+// and two rows would approve into two tokens under one name.
 func (s *Store[T, P]) Create(req T) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked()
 	p := P(&req)
 	r := p.request()
-	s.dropPendingLocked(r.App)
+	s.dropPendingLocked(r.App, r.Label, false)
 	pending := 0
 	for _, q := range s.m {
 		if q.request().State == Pending {
@@ -101,37 +107,41 @@ func (s *Store[T, P]) Create(req T) (string, bool) {
 	return r.ID, true
 }
 
+// DropPending drops every pending request of app, whatever its label.
 func (s *Store[T, P]) DropPending(app string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.dropPendingLocked(app)
+	s.dropPendingLocked(app, "", true)
 }
 
+// In the order they arrived, so a card stays where it was between polls.
 func (s *Store[T, P]) ListPending() []T {
+	return s.list(func(r *Request) bool { return r.State == Pending })
+}
+
+func (s *Store[T, P]) list(keep func(*Request) bool) []T {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked()
-	var out []T
+	var ps []P
 	for _, p := range s.m {
-		if p.request().State == Pending {
-			out = append(out, *p)
+		if keep(p.request()) {
+			ps = append(ps, p)
 		}
+	}
+	slices.SortFunc(ps, func(a, b P) int {
+		return cmp.Or(a.request().CreatedAt.Compare(b.request().CreatedAt), cmp.Compare(a.request().ID, b.request().ID))
+	})
+	out := make([]T, len(ps))
+	for i, p := range ps {
+		out[i] = *p
 	}
 	return out
 }
 
 // ListApproved returns the approvals whose token the peer has not collected yet.
 func (s *Store[T, P]) ListApproved() []T {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sweepLocked()
-	var out []T
-	for _, p := range s.m {
-		if r := p.request(); r.State == Approved && !r.Claimed {
-			out = append(out, *p)
-		}
-	}
-	return out
+	return s.list(func(r *Request) bool { return r.State == Approved && !r.Claimed })
 }
 
 func (s *Store[T, P]) Get(id string) (T, bool) {
@@ -187,6 +197,7 @@ func (s *Store[T, P]) Remove(id string) {
 // Embedding it lets an app's own offer body pass to DecodeOffer.
 type RequestBody struct {
 	App             string   `json:"app"`
+	Label           string   `json:"label,omitempty"`
 	URL             string   `json:"url,omitempty"`
 	RequestedScopes []string `json:"requested_scopes"`
 	PeerToken       string   `json:"peer_token,omitempty"`
